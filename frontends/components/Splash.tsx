@@ -1,5 +1,5 @@
-import { useEffect, type ReactNode } from "react";
-import { ShieldCheck, Zap, Share2, Send } from "lucide-react";
+import { useEffect, type CSSProperties, type ReactNode } from "react";
+import { ShieldCheck, Zap, Share2 } from "lucide-react";
 
 interface SplashProps {
   onReady?: () => void;
@@ -60,6 +60,45 @@ const FEATURES = [
   { color: "#10B981", bg: "#D1FAE5", stroke: "#6EE7B7", label: "安全可靠", Icon: ShieldCheck },
   { color: "#3B82F6", bg: "#DBEAFE", stroke: "#93C5FD", label: "高效聚合", Icon: Zap },
   { color: "#FB923C", bg: "#FFEDD5", stroke: "#FDBA74", label: "轻量便捷", Icon: Share2 },
+];
+
+// Satellite "twinkling" mini-bubbles that drift around each main bubble.
+// Coordinates are local to the parent bubble's container.
+type Satellite = {
+  x: number;
+  y: number;
+  size: number;
+  color: string;
+  dx: number; // drift X (px) at the midpoint of the loop
+  dy: number; // drift Y (px) at the midpoint of the loop
+  delay: number; // ms
+  duration: number; // ms — varied so satellites twinkle out of sync
+};
+
+const SATELLITES_BLUE: Satellite[] = [
+  { x: -18, y: 50, size: 9, color: "#A8CFFF", dx: 4, dy: -3, delay: 0, duration: 2800 },
+  { x: -24, y: 130, size: 7, color: "#BFD9FF", dx: -3, dy: 4, delay: 600, duration: 2400 },
+  { x: 60, y: -16, size: 6, color: "#7BB6FF", dx: 3, dy: -2, delay: 200, duration: 2600 },
+  { x: 200, y: -10, size: 5, color: "#A8CFFF", dx: -2, dy: -3, delay: 1100, duration: 2900 },
+  { x: 290, y: 70, size: 8, color: "#BFD9FF", dx: -3, dy: 3, delay: 400, duration: 3200 },
+  { x: 296, y: 150, size: 6, color: "#7BB6FF", dx: -2, dy: -2, delay: 1300, duration: 2500 },
+  { x: 230, y: 218, size: 5, color: "#A8CFFF", dx: 2, dy: 3, delay: 800, duration: 2700 },
+];
+
+const SATELLITES_GREEN: Satellite[] = [
+  { x: -14, y: 28, size: 6, color: "#7CE3A8", dx: 3, dy: -2, delay: 0, duration: 2400 },
+  { x: -10, y: 70, size: 5, color: "#C8F0DC", dx: -2, dy: 3, delay: 700, duration: 2800 },
+  { x: 16, y: -10, size: 4, color: "#A8F0C5", dx: 2, dy: -2, delay: 300, duration: 2600 },
+  { x: 116, y: 30, size: 6, color: "#7CE3A8", dx: -3, dy: 2, delay: 1100, duration: 3000 },
+  { x: 110, y: 78, size: 5, color: "#A8F0C5", dx: -2, dy: 3, delay: 500, duration: 2500 },
+];
+
+const SATELLITES_WHITE: Satellite[] = [
+  { x: -16, y: 40, size: 7, color: "#D6DEE9", dx: 3, dy: -3, delay: 0, duration: 2600 },
+  { x: -10, y: 90, size: 5, color: "#E8EDF4", dx: -2, dy: 3, delay: 800, duration: 2400 },
+  { x: 30, y: -12, size: 5, color: "#C5CFE0", dx: 2, dy: -2, delay: 400, duration: 2700 },
+  { x: 156, y: 28, size: 6, color: "#D6DEE9", dx: -3, dy: 2, delay: 1100, duration: 3200 },
+  { x: 156, y: 80, size: 7, color: "#E8EDF4", dx: -2, dy: 3, delay: 600, duration: 2900 },
 ];
 
 // ─── Splash ───────────────────────────────────────────────────────────────
@@ -142,11 +181,13 @@ function Halos() {
     <>
       <div
         aria-hidden
-        className="absolute h-[360px] w-[500px] opacity-70"
+        className="absolute h-[360px] w-[500px]"
         style={{
           left: 10,
           top: -10,
           background: "radial-gradient(ellipse at center, #EEF2FF 0%, rgba(255,255,255,0) 90%)",
+          animation: "splashHaloPulse 8s ease-in-out infinite",
+          transformOrigin: "center",
         }}
       />
       <div
@@ -208,6 +249,7 @@ function BubbleBlue() {
           animation={`splashTyping 1.2s ${delay}ms ease-in-out infinite`}
         />
       ))}
+      <SatelliteRing items={SATELLITES_BLUE} />
     </div>
   );
 }
@@ -235,6 +277,7 @@ function BubbleGreen() {
           <path d="M21 35 q0 -10 7 -10 q7 0 7 10 z" />
         </g>
       </svg>
+      <SatelliteRing items={SATELLITES_GREEN} />
     </div>
   );
 }
@@ -248,7 +291,7 @@ function BubbleWhite() {
           d="M 75 0 A 75 55 0 0 1 78 110 L 50 121 L 52 107 A 75 55 0 0 1 75 0 Z"
           fill="#FFFFFF"
           stroke="#B8C5DD"
-          strokeWidth="1.2"
+          strokeWidth="0.5"
           strokeLinejoin="round"
         />
       </svg>
@@ -262,6 +305,7 @@ function BubbleWhite() {
           animation={`splashTyping 1.2s ${delay}ms ease-in-out infinite`}
         />
       ))}
+      <SatelliteRing items={SATELLITES_WHITE} />
     </div>
   );
 }
@@ -313,9 +357,14 @@ function BottomScene() {
       className="pointer-events-none absolute inset-x-0 bottom-0 h-[260px]"
       style={{ animation: "splashFadeUp 900ms 700ms backwards ease-out" }}
     >
-      <CityBuildings />
+      {/* Waves stretch full-width */}
       <Waves />
-      <PaperPlane />
+      {/* Plane + city skyline are anchored to a centered container so they
+          slide inward instead of pinning to the right edge on narrow viewports. */}
+      <div className="relative mx-auto h-full w-full max-w-[1280px]">
+        <CityBuildings />
+        <PaperPlane />
+      </div>
     </div>
   );
 }
@@ -335,113 +384,117 @@ function CityBuildings() {
 }
 
 function Waves() {
+  // Each path is 2× viewBox-wide (period 640) so the SMIL animateTransform
+  // can drift it by -1280 SVG units in a seamless loop. Different durations
+  // per layer create a parallax-water feel.
   return (
     <svg
       className="absolute bottom-0 left-0 block h-[260px] w-full"
       viewBox="0 0 1280 260"
       preserveAspectRatio="none"
     >
-      <path
-        d="M0,90 C200,-20 420,210 640,80 C880,-30 1080,220 1280,70 L1280,260 L0,260 Z"
+      <DriftingWave
+        d="M0,70 Q160,20 320,70 T640,70 T960,70 T1280,70 T1600,70 T1920,70 T2240,70 T2560,70 L2560,260 L0,260 Z"
         fill="#E0E7FF"
-        opacity="0.28"
+        opacity={0.28}
+        dur="26s"
       />
-      <path
-        d="M0,140 C220,30 460,240 700,120 C940,20 1120,250 1280,130 L1280,260 L0,260 Z"
+      <DriftingWave
+        d="M0,130 Q160,80 320,130 T640,130 T960,130 T1280,130 T1600,130 T1920,130 T2240,130 T2560,130 L2560,260 L0,260 Z"
         fill="#D6E4FF"
-        opacity="0.7"
+        opacity={0.7}
+        dur="20s"
       />
-      <path
-        d="M0,180 C240,90 500,250 760,170 C1000,100 1140,255 1280,170 L1280,260 L0,260 Z"
+      <DriftingWave
+        d="M0,180 Q160,150 320,180 T640,180 T960,180 T1280,180 T1600,180 T1920,180 T2240,180 T2560,180 L2560,260 L0,260 Z"
         fill="#FCE7B8"
+        opacity={1}
+        dur="14s"
       />
-      <path
-        d="M0,220 C260,150 540,255 800,205 C1020,170 1160,255 1280,210 L1280,260 L0,260 Z"
+      <DriftingWave
+        d="M0,220 Q160,195 320,220 T640,220 T960,220 T1280,220 T1600,220 T1920,220 T2240,220 T2560,220 L2560,260 L0,260 Z"
         fill="#DCEFE2"
-        opacity="0.78"
+        opacity={0.78}
+        dur="10s"
       />
     </svg>
   );
 }
 
-const PLANE_TRAIL = "M14 178 C 80 162, 160 124, 220 56";
+function DriftingWave({
+  d,
+  fill,
+  opacity,
+  dur,
+}: {
+  d: string;
+  fill: string;
+  opacity: number;
+  dur: string;
+}) {
+  return (
+    <path d={d} fill={fill} opacity={opacity}>
+      <animateTransform
+        attributeName="transform"
+        type="translate"
+        from="0 0"
+        to="-1280 0"
+        dur={dur}
+        repeatCount="indefinite"
+      />
+    </path>
+  );
+}
 
+// Soft enterprise-illustration paper plane.
+// Single self-contained SVG: low-saturation stroke, transparent gradient body,
+// integrated dashed trail, gentle -12° upward tilt. No icon library.
 function PaperPlane() {
   return (
-    <div
-      className="absolute h-[200px] w-[340px]"
-      style={{ right: 60, top: -10, animation: "splashPlaneFloat 6s ease-in-out infinite" }}
+    <svg
+      aria-hidden
+      className="absolute"
+      width="48"
+      height="38"
+      viewBox="0 0 90 70"
+      style={{
+        right: 100,
+        top: 28,
+        overflow: "visible",
+        filter: "drop-shadow(0 4px 10px rgba(120, 180, 255, 0.16))",
+        pointerEvents: "none",
+        animation: "splashPlaneFloat 5.5s ease-in-out infinite",
+      }}
     >
-      <svg className="absolute inset-0" width="340" height="200" viewBox="0 0 340 200" fill="none">
-        <defs>
-          <linearGradient id="splashPlaneTrail" x1="0%" y1="100%" x2="100%" y2="0%">
-            <stop offset="0%" stopColor="#93C5FD" stopOpacity="0" />
-            <stop offset="45%" stopColor="#93C5FD" stopOpacity="0.5" />
-            <stop offset="100%" stopColor="#2563EB" stopOpacity="0.9" />
-          </linearGradient>
-          <linearGradient id="splashPlaneHalo" x1="0%" y1="100%" x2="100%" y2="0%">
-            <stop offset="0%" stopColor="#DBEAFE" stopOpacity="0" />
-            <stop offset="100%" stopColor="#93C5FD" stopOpacity="0.45" />
-          </linearGradient>
-        </defs>
-
-        {/* origin ring */}
-        <circle cx="14" cy="178" r="4" stroke="#7DB7F5" strokeWidth="1.5" fill="none" />
-        <circle cx="14" cy="178" r="1.6" fill="#7DB7F5" />
-
-        {/* trail layers — soft halo + main gradient */}
-        <path
-          d={PLANE_TRAIL}
-          stroke="url(#splashPlaneHalo)"
-          strokeWidth="5"
-          strokeLinecap="round"
-          fill="none"
-          opacity="0.5"
-        />
-        <path
-          d={PLANE_TRAIL}
-          stroke="url(#splashPlaneTrail)"
-          strokeWidth="1.6"
-          strokeLinecap="round"
-          fill="none"
-        />
-        {/* dotted echo line just below */}
-        <path
-          d="M26 188 C 92 174, 168 138, 226 76"
-          stroke="#BFD7F7"
-          strokeWidth="0.9"
-          strokeLinecap="round"
-          strokeDasharray="1 7"
-          fill="none"
-          opacity="0.6"
-        />
-        {/* accent dots ramp opacity toward the plane */}
-        {[
-          { cx: 55, cy: 166, op: 0.4 },
-          { cx: 105, cy: 146, op: 0.55 },
-          { cx: 155, cy: 118, op: 0.7 },
-          { cx: 195, cy: 84, op: 0.85 },
-        ].map((d, i) => (
-          <circle key={i} cx={d.cx} cy={d.cy} r="1.2" fill="#93C5FD" opacity={d.op} />
-        ))}
-      </svg>
-
-      {/* the plane — lucide Send icon */}
-      <Send
-        size={52}
-        color="#2563EB"
-        fill="#DBEAFE"
-        strokeWidth={0.7}
+      <defs>
+        <linearGradient id="splashPlaneFill" x1="0%" y1="0%" x2="100%" y2="100%">
+          <stop offset="0%" stopColor="#78B4FF" stopOpacity="0.16" />
+          <stop offset="100%" stopColor="#78B4FF" stopOpacity="0.04" />
+        </linearGradient>
+      </defs>
+      <g
+        transform="rotate(-12 45 35)"
+        fill="none"
+        stroke="#9CB8DB"
+        strokeWidth="1.8"
+        strokeLinecap="round"
         strokeLinejoin="round"
-        className="absolute"
-        style={{
-          left: 204,
-          top: 16,
-          transform: "rotate(-18deg)",
-          filter: "drop-shadow(0 6px 12px rgba(37,99,235,0.26))",
-        }}
-      />
-    </div>
+      >
+        {/* dashed trail — drawn first so the body sits on top.
+            The dashoffset animation makes the dashes slide backward along the
+            curve, giving the impression that the plane is moving forward. */}
+        <path
+          d="M -10 76 C 4 70, 14 60, 24 52"
+          strokeDasharray="3 8"
+          opacity="0.25"
+          style={{ animation: "splashPlaneTrailFlow 1.4s linear infinite" }}
+        />
+        {/* body silhouette — origami arrow with V-notch on the back */}
+        <path d="M 84 6 L 30 64 L 38 36 L 4 22 Z" fill="url(#splashPlaneFill)" />
+        {/* inner crease — diagonal from tip to V-notch */}
+        <path d="M 84 6 L 38 36" />
+      </g>
+    </svg>
   );
 }
 
@@ -473,6 +526,32 @@ function AbsDot({ x, y, size, color, opacity, animation, glow }: AbsDotProps) {
         boxShadow: glow,
       }}
     />
+  );
+}
+
+function SatelliteRing({ items }: { items: Satellite[] }) {
+  return (
+    <>
+      {items.map((s, i) => (
+        <span
+          key={i}
+          aria-hidden
+          className="absolute rounded-full"
+          style={
+            {
+              left: s.x,
+              top: s.y,
+              width: s.size,
+              height: s.size,
+              background: s.color,
+              animation: `splashSatellite ${s.duration}ms ${s.delay}ms ease-in-out infinite`,
+              "--dx": `${s.dx}px`,
+              "--dy": `${s.dy}px`,
+            } as CSSProperties
+          }
+        />
+      ))}
+    </>
   );
 }
 
@@ -534,8 +613,20 @@ const KEYFRAMES = `
   0%, 100% { transform: translateY(0); }
   50%      { transform: translateY(-3px); }
 }
+@keyframes splashSatellite {
+  0%, 100% { opacity: 0.25; transform: translate(0, 0) scale(0.7); }
+  50%      { opacity: 1;    transform: translate(var(--dx, 0), var(--dy, 0)) scale(1); }
+}
+@keyframes splashHaloPulse {
+  0%, 100% { opacity: 0.62; transform: scale(1); }
+  50%      { opacity: 0.78; transform: scale(1.04); }
+}
 @keyframes splashPlaneFloat {
   0%, 100% { transform: translate(0, 0); }
-  50%      { transform: translate(-6px, 4px); }
+  50%      { transform: translate(-2px, -3px); }
+}
+@keyframes splashPlaneTrailFlow {
+  from { stroke-dashoffset: 0; }
+  to   { stroke-dashoffset: 11; }
 }
 `;

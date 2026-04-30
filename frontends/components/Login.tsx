@@ -1,4 +1,4 @@
-import { useState, type FormEvent, type ReactNode } from "react";
+import { useState, type CSSProperties, type FormEvent, type ReactNode } from "react";
 import { ArrowRight, Eye, EyeOff, Lock, Smartphone, UserRound } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -45,8 +45,8 @@ export function Login({ onSuccess }: LoginProps) {
 
       <Backdrop />
 
-      <main className="relative flex h-full w-full items-center justify-center px-12">
-        <div className="grid w-full max-w-[1080px] grid-cols-1 items-center gap-16 lg:grid-cols-[1fr_460px]">
+      <main className="relative flex h-full w-full items-center justify-center px-6 md:px-10 lg:px-12">
+        <div className="grid w-full max-w-[1080px] grid-cols-1 items-center gap-10 lg:grid-cols-[1fr_460px] lg:gap-16">
           <BrandPanel />
           <FormCard
             tab={tab}
@@ -78,21 +78,24 @@ function Backdrop() {
   return (
     <div aria-hidden className="pointer-events-none absolute inset-0">
       <div
-        className="absolute -left-40 -top-40 h-[520px] w-[520px] rounded-full opacity-60"
+        className="absolute -left-40 -top-40 h-[520px] w-[520px] rounded-full"
         style={{
           background: "radial-gradient(closest-side, #DCE6FF 0%, rgba(220,230,255,0) 70%)",
+          animation: "loginHaloPulse 9s ease-in-out infinite",
         }}
       />
       <div
-        className="absolute -right-32 -top-24 h-[420px] w-[420px] rounded-full opacity-55"
+        className="absolute -right-32 -top-24 h-[420px] w-[420px] rounded-full"
         style={{
           background: "radial-gradient(closest-side, #FFE2C7 0%, rgba(255,226,199,0) 70%)",
+          animation: "loginHaloPulse 11s 1.4s ease-in-out infinite",
         }}
       />
       <div
-        className="absolute -bottom-24 left-1/4 h-[300px] w-[480px] rounded-full opacity-50"
+        className="absolute -bottom-24 left-1/4 h-[300px] w-[480px] rounded-full"
         style={{
           background: "radial-gradient(closest-side, #DCEFE2 0%, rgba(220,239,226,0) 70%)",
+          animation: "loginHaloPulse 13s 2.8s ease-in-out infinite",
         }}
       />
     </div>
@@ -116,9 +119,9 @@ function BrandPanel() {
         </h1>
         <p
           className="text-[15px] leading-relaxed"
-          style={{ color: COLOR_SUBTITLE, letterSpacing: "0.06em" }}
+          style={{ color: COLOR_SUBTITLE, letterSpacing: "0.04em" }}
         >
-          让每一次团队对话都更高效，让每一个工作流都更顺畅。
+          让每一次团队对话都更高效，让每一个工作流都更顺畅
         </p>
       </div>
 
@@ -246,6 +249,7 @@ function BrandBubbleBlue() {
           />
         ))}
       </svg>
+      <SatelliteRing items={LOGIN_SATELLITES_BLUE} />
     </div>
   );
 }
@@ -290,6 +294,7 @@ function BrandBubbleGreen() {
           <path d="M21 35 q0 -10 7 -10 q7 0 7 10 z" />
         </g>
       </svg>
+      <SatelliteRing items={LOGIN_SATELLITES_GREEN} />
     </div>
   );
 }
@@ -320,7 +325,7 @@ function BrandBubbleWhite() {
           d="M 75 0 A 75 55 0 0 1 78 110 L 50 121 L 52 107 A 75 55 0 0 1 75 0 Z"
           fill="#FFFFFF"
           stroke="#B8C5DD"
-          strokeWidth="1.2"
+          strokeWidth="0.5"
           strokeLinejoin="round"
         />
         {[0, 160, 320].map((delay, i) => (
@@ -334,6 +339,7 @@ function BrandBubbleWhite() {
           />
         ))}
       </svg>
+      <SatelliteRing items={LOGIN_SATELLITES_WHITE} />
     </div>
   );
 }
@@ -348,6 +354,65 @@ const DECOR_DOTS = [
   { x: 424, y: 100, size: 8, color: "#E0D6FF", opacity: 0.55 },
   { x: 220, y: 268, size: 10, color: "#FCE7B8", opacity: 0.6 },
 ];
+
+// Twinkling satellites that drift around each brand bubble.
+type Satellite = {
+  x: number;
+  y: number;
+  size: number;
+  color: string;
+  dx: number;
+  dy: number;
+  delay: number;
+  duration: number;
+};
+
+const LOGIN_SATELLITES_BLUE: Satellite[] = [
+  { x: -14, y: 30, size: 6, color: "#A8CFFF", dx: 3, dy: -2, delay: 0, duration: 2800 },
+  { x: -18, y: 110, size: 5, color: "#BFD9FF", dx: -2, dy: 3, delay: 700, duration: 2400 },
+  { x: 60, y: -10, size: 4, color: "#7BB6FF", dx: 2, dy: -2, delay: 300, duration: 2600 },
+  { x: 250, y: 60, size: 6, color: "#BFD9FF", dx: -3, dy: 2, delay: 1100, duration: 3000 },
+  { x: 252, y: 130, size: 4, color: "#7BB6FF", dx: -2, dy: 3, delay: 500, duration: 2700 },
+  { x: 200, y: 188, size: 5, color: "#A8CFFF", dx: 2, dy: 2, delay: 900, duration: 2500 },
+];
+
+const LOGIN_SATELLITES_GREEN: Satellite[] = [
+  { x: -10, y: 28, size: 5, color: "#7CE3A8", dx: 2, dy: -2, delay: 0, duration: 2400 },
+  { x: 38, y: -8, size: 4, color: "#A8F0C5", dx: 2, dy: -2, delay: 600, duration: 2700 },
+  { x: 96, y: 30, size: 4, color: "#C8F0DC", dx: -2, dy: 3, delay: 1100, duration: 2900 },
+];
+
+const LOGIN_SATELLITES_WHITE: Satellite[] = [
+  { x: -14, y: 50, size: 5, color: "#D6DEE9", dx: 2, dy: -3, delay: 0, duration: 2600 },
+  { x: 60, y: -10, size: 4, color: "#C5CFE0", dx: 2, dy: -2, delay: 700, duration: 2400 },
+  { x: 134, y: 60, size: 5, color: "#E8EDF4", dx: -3, dy: 2, delay: 1100, duration: 3000 },
+];
+
+function SatelliteRing({ items }: { items: Satellite[] }) {
+  return (
+    <>
+      {items.map((s, i) => (
+        <span
+          key={i}
+          aria-hidden
+          className="absolute rounded-full"
+          style={
+            {
+              left: s.x,
+              top: s.y,
+              width: s.size,
+              height: s.size,
+              background: s.color,
+              animation: `loginSatellite ${s.duration}ms ${s.delay}ms ease-in-out infinite`,
+              "--dx": `${s.dx}px`,
+              "--dy": `${s.dy}px`,
+            } as CSSProperties
+          }
+        />
+      ))}
+    </>
+  );
+}
 
 // ─── Form Card (right) ────────────────────────────────────────────────────
 
@@ -569,6 +634,8 @@ function SubmitButton({ disabled }: { disabled: boolean }) {
 // ─── Bottom waves ─────────────────────────────────────────────────────────
 
 function BottomWaves() {
+  // Each layer is 2× viewBox-wide and tile-able (period 640) so the SMIL
+  // animateTransform can drift it -1280 SVG units in a seamless loop.
   return (
     <svg
       aria-hidden
@@ -577,22 +644,50 @@ function BottomWaves() {
       preserveAspectRatio="none"
       style={{ animation: "loginFade 900ms 500ms backwards ease-out" }}
     >
-      <path
-        d="M0,120 C220,20 460,280 700,140 C940,20 1100,280 1280,160 L1280,320 L0,320 Z"
+      <DriftingWave
+        d="M0,100 Q160,20 320,100 T640,100 T960,100 T1280,100 T1600,100 T1920,100 T2240,100 T2560,100 L2560,320 L0,320 Z"
         fill={WAVE_FILLS.back}
-        opacity="0.45"
+        opacity={0.45}
+        dur="22s"
       />
-      <path
-        d="M0,200 C240,110 480,300 720,220 C960,150 1120,300 1280,220 L1280,320 L0,320 Z"
+      <DriftingWave
+        d="M0,200 Q160,110 320,200 T640,200 T960,200 T1280,200 T1600,200 T1920,200 T2240,200 T2560,200 L2560,320 L0,320 Z"
         fill={WAVE_FILLS.warm}
-        opacity="0.85"
+        opacity={0.85}
+        dur="16s"
       />
-      <path
-        d="M0,260 C260,190 540,310 800,270 C1020,230 1160,310 1280,270 L1280,320 L0,320 Z"
+      <DriftingWave
+        d="M0,270 Q160,220 320,270 T640,270 T960,270 T1280,270 T1600,270 T1920,270 T2240,270 T2560,270 L2560,320 L0,320 Z"
         fill={WAVE_FILLS.mint}
-        opacity="0.85"
+        opacity={0.85}
+        dur="11s"
       />
     </svg>
+  );
+}
+
+function DriftingWave({
+  d,
+  fill,
+  opacity,
+  dur,
+}: {
+  d: string;
+  fill: string;
+  opacity: number;
+  dur: string;
+}) {
+  return (
+    <path d={d} fill={fill} opacity={opacity}>
+      <animateTransform
+        attributeName="transform"
+        type="translate"
+        from="0 0"
+        to="-1280 0"
+        dur={dur}
+        repeatCount="indefinite"
+      />
+    </path>
   );
 }
 
@@ -622,5 +717,13 @@ const KEYFRAMES = `
 @keyframes loginDotFloat {
   0%, 100% { transform: translateY(0); }
   50%      { transform: translateY(-3px); }
+}
+@keyframes loginSatellite {
+  0%, 100% { opacity: 0.25; transform: translate(0, 0) scale(0.7); }
+  50%      { opacity: 1;    transform: translate(var(--dx, 0), var(--dy, 0)) scale(1); }
+}
+@keyframes loginHaloPulse {
+  0%, 100% { opacity: 0.55; transform: scale(1); }
+  50%      { opacity: 0.75; transform: scale(1.04); }
 }
 `;

@@ -16,7 +16,7 @@ function App() {
 
   const handleSplashReady = useCallback(() => {
     setSplashFading(true);
-    window.setTimeout(() => setSplashHidden(true), 500);
+    window.setTimeout(() => setSplashHidden(true), 700);
   }, []);
 
   return (
@@ -33,7 +33,7 @@ function App() {
       {!splashHidden && (
         <div
           className={cn(
-            "absolute inset-0 z-40 transition-opacity duration-500 ease-out",
+            "absolute inset-0 z-40 transition-opacity duration-700 ease-out",
             splashFading && "pointer-events-none opacity-0",
           )}
         >
