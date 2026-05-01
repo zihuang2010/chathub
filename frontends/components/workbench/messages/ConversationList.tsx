@@ -1,19 +1,24 @@
-import { memo, useState } from "react";
-import { Menu } from "lucide-react";
+import { memo, useMemo, useState } from "react";
+import { ChevronDown, Menu, Search } from "lucide-react";
 
+import {
+  WORKBENCH_BLUE,
+  WORKBENCH_LINE,
+  WORKBENCH_LINE_STRONG,
+  WORKBENCH_NUMERIC_FONT,
+  WORKBENCH_SOFT_BG,
+  WORKBENCH_TEXT_MUTED,
+  WORKBENCH_TEXT_PRIMARY,
+  WORKBENCH_TEXT_SECONDARY,
+} from "@/lib/theme";
 import { cn } from "@/lib/utils";
 
 import type { Conversation } from "./data";
+import { WorkbenchScrollArea } from "./WorkbenchScrollArea";
 
 // ─── Types & static data ────────────────────────────────────────────────────
 
 type StatusTab = "all" | "unread" | "mentioned";
-
-const STATUS_TABS: { value: StatusTab; label: string; count: number }[] = [
-  { value: "all", label: "全部", count: 32 },
-  { value: "unread", label: "未读", count: 12 },
-  { value: "mentioned", label: "@我", count: 5 },
-];
 
 // ─── Component ──────────────────────────────────────────────────────────────
 
@@ -22,6 +27,9 @@ interface ConversationListProps {
   selectedId: string;
   onSelect: (id: string) => void;
   width: number;
+  accountOptions: string[];
+  selectedAccount: string | null;
+  onAccountChange: (account: string | null) => void;
 }
 
 export const ConversationList = memo(function ConversationList({
@@ -29,75 +37,230 @@ export const ConversationList = memo(function ConversationList({
   selectedId,
   onSelect,
   width,
+  accountOptions,
+  selectedAccount,
+  onAccountChange,
 }: ConversationListProps) {
   const [statusTab, setStatusTab] = useState<StatusTab>("all");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [accountPickerOpen, setAccountPickerOpen] = useState(false);
+  const isCompact = width < 300;
+
+  const filteredConversations = useMemo(() => {
+    const normalizedQuery = searchQuery.trim().toLowerCase();
+
+    return conversations.filter((conversation) => {
+      if (statusTab === "unread" && conversation.unread <= 0) return false;
+      if (selectedAccount && conversation.account !== selectedAccount) return false;
+      if (!normalizedQuery) return true;
+
+      return [conversation.name, conversation.account, conversation.preview].some((value) =>
+        value.toLowerCase().includes(normalizedQuery),
+      );
+    });
+  }, [conversations, searchQuery, selectedAccount, statusTab]);
 
   return (
     <div className="flex h-full shrink-0 flex-col bg-white" style={{ width }}>
-      <div className="border-b border-[#EEF2F7] px-3 py-2.5">
-        <StatusTabs value={statusTab} onChange={setStatusTab} />
+      <div className="relative flex flex-col gap-2 px-3 pb-1.5 pt-3">
+        <SearchBar value={searchQuery} onChange={setSearchQuery} compact={isCompact} />
+        <FilterToolbar
+          statusTab={statusTab}
+          onStatusChange={setStatusTab}
+          selectedAccount={selectedAccount}
+          onAccountClick={() => setAccountPickerOpen((open) => !open)}
+        />
+        {accountPickerOpen && (
+          <AccountPicker
+            accounts={accountOptions}
+            selectedAccount={selectedAccount}
+            onSelect={(account) => {
+              onAccountChange(account);
+              setAccountPickerOpen(false);
+            }}
+          />
+        )}
       </div>
 
-      <div className="flex-1 overflow-y-auto py-1.5">
-        {conversations.map((c) => (
-          <ConversationItem
-            key={c.id}
-            conversation={c}
-            selected={c.id === selectedId}
-            onSelect={onSelect}
-          />
-        ))}
-      </div>
+      <WorkbenchScrollArea
+        className="flex-1"
+        viewportClassName="pb-1.5 pt-0.5 pr-2"
+        contentClassName="min-h-full"
+      >
+        {filteredConversations.length > 0 ? (
+          filteredConversations.map((c) => (
+            <ConversationItem
+              key={c.id}
+              conversation={c}
+              selected={c.id === selectedId}
+              onSelect={onSelect}
+            />
+          ))
+        ) : (
+          <div className="px-5 py-8 text-center text-[12px] text-[#9CA3AF]">暂无匹配会话</div>
+        )}
+      </WorkbenchScrollArea>
     </div>
   );
 });
 
-// ─── Status tabs ────────────────────────────────────────────────────────────
+// ─── Search and secondary filters ───────────────────────────────────────────
 
-function StatusTabs({ value, onChange }: { value: StatusTab; onChange: (v: StatusTab) => void }) {
+function SearchBar({
+  value,
+  onChange,
+  compact,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  compact: boolean;
+}) {
   return (
-    <div className="flex items-center gap-1 text-[12px]">
-      {STATUS_TABS.map((tab) => {
-        const active = tab.value === value;
-        return (
-          <button
-            key={tab.value}
-            type="button"
-            onClick={() => onChange(tab.value)}
-            className={cn(
-              "inline-flex h-7 items-center gap-1 rounded-md px-2 transition-colors",
-              active
-                ? "bg-[#EAF2FF] text-[#2563EB]"
-                : "text-[#6B7280] hover:bg-[#F5F8FF] hover:text-[#1F2937]",
-            )}
-          >
-            {tab.label}
-            {tab.count > 0 && (
-              <span
-                className={cn(
-                  "rounded-full px-1.5 text-[10px] font-semibold leading-[16px]",
-                  tab.value === "unread"
-                    ? "bg-[#EF4444] text-white"
-                    : active
-                      ? "bg-white text-[#2563EB]"
-                      : "bg-[#EEF2F7] text-[#6B7280]",
-                )}
-              >
-                {tab.count}
-              </span>
-            )}
-          </button>
-        );
-      })}
+    <div
+      className="flex h-9 items-center gap-2 rounded-lg border bg-white px-2.5 transition-colors focus-within:ring-2 focus-within:ring-[#2563EB]/10"
+      style={{ borderColor: WORKBENCH_LINE, color: WORKBENCH_TEXT_MUTED }}
+    >
+      <Search size={15} className="shrink-0" />
+      <input
+        value={value}
+        onChange={(event) => onChange(event.currentTarget.value)}
+        placeholder={compact ? "搜索客户" : "搜索客户 / 账号"}
+        className="min-w-0 flex-1 bg-transparent text-[12px] font-medium focus:outline-none"
+        style={{ color: WORKBENCH_TEXT_PRIMARY }}
+      />
+    </div>
+  );
+}
+
+function FilterToolbar({
+  statusTab,
+  onStatusChange,
+  selectedAccount,
+  onAccountClick,
+}: {
+  statusTab: StatusTab;
+  onStatusChange: (value: StatusTab) => void;
+  selectedAccount: string | null;
+  onAccountClick: () => void;
+}) {
+  const accountParts = selectedAccount?.split("-");
+  const selectedAccountLabel = accountParts
+    ? accountParts[accountParts.length - 1] || selectedAccount
+    : null;
+  const accountLabel = selectedAccountLabel ?? "账号";
+  const statusTabs: { value: StatusTab; label: string }[] = [
+    { value: "all", label: "全部" },
+    { value: "unread", label: "未读" },
+    { value: "mentioned", label: "@我" },
+  ];
+
+  return (
+    <div
+      className="flex h-8 min-w-0 items-center gap-1 text-[11px] font-medium"
+      style={{ color: WORKBENCH_TEXT_SECONDARY }}
+    >
+      <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto pr-1 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+        <button
+          type="button"
+          onClick={onAccountClick}
+          className={cn(
+            "inline-flex h-[30px] max-w-[96px] shrink-0 items-center gap-1 rounded-md px-2 transition-colors",
+            selectedAccount
+              ? "bg-[#EAF2FF] text-[#2563EB]"
+              : "hover:bg-[#EAF2FF] hover:text-[#2563EB]",
+          )}
+          style={
+            !selectedAccount
+              ? { background: WORKBENCH_SOFT_BG, color: WORKBENCH_TEXT_PRIMARY }
+              : undefined
+          }
+          title={selectedAccount ?? "全部账号"}
+        >
+          <span className="min-w-0 truncate">{accountLabel}</span>
+          <ChevronDown size={12} className="shrink-0 text-current opacity-70" />
+        </button>
+        {statusTabs.map((tab) => {
+          const active = tab.value === statusTab;
+          return (
+            <button
+              key={tab.value}
+              type="button"
+              onClick={() => onStatusChange(tab.value)}
+              className={cn(
+                "inline-flex h-[30px] shrink-0 items-center rounded-md px-2 transition-colors",
+                active ? "bg-[#EAF2FF] text-[#2563EB]" : "hover:bg-[#F7FAFD] hover:text-[#1F2937]",
+              )}
+            >
+              {tab.label}
+            </button>
+          );
+        })}
+      </div>
       <button
         type="button"
-        aria-label="更多筛选"
-        title="更多筛选"
-        className="ml-auto grid size-7 place-items-center rounded-md text-[#6B7280] transition-colors hover:bg-[#F5F8FF] hover:text-[#2563EB]"
+        aria-label="筛选"
+        title="筛选"
+        className="grid size-[30px] shrink-0 place-items-center rounded-md transition-colors hover:bg-[#F7FAFD] hover:text-[#2563EB]"
+        style={{ color: WORKBENCH_TEXT_SECONDARY }}
       >
-        <Menu size={14} />
+        <Menu size={18} strokeWidth={2} />
       </button>
     </div>
+  );
+}
+
+function AccountPicker({
+  accounts,
+  selectedAccount,
+  onSelect,
+}: {
+  accounts: string[];
+  selectedAccount: string | null;
+  onSelect: (account: string | null) => void;
+}) {
+  return (
+    <div
+      className="absolute left-3 right-3 top-full z-20 mt-1 rounded-lg border bg-white p-2 shadow-[0_12px_32px_rgba(15,23,42,0.10)]"
+      style={{ borderColor: WORKBENCH_LINE }}
+    >
+      <div className="mb-1 px-1 text-[12px] font-medium" style={{ color: WORKBENCH_TEXT_PRIMARY }}>
+        按账号筛选
+      </div>
+      <AccountOption active={!selectedAccount} label="全部账号" onClick={() => onSelect(null)} />
+      {accounts.map((account) => (
+        <AccountOption
+          key={account}
+          active={selectedAccount === account}
+          label={account}
+          onClick={() => onSelect(account)}
+        />
+      ))}
+    </div>
+  );
+}
+
+function AccountOption({
+  active,
+  label,
+  onClick,
+}: {
+  active: boolean;
+  label: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        "flex h-8 w-full items-center justify-between gap-2 rounded-md px-2 text-left text-[12px] transition-colors",
+        active ? "bg-[#EAF2FF] text-[#2563EB]" : "hover:bg-[#F7FAFD]",
+      )}
+      style={!active ? { color: WORKBENCH_TEXT_SECONDARY } : undefined}
+    >
+      <span className="truncate">{label}</span>
+      {active && <span className="size-1.5 rounded-full bg-[#2563EB]" />}
+    </button>
   );
 }
 
@@ -118,31 +281,45 @@ const ConversationItem = memo(function ConversationItem({
     <button
       type="button"
       onClick={() => onSelect(id)}
-      title={`来自 ${account}`}
       className={cn(
-        "group relative mx-2 my-1 grid w-[calc(100%-1rem)] grid-cols-[46px_minmax(0,1fr)] items-start gap-3 rounded-xl px-3 py-3.5 text-left transition-colors",
-        selected ? "bg-[#EEF6FF]" : "hover:bg-[#F7FBFF]",
+        "group relative mx-2 my-0.5 grid w-[calc(100%-1rem)] grid-cols-[44px_minmax(0,1fr)] items-start gap-3 rounded-xl px-3 py-2.5 text-left transition-colors",
+        selected ? "bg-[#EAF2FF]" : "hover:bg-[#F7FAFD]",
       )}
     >
       <ConversationAvatar name={name} color={avatarColor} online={online} />
-      <div className="min-w-0 pr-11 pt-0.5">
+      <div className="min-w-0 pr-11 pt-px">
         <div className="flex min-w-0 items-center">
-          <span className="truncate text-[13.5px] font-medium leading-[18px] text-[#1F2937]">
+          <span
+            className="truncate text-[13.5px] font-medium leading-[18px]"
+            style={{ color: WORKBENCH_TEXT_PRIMARY }}
+          >
             {name}
           </span>
         </div>
-        <div className="mt-1 truncate text-[12px] leading-[17px] text-[#6B7280]">{preview}</div>
-        <div className="mt-1 flex min-w-0 items-center gap-1.5 text-[10.5px] leading-[15px]">
-          <span className="shrink-0 text-[#A0A9B8]">来自</span>
-          <span className="font-nomarl min-w-0 truncate text-[#2563EB]">{account}</span>
+        <div
+          className="mt-0.5 truncate text-[12px] font-normal leading-[17px]"
+          style={{ color: WORKBENCH_TEXT_MUTED }}
+        >
+          {preview}
+        </div>
+        <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[10px] font-medium leading-[15px]">
+          <span className="shrink-0" style={{ color: WORKBENCH_TEXT_MUTED }}>
+            来自
+          </span>
+          <span className="min-w-0 truncate font-medium" style={{ color: WORKBENCH_BLUE }}>
+            {account}
+          </span>
           <WeChatBadge />
         </div>
       </div>
-      <span className="absolute right-3 top-3 text-[11px] leading-[16px] text-[#9CA3AF]">
+      <span
+        className="absolute right-3 top-3 w-11 text-right text-[11px] tabular-nums leading-[16px]"
+        style={{ color: WORKBENCH_TEXT_MUTED, fontFamily: WORKBENCH_NUMERIC_FONT }}
+      >
         {time}
       </span>
       {unread > 0 && (
-        <span className="absolute right-3 top-1/2 grid h-4 min-w-4 translate-y-[-10%] place-items-center rounded-full bg-[#EF4444] px-1 text-[10px] font-semibold leading-none text-white shadow-[0_1px_2px_rgba(239,68,68,0.24)]">
+        <span className="absolute right-3 top-1/2 grid h-4 min-w-4 translate-y-[-10%] place-items-center rounded-full bg-[#EF4444] px-1 text-[10px] font-semibold tabular-nums leading-none text-white shadow-[0_1px_2px_rgba(239,68,68,0.24)]">
           {unread > 99 ? "99+" : unread}
         </span>
       )}
@@ -154,7 +331,6 @@ function WeChatBadge() {
   return (
     <span
       aria-label="微信"
-      title="微信"
       className="grid size-4 shrink-0 place-items-center rounded bg-[#ECFDF3] text-[#07C160]"
     >
       <svg
@@ -197,15 +373,16 @@ function ConversationAvatar({
   return (
     <div className="relative shrink-0">
       <div
-        className="grid size-[46px] place-items-center rounded-xl text-[16px] font-medium text-[#243041] shadow-[inset_0_0_0_1px_rgba(255,255,255,0.45)]"
-        style={{ background: color }}
+        className="grid size-11 place-items-center rounded-xl text-[15px] font-medium shadow-[inset_0_0_0_1px_rgba(255,255,255,0.45)]"
+        style={{ background: color, color: WORKBENCH_TEXT_PRIMARY }}
       >
         {initial}
       </div>
       {online && (
         <span
           aria-hidden
-          className="absolute bottom-0 right-0 size-2.5 rounded-full border-2 border-white bg-[#10B981]"
+          className="absolute bottom-0 right-0 size-2.5 rounded-full border-2 bg-[#10B981]"
+          style={{ borderColor: WORKBENCH_LINE_STRONG }}
         />
       )}
     </div>

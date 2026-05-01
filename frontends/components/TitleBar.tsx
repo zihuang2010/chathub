@@ -3,6 +3,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import { cn } from "@/lib/utils";
 import { isMac } from "@/lib/platform";
+import { WORKBENCH_TOP_BG } from "@/lib/theme";
 
 type Tone = "transparent" | "blue";
 
@@ -16,10 +17,6 @@ interface WindowControls {
   onToggleMaximize: () => void;
   onClose: () => void;
 }
-
-// The lightest stop of the workbench sidebar gradient. Anchoring both surfaces
-// on the same literal makes the title bar / sidebar boundary seamless.
-const TONE_BLUE_BG = "#E8F0FE";
 
 export function TitleBar({ tone = "transparent" }: TitleBarProps) {
   const [maximized, setMaximized] = useState(false);
@@ -76,7 +73,7 @@ function MacTitleBar({ controls, tone }: { controls: WindowControls; tone: Tone 
       className="absolute inset-x-0 top-0 z-[100] flex h-10 select-none items-center"
       style={{
         WebkitUserSelect: "none",
-        background: tone === "blue" ? TONE_BLUE_BG : "transparent",
+        background: tone === "blue" ? WORKBENCH_TOP_BG : "transparent",
       }}
     >
       <div className="group flex items-center gap-[8px] pl-[14px]">
@@ -135,7 +132,7 @@ function WindowsTitleBar({ controls, tone }: { controls: WindowControls; tone: T
       className="absolute inset-x-0 top-0 z-[100] flex h-10 select-none items-center justify-between"
       style={{
         WebkitUserSelect: "none",
-        background: tone === "blue" ? TONE_BLUE_BG : "transparent",
+        background: tone === "blue" ? WORKBENCH_TOP_BG : "transparent",
       }}
     >
       {/* drag region — no app-name text */}

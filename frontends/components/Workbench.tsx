@@ -10,6 +10,7 @@ const FONT_BODY =
 
 export function Workbench() {
   const [section, setSection] = useState<Section>("messages");
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
   return (
     <div
@@ -20,7 +21,12 @@ export function Workbench() {
       className="absolute inset-x-0 bottom-0 top-10 flex select-none overflow-hidden bg-[#F1F5F9] text-[#1F2937]"
       style={{ fontFamily: FONT_BODY }}
     >
-      <Sidebar value={section} onChange={setSection} />
+      <Sidebar
+        value={section}
+        onChange={setSection}
+        collapsed={sidebarCollapsed}
+        onToggleCollapsed={() => setSidebarCollapsed((collapsed) => !collapsed)}
+      />
       {section === "messages" ? <MessagesPage /> : <PlaceholderPage section={section} />}
     </div>
   );

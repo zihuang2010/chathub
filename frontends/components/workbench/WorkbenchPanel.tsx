@@ -1,6 +1,6 @@
 import type { ReactNode, Ref } from "react";
 
-import { WORKBENCH_SIDEBAR_BG } from "@/lib/theme";
+import { WORKBENCH_LINE, WORKBENCH_SIDEBAR_BG } from "@/lib/theme";
 import { cn } from "@/lib/utils";
 
 interface WorkbenchPanelProps {
@@ -18,9 +18,10 @@ export function WorkbenchPanel({ children, panelRef, className }: WorkbenchPanel
       <div
         ref={panelRef}
         className={cn(
-          "flex h-full min-h-0 min-w-0 flex-1 overflow-hidden rounded-lg bg-white shadow-[0_1px_2px_rgba(15,23,42,0.04)]",
+          "flex h-full min-h-0 min-w-0 flex-1 overflow-hidden rounded-lg border bg-white shadow-[0_1px_2px_rgba(15,23,42,0.04)]",
           className,
         )}
+        style={{ borderColor: WORKBENCH_LINE }}
       >
         {children}
       </div>
