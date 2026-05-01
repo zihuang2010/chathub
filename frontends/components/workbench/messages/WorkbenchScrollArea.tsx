@@ -13,6 +13,14 @@ import { cn } from "@/lib/utils";
 
 const SCROLLBAR_MIN_THUMB_HEIGHT = 44;
 const SCROLLBAR_MAX_THUMB_HEIGHT = 160;
+const AT_BOTTOM_THRESHOLD = 24;
+
+export interface ScrollMetrics {
+  scrollTop: number;
+  scrollHeight: number;
+  clientHeight: number;
+  atBottom: boolean;
+}
 
 interface WorkbenchScrollAreaProps {
   children: ReactNode;
@@ -20,6 +28,7 @@ interface WorkbenchScrollAreaProps {
   viewportClassName?: string;
   contentClassName?: string;
   scrollRef?: RefObject<HTMLDivElement | null>;
+  onScrollMetrics?: (metrics: ScrollMetrics) => void;
 }
 
 function clampNumber(value: number, min: number, max: number) {
@@ -32,6 +41,7 @@ export function WorkbenchScrollArea({
   viewportClassName,
   contentClassName,
   scrollRef,
+  onScrollMetrics,
 }: WorkbenchScrollAreaProps) {
   const internalScrollRef = useRef<HTMLDivElement | null>(null);
   const viewportRef = scrollRef ?? internalScrollRef;
@@ -47,7 +57,7 @@ export function WorkbenchScrollArea({
       >
         <div className={contentClassName}>{children}</div>
       </div>
-      <WorkbenchScrollbar scrollRef={viewportRef} />
+      <WorkbenchScrollbar scrollRef={viewportRef} onScrollMetrics={onScrollMetrics} />
     </div>
   );
 }
@@ -69,7 +79,13 @@ interface DragStateRef {
   targetScrollTop: number;
 }
 
-function WorkbenchScrollbar({ scrollRef }: { scrollRef: RefObject<HTMLDivElement | null> }) {
+function WorkbenchScrollbar({
+  scrollRef,
+  onScrollMetrics,
+}: {
+  scrollRef: RefObject<HTMLDivElement | null>;
+  onScrollMetrics?: (metrics: ScrollMetrics) => void;
+}) {
   const trackRef = useRef<HTMLDivElement | null>(null);
   const thumbRef = useRef<HTMLDivElement | null>(null);
   const dragRafRef = useRef<number | null>(null);
@@ -88,6 +104,13 @@ function WorkbenchScrollbar({ scrollRef }: { scrollRef: RefObject<HTMLDivElement
     maxThumbTop: 0,
     maxScrollTop: 0,
   });
+  // Stash the latest callback in a ref so the listener-installing effect
+  // doesn't need to re-run every time the parent re-renders.
+  const onScrollMetricsRef = useRef(onScrollMetrics);
+  useEffect(() => {
+    onScrollMetricsRef.current = onScrollMetrics;
+  }, [onScrollMetrics]);
+
   const [isDragging, setIsDragging] = useState(false);
   // Only re-render when these visual props change. Thumb position is updated
   // imperatively via `transform` to keep scroll-driven updates off the React tree.
@@ -102,6 +125,20 @@ function WorkbenchScrollbar({ scrollRef }: { scrollRef: RefObject<HTMLDivElement
     thumb.style.transform = `translate3d(0, ${thumbTop}px, 0)`;
   }, []);
 
+  const emitMetrics = useCallback(
+    (scrollTop: number, scrollHeight: number, clientHeight: number) => {
+      const cb = onScrollMetricsRef.current;
+      if (!cb) return;
+      cb({
+        scrollTop,
+        scrollHeight,
+        clientHeight,
+        atBottom: scrollHeight - scrollTop - clientHeight < AT_BOTTOM_THRESHOLD,
+      });
+    },
+    [],
+  );
+
   const recomputeAll = useCallback(() => {
     const node = scrollRef.current;
     const track = trackRef.current;
@@ -115,18 +152,21 @@ function WorkbenchScrollbar({ scrollRef }: { scrollRef: RefObject<HTMLDivElement
       return;
     }
 
+    const scrollHeight = node.scrollHeight;
+    const clientHeight = node.clientHeight;
     const trackHeight = Math.max(track.clientHeight, 0);
-    const maxScrollTop = Math.max(node.scrollHeight - node.clientHeight, 0);
+    const maxScrollTop = Math.max(scrollHeight - clientHeight, 0);
 
     if (trackHeight <= 0 || maxScrollTop <= 1) {
       m.visible = false;
       m.maxScrollTop = 0;
       m.maxThumbTop = 0;
       setVisualState((s) => (s.visible ? { ...s, visible: false } : s));
+      emitMetrics(node.scrollTop, scrollHeight, clientHeight);
       return;
     }
 
-    const rawThumbHeight = (node.clientHeight / node.scrollHeight) * trackHeight;
+    const rawThumbHeight = (clientHeight / scrollHeight) * trackHeight;
     const thumbHeight = clampNumber(
       Math.round(rawThumbHeight),
       Math.min(SCROLLBAR_MIN_THUMB_HEIGHT, trackHeight),
@@ -143,11 +183,12 @@ function WorkbenchScrollbar({ scrollRef }: { scrollRef: RefObject<HTMLDivElement
     m.maxScrollTop = maxScrollTop;
 
     writeThumbTransform(thumbTop);
+    emitMetrics(scrollTop, scrollHeight, clientHeight);
 
     setVisualState((s) =>
       s.visible && s.thumbHeight === thumbHeight ? s : { visible: true, thumbHeight },
     );
-  }, [scrollRef, writeThumbTransform]);
+  }, [emitMetrics, scrollRef, writeThumbTransform]);
 
   // Fast path on scroll: only update thumb transform via ref. If content size
   // changed (e.g. new messages appended), fall back to a full recompute.
@@ -155,16 +196,25 @@ function WorkbenchScrollbar({ scrollRef }: { scrollRef: RefObject<HTMLDivElement
     const node = scrollRef.current;
     if (!node) return;
     const m = metricsRef.current;
-    const maxScrollTop = Math.max(node.scrollHeight - node.clientHeight, 0);
+    const scrollHeight = node.scrollHeight;
+    const clientHeight = node.clientHeight;
+    const maxScrollTop = Math.max(scrollHeight - clientHeight, 0);
+
     if (Math.abs(maxScrollTop - m.maxScrollTop) > 0.5) {
       recomputeAll();
       return;
     }
-    if (m.maxThumbTop <= 0 || maxScrollTop <= 0) return;
+
+    if (m.maxThumbTop <= 0 || maxScrollTop <= 0) {
+      emitMetrics(node.scrollTop, scrollHeight, clientHeight);
+      return;
+    }
+
     const scrollTop = clampNumber(node.scrollTop, 0, maxScrollTop);
     const thumbTop = (scrollTop / maxScrollTop) * m.maxThumbTop;
     writeThumbTransform(thumbTop);
-  }, [recomputeAll, scrollRef, writeThumbTransform]);
+    emitMetrics(scrollTop, scrollHeight, clientHeight);
+  }, [emitMetrics, recomputeAll, scrollRef, writeThumbTransform]);
 
   useLayoutEffect(() => {
     const node = scrollRef.current;

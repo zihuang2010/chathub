@@ -1,4 +1,4 @@
-import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent, PointerEvent as ReactPointerEvent } from "react";
 import {
   CheckCheck,
@@ -35,7 +35,7 @@ import {
 } from "@/lib/theme";
 
 import type { Conversation, Message } from "./data";
-import { WorkbenchScrollArea } from "./WorkbenchScrollArea";
+import { WorkbenchScrollArea, type ScrollMetrics } from "./WorkbenchScrollArea";
 
 interface ChatAreaProps {
   conversation: Conversation;
@@ -70,20 +70,11 @@ export const ChatArea = memo(function ChatArea({
   const [composerHeight, setComposerHeight] = useState(COMPOSER_DEFAULT_HEIGHT);
   const timelineItems = useMemo(() => buildTimelineItems(messages), [messages]);
 
-  // Track whether the user is currently parked at the bottom; only then do we
-  // auto-follow new messages. Otherwise leave the scroll position alone so
-  // browsing history isn't yanked away.
-  useEffect(() => {
-    const node = scrollRef.current;
-    if (!node) return;
-
-    const handleScroll = () => {
-      const distance = node.scrollHeight - node.scrollTop - node.clientHeight;
-      wasAtBottomRef.current = distance < 24;
-    };
-
-    node.addEventListener("scroll", handleScroll, { passive: true });
-    return () => node.removeEventListener("scroll", handleScroll);
+  // Track whether the user is parked at the bottom so new messages only pull
+  // the view down when they were already there. We piggyback on the metrics
+  // the scrollbar already computes — no separate scroll listener / layout read.
+  const handleScrollMetrics = useCallback((m: ScrollMetrics) => {
+    wasAtBottomRef.current = m.atBottom;
   }, []);
 
   // Switching conversations always jumps to the latest message.
@@ -112,6 +103,7 @@ export const ChatArea = memo(function ChatArea({
       />
       <WorkbenchScrollArea
         scrollRef={scrollRef}
+        onScrollMetrics={handleScrollMetrics}
         className="flex-1 bg-white"
         viewportClassName="bg-white px-4 py-5 pr-6"
         contentClassName="flex w-full flex-col gap-4"
