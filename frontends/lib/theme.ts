@@ -10,6 +10,8 @@ export const COLOR_MUTED = "#A0AEC0";
 
 export const BLUE_GRADIENT = "linear-gradient(135deg, #5BAEFF 0%, #2196FA 55%, #0F6FE0 100%)";
 export const BLUE_GRADIENT_HOVER = "linear-gradient(135deg, #6FBAFF 0%, #1F8AE5 55%, #0E66CF 100%)";
+export const WORKBENCH_SIDEBAR_BG =
+  "linear-gradient(180deg, #E8F0FE 0%, #C9DCF5 55%, #BDD3F0 100%)";
 
 // Pastel halo colors used as ambient backdrops.
 export const HALO_BLUE = "#EEF2FF";

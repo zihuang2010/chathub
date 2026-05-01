@@ -4,10 +4,10 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { cn } from "@/lib/utils";
 import { isMac } from "@/lib/platform";
 
-const LOGO_BG = "linear-gradient(145deg, #2791ff, #0869f2)";
+type Tone = "transparent" | "blue";
 
 interface TitleBarProps {
-  showTitle?: boolean;
+  tone?: Tone;
 }
 
 interface WindowControls {
@@ -17,7 +17,11 @@ interface WindowControls {
   onClose: () => void;
 }
 
-export function TitleBar({ showTitle = true }: TitleBarProps) {
+// The lightest stop of the workbench sidebar gradient. Anchoring both surfaces
+// on the same literal makes the title bar / sidebar boundary seamless.
+const TONE_BLUE_BG = "#E8F0FE";
+
+export function TitleBar({ tone = "transparent" }: TitleBarProps) {
   const [maximized, setMaximized] = useState(false);
 
   useEffect(() => {
@@ -58,19 +62,22 @@ export function TitleBar({ showTitle = true }: TitleBarProps) {
   };
 
   return isMac ? (
-    <MacTitleBar controls={controls} showTitle={showTitle} />
+    <MacTitleBar controls={controls} tone={tone} />
   ) : (
-    <WindowsTitleBar controls={controls} showTitle={showTitle} />
+    <WindowsTitleBar controls={controls} tone={tone} />
   );
 }
 
 // ─── macOS layout ───────────────────────────────────────────────────────────
 
-function MacTitleBar({ controls, showTitle }: { controls: WindowControls; showTitle: boolean }) {
+function MacTitleBar({ controls, tone }: { controls: WindowControls; tone: Tone }) {
   return (
     <header
-      className="absolute inset-x-0 top-0 z-[100] flex h-8 select-none items-center"
-      style={{ WebkitUserSelect: "none" }}
+      className="absolute inset-x-0 top-0 z-[100] flex h-10 select-none items-center"
+      style={{
+        WebkitUserSelect: "none",
+        background: tone === "blue" ? TONE_BLUE_BG : "transparent",
+      }}
     >
       <div className="group flex items-center gap-[8px] pl-[14px]">
         <TrafficLight color="#ff5f57" symbol="×" ariaLabel="关闭" onClick={controls.onClose} />
@@ -82,16 +89,8 @@ function MacTitleBar({ controls, showTitle }: { controls: WindowControls; showTi
           onClick={controls.onToggleMaximize}
         />
       </div>
-      <div
-        data-tauri-drag-region
-        className="flex flex-1 items-center justify-center text-[12px] font-medium tracking-tight"
-        style={{ color: showTitle ? "rgba(15, 37, 68, 0.65)" : "transparent" }}
-        aria-hidden={!showTitle}
-      >
-        ChatHub
-      </div>
-      {/* spacer matches the traffic-light cluster width so the title is truly centered */}
-      <div data-tauri-drag-region className="h-full w-[80px]" aria-hidden />
+      {/* drag region — no app-name text, matches the DingTalk style */}
+      <div data-tauri-drag-region className="h-full flex-1" aria-hidden />
     </header>
   );
 }
@@ -130,46 +129,17 @@ function TrafficLight({ color, symbol, ariaLabel, onClick }: TrafficLightProps) 
 
 // ─── Windows / Linux layout ─────────────────────────────────────────────────
 
-function WindowsTitleBar({
-  controls,
-  showTitle,
-}: {
-  controls: WindowControls;
-  showTitle: boolean;
-}) {
+function WindowsTitleBar({ controls, tone }: { controls: WindowControls; tone: Tone }) {
   return (
     <header
-      className="absolute inset-x-0 top-0 z-[100] flex h-8 select-none items-center justify-between"
-      style={{ WebkitUserSelect: "none" }}
+      className="absolute inset-x-0 top-0 z-[100] flex h-10 select-none items-center justify-between"
+      style={{
+        WebkitUserSelect: "none",
+        background: tone === "blue" ? TONE_BLUE_BG : "transparent",
+      }}
     >
-      <div
-        data-tauri-drag-region
-        className="flex h-full flex-1 items-center gap-[8px] pl-3 text-[12px]"
-        style={{ color: "#3b5470" }}
-      >
-        {showTitle && (
-          <>
-            <span
-              className="grid h-[18px] w-[18px] place-items-center rounded-[5px]"
-              style={{ background: LOGO_BG, boxShadow: "0 4px 10px rgba(22,119,255,.25)" }}
-            >
-              <svg
-                viewBox="0 0 24 24"
-                width="11"
-                height="11"
-                fill="none"
-                stroke="white"
-                strokeWidth={2.4}
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              >
-                <path d="M7 8h10M7 12h6M6 19l-3 2v-4a8 8 0 0 1-1-4C2 7.5 6.5 4 12 4s10 3.5 10 9-4.5 9-10 9a12 12 0 0 1-6-1.6Z" />
-              </svg>
-            </span>
-            <span className="font-semibold tracking-tight">ChatHub</span>
-          </>
-        )}
-      </div>
+      {/* drag region — no app-name text */}
+      <div data-tauri-drag-region className="h-full flex-1" aria-hidden />
       <div className="flex h-full items-stretch">
         <ControlButton onClick={controls.onMinimize} aria-label="最小化" title="最小化">
           <MinimizeIcon />
@@ -200,10 +170,8 @@ function ControlButton({ children, variant = "default", className, ...rest }: Co
       type="button"
       data-tauri-drag-region="false"
       className={cn(
-        "flex h-full w-[46px] items-center justify-center transition-colors",
-        variant === "close"
-          ? "text-[#3b5470] hover:bg-[#e81123] hover:text-white"
-          : "text-[#3b5470] hover:bg-black/5",
+        "flex h-full w-[46px] items-center justify-center text-[#3b5470] transition-colors",
+        variant === "close" ? "hover:bg-[#e81123] hover:text-white" : "hover:bg-black/5",
         className,
       )}
       {...rest}

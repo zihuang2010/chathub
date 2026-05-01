@@ -1,8 +1,16 @@
-import { useState, type CSSProperties, type FormEvent, type ReactNode } from "react";
+import { useState, type FormEvent, type ReactNode } from "react";
 import { ArrowRight, Eye, EyeOff, Lock, Smartphone, UserRound } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import {
+  BubbleBlue,
+  BubbleGreen,
+  BubbleWhite,
+  DriftingWave,
+  buildWavePath,
+  type Satellite,
+} from "@/components/illustrations";
 import { cn } from "@/lib/utils";
 import {
   BLUE_GRADIENT,
@@ -13,11 +21,79 @@ import {
   WAVE_FILLS,
 } from "@/lib/theme";
 
+// ─── Types ──────────────────────────────────────────────────────────────────
+
 type Tab = "account" | "phone";
 
 interface LoginProps {
   onSuccess?: (payload: { tab: Tab; identifier: string }) => void;
 }
+
+// ─── Data ───────────────────────────────────────────────────────────────────
+
+interface DecorDot {
+  x: number;
+  y: number;
+  size: number;
+  color: string;
+  opacity: number;
+}
+
+const DECOR_DOTS: DecorDot[] = [
+  { x: 8, y: 18, size: 12, color: "#BFD0FF", opacity: 0.7 },
+  { x: 50, y: 4, size: 7, color: "#DDD0FF", opacity: 0.65 },
+  { x: 420, y: 14, size: 14, color: "#FFE2C7", opacity: 0.6 },
+  { x: 4, y: 200, size: 10, color: "#C8E6D2", opacity: 0.65 },
+  { x: 438, y: 200, size: 12, color: "#FFD2DF", opacity: 0.55 },
+  { x: 0, y: 110, size: 6, color: "#BFD0FF", opacity: 0.55 },
+  { x: 424, y: 100, size: 8, color: "#E0D6FF", opacity: 0.55 },
+  { x: 220, y: 268, size: 10, color: "#FCE7B8", opacity: 0.6 },
+];
+
+const SATELLITES_BLUE: Satellite[] = [
+  { x: -14, y: 30, size: 6, color: "#A8CFFF", dx: 3, dy: -2, delay: 0, duration: 2800 },
+  { x: -18, y: 110, size: 5, color: "#BFD9FF", dx: -2, dy: 3, delay: 700, duration: 2400 },
+  { x: 60, y: -10, size: 4, color: "#7BB6FF", dx: 2, dy: -2, delay: 300, duration: 2600 },
+  { x: 250, y: 60, size: 6, color: "#BFD9FF", dx: -3, dy: 2, delay: 1100, duration: 3000 },
+  { x: 252, y: 130, size: 4, color: "#7BB6FF", dx: -2, dy: 3, delay: 500, duration: 2700 },
+  { x: 200, y: 188, size: 5, color: "#A8CFFF", dx: 2, dy: 2, delay: 900, duration: 2500 },
+];
+
+const SATELLITES_GREEN: Satellite[] = [
+  { x: -10, y: 28, size: 5, color: "#7CE3A8", dx: 2, dy: -2, delay: 0, duration: 2400 },
+  { x: 38, y: -8, size: 4, color: "#A8F0C5", dx: 2, dy: -2, delay: 600, duration: 2700 },
+  { x: 96, y: 30, size: 4, color: "#C8F0DC", dx: -2, dy: 3, delay: 1100, duration: 2900 },
+];
+
+const SATELLITES_WHITE: Satellite[] = [
+  { x: -14, y: 50, size: 5, color: "#D6DEE9", dx: 2, dy: -3, delay: 0, duration: 2600 },
+  { x: 60, y: -10, size: 4, color: "#C5CFE0", dx: 2, dy: -2, delay: 700, duration: 2400 },
+  { x: 134, y: 60, size: 5, color: "#E8EDF4", dx: -3, dy: 2, delay: 1100, duration: 3000 },
+];
+
+const LOGIN_WAVE_BOTTOM = 320;
+const LOGIN_WAVES = [
+  {
+    d: buildWavePath(100, 80, LOGIN_WAVE_BOTTOM),
+    fill: WAVE_FILLS.back,
+    opacity: 0.45,
+    dur: "22s",
+  },
+  {
+    d: buildWavePath(200, 90, LOGIN_WAVE_BOTTOM),
+    fill: WAVE_FILLS.warm,
+    opacity: 0.85,
+    dur: "16s",
+  },
+  {
+    d: buildWavePath(270, 50, LOGIN_WAVE_BOTTOM),
+    fill: WAVE_FILLS.mint,
+    opacity: 0.85,
+    dur: "11s",
+  },
+];
+
+// ─── Login (entry) ──────────────────────────────────────────────────────────
 
 export function Login({ onSuccess }: LoginProps) {
   const [tab, setTab] = useState<Tab>("account");
@@ -41,8 +117,6 @@ export function Login({ onSuccess }: LoginProps) {
       className="absolute inset-0 select-none overflow-hidden bg-white"
       style={{ fontFamily: FONT_BODY }}
     >
-      <style>{KEYFRAMES}</style>
-
       <Backdrop />
 
       <main className="relative flex h-full w-full items-center justify-center px-6 md:px-10 lg:px-12">
@@ -50,18 +124,18 @@ export function Login({ onSuccess }: LoginProps) {
           <BrandPanel />
           <FormCard
             tab={tab}
-            setTab={setTab}
             account={account}
-            setAccount={setAccount}
             phone={phone}
-            setPhone={setPhone}
             password={password}
-            setPassword={setPassword}
             remember={remember}
-            setRemember={setRemember}
             showPassword={showPassword}
-            setShowPassword={setShowPassword}
             canSubmit={canSubmit}
+            onTabChange={setTab}
+            onAccountChange={setAccount}
+            onPhoneChange={setPhone}
+            onPasswordChange={setPassword}
+            onRememberChange={setRemember}
+            onShowPasswordToggle={() => setShowPassword((v) => !v)}
             onSubmit={handleSubmit}
           />
         </div>
@@ -72,7 +146,7 @@ export function Login({ onSuccess }: LoginProps) {
   );
 }
 
-// ─── Backdrop (ambient halos) ─────────────────────────────────────────────
+// ─── Backdrop (ambient halos) ───────────────────────────────────────────────
 
 function Backdrop() {
   return (
@@ -81,34 +155,34 @@ function Backdrop() {
         className="absolute -left-40 -top-40 h-[520px] w-[520px] rounded-full"
         style={{
           background: "radial-gradient(closest-side, #DCE6FF 0%, rgba(220,230,255,0) 70%)",
-          animation: "loginHaloPulse 9s ease-in-out infinite",
+          animation: "chHaloPulse 9s ease-in-out infinite",
         }}
       />
       <div
         className="absolute -right-32 -top-24 h-[420px] w-[420px] rounded-full"
         style={{
           background: "radial-gradient(closest-side, #FFE2C7 0%, rgba(255,226,199,0) 70%)",
-          animation: "loginHaloPulse 11s 1.4s ease-in-out infinite",
+          animation: "chHaloPulse 11s 1.4s ease-in-out infinite",
         }}
       />
       <div
         className="absolute -bottom-24 left-1/4 h-[300px] w-[480px] rounded-full"
         style={{
           background: "radial-gradient(closest-side, #DCEFE2 0%, rgba(220,239,226,0) 70%)",
-          animation: "loginHaloPulse 13s 2.8s ease-in-out infinite",
+          animation: "chHaloPulse 13s 2.8s ease-in-out infinite",
         }}
       />
     </div>
   );
 }
 
-// ─── Brand Panel (left) ───────────────────────────────────────────────────
+// ─── Brand panel (left) ─────────────────────────────────────────────────────
 
 function BrandPanel() {
   return (
     <div
       className="relative hidden flex-col gap-8 lg:flex"
-      style={{ animation: "loginFade 800ms 200ms backwards ease-out" }}
+      style={{ animation: "chFadeUpSmall 800ms 200ms backwards ease-out" }}
     >
       <div className="flex flex-col gap-3">
         <h1
@@ -129,7 +203,7 @@ function BrandPanel() {
 
       <div
         className="mt-2 inline-flex w-fit items-center gap-2 rounded-full bg-[#F5F8FF] px-4 py-2"
-        style={{ animation: "loginFade 800ms 600ms backwards ease-out" }}
+        style={{ animation: "chFadeUpSmall 800ms 600ms backwards ease-out" }}
       >
         <span className="size-1.5 rounded-full" style={{ background: "#3B82F6" }} />
         <span
@@ -144,11 +218,10 @@ function BrandPanel() {
 }
 
 function BrandIllustration() {
-  // Three-bubble cluster mirroring the splash composition (blue on top).
   return (
     <div
       className="relative h-[290px] w-full max-w-[460px]"
-      style={{ animation: "loginIllustrationIn 900ms 300ms backwards ease-out" }}
+      style={{ animation: "chIllustrationIn 900ms 300ms backwards ease-out" }}
     >
       <IllustrationHalos />
 
@@ -164,15 +237,36 @@ function BrandIllustration() {
             height: d.size,
             background: d.color,
             opacity: d.opacity,
-            animation: "loginDotFloat 5s ease-in-out infinite",
+            animation: "chDotFloat 5s ease-in-out infinite",
           }}
         />
       ))}
 
       {/* Stacking order — blue is on top, matching splash */}
-      <BrandBubbleWhite />
-      <BrandBubbleGreen />
-      <BrandBubbleBlue />
+      <BubbleWhite
+        left={250}
+        top={150}
+        width={130}
+        height={112}
+        delay={700}
+        satellites={SATELLITES_WHITE}
+      />
+      <BubbleGreen
+        left={60}
+        top={165}
+        width={92}
+        height={84}
+        delay={540}
+        satellites={SATELLITES_GREEN}
+      />
+      <BubbleBlue
+        left={100}
+        top={50}
+        width={240}
+        height={200}
+        delay={380}
+        satellites={SATELLITES_BLUE}
+      />
     </div>
   );
 }
@@ -202,234 +296,22 @@ function IllustrationHalos() {
   );
 }
 
-function BrandBubbleBlue() {
-  return (
-    <div
-      className="absolute"
-      style={{
-        left: 100,
-        top: 50,
-        width: 240,
-        height: 200,
-        animation: "loginBubblePop 800ms 380ms backwards cubic-bezier(.2,.7,.2,1)",
-      }}
-    >
-      <svg
-        width="240"
-        height="200"
-        viewBox="0 0 280 240"
-        style={{
-          overflow: "visible",
-          filter:
-            "drop-shadow(0 12px 36px rgba(33,150,250,.28)) drop-shadow(0 1px 2px rgba(21,24,42,.06))",
-        }}
-      >
-        <defs>
-          <linearGradient id="loginBlueGrad" x1="0%" y1="0%" x2="60%" y2="100%">
-            <stop offset="0%" stopColor="#5BAEFF" />
-            <stop offset="55%" stopColor="#2196FA" />
-            <stop offset="100%" stopColor="#0F6FE0" />
-          </linearGradient>
-        </defs>
-        <path
-          d="M 140 0 A 140 100 0 1 1 106 197 L 68 218 L 62 183 A 140 100 0 0 1 140 0 Z"
-          fill="url(#loginBlueGrad)"
-        />
-        {/* gloss highlight */}
-        <ellipse cx="140" cy="32" rx="55" ry="9" fill="white" opacity="0.22" filter="blur(2px)" />
-        {/* typing dots */}
-        {[0, 160, 320].map((delay, i) => (
-          <circle
-            key={i}
-            cx={108 + i * 32}
-            cy={100}
-            r={10}
-            fill="white"
-            style={{ animation: `loginTyping 1.2s ${delay}ms ease-in-out infinite` }}
-          />
-        ))}
-      </svg>
-      <SatelliteRing items={LOGIN_SATELLITES_BLUE} />
-    </div>
-  );
-}
-
-function BrandBubbleGreen() {
-  return (
-    <div
-      className="absolute"
-      style={{
-        left: 60,
-        top: 165,
-        width: 92,
-        height: 84,
-        animation: "loginBubblePop 800ms 540ms backwards cubic-bezier(.2,.7,.2,1)",
-      }}
-    >
-      <svg
-        width="92"
-        height="84"
-        viewBox="0 0 110 100"
-        style={{
-          overflow: "visible",
-          filter:
-            "drop-shadow(0 8px 22px rgba(21,24,42,.10)) drop-shadow(0 1px 2px rgba(21,24,42,.06))",
-        }}
-      >
-        <defs>
-          <linearGradient id="loginGreenGrad" x1="0%" y1="0%" x2="60%" y2="100%">
-            <stop offset="0%" stopColor="#86EBB7" />
-            <stop offset="100%" stopColor="#3DCB8A" />
-          </linearGradient>
-        </defs>
-        <path
-          d="M 55 0 A 55 40 0 0 1 59 80 L 45 92 L 40 78 A 55 40 0 0 1 55 0 Z"
-          fill="url(#loginGreenGrad)"
-        />
-        {/* group-of-people glyph */}
-        <g transform="translate(36 18)" fill="#FFFFFF">
-          <circle cx="14" cy="10" r="5" />
-          <path d="M5 35 q0 -12 9 -12 q9 0 9 12 z" />
-          <circle cx="28" cy="14" r="4" />
-          <path d="M21 35 q0 -10 7 -10 q7 0 7 10 z" />
-        </g>
-      </svg>
-      <SatelliteRing items={LOGIN_SATELLITES_GREEN} />
-    </div>
-  );
-}
-
-function BrandBubbleWhite() {
-  return (
-    <div
-      className="absolute"
-      style={{
-        left: 250,
-        top: 150,
-        width: 130,
-        height: 112,
-        animation: "loginBubblePop 800ms 700ms backwards cubic-bezier(.2,.7,.2,1)",
-      }}
-    >
-      <svg
-        width="130"
-        height="112"
-        viewBox="0 0 150 130"
-        style={{
-          overflow: "visible",
-          filter:
-            "drop-shadow(0 4px 10px rgba(21,24,42,.06)) drop-shadow(0 1px 2px rgba(21,24,42,.04))",
-        }}
-      >
-        <path
-          d="M 75 0 A 75 55 0 0 1 78 110 L 50 121 L 52 107 A 75 55 0 0 1 75 0 Z"
-          fill="#FFFFFF"
-          stroke="#B8C5DD"
-          strokeWidth="0.5"
-          strokeLinejoin="round"
-        />
-        {[0, 160, 320].map((delay, i) => (
-          <circle
-            key={i}
-            cx={58 + i * 15}
-            cy={55}
-            r={4.5}
-            fill="#A2B5D4"
-            style={{ animation: `loginTyping 1.2s ${delay}ms ease-in-out infinite` }}
-          />
-        ))}
-      </svg>
-      <SatelliteRing items={LOGIN_SATELLITES_WHITE} />
-    </div>
-  );
-}
-
-const DECOR_DOTS = [
-  { x: 8, y: 18, size: 12, color: "#BFD0FF", opacity: 0.7 },
-  { x: 50, y: 4, size: 7, color: "#DDD0FF", opacity: 0.65 },
-  { x: 420, y: 14, size: 14, color: "#FFE2C7", opacity: 0.6 },
-  { x: 4, y: 200, size: 10, color: "#C8E6D2", opacity: 0.65 },
-  { x: 438, y: 200, size: 12, color: "#FFD2DF", opacity: 0.55 },
-  { x: 0, y: 110, size: 6, color: "#BFD0FF", opacity: 0.55 },
-  { x: 424, y: 100, size: 8, color: "#E0D6FF", opacity: 0.55 },
-  { x: 220, y: 268, size: 10, color: "#FCE7B8", opacity: 0.6 },
-];
-
-// Twinkling satellites that drift around each brand bubble.
-type Satellite = {
-  x: number;
-  y: number;
-  size: number;
-  color: string;
-  dx: number;
-  dy: number;
-  delay: number;
-  duration: number;
-};
-
-const LOGIN_SATELLITES_BLUE: Satellite[] = [
-  { x: -14, y: 30, size: 6, color: "#A8CFFF", dx: 3, dy: -2, delay: 0, duration: 2800 },
-  { x: -18, y: 110, size: 5, color: "#BFD9FF", dx: -2, dy: 3, delay: 700, duration: 2400 },
-  { x: 60, y: -10, size: 4, color: "#7BB6FF", dx: 2, dy: -2, delay: 300, duration: 2600 },
-  { x: 250, y: 60, size: 6, color: "#BFD9FF", dx: -3, dy: 2, delay: 1100, duration: 3000 },
-  { x: 252, y: 130, size: 4, color: "#7BB6FF", dx: -2, dy: 3, delay: 500, duration: 2700 },
-  { x: 200, y: 188, size: 5, color: "#A8CFFF", dx: 2, dy: 2, delay: 900, duration: 2500 },
-];
-
-const LOGIN_SATELLITES_GREEN: Satellite[] = [
-  { x: -10, y: 28, size: 5, color: "#7CE3A8", dx: 2, dy: -2, delay: 0, duration: 2400 },
-  { x: 38, y: -8, size: 4, color: "#A8F0C5", dx: 2, dy: -2, delay: 600, duration: 2700 },
-  { x: 96, y: 30, size: 4, color: "#C8F0DC", dx: -2, dy: 3, delay: 1100, duration: 2900 },
-];
-
-const LOGIN_SATELLITES_WHITE: Satellite[] = [
-  { x: -14, y: 50, size: 5, color: "#D6DEE9", dx: 2, dy: -3, delay: 0, duration: 2600 },
-  { x: 60, y: -10, size: 4, color: "#C5CFE0", dx: 2, dy: -2, delay: 700, duration: 2400 },
-  { x: 134, y: 60, size: 5, color: "#E8EDF4", dx: -3, dy: 2, delay: 1100, duration: 3000 },
-];
-
-function SatelliteRing({ items }: { items: Satellite[] }) {
-  return (
-    <>
-      {items.map((s, i) => (
-        <span
-          key={i}
-          aria-hidden
-          className="absolute rounded-full"
-          style={
-            {
-              left: s.x,
-              top: s.y,
-              width: s.size,
-              height: s.size,
-              background: s.color,
-              animation: `loginSatellite ${s.duration}ms ${s.delay}ms ease-in-out infinite`,
-              "--dx": `${s.dx}px`,
-              "--dy": `${s.dy}px`,
-            } as CSSProperties
-          }
-        />
-      ))}
-    </>
-  );
-}
-
-// ─── Form Card (right) ────────────────────────────────────────────────────
+// ─── Form card (right) ──────────────────────────────────────────────────────
 
 interface FormCardProps {
   tab: Tab;
-  setTab: (t: Tab) => void;
   account: string;
-  setAccount: (v: string) => void;
   phone: string;
-  setPhone: (v: string) => void;
   password: string;
-  setPassword: (v: string) => void;
   remember: boolean;
-  setRemember: (v: boolean) => void;
   showPassword: boolean;
-  setShowPassword: (v: boolean) => void;
   canSubmit: boolean;
+  onTabChange: (t: Tab) => void;
+  onAccountChange: (v: string) => void;
+  onPhoneChange: (v: string) => void;
+  onPasswordChange: (v: string) => void;
+  onRememberChange: (v: boolean) => void;
+  onShowPasswordToggle: () => void;
   onSubmit: (e: FormEvent) => void;
 }
 
@@ -437,7 +319,7 @@ function FormCard(p: FormCardProps) {
   return (
     <div
       className="relative w-full rounded-[20px] border border-[#EEF2F7] bg-white/95 p-10 shadow-[0_20px_60px_-20px_rgba(33,68,124,0.18)] backdrop-blur"
-      style={{ animation: "loginCardIn 800ms 220ms backwards cubic-bezier(.2,.7,.2,1)" }}
+      style={{ animation: "chCardIn 800ms 220ms backwards cubic-bezier(.2,.7,.2,1)" }}
     >
       <div className="mb-7 flex flex-col gap-1.5">
         <h2 className="text-[24px] font-semibold" style={{ color: COLOR_TITLE }}>
@@ -448,7 +330,7 @@ function FormCard(p: FormCardProps) {
         </p>
       </div>
 
-      <Tabs value={p.tab} onChange={p.setTab} />
+      <Tabs value={p.tab} onChange={p.onTabChange} />
 
       <form onSubmit={p.onSubmit} className="mt-6 flex flex-col gap-5">
         {p.tab === "account" ? (
@@ -458,7 +340,7 @@ function FormCard(p: FormCardProps) {
               placeholder="请输入账号 / 邮箱"
               autoComplete="username"
               value={p.account}
-              onChange={(e) => p.setAccount(e.currentTarget.value)}
+              onChange={(e) => p.onAccountChange(e.currentTarget.value)}
             />
           </Field>
         ) : (
@@ -471,7 +353,7 @@ function FormCard(p: FormCardProps) {
               maxLength={11}
               autoComplete="tel"
               value={p.phone}
-              onChange={(e) => p.setPhone(e.currentTarget.value.replace(/\D/g, ""))}
+              onChange={(e) => p.onPhoneChange(e.currentTarget.value.replace(/\D/g, ""))}
             />
           </Field>
         )}
@@ -483,11 +365,11 @@ function FormCard(p: FormCardProps) {
             type={p.showPassword ? "text" : "password"}
             autoComplete="current-password"
             value={p.password}
-            onChange={(e) => p.setPassword(e.currentTarget.value)}
+            onChange={(e) => p.onPasswordChange(e.currentTarget.value)}
             endSlot={
               <button
                 type="button"
-                onClick={() => p.setShowPassword(!p.showPassword)}
+                onClick={p.onShowPasswordToggle}
                 className="grid size-7 place-items-center rounded-md text-[#A0AEC0] transition-colors hover:bg-[#F5F8FF] hover:text-[#2196FA]"
                 aria-label={p.showPassword ? "隐藏密码" : "显示密码"}
               >
@@ -498,7 +380,7 @@ function FormCard(p: FormCardProps) {
         </Field>
 
         <div className="flex items-center justify-between text-[12.5px]">
-          <Checkbox checked={p.remember} onChange={p.setRemember} label="7 天免登录" />
+          <Checkbox checked={p.remember} onChange={p.onRememberChange} label="7 天免登录" />
           <button
             type="button"
             className="font-medium text-[#2196FA] transition-colors hover:text-[#0F6FE0]"
@@ -523,13 +405,14 @@ function FormCard(p: FormCardProps) {
   );
 }
 
-// ─── Form primitives ──────────────────────────────────────────────────────
+// ─── Form primitives ────────────────────────────────────────────────────────
+
+const TAB_ITEMS: { value: Tab; label: string }[] = [
+  { value: "account", label: "账号登录" },
+  { value: "phone", label: "手机号登录" },
+];
 
 function Tabs({ value, onChange }: { value: Tab; onChange: (t: Tab) => void }) {
-  const items: { value: Tab; label: string }[] = [
-    { value: "account", label: "账号登录" },
-    { value: "phone", label: "手机号登录" },
-  ];
   return (
     <div className="relative grid grid-cols-2 rounded-lg bg-[#F5F8FF] p-1">
       <span
@@ -539,7 +422,7 @@ function Tabs({ value, onChange }: { value: Tab; onChange: (t: Tab) => void }) {
           transform: value === "account" ? "translateX(4px)" : "translateX(calc(100% + 4px))",
         }}
       />
-      {items.map((it) => (
+      {TAB_ITEMS.map((it) => (
         <button
           key={it.value}
           type="button"
@@ -619,9 +502,7 @@ function SubmitButton({ disabled }: { disabled: boolean }) {
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
       className="group h-11 w-full rounded-lg text-[14px] font-medium text-white shadow-[0_10px_24px_-10px_rgba(33,150,250,0.6)] transition-all hover:shadow-[0_14px_28px_-10px_rgba(33,150,250,0.7)] disabled:shadow-none"
-      style={{
-        background: hover && !disabled ? BLUE_GRADIENT_HOVER : BLUE_GRADIENT,
-      }}
+      style={{ background: hover && !disabled ? BLUE_GRADIENT_HOVER : BLUE_GRADIENT }}
     >
       <span className="flex items-center justify-center gap-1.5">
         登&nbsp;录
@@ -631,99 +512,20 @@ function SubmitButton({ disabled }: { disabled: boolean }) {
   );
 }
 
-// ─── Bottom waves ─────────────────────────────────────────────────────────
+// ─── Bottom waves ───────────────────────────────────────────────────────────
 
 function BottomWaves() {
-  // Each layer is 2× viewBox-wide and tile-able (period 640) so the SMIL
-  // animateTransform can drift it -1280 SVG units in a seamless loop.
   return (
     <svg
       aria-hidden
       className="pointer-events-none absolute bottom-0 left-0 block h-[320px] w-full"
-      viewBox="0 0 1280 320"
+      viewBox={`0 0 1280 ${LOGIN_WAVE_BOTTOM}`}
       preserveAspectRatio="none"
-      style={{ animation: "loginFade 900ms 500ms backwards ease-out" }}
+      style={{ animation: "chFadeUpSmall 900ms 500ms backwards ease-out" }}
     >
-      <DriftingWave
-        d="M0,100 Q160,20 320,100 T640,100 T960,100 T1280,100 T1600,100 T1920,100 T2240,100 T2560,100 L2560,320 L0,320 Z"
-        fill={WAVE_FILLS.back}
-        opacity={0.45}
-        dur="22s"
-      />
-      <DriftingWave
-        d="M0,200 Q160,110 320,200 T640,200 T960,200 T1280,200 T1600,200 T1920,200 T2240,200 T2560,200 L2560,320 L0,320 Z"
-        fill={WAVE_FILLS.warm}
-        opacity={0.85}
-        dur="16s"
-      />
-      <DriftingWave
-        d="M0,270 Q160,220 320,270 T640,270 T960,270 T1280,270 T1600,270 T1920,270 T2240,270 T2560,270 L2560,320 L0,320 Z"
-        fill={WAVE_FILLS.mint}
-        opacity={0.85}
-        dur="11s"
-      />
+      {LOGIN_WAVES.map((w, i) => (
+        <DriftingWave key={i} {...w} />
+      ))}
     </svg>
   );
 }
-
-function DriftingWave({
-  d,
-  fill,
-  opacity,
-  dur,
-}: {
-  d: string;
-  fill: string;
-  opacity: number;
-  dur: string;
-}) {
-  return (
-    <path d={d} fill={fill} opacity={opacity}>
-      <animateTransform
-        attributeName="transform"
-        type="translate"
-        from="0 0"
-        to="-1280 0"
-        dur={dur}
-        repeatCount="indefinite"
-      />
-    </path>
-  );
-}
-
-// ─── Animations ───────────────────────────────────────────────────────────
-
-const KEYFRAMES = `
-@keyframes loginFade {
-  from { opacity: 0; transform: translateY(8px); }
-  to   { opacity: 1; transform: translateY(0); }
-}
-@keyframes loginCardIn {
-  from { opacity: 0; transform: translateY(20px) scale(0.985); }
-  to   { opacity: 1; transform: translateY(0) scale(1); }
-}
-@keyframes loginIllustrationIn {
-  from { opacity: 0; transform: translateY(-10px) scale(0.98); }
-  to   { opacity: 1; transform: translateY(0) scale(1); }
-}
-@keyframes loginBubblePop {
-  from { opacity: 0; transform: scale(0.6); }
-  to   { opacity: 1; transform: scale(1); }
-}
-@keyframes loginTyping {
-  0%, 60%, 100% { transform: translateY(0); opacity: 0.55; }
-  30%           { transform: translateY(-3px); opacity: 1; }
-}
-@keyframes loginDotFloat {
-  0%, 100% { transform: translateY(0); }
-  50%      { transform: translateY(-3px); }
-}
-@keyframes loginSatellite {
-  0%, 100% { opacity: 0.25; transform: translate(0, 0) scale(0.7); }
-  50%      { opacity: 1;    transform: translate(var(--dx, 0), var(--dy, 0)) scale(1); }
-}
-@keyframes loginHaloPulse {
-  0%, 100% { opacity: 0.55; transform: scale(1); }
-  50%      { opacity: 0.75; transform: scale(1.04); }
-}
-`;
