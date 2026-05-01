@@ -1,19 +1,10 @@
 import { memo, useState } from "react";
-import { Pencil, Plus, Search } from "lucide-react";
+import { Plus } from "lucide-react";
 
-import { Input } from "@/components/ui/input";
-import {
-  WORKBENCH_ACTIVE_BG,
-  WORKBENCH_BLUE,
-  WORKBENCH_LINE,
-  WORKBENCH_SOFT_BG,
-  WORKBENCH_TEXT_MUTED,
-  WORKBENCH_TEXT_PRIMARY,
-  WORKBENCH_TEXT_SECONDARY,
-} from "@/lib/theme";
 import { cn } from "@/lib/utils";
 
 import type { Customer, QuickReply } from "./data";
+import { QuickRepliesPanel } from "./QuickRepliesPanel";
 
 type DetailsTab = "profile" | "replies" | "trace";
 
@@ -35,10 +26,7 @@ export const CustomerDetails = memo(function CustomerDetails({
   const [tab, setTab] = useState<DetailsTab>("profile");
 
   return (
-    <aside
-      className="flex h-full w-[324px] shrink-0 flex-col border-l bg-white"
-      style={{ borderColor: WORKBENCH_LINE }}
-    >
+    <aside className="flex h-full w-[324px] shrink-0 flex-col border-l border-workbench-line bg-white">
       <Tabs value={tab} onChange={setTab} />
       <div className="flex-1 overflow-y-auto">
         {tab === "profile" && <ProfileTab customer={customer} quickReplies={quickReplies} />}
@@ -53,7 +41,7 @@ export const CustomerDetails = memo(function CustomerDetails({
 
 function Tabs({ value, onChange }: { value: DetailsTab; onChange: (t: DetailsTab) => void }) {
   return (
-    <div className="grid grid-cols-3 border-b px-2 pt-2" style={{ borderColor: WORKBENCH_LINE }}>
+    <div className="grid grid-cols-3 border-b border-workbench-line px-2 pt-2">
       {TABS.map((t) => {
         const active = t.value === value;
         return (
@@ -63,16 +51,16 @@ function Tabs({ value, onChange }: { value: DetailsTab; onChange: (t: DetailsTab
             onClick={() => onChange(t.value)}
             className={cn(
               "relative flex h-8 items-center justify-center text-[12.5px] font-medium transition-colors",
-              active ? "text-[#1F2937]" : "hover:text-[#1F2937]",
+              active
+                ? "text-workbench-text"
+                : "text-workbench-text-muted hover:text-workbench-text",
             )}
-            style={!active ? { color: WORKBENCH_TEXT_MUTED } : undefined}
           >
             {t.label}
             {active && (
               <span
                 aria-hidden
-                className="absolute bottom-0 left-1/2 h-[2px] w-5 -translate-x-1/2 rounded-full"
-                style={{ background: WORKBENCH_BLUE }}
+                className="absolute bottom-0 left-1/2 h-[2px] w-5 -translate-x-1/2 rounded-full bg-workbench-blue"
               />
             )}
           </button>
@@ -96,15 +84,11 @@ function ProfileTab({
       <ProfileHeader customer={customer} />
       <TagsRow tags={customer.tags} />
       <DetailList customer={customer} />
-      <button
-        type="button"
-        className="self-start text-[11.5px] font-medium"
-        style={{ color: WORKBENCH_BLUE }}
-      >
+      <button type="button" className="self-start text-[11.5px] font-medium text-workbench-blue">
         展开更多
       </button>
-      <hr style={{ borderColor: WORKBENCH_LINE }} />
-      <QuickRepliesSection items={quickReplies} />
+      <hr className="border-workbench-line" />
+      <QuickRepliesPanel items={quickReplies} />
     </div>
   );
 }
@@ -112,30 +96,17 @@ function ProfileTab({
 function ProfileHeader({ customer }: { customer: Customer }) {
   return (
     <div className="flex items-center gap-2.5">
-      <div
-        className="grid size-10 place-items-center rounded-full text-[15px] font-medium"
-        style={{ background: "#FCE7B8", color: WORKBENCH_TEXT_PRIMARY }}
-      >
+      <div className="grid size-10 place-items-center rounded-full bg-[#FCE7B8] text-[15px] font-medium text-workbench-text">
         {customer.name.slice(0, 1)}
       </div>
       <div className="flex flex-col gap-0.5">
         <div className="flex items-center gap-1.5">
-          <span className="text-[14px] font-semibold" style={{ color: WORKBENCH_TEXT_PRIMARY }}>
-            {customer.name}
-          </span>
-          <span className="text-[11.5px]" style={{ color: WORKBENCH_TEXT_MUTED }}>
-            @ {customer.channel}
-          </span>
+          <span className="text-[14px] font-semibold text-workbench-text">{customer.name}</span>
+          <span className="text-[11.5px] text-workbench-text-muted">@ {customer.channel}</span>
         </div>
-        <div
-          className="flex items-center gap-1.5 text-[11px]"
-          style={{ color: WORKBENCH_TEXT_SECONDARY }}
-        >
+        <div className="flex items-center gap-1.5 text-[11px] text-workbench-text-secondary">
           <span className="truncate">{customer.account}</span>
-          <span
-            className="rounded-sm px-1.5 py-0.5 text-[10px] font-medium"
-            style={{ background: WORKBENCH_ACTIVE_BG, color: WORKBENCH_BLUE }}
-          >
+          <span className="rounded-sm bg-workbench-surface-active px-1.5 py-0.5 text-[10px] font-medium text-workbench-blue">
             来自账号
           </span>
         </div>
@@ -147,14 +118,11 @@ function ProfileHeader({ customer }: { customer: Customer }) {
 function TagsRow({ tags }: { tags: string[] }) {
   return (
     <div className="flex flex-wrap items-center gap-1.5">
-      <span className="text-[11.5px]" style={{ color: WORKBENCH_TEXT_SECONDARY }}>
-        添加标签
-      </span>
+      <span className="text-[11.5px] text-workbench-text-secondary">添加标签</span>
       {tags.map((t) => (
         <span
           key={t}
-          className="rounded-full px-1.5 py-0.5 text-[10.5px] font-medium"
-          style={{ background: WORKBENCH_ACTIVE_BG, color: WORKBENCH_BLUE }}
+          className="rounded-full bg-workbench-surface-active px-1.5 py-0.5 text-[10.5px] font-medium text-workbench-blue"
         >
           {t}
         </span>
@@ -162,8 +130,7 @@ function TagsRow({ tags }: { tags: string[] }) {
       <button
         type="button"
         aria-label="添加标签"
-        className="grid size-[18px] place-items-center rounded-full border border-dashed transition-colors hover:text-[#2563EB]"
-        style={{ borderColor: WORKBENCH_LINE, color: WORKBENCH_TEXT_MUTED }}
+        className="grid size-[18px] place-items-center rounded-full border border-dashed border-workbench-line text-workbench-text-muted transition-colors hover:text-workbench-blue-strong"
       >
         <Plus size={10} />
       </button>
@@ -185,61 +152,11 @@ function DetailList({ customer }: { customer: Customer }) {
     <dl className="flex flex-col gap-2 text-[12px]">
       {rows.map((r) => (
         <div key={r.label} className="grid grid-cols-[68px_1fr] items-baseline gap-2.5">
-          <dt style={{ color: WORKBENCH_TEXT_MUTED }}>{r.label}</dt>
-          <dd style={{ color: WORKBENCH_TEXT_PRIMARY }}>{r.value}</dd>
+          <dt className="text-workbench-text-muted">{r.label}</dt>
+          <dd className="text-workbench-text">{r.value}</dd>
         </div>
       ))}
     </dl>
-  );
-}
-
-function QuickRepliesSection({ items }: { items: QuickReply[] }) {
-  return (
-    <section className="flex flex-col gap-2.5">
-      <div className="flex items-center justify-between">
-        <span className="text-[13px] font-semibold" style={{ color: WORKBENCH_TEXT_PRIMARY }}>
-          快捷回复
-        </span>
-        <button
-          type="button"
-          className="text-[11.5px] font-medium"
-          style={{ color: WORKBENCH_BLUE }}
-        >
-          管理
-        </button>
-      </div>
-      <Input
-        icon={<Search size={12} />}
-        placeholder="搜索快捷回复"
-        className="h-8 rounded border-transparent text-[12px]"
-        style={{ background: WORKBENCH_SOFT_BG }}
-      />
-      <ul className="flex flex-col gap-0.5">
-        {items.map((q) => (
-          <li
-            key={q.id}
-            className="group flex items-start gap-1.5 rounded px-1.5 py-1.5 transition-colors hover:bg-[#F7FAFD]"
-          >
-            <div className="min-w-0 flex-1">
-              <div className="text-[12px] font-medium" style={{ color: WORKBENCH_TEXT_PRIMARY }}>
-                {q.title}
-              </div>
-              <p className="mt-0.5 truncate text-[11px]" style={{ color: WORKBENCH_TEXT_MUTED }}>
-                {q.preview}
-              </p>
-            </div>
-            <button
-              type="button"
-              aria-label={`编辑 ${q.title}`}
-              className="grid size-6 shrink-0 place-items-center rounded opacity-0 transition-opacity hover:bg-white hover:text-[#2563EB] group-hover:opacity-100"
-              style={{ color: WORKBENCH_TEXT_MUTED }}
-            >
-              <Pencil size={11} />
-            </button>
-          </li>
-        ))}
-      </ul>
-    </section>
   );
 }
 
@@ -248,15 +165,10 @@ function QuickRepliesSection({ items }: { items: QuickReply[] }) {
 function EmptyTab({ text }: { text: string }) {
   return (
     <div className="flex h-full flex-col items-center justify-center gap-2.5 px-6 py-10 text-center">
-      <div
-        className="grid size-12 place-items-center rounded-full"
-        style={{ background: "#F1F5F9" }}
-      >
+      <div className="grid size-12 place-items-center rounded-full bg-[#F1F5F9]">
         <span className="text-[22px] text-[#CBD5E1]">·</span>
       </div>
-      <p className="text-[12px]" style={{ color: WORKBENCH_TEXT_MUTED }}>
-        {text}
-      </p>
+      <p className="text-[12px] text-workbench-text-muted">{text}</p>
     </div>
   );
 }

@@ -1,8 +1,6 @@
 // Mock data for the Messages page. Pure types + literals — no JSX, no React imports,
 // safe for any consumer. Replace with real backend payloads when the API is wired.
 
-export type ConversationGroup = "today" | "yesterday";
-
 export interface Conversation {
   id: string;
   name: string;
@@ -11,10 +9,9 @@ export interface Conversation {
   preview: string;
   /** The account that received/initiated the conversation, e.g. "杭州企微-小美". */
   account: string;
-  /** Display time, e.g. "11:24". */
+  /** Pre-formatted relative time shown in the conversation row (e.g. "11:24" or "昨天"). */
   time: string;
   unread: number;
-  group: ConversationGroup;
   online: boolean;
 }
 
@@ -23,14 +20,8 @@ export interface Message {
   conversationId: string;
   direction: "in" | "out";
   text: string;
-  /** ISO timestamp used for sorting and grouping. */
+  /** ISO 8601 timestamp; UI components derive any display label from this. */
   sentAt: string;
-  /** Short display time, e.g. "10:21". */
-  timeLabel: string;
-  /** Date label used by timeline dividers, e.g. "2026年5月1日". */
-  dateLabel: string;
-  /** Existing display time retained for compatibility. */
-  time: string;
   /** Only meaningful for outgoing messages. */
   read?: boolean;
 }
@@ -66,7 +57,6 @@ export const MOCK_CONVERSATIONS: Conversation[] = [
     account: "杭州企微-小美",
     time: "11:24",
     unread: 1,
-    group: "today",
     online: true,
   },
   {
@@ -77,7 +67,6 @@ export const MOCK_CONVERSATIONS: Conversation[] = [
     account: "广州企微-小贝",
     time: "11:01",
     unread: 2,
-    group: "today",
     online: false,
   },
   {
@@ -88,7 +77,6 @@ export const MOCK_CONVERSATIONS: Conversation[] = [
     account: "北京企微-小林",
     time: "10:48",
     unread: 0,
-    group: "today",
     online: false,
   },
   {
@@ -99,7 +87,6 @@ export const MOCK_CONVERSATIONS: Conversation[] = [
     account: "上海企微-小雨",
     time: "09:32",
     unread: 0,
-    group: "today",
     online: true,
   },
   {
@@ -110,7 +97,6 @@ export const MOCK_CONVERSATIONS: Conversation[] = [
     account: "深圳企微-小陈",
     time: "昨天",
     unread: 0,
-    group: "yesterday",
     online: false,
   },
   {
@@ -121,7 +107,6 @@ export const MOCK_CONVERSATIONS: Conversation[] = [
     account: "杭州企微-小美",
     time: "昨天",
     unread: 0,
-    group: "yesterday",
     online: false,
   },
   {
@@ -132,7 +117,6 @@ export const MOCK_CONVERSATIONS: Conversation[] = [
     account: "广州企微-小贝",
     time: "昨天",
     unread: 0,
-    group: "yesterday",
     online: false,
   },
   {
@@ -143,7 +127,6 @@ export const MOCK_CONVERSATIONS: Conversation[] = [
     account: "成都企微-小周",
     time: "昨天",
     unread: 3,
-    group: "yesterday",
     online: true,
   },
   {
@@ -154,7 +137,6 @@ export const MOCK_CONVERSATIONS: Conversation[] = [
     account: "杭州企微-小美",
     time: "昨天",
     unread: 1,
-    group: "yesterday",
     online: false,
   },
   {
@@ -165,7 +147,6 @@ export const MOCK_CONVERSATIONS: Conversation[] = [
     account: "南京企微-小唐",
     time: "周二",
     unread: 0,
-    group: "yesterday",
     online: false,
   },
   {
@@ -176,7 +157,6 @@ export const MOCK_CONVERSATIONS: Conversation[] = [
     account: "北京企微-小林",
     time: "周二",
     unread: 0,
-    group: "yesterday",
     online: true,
   },
   {
@@ -187,7 +167,6 @@ export const MOCK_CONVERSATIONS: Conversation[] = [
     account: "上海企微-小雨",
     time: "周一",
     unread: 2,
-    group: "yesterday",
     online: true,
   },
   {
@@ -198,7 +177,6 @@ export const MOCK_CONVERSATIONS: Conversation[] = [
     account: "深圳企微-小陈",
     time: "周一",
     unread: 0,
-    group: "yesterday",
     online: false,
   },
   {
@@ -209,7 +187,6 @@ export const MOCK_CONVERSATIONS: Conversation[] = [
     account: "广州企微-小贝",
     time: "4/28",
     unread: 4,
-    group: "yesterday",
     online: false,
   },
   {
@@ -220,7 +197,6 @@ export const MOCK_CONVERSATIONS: Conversation[] = [
     account: "成都企微-小周",
     time: "4/28",
     unread: 0,
-    group: "yesterday",
     online: true,
   },
   {
@@ -231,7 +207,6 @@ export const MOCK_CONVERSATIONS: Conversation[] = [
     account: "南京企微-小唐",
     time: "4/27",
     unread: 1,
-    group: "yesterday",
     online: false,
   },
   {
@@ -242,7 +217,6 @@ export const MOCK_CONVERSATIONS: Conversation[] = [
     account: "杭州企微-小美",
     time: "4/27",
     unread: 0,
-    group: "yesterday",
     online: false,
   },
   {
@@ -253,7 +227,6 @@ export const MOCK_CONVERSATIONS: Conversation[] = [
     account: "北京企微-小林",
     time: "4/26",
     unread: 0,
-    group: "yesterday",
     online: true,
   },
   {
@@ -264,7 +237,6 @@ export const MOCK_CONVERSATIONS: Conversation[] = [
     account: "上海企微-小雨",
     time: "4/26",
     unread: 0,
-    group: "yesterday",
     online: false,
   },
   {
@@ -275,7 +247,6 @@ export const MOCK_CONVERSATIONS: Conversation[] = [
     account: "广州企微-小贝",
     time: "4/25",
     unread: 0,
-    group: "yesterday",
     online: false,
   },
 ];
@@ -288,9 +259,6 @@ export const MOCK_MESSAGES_BY_CONVERSATION: Record<string, Message[]> = {
       direction: "in",
       text: "您好，我想了解一下你们的产品。",
       sentAt: "2026-05-01T10:20:00+08:00",
-      timeLabel: "10:20",
-      dateLabel: "2026年5月1日",
-      time: "10:20",
     },
     {
       id: "m2",
@@ -298,9 +266,6 @@ export const MOCK_MESSAGES_BY_CONVERSATION: Record<string, Message[]> = {
       direction: "out",
       text: "您好，王女士，很高兴为您服务！",
       sentAt: "2026-05-01T10:20:00+08:00",
-      timeLabel: "10:20",
-      dateLabel: "2026年5月1日",
-      time: "10:20",
       read: true,
     },
     {
@@ -309,9 +274,6 @@ export const MOCK_MESSAGES_BY_CONVERSATION: Record<string, Message[]> = {
       direction: "in",
       text: "你们的产品支持试用吗？",
       sentAt: "2026-05-01T10:21:00+08:00",
-      timeLabel: "10:21",
-      dateLabel: "2026年5月1日",
-      time: "10:21",
     },
     {
       id: "m4",
@@ -319,9 +281,6 @@ export const MOCK_MESSAGES_BY_CONVERSATION: Record<string, Message[]> = {
       direction: "out",
       text: "支持的，我们可以为您申请 14 天的免费试用，您看可以吗？",
       sentAt: "2026-05-01T10:21:00+08:00",
-      timeLabel: "10:21",
-      dateLabel: "2026年5月1日",
-      time: "10:21",
       read: true,
     },
     {
@@ -330,9 +289,6 @@ export const MOCK_MESSAGES_BY_CONVERSATION: Record<string, Message[]> = {
       direction: "in",
       text: "试用的话需要满足什么条件？",
       sentAt: "2026-05-01T10:22:00+08:00",
-      timeLabel: "10:22",
-      dateLabel: "2026年5月1日",
-      time: "10:22",
     },
     {
       id: "m6",
@@ -340,9 +296,6 @@ export const MOCK_MESSAGES_BY_CONVERSATION: Record<string, Message[]> = {
       direction: "out",
       text: "只需要您提供企业信息，我们这边为您开通试用权限即可。",
       sentAt: "2026-05-01T10:22:00+08:00",
-      timeLabel: "10:22",
-      dateLabel: "2026年5月1日",
-      time: "10:22",
       read: true,
     },
     {
@@ -351,9 +304,6 @@ export const MOCK_MESSAGES_BY_CONVERSATION: Record<string, Message[]> = {
       direction: "in",
       text: "好的，那我要试用一下。",
       sentAt: "2026-05-01T10:24:00+08:00",
-      timeLabel: "10:24",
-      dateLabel: "2026年5月1日",
-      time: "10:24",
     },
   ],
   c2: [
@@ -363,9 +313,6 @@ export const MOCK_MESSAGES_BY_CONVERSATION: Record<string, Message[]> = {
       direction: "in",
       text: "你们的产品价格是多少？",
       sentAt: "2026-05-01T10:55:00+08:00",
-      timeLabel: "10:55",
-      dateLabel: "2026年5月1日",
-      time: "10:55",
     },
     {
       id: "m2",
@@ -373,9 +320,6 @@ export const MOCK_MESSAGES_BY_CONVERSATION: Record<string, Message[]> = {
       direction: "out",
       text: "您好，李先生，我们提供多种套餐，可以根据您的需求来推荐。",
       sentAt: "2026-05-01T10:56:00+08:00",
-      timeLabel: "10:56",
-      dateLabel: "2026年5月1日",
-      time: "10:56",
       read: true,
     },
     {
@@ -384,9 +328,6 @@ export const MOCK_MESSAGES_BY_CONVERSATION: Record<string, Message[]> = {
       direction: "in",
       text: "我们大概 20 人团队使用",
       sentAt: "2026-05-01T11:01:00+08:00",
-      timeLabel: "11:01",
-      dateLabel: "2026年5月1日",
-      time: "11:01",
     },
   ],
   c3: [
@@ -396,9 +337,6 @@ export const MOCK_MESSAGES_BY_CONVERSATION: Record<string, Message[]> = {
       direction: "out",
       text: "张总您好，资料已发您邮箱，请查收。",
       sentAt: "2026-05-01T10:30:00+08:00",
-      timeLabel: "10:30",
-      dateLabel: "2026年5月1日",
-      time: "10:30",
       read: true,
     },
     {
@@ -407,9 +345,6 @@ export const MOCK_MESSAGES_BY_CONVERSATION: Record<string, Message[]> = {
       direction: "in",
       text: "好的，谢谢",
       sentAt: "2026-05-01T10:48:00+08:00",
-      timeLabel: "10:48",
-      dateLabel: "2026年5月1日",
-      time: "10:48",
     },
   ],
   c4: [
@@ -419,9 +354,6 @@ export const MOCK_MESSAGES_BY_CONVERSATION: Record<string, Message[]> = {
       direction: "in",
       text: "刚才看了一下方案，挺有意思的。",
       sentAt: "2026-05-01T09:30:00+08:00",
-      timeLabel: "09:30",
-      dateLabel: "2026年5月1日",
-      time: "09:30",
     },
     {
       id: "m2",
@@ -429,9 +361,6 @@ export const MOCK_MESSAGES_BY_CONVERSATION: Record<string, Message[]> = {
       direction: "out",
       text: "感谢您的反馈，有任何问题随时联系我。",
       sentAt: "2026-05-01T09:31:00+08:00",
-      timeLabel: "09:31",
-      dateLabel: "2026年5月1日",
-      time: "09:31",
       read: true,
     },
     {
@@ -440,9 +369,6 @@ export const MOCK_MESSAGES_BY_CONVERSATION: Record<string, Message[]> = {
       direction: "in",
       text: "收到，我再看看",
       sentAt: "2026-05-01T09:32:00+08:00",
-      timeLabel: "09:32",
-      dateLabel: "2026年5月1日",
-      time: "09:32",
     },
   ],
   c5: [
@@ -452,9 +378,6 @@ export const MOCK_MESSAGES_BY_CONVERSATION: Record<string, Message[]> = {
       direction: "out",
       text: "黄先生您好，方便加个微信吗？",
       sentAt: "2026-04-30T16:20:00+08:00",
-      timeLabel: "16:20",
-      dateLabel: "2026年4月30日",
-      time: "昨天 16:20",
       read: true,
     },
     {
@@ -463,9 +386,6 @@ export const MOCK_MESSAGES_BY_CONVERSATION: Record<string, Message[]> = {
       direction: "in",
       text: "好的，那我等下联系您",
       sentAt: "2026-04-30T16:25:00+08:00",
-      timeLabel: "16:25",
-      dateLabel: "2026年4月30日",
-      time: "昨天 16:25",
     },
   ],
   c6: [
@@ -475,9 +395,6 @@ export const MOCK_MESSAGES_BY_CONVERSATION: Record<string, Message[]> = {
       direction: "out",
       text: "陈女士，您看下这份合同条款是否清晰？",
       sentAt: "2026-04-30T14:00:00+08:00",
-      timeLabel: "14:00",
-      dateLabel: "2026年4月30日",
-      time: "昨天 14:00",
       read: true,
     },
     {
@@ -486,9 +403,6 @@ export const MOCK_MESSAGES_BY_CONVERSATION: Record<string, Message[]> = {
       direction: "in",
       text: "ok，没问题",
       sentAt: "2026-04-30T14:30:00+08:00",
-      timeLabel: "14:30",
-      dateLabel: "2026年4月30日",
-      time: "昨天 14:30",
     },
   ],
   c7: [
@@ -498,9 +412,6 @@ export const MOCK_MESSAGES_BY_CONVERSATION: Record<string, Message[]> = {
       direction: "out",
       text: "吴先生，资料已经发您邮箱了。",
       sentAt: "2026-04-30T11:00:00+08:00",
-      timeLabel: "11:00",
-      dateLabel: "2026年4月30日",
-      time: "昨天 11:00",
       read: true,
     },
     {
@@ -509,9 +420,6 @@ export const MOCK_MESSAGES_BY_CONVERSATION: Record<string, Message[]> = {
       direction: "in",
       text: "谢谢",
       sentAt: "2026-04-30T11:05:00+08:00",
-      timeLabel: "11:05",
-      dateLabel: "2026年4月30日",
-      time: "昨天 11:05",
     },
   ],
   c8: [
@@ -521,9 +429,6 @@ export const MOCK_MESSAGES_BY_CONVERSATION: Record<string, Message[]> = {
       direction: "in",
       text: "我们想先看一下演示环境，方便今天开通吗？",
       sentAt: "2026-04-30T17:05:00+08:00",
-      timeLabel: "17:05",
-      dateLabel: "2026年4月30日",
-      time: "昨天 17:05",
     },
     {
       id: "m2",
@@ -531,9 +436,6 @@ export const MOCK_MESSAGES_BY_CONVERSATION: Record<string, Message[]> = {
       direction: "out",
       text: "可以的，赵经理，我这边先为您创建演示账号。",
       sentAt: "2026-04-30T17:08:00+08:00",
-      timeLabel: "17:08",
-      dateLabel: "2026年4月30日",
-      time: "昨天 17:08",
       read: true,
     },
     {
@@ -542,9 +444,6 @@ export const MOCK_MESSAGES_BY_CONVERSATION: Record<string, Message[]> = {
       direction: "in",
       text: "好的，最好能带一些示例数据。",
       sentAt: "2026-04-30T17:12:00+08:00",
-      timeLabel: "17:12",
-      dateLabel: "2026年4月30日",
-      time: "昨天 17:12",
     },
   ],
   c9: [
@@ -554,9 +453,6 @@ export const MOCK_MESSAGES_BY_CONVERSATION: Record<string, Message[]> = {
       direction: "in",
       text: "合同能不能今天发我？我们法务想先看一下。",
       sentAt: "2026-04-30T15:40:00+08:00",
-      timeLabel: "15:40",
-      dateLabel: "2026年4月30日",
-      time: "昨天 15:40",
     },
     {
       id: "m2",
@@ -564,9 +460,6 @@ export const MOCK_MESSAGES_BY_CONVERSATION: Record<string, Message[]> = {
       direction: "out",
       text: "没问题，我整理好版本后发您邮箱。",
       sentAt: "2026-04-30T15:44:00+08:00",
-      timeLabel: "15:44",
-      dateLabel: "2026年4月30日",
-      time: "昨天 15:44",
       read: true,
     },
   ],
@@ -577,9 +470,6 @@ export const MOCK_MESSAGES_BY_CONVERSATION: Record<string, Message[]> = {
       direction: "in",
       text: "学生账号可以批量导入吗？",
       sentAt: "2026-04-28T18:10:00+08:00",
-      timeLabel: "18:10",
-      dateLabel: "2026年4月28日",
-      time: "周二 18:10",
     },
     {
       id: "m2",
@@ -587,9 +477,6 @@ export const MOCK_MESSAGES_BY_CONVERSATION: Record<string, Message[]> = {
       direction: "out",
       text: "支持批量导入，也可以通过模板校验字段。",
       sentAt: "2026-04-28T18:15:00+08:00",
-      timeLabel: "18:15",
-      dateLabel: "2026年4月28日",
-      time: "周二 18:15",
       read: true,
     },
   ],
@@ -600,9 +487,6 @@ export const MOCK_MESSAGES_BY_CONVERSATION: Record<string, Message[]> = {
       direction: "out",
       text: "郑总，评审材料我已同步到群里。",
       sentAt: "2026-04-28T16:30:00+08:00",
-      timeLabel: "16:30",
-      dateLabel: "2026年4月28日",
-      time: "周二 16:30",
       read: true,
     },
     {
@@ -611,9 +495,6 @@ export const MOCK_MESSAGES_BY_CONVERSATION: Record<string, Message[]> = {
       direction: "in",
       text: "我们下周一内部评审。",
       sentAt: "2026-04-28T16:42:00+08:00",
-      timeLabel: "16:42",
-      dateLabel: "2026年4月28日",
-      time: "周二 16:42",
     },
   ],
   c12: [
@@ -623,9 +504,6 @@ export const MOCK_MESSAGES_BY_CONVERSATION: Record<string, Message[]> = {
       direction: "in",
       text: "可以安排一次线上会议吗？我想让同事一起听。",
       sentAt: "2026-04-27T14:20:00+08:00",
-      timeLabel: "14:20",
-      dateLabel: "2026年4月27日",
-      time: "周一 14:20",
     },
     {
       id: "m2",
@@ -633,9 +511,6 @@ export const MOCK_MESSAGES_BY_CONVERSATION: Record<string, Message[]> = {
       direction: "out",
       text: "可以，您看明天下午三点是否方便？",
       sentAt: "2026-04-27T14:22:00+08:00",
-      timeLabel: "14:22",
-      dateLabel: "2026年4月27日",
-      time: "周一 14:22",
       read: true,
     },
   ],
@@ -646,9 +521,6 @@ export const MOCK_MESSAGES_BY_CONVERSATION: Record<string, Message[]> = {
       direction: "out",
       text: "报价单已发送，请您查收。",
       sentAt: "2026-04-27T11:00:00+08:00",
-      timeLabel: "11:00",
-      dateLabel: "2026年4月27日",
-      time: "周一 11:00",
       read: true,
     },
     {
@@ -657,9 +529,6 @@ export const MOCK_MESSAGES_BY_CONVERSATION: Record<string, Message[]> = {
       direction: "in",
       text: "报价单我已经收到了。",
       sentAt: "2026-04-27T11:18:00+08:00",
-      timeLabel: "11:18",
-      dateLabel: "2026年4月27日",
-      time: "周一 11:18",
     },
   ],
   c14: [
@@ -669,9 +538,6 @@ export const MOCK_MESSAGES_BY_CONVERSATION: Record<string, Message[]> = {
       direction: "in",
       text: "这个版本支持私有化部署吗？",
       sentAt: "2026-04-28T19:01:00+08:00",
-      timeLabel: "19:01",
-      dateLabel: "2026年4月28日",
-      time: "4/28 19:01",
     },
     {
       id: "m2",
@@ -679,9 +545,6 @@ export const MOCK_MESSAGES_BY_CONVERSATION: Record<string, Message[]> = {
       direction: "out",
       text: "支持，我们可以根据服务器环境提供部署方案。",
       sentAt: "2026-04-28T19:06:00+08:00",
-      timeLabel: "19:06",
-      dateLabel: "2026年4月28日",
-      time: "4/28 19:06",
       read: true,
     },
   ],
@@ -692,9 +555,6 @@ export const MOCK_MESSAGES_BY_CONVERSATION: Record<string, Message[]> = {
       direction: "in",
       text: "先给我开一个测试账号。",
       sentAt: "2026-04-28T10:12:00+08:00",
-      timeLabel: "10:12",
-      dateLabel: "2026年4月28日",
-      time: "4/28 10:12",
     },
     {
       id: "m2",
@@ -702,9 +562,6 @@ export const MOCK_MESSAGES_BY_CONVERSATION: Record<string, Message[]> = {
       direction: "out",
       text: "好的，马总，我这边马上处理。",
       sentAt: "2026-04-28T10:14:00+08:00",
-      timeLabel: "10:14",
-      dateLabel: "2026年4月28日",
-      time: "4/28 10:14",
       read: true,
     },
   ],
@@ -715,9 +572,6 @@ export const MOCK_MESSAGES_BY_CONVERSATION: Record<string, Message[]> = {
       direction: "in",
       text: "接口文档在哪里下载？",
       sentAt: "2026-04-27T20:30:00+08:00",
-      timeLabel: "20:30",
-      dateLabel: "2026年4月27日",
-      time: "4/27 20:30",
     },
     {
       id: "m2",
@@ -725,9 +579,6 @@ export const MOCK_MESSAGES_BY_CONVERSATION: Record<string, Message[]> = {
       direction: "out",
       text: "我发您一份最新版文档链接，里面包含鉴权和回调说明。",
       sentAt: "2026-04-27T20:35:00+08:00",
-      timeLabel: "20:35",
-      dateLabel: "2026年4月27日",
-      time: "4/27 20:35",
       read: true,
     },
   ],
@@ -738,9 +589,6 @@ export const MOCK_MESSAGES_BY_CONVERSATION: Record<string, Message[]> = {
       direction: "in",
       text: "我们财务需要发票信息。",
       sentAt: "2026-04-27T13:22:00+08:00",
-      timeLabel: "13:22",
-      dateLabel: "2026年4月27日",
-      time: "4/27 13:22",
     },
     {
       id: "m2",
@@ -748,9 +596,6 @@ export const MOCK_MESSAGES_BY_CONVERSATION: Record<string, Message[]> = {
       direction: "out",
       text: "可以，我稍后把开票资料清单发给您。",
       sentAt: "2026-04-27T13:25:00+08:00",
-      timeLabel: "13:25",
-      dateLabel: "2026年4月27日",
-      time: "4/27 13:25",
       read: true,
     },
   ],
@@ -761,9 +606,6 @@ export const MOCK_MESSAGES_BY_CONVERSATION: Record<string, Message[]> = {
       direction: "in",
       text: "后续培训怎么安排？",
       sentAt: "2026-04-26T17:45:00+08:00",
-      timeLabel: "17:45",
-      dateLabel: "2026年4月26日",
-      time: "4/26 17:45",
     },
     {
       id: "m2",
@@ -771,9 +613,6 @@ export const MOCK_MESSAGES_BY_CONVERSATION: Record<string, Message[]> = {
       direction: "out",
       text: "上线前我们会安排一次管理员培训和一次业务培训。",
       sentAt: "2026-04-26T17:52:00+08:00",
-      timeLabel: "17:52",
-      dateLabel: "2026年4月26日",
-      time: "4/26 17:52",
       read: true,
     },
   ],
@@ -784,9 +623,6 @@ export const MOCK_MESSAGES_BY_CONVERSATION: Record<string, Message[]> = {
       direction: "out",
       text: "采购流程中如果需要资质文件，我可以一起提供。",
       sentAt: "2026-04-26T09:18:00+08:00",
-      timeLabel: "09:18",
-      dateLabel: "2026年4月26日",
-      time: "4/26 09:18",
       read: true,
     },
     {
@@ -795,9 +631,6 @@ export const MOCK_MESSAGES_BY_CONVERSATION: Record<string, Message[]> = {
       direction: "in",
       text: "我们先走采购流程。",
       sentAt: "2026-04-26T09:25:00+08:00",
-      timeLabel: "09:25",
-      dateLabel: "2026年4月26日",
-      time: "4/26 09:25",
     },
   ],
   c20: [
@@ -807,9 +640,6 @@ export const MOCK_MESSAGES_BY_CONVERSATION: Record<string, Message[]> = {
       direction: "in",
       text: "可以把案例资料再发一份吗？",
       sentAt: "2026-04-25T16:08:00+08:00",
-      timeLabel: "16:08",
-      dateLabel: "2026年4月25日",
-      time: "4/25 16:08",
     },
     {
       id: "m2",
@@ -817,9 +647,6 @@ export const MOCK_MESSAGES_BY_CONVERSATION: Record<string, Message[]> = {
       direction: "out",
       text: "可以，我会补充几份同行业案例给您参考。",
       sentAt: "2026-04-25T16:12:00+08:00",
-      timeLabel: "16:12",
-      dateLabel: "2026年4月25日",
-      time: "4/25 16:12",
       read: true,
     },
   ],
