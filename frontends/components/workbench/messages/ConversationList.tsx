@@ -38,7 +38,7 @@ export const ConversationList = memo(function ConversationList({
         <StatusTabs value={statusTab} onChange={setStatusTab} />
       </div>
 
-      <div className="flex-1 overflow-y-auto py-1">
+      <div className="flex-1 overflow-y-auto py-1.5">
         {conversations.map((c) => (
           <ConversationItem
             key={c.id}
@@ -65,7 +65,7 @@ function StatusTabs({ value, onChange }: { value: StatusTab; onChange: (v: Statu
             type="button"
             onClick={() => onChange(tab.value)}
             className={cn(
-              "inline-flex h-6 items-center gap-1 rounded px-2 transition-colors",
+              "inline-flex h-7 items-center gap-1 rounded-md px-2 transition-colors",
               active
                 ? "bg-[#EAF2FF] text-[#2563EB]"
                 : "text-[#6B7280] hover:bg-[#F5F8FF] hover:text-[#1F2937]",
@@ -93,7 +93,7 @@ function StatusTabs({ value, onChange }: { value: StatusTab; onChange: (v: Statu
         type="button"
         aria-label="更多筛选"
         title="更多筛选"
-        className="ml-auto grid size-6 place-items-center rounded text-[#6B7280] transition-colors hover:bg-[#F5F8FF] hover:text-[#2563EB]"
+        className="ml-auto grid size-7 place-items-center rounded-md text-[#6B7280] transition-colors hover:bg-[#F5F8FF] hover:text-[#2563EB]"
       >
         <Menu size={14} />
       </button>
@@ -120,57 +120,64 @@ const ConversationItem = memo(function ConversationItem({
       onClick={() => onSelect(id)}
       title={`来自 ${account}`}
       className={cn(
-        "group relative flex w-full items-center gap-3 px-3 py-3 text-left transition-colors",
-        selected ? "bg-[#EAF2FF]" : "hover:bg-[#F7FAFF]",
+        "group relative mx-2 my-1 grid w-[calc(100%-1rem)] grid-cols-[46px_minmax(0,1fr)] items-start gap-3 rounded-xl px-3 py-3.5 text-left transition-colors",
+        selected ? "bg-[#EEF6FF]" : "hover:bg-[#F7FBFF]",
       )}
     >
-      <span
-        aria-hidden
-        className={cn(
-          "absolute bottom-3 left-0 top-3 w-[2px] rounded-r-full transition-colors",
-          selected ? "bg-[#2196FA]" : "bg-transparent group-hover:bg-[#BFDBFE]",
-        )}
-      />
       <ConversationAvatar name={name} color={avatarColor} online={online} />
-      <div className="min-w-0 flex-1">
-        <ConversationMetaLine name={name} account={account} time={time} />
-        <div className="mt-1 flex items-center justify-between gap-2">
-          <span className="truncate text-[12px] leading-[1.35] text-[#6B7280]">{preview}</span>
-          {unread > 0 && (
-            <span className="grid h-[16px] min-w-[16px] shrink-0 place-items-center rounded-full bg-[#EF4444] px-1 text-[10px] font-semibold leading-none text-white shadow-[0_1px_2px_rgba(239,68,68,0.28)]">
-              {unread > 99 ? "99+" : unread}
-            </span>
-          )}
+      <div className="min-w-0 pr-11 pt-0.5">
+        <div className="flex min-w-0 items-center">
+          <span className="truncate text-[13.5px] font-medium leading-[18px] text-[#1F2937]">
+            {name}
+          </span>
+        </div>
+        <div className="mt-1 truncate text-[12px] leading-[17px] text-[#6B7280]">{preview}</div>
+        <div className="mt-1 flex min-w-0 items-center gap-1.5 text-[10.5px] leading-[15px]">
+          <span className="shrink-0 text-[#A0A9B8]">来自</span>
+          <span className="font-nomarl min-w-0 truncate text-[#2563EB]">{account}</span>
+          <WeChatBadge />
         </div>
       </div>
+      <span className="absolute right-3 top-3 text-[11px] leading-[16px] text-[#9CA3AF]">
+        {time}
+      </span>
+      {unread > 0 && (
+        <span className="absolute right-3 top-1/2 grid h-4 min-w-4 translate-y-[-10%] place-items-center rounded-full bg-[#EF4444] px-1 text-[10px] font-semibold leading-none text-white shadow-[0_1px_2px_rgba(239,68,68,0.24)]">
+          {unread > 99 ? "99+" : unread}
+        </span>
+      )}
     </button>
   );
 });
 
-function ConversationMetaLine({
-  name,
-  account,
-  time,
-}: {
-  name: string;
-  account: string;
-  time: string;
-}) {
+function WeChatBadge() {
   return (
-    <div className="flex min-w-0 items-center justify-between gap-2">
-      <div className="flex min-w-0 items-center gap-1.5">
-        <span className="truncate text-[13.5px] font-medium leading-[18px] text-[#1F2937]">
-          {name}
-        </span>
-        <span className="shrink-0 rounded bg-[#ECFDF3] px-1.5 py-px text-[10px] font-semibold leading-[15px] text-[#059669]">
-          @微信
-        </span>
-        <span className="min-w-0 truncate text-[11px] font-medium leading-[16px] text-[#2563EB]">
-          {account}
-        </span>
-      </div>
-      <span className="shrink-0 text-[11px] leading-[16px] text-[#9CA3AF]">{time}</span>
-    </div>
+    <span
+      aria-label="微信"
+      title="微信"
+      className="grid size-4 shrink-0 place-items-center rounded bg-[#ECFDF3] text-[#07C160]"
+    >
+      <svg
+        aria-hidden
+        viewBox="0 0 16 16"
+        className="size-[13px]"
+        fill="none"
+        xmlns="http://www.w3.org/2000/svg"
+      >
+        <path
+          d="M6.7 3.2C3.9 3.2 1.8 4.8 1.8 6.9c0 1.2.7 2.2 1.8 2.9l-.4 1.3 1.5-.8c.6.2 1.2.3 2 .3 2.8 0 4.9-1.6 4.9-3.7S9.5 3.2 6.7 3.2Z"
+          fill="currentColor"
+          opacity="0.95"
+        />
+        <path
+          d="M9.8 6.6c2.4 0 4.4 1.4 4.4 3.3 0 1-.6 1.9-1.5 2.5l.3 1.1-1.3-.7c-.5.2-1.1.3-1.8.3-2.4 0-4.4-1.4-4.4-3.2 0-1.9 1.9-3.3 4.3-3.3Z"
+          fill="currentColor"
+          opacity="0.55"
+        />
+        <circle cx="5.1" cy="6.5" r="0.45" fill="white" />
+        <circle cx="8" cy="6.5" r="0.45" fill="white" />
+      </svg>
+    </span>
   );
 }
 
@@ -190,7 +197,7 @@ function ConversationAvatar({
   return (
     <div className="relative shrink-0">
       <div
-        className="grid size-11 place-items-center rounded-xl text-[15px] font-semibold text-[#1F2937] shadow-[inset_0_0_0_1px_rgba(255,255,255,0.48)]"
+        className="grid size-[46px] place-items-center rounded-xl text-[16px] font-medium text-[#243041] shadow-[inset_0_0_0_1px_rgba(255,255,255,0.45)]"
         style={{ background: color }}
       >
         {initial}
@@ -198,7 +205,7 @@ function ConversationAvatar({
       {online && (
         <span
           aria-hidden
-          className="absolute bottom-[-2px] right-[-2px] size-2 rounded-full border-2 border-white bg-[#10B981]"
+          className="absolute bottom-0 right-0 size-2.5 rounded-full border-2 border-white bg-[#10B981]"
         />
       )}
     </div>

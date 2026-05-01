@@ -62,10 +62,10 @@ export const ChatArea = memo(function ChatArea({ conversation, messages }: ChatA
 
 function Header({ conversation }: { conversation: Conversation }) {
   return (
-    <div className="flex min-h-[64px] items-center justify-between gap-4 bg-white px-4 py-2.5 shadow-[0_1px_0_rgba(226,232,240,0.65)]">
-      <div className="flex min-w-0 flex-1 items-center gap-2.5">
+    <div className="flex min-h-[76px] items-center justify-between gap-4 bg-white px-4 py-3.5 shadow-[0_1px_0_rgba(226,232,240,0.65)]">
+      <div className="flex min-w-0 flex-1 items-center gap-3">
         <CustomerAvatar name={conversation.name} color={conversation.avatarColor} size="header" />
-        <div className="flex min-w-0 flex-col gap-0.5 leading-tight">
+        <div className="flex min-w-0 flex-col gap-1 leading-tight">
           <div className="flex min-w-0 items-center gap-1.5">
             <span className="truncate text-[14px] font-medium text-[#1F2937]">
               {conversation.name}
@@ -74,7 +74,7 @@ function Header({ conversation }: { conversation: Conversation }) {
               @微信
             </span>
           </div>
-          <span className="truncate text-[11.5px] text-[#8A94A6]">
+          <span className="truncate text-[12px] leading-[17px] text-[#8A94A6]">
             来自：<span className="text-[#2563EB]">{conversation.account}</span>
           </span>
         </div>
@@ -181,7 +181,7 @@ function IncomingBubble({
     <div className="flex w-full items-start gap-2 self-start">
       <CustomerAvatar name={avatarName} color={avatarColor} size="sm" />
       <div className="flex min-w-0 max-w-[76%] flex-col gap-1">
-        <div className="flex min-h-11 items-center rounded-md border border-[#DDE6F0] bg-white px-3.5 py-2 text-[13px] leading-[1.65] text-[#1F2937] shadow-[0_1px_2px_rgba(15,23,42,0.06),0_6px_16px_rgba(15,23,42,0.035)]">
+        <div className="flex min-h-11 items-center rounded-md border border-[#E8EEF6] bg-white px-3.5 py-2 text-[13px] leading-[1.65] text-[#1F2937] shadow-[0_1px_1px_rgba(15,23,42,0.035),0_4px_12px_rgba(15,23,42,0.025)]">
           {message.text}
         </div>
         {showMeta && <div className="px-1 text-[11px] text-[#9CA3AF]">{message.time}</div>}
@@ -203,7 +203,7 @@ function OutgoingBubble({
     <div className="flex w-full flex-row-reverse items-start gap-2 self-end">
       <AgentAvatar account={account} />
       <div className="flex min-w-0 max-w-[76%] flex-col items-end gap-1">
-        <div className="flex min-h-11 items-center rounded-md border border-[#CBE2FA] bg-[#E3F1FF] px-3.5 py-2 text-[13px] leading-[1.65] text-[#1F2937] shadow-[0_1px_2px_rgba(15,23,42,0.06),0_6px_16px_rgba(15,23,42,0.035)]">
+        <div className="flex min-h-11 items-center rounded-md border border-[#D7E9FB] bg-[#E7F3FF] px-3.5 py-2 text-[13px] leading-[1.65] text-[#1F2937] shadow-[0_1px_1px_rgba(37,99,235,0.035),0_4px_12px_rgba(37,99,235,0.025)]">
           {message.text}
         </div>
         {showMeta && (
@@ -230,7 +230,7 @@ function CustomerAvatar({
     <div
       className={cn(
         "grid shrink-0 place-items-center rounded-xl font-semibold text-[#1F2937] shadow-[inset_0_0_0_1px_rgba(255,255,255,0.48)]",
-        size === "header" ? "size-10 text-[15px]" : "size-11 text-[15px]",
+        size === "header" ? "size-11 text-[16px]" : "size-11 text-[15px]",
       )}
       style={{ background: color }}
     >
