@@ -1,12 +1,13 @@
 import { Fragment } from "react";
 import { Download, FileText, Play } from "lucide-react";
 
-import type { MessageAttachment } from "./data";
+import type { MessageAttachment, MessageBlock } from "./data";
 import { STRINGS } from "./strings";
 import { formatFileSize, formatRichText } from "./utils";
 
 interface MessageContentProps {
   text: string;
+  blocks?: MessageBlock[];
   attachments?: MessageAttachment[];
 }
 
@@ -16,7 +17,11 @@ interface MessageContentProps {
  * a Fragment so it composes inside any bubble layout without introducing
  * extra block-level wrappers around the text portion.
  */
-export function MessageContent({ text, attachments }: MessageContentProps) {
+export function MessageContent({ text, blocks, attachments }: MessageContentProps) {
+  if (blocks && blocks.length > 0) {
+    return <BlocksContent blocks={blocks} attachments={attachments} />;
+  }
+
   const segments = formatRichText(text);
   const hasText = text.length > 0;
   const hasAttachments = attachments && attachments.length > 0;
@@ -184,6 +189,110 @@ function VideoAttachment({ attachment }: { attachment: MessageAttachment }) {
           <Play size={20} strokeWidth={1.6} fill="currentColor" />
         </span>
       </span>
+    </a>
+  );
+}
+
+// ─── Blocks-path helpers ─────────────────────────────────────────────────────
+
+function BlocksContent({
+  blocks,
+  attachments,
+}: {
+  blocks: MessageBlock[];
+  attachments?: MessageAttachment[];
+}) {
+  // 「图片独占消息」判定：blocks 长度 = 1 且唯一一项为 image。命中走旧大卡样式。
+  if (blocks.length === 1 && blocks[0].type === "image") {
+    const only = blocks[0];
+    return <ImageStandalone block={only} />;
+  }
+
+  // 否则 inline 混排；非图片附件仍走下方堆叠
+  const nonImageAttachments = (attachments ?? []).filter((a) => a.type !== "image");
+  return (
+    <>
+      {blocks.map((b, i) => {
+        if (b.type === "text") return <TextRun key={i} value={b.value} />;
+        return <InlineImage key={i} block={b} />;
+      })}
+      {nonImageAttachments.length > 0 && (
+        <div className="mt-2 flex flex-col gap-2">
+          {nonImageAttachments.map((att, i) => (
+            <AttachmentCard key={`${att.type}-${i}`} attachment={att} />
+          ))}
+        </div>
+      )}
+    </>
+  );
+}
+
+function TextRun({ value }: { value: string }) {
+  const segs = formatRichText(value);
+  return (
+    <>
+      {segs.map((seg, i) => {
+        const key = `${seg.type}-${i}`;
+        switch (seg.type) {
+          case "link":
+            return (
+              <a
+                key={key}
+                href={seg.href}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-workbench-accent underline-offset-2 hover:underline"
+              >
+                {seg.value}
+              </a>
+            );
+          case "mention":
+            return (
+              <span key={key} className="font-medium text-workbench-accent">
+                {seg.value}
+              </span>
+            );
+          case "emoji":
+          case "text":
+            return <Fragment key={key}>{seg.value}</Fragment>;
+        }
+      })}
+    </>
+  );
+}
+
+function InlineImage({ block }: { block: Extract<MessageBlock, { type: "image" }> }) {
+  return (
+    <a
+      href={block.url}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="focus-ring mx-1 inline-block overflow-hidden rounded-lg align-middle ring-1 ring-workbench-line transition-shadow hover:ring-workbench-accent"
+    >
+      <img
+        src={block.url}
+        alt={block.name ?? STRINGS.attachment.image}
+        className="block max-h-[200px] max-w-[260px] object-contain"
+      />
+    </a>
+  );
+}
+
+function ImageStandalone({ block }: { block: Extract<MessageBlock, { type: "image" }> }) {
+  return (
+    <a
+      href={block.url}
+      target="_blank"
+      rel="noopener noreferrer"
+      title={STRINGS.attachment.openImage}
+      className="focus-ring inline-block max-w-full overflow-hidden rounded-xl border border-workbench-line bg-workbench-surface p-1 shadow-wb-bubble transition-colors hover:bg-workbench-surface-subtle"
+    >
+      <img
+        src={block.url}
+        alt={STRINGS.attachment.imageAlt(block.name)}
+        loading="lazy"
+        className="block max-h-72 max-w-full rounded-lg object-contain"
+      />
     </a>
   );
 }
