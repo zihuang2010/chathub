@@ -1,3 +1,4 @@
+import { useState } from "react";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { Check, ChevronDown, Clock3, Forward, VolumeX, Zap } from "lucide-react";
 
@@ -10,27 +11,26 @@ import { STRINGS } from "../strings";
 
 interface SendButtonGroupProps {
   canSend: boolean;
-  hover: boolean;
-  setHover: (v: boolean) => void;
   onSend: () => void;
   onScheduleSend?: () => void;
 }
 
-export function SendButtonGroup({
-  canSend,
-  hover,
-  setHover,
-  onSend,
-  onScheduleSend,
-}: SendButtonGroupProps) {
+export function SendButtonGroup({ canSend, onSend, onScheduleSend }: SendButtonGroupProps) {
+  const [hover, setHover] = useState(false);
   const { prefs, setSilent, setJumpToNext } = useComposerPrefs();
   const mainLabel = prefs.silent ? STRINGS.composer.sendSilentMain : STRINGS.composer.send;
   const styleSend = canSend
     ? { background: hover ? WORKBENCH_ACTION_GRADIENT_HOVER : WORKBENCH_ACTION_GRADIENT }
     : undefined;
-  const baseCls = cn(
-    "focus-ring h-9 text-wb-xs font-medium transition-all",
+  const mainBtnCls = cn(
+    "focus-ring h-9 rounded-l-md rounded-r-none px-5 text-wb-xs font-medium transition-all",
     canSend ? "text-white" : "bg-workbench-line text-workbench-text disabled:opacity-100",
+  );
+  const chevronBtnCls = cn(
+    "focus-ring h-9 rounded-l-none rounded-r-md border-l border-black/20 px-2 text-wb-xs font-medium transition-all dark:border-white/30",
+    canSend
+      ? "text-white"
+      : "bg-workbench-surface-subtle text-workbench-text hover:bg-workbench-surface-active",
   );
 
   return (
@@ -44,7 +44,7 @@ export function SendButtonGroup({
         disabled={!canSend}
         onClick={onSend}
         aria-label={mainLabel}
-        className={cn(baseCls, "rounded-l-md rounded-r-none px-5")}
+        className={mainBtnCls}
         style={styleSend}
       >
         {mainLabel}
@@ -54,10 +54,7 @@ export function SendButtonGroup({
           <Button
             type="button"
             aria-label={STRINGS.composer.sendOptions}
-            className={cn(
-              baseCls,
-              "rounded-l-none rounded-r-md border-l border-black/20 px-2 dark:border-white/30",
-            )}
+            className={chevronBtnCls}
             style={styleSend}
           >
             <ChevronDown size={12} />
@@ -79,6 +76,7 @@ export function SendButtonGroup({
               icon={Clock3}
               label={STRINGS.composer.sendSchedule}
               onSelect={() => onScheduleSend?.()}
+              disabled={!onScheduleSend}
             />
             <DropdownMenu.Separator className="my-1 h-px bg-workbench-line" />
             <Toggle

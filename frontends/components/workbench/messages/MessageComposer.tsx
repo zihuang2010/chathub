@@ -67,7 +67,6 @@ export function MessageComposer({
   mentionCandidates,
 }: MessageComposerProps) {
   const [draft, setDraftValue] = useDraft(conversationId);
-  const [hover, setHover] = useState(false);
   const [isResizing, setIsResizing] = useState(false);
   const [quickRepliesOpen, setQuickRepliesOpen] = useState(false);
   const [emojiOpen, setEmojiOpen] = useState(false);
@@ -469,12 +468,7 @@ export function MessageComposer({
             {STRINGS.composer.enterToSend}
           </span>
           <div className="ml-auto">
-            <SendButtonGroup
-              canSend={canSend}
-              hover={hover}
-              setHover={setHover}
-              onSend={submitDraft}
-            />
+            <SendButtonGroup canSend={canSend} onSend={submitDraft} />
           </div>
         </div>
       </div>
