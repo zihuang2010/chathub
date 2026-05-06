@@ -2,7 +2,7 @@ import type { MessageBlock } from "../data";
 
 // TipTap 的 JSONContent 是递归节点树。这里只声明本模块用到的字段。
 export interface JSONNode {
-  type: string;
+  type?: string;
   text?: string;
   attrs?: Record<string, unknown>;
   content?: JSONNode[];

@@ -75,6 +75,10 @@ export function MessageComposer({
   const [emojiOpen, setEmojiOpen] = useState(false);
   const [pendingFileAttachments, setPendingFileAttachments] = useState<MessageAttachment[]>([]);
   const editorRef = useRef<Editor | null>(null);
+  const pendingFileAttachmentsRef = useRef<MessageAttachment[]>([]);
+  useEffect(() => {
+    pendingFileAttachmentsRef.current = pendingFileAttachments;
+  }, [pendingFileAttachments]);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const imageInputRef = useRef<HTMLInputElement | null>(null);
   const resizeStartRef = useRef({ y: 0, height });
@@ -82,16 +86,12 @@ export function MessageComposer({
   // Cleanup blob URLs on unmount only (do NOT revoke on send — bubbles still need them).
   useEffect(() => {
     return () => {
-      pendingFileAttachments.forEach((a) => URL.revokeObjectURL(a.url));
+      pendingFileAttachmentsRef.current.forEach((a) => URL.revokeObjectURL(a.url));
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- 仅卸载时回收
   }, []);
 
   // Derive canSend from the TipTap doc and file tray.
-  // docToBlocks expects JSONNode (type: string), while JSONContent.type is string|undefined.
-  // A valid TipTap doc always has type="doc", so the cast is safe.
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const blocks = docToBlocks(draft as any);
+  const blocks = docToBlocks(draft);
   const textBlocks = blocks.filter((b): b is { type: "text"; value: string } => b.type === "text");
   const textJoined = textBlocks.map((b) => b.value).join("\n");
   const canSend =
