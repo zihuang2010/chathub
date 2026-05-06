@@ -105,6 +105,7 @@ export const STRINGS = {
       humor: "幽默",
       concise: "简洁",
     },
+    polishImageHint: "含图片时无法润色（暂不支持）",
     polishOriginal: "原文",
     polishPreview: "润色预览",
     polishCancel: "取消",

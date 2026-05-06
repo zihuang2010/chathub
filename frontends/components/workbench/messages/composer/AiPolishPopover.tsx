@@ -11,6 +11,7 @@ interface AiPolishPopoverProps {
   originalText: string;
   onApply: (newText: string) => void;
   disabled?: boolean;
+  disabledReason?: string;
 }
 
 const TONE_KEYS: PolishTone[] = ["formal", "warm", "humor", "concise"];
@@ -20,7 +21,12 @@ function mockPolish(text: string, tone: PolishTone): string {
   return `[${label}] ${text}`;
 }
 
-export function AiPolishPopover({ originalText, onApply, disabled }: AiPolishPopoverProps) {
+export function AiPolishPopover({
+  originalText,
+  onApply,
+  disabled,
+  disabledReason,
+}: AiPolishPopoverProps) {
   const [open, setOpen] = useState(false);
   const [tone, setTone] = useState<PolishTone>("formal");
   const preview = originalText ? mockPolish(originalText, tone) : "";
@@ -31,7 +37,8 @@ export function AiPolishPopover({ originalText, onApply, disabled }: AiPolishPop
         <button
           type="button"
           disabled={disabled}
-          className="focus-ring inline-flex h-9 items-center gap-1 rounded-md bg-workbench-surface-soft px-2.5 text-wb-2xs font-medium text-workbench-accent transition-colors hover:bg-workbench-surface-active disabled:opacity-50"
+          title={disabled ? disabledReason : undefined}
+          className="focus-ring inline-flex h-9 items-center gap-1 rounded-md bg-workbench-surface-soft px-2.5 text-wb-2xs font-medium text-workbench-accent transition-colors hover:bg-workbench-surface-active disabled:cursor-not-allowed disabled:opacity-50"
         >
           <Sparkles size={12} />
           <span>{STRINGS.composer.polishTitle}</span>
@@ -46,11 +53,17 @@ export function AiPolishPopover({ originalText, onApply, disabled }: AiPolishPop
           className="z-30 w-[320px] rounded-lg border border-workbench-line bg-workbench-surface p-3 shadow-wb-popover-strong outline-none"
         >
           <div className="flex flex-col gap-3">
-            <div className="flex flex-wrap gap-1">
+            <div
+              role="radiogroup"
+              aria-label={STRINGS.composer.polishTitle}
+              className="flex flex-wrap gap-1"
+            >
               {TONE_KEYS.map((k) => (
                 <button
                   key={k}
                   type="button"
+                  role="radio"
+                  aria-checked={tone === k}
                   onClick={() => setTone(k)}
                   className={cn(
                     "focus-ring h-7 rounded-full px-3 text-wb-3xs transition-colors",

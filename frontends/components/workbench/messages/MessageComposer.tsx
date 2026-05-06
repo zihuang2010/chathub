@@ -94,6 +94,7 @@ export function MessageComposer({
   const blocks = docToBlocks(draft);
   const textBlocks = blocks.filter((b): b is { type: "text"; value: string } => b.type === "text");
   const textJoined = textBlocks.map((b) => b.value).join("\n");
+  const hasImageBlocks = blocks.some((b) => b.type === "image");
   const canSend =
     textJoined.trim().length > 0 ||
     blocks.some((b) => b.type === "image") ||
@@ -444,7 +445,8 @@ export function MessageComposer({
           </Popover.Root>
           <AiPolishPopover
             originalText={textJoined}
-            disabled={!textJoined.trim()}
+            disabled={!textJoined.trim() || hasImageBlocks}
+            disabledReason={hasImageBlocks ? STRINGS.composer.polishImageHint : undefined}
             onApply={(newText) => {
               if (!editorRef.current) return;
               editorRef.current
