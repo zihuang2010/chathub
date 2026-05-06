@@ -33,6 +33,56 @@ function isEmptyDoc(doc: JSONContent): boolean {
   return false;
 }
 
+// ─── Pure helpers ───────────────────────────────────────────────────────────
+
+/**
+ * Walk a TipTap doc tree and blank the `src` attr of any image node whose src
+ * starts with `"blob:"`. Object URLs are session-scoped — once the page reloads
+ * they're dead, so persisting them is worse than persisting nothing (the user
+ * sees a broken image and may submit the dead URL by accident).
+ *
+ * Pure: preserves referential equality on subtrees with no blob images so the
+ * caller can cheaply detect "nothing was stripped".
+ */
+export function stripBlobImageSrcs(doc: JSONContent): JSONContent {
+  return stripNode(doc);
+}
+
+function stripNode(node: JSONContent): JSONContent {
+  if (
+    node.type === "image" &&
+    typeof node.attrs?.src === "string" &&
+    node.attrs.src.startsWith("blob:")
+  ) {
+    return { ...node, attrs: { ...node.attrs, src: "" } };
+  }
+  const children = node.content;
+  if (!children || children.length === 0) return node;
+  let changed = false;
+  const next: JSONContent[] = new Array(children.length);
+  for (let i = 0; i < children.length; i++) {
+    const original = children[i];
+    const replaced = stripNode(original);
+    if (replaced !== original) changed = true;
+    next[i] = replaced;
+  }
+  if (!changed) return node;
+  return { ...node, content: next };
+}
+
+/** Wrap a legacy raw-string draft in a TipTap doc with a single paragraph. */
+function legacyStringToDoc(text: string): JSONContent {
+  return {
+    type: "doc",
+    content: [
+      {
+        type: "paragraph",
+        content: [{ type: "text", text }],
+      },
+    ],
+  };
+}
+
 const drafts = new Map<string, JSONContent>();
 // LRU order — most recently touched at the END.
 const order: string[] = [];
@@ -49,9 +99,41 @@ function isValidJSONContent(value: unknown): value is JSONContent {
   );
 }
 
+/**
+ * Try to interpret a localStorage entry as a draft and stash it in the
+ * in-memory map. Returns the legacy-migration source string if a re-persist is
+ * needed (caller schedules it asynchronously to keep this fn sync-safe).
+ */
+function ingestRawDraft(id: string, raw: string): string | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    // Old format: raw plain text written via `localStorage.setItem(key, text)`.
+    if (raw.length === 0) return null;
+    drafts.set(id, legacyStringToDoc(raw));
+    order.push(id);
+    return raw;
+  }
+  if (isValidJSONContent(parsed)) {
+    drafts.set(id, parsed);
+    order.push(id);
+    return null;
+  }
+  if (typeof parsed === "string") {
+    // Old format that happened to be JSON-encoded (e.g. `JSON.stringify("你好")`).
+    if (parsed.length === 0) return null;
+    drafts.set(id, legacyStringToDoc(parsed));
+    order.push(id);
+    return parsed;
+  }
+  return null;
+}
+
 function readFromStorage(): void {
   const w = safeWindow();
   if (!w) return;
+  const pendingMigrations: string[] = [];
   try {
     const indexRaw = w.localStorage.getItem(STORAGE_INDEX_KEY);
     if (!indexRaw) return;
@@ -60,19 +142,29 @@ function readFromStorage(): void {
     for (const id of ids) {
       const raw = w.localStorage.getItem(STORAGE_PREFIX + id);
       if (typeof raw === "string" && raw.length > 0) {
-        try {
-          const parsed: unknown = JSON.parse(raw);
-          if (isValidJSONContent(parsed)) {
-            drafts.set(id, parsed);
-            order.push(id);
-          }
-        } catch {
-          // Corrupted or old-format string draft — skip silently.
+        if (ingestRawDraft(id, raw) !== null) {
+          pendingMigrations.push(id);
         }
       }
     }
   } catch {
     // Corrupted index — abandon recovery, start fresh in memory.
+    return;
+  }
+  // Re-persist migrated legacy drafts asynchronously so the read path stays
+  // sync (it may be invoked during a render via getSnapshot).
+  if (pendingMigrations.length > 0) {
+    const reflow = () => {
+      for (const id of pendingMigrations) {
+        const doc = drafts.get(id);
+        if (doc) persist(id, doc);
+      }
+    };
+    if (typeof queueMicrotask === "function") {
+      queueMicrotask(reflow);
+    } else {
+      setTimeout(reflow, 0);
+    }
   }
 }
 
@@ -86,18 +178,36 @@ function writeIndex(): void {
   }
 }
 
+const MAX_PERSISTED_BYTES = 500_000;
+
 function persist(id: string, value: JSONContent): void {
   const w = safeWindow();
   if (!w) return;
-  try {
-    if (isEmptyDoc(value)) {
+  if (isEmptyDoc(value)) {
+    try {
       w.localStorage.removeItem(STORAGE_PREFIX + id);
-    } else {
-      w.localStorage.setItem(STORAGE_PREFIX + id, JSON.stringify(value));
+      writeIndex();
+    } catch {
+      // Best-effort only.
     }
+    return;
+  }
+  // Strip live blob URLs first — they're worthless after a reload.
+  const sanitized = stripBlobImageSrcs(value);
+  const serialized = JSON.stringify(sanitized);
+  if (serialized.length > MAX_PERSISTED_BYTES) {
+    console.warn(
+      "[useDraftStore] draft for conversation %s exceeds 500KB (%d chars), skipping persist",
+      id,
+      serialized.length,
+    );
+    return;
+  }
+  try {
+    w.localStorage.setItem(STORAGE_PREFIX + id, serialized);
     writeIndex();
-  } catch {
-    // Best-effort only.
+  } catch (err) {
+    console.warn("[useDraftStore] failed to persist draft for conversation %s (%o)", id, err);
   }
 }
 
