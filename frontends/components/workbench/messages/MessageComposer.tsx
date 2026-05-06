@@ -5,7 +5,6 @@ import { invoke, isTauri } from "@tauri-apps/api/core";
 import type { Editor, JSONContent } from "@tiptap/react";
 import {
   Camera,
-  ChevronDown,
   FileText,
   ImagePlus,
   PanelRightClose,
@@ -15,14 +14,13 @@ import {
   X,
 } from "lucide-react";
 
-import { Button } from "@/components/ui/button";
 import { showToast } from "@/components/ui/toast";
 import { cn } from "@/lib/utils";
-import { WORKBENCH_ACTION_GRADIENT, WORKBENCH_ACTION_GRADIENT_HOVER } from "@/lib/theme";
 
 import { COMPOSER_MAX_HEIGHT, COMPOSER_MIN_HEIGHT, RESIZE_KEYBOARD_STEP } from "./constants";
 import type { Conversation, MessageAttachment, MessageBlock, QuickReply } from "./data";
 import { AiPolishPopover } from "./composer/AiPolishPopover";
+import { SendButtonGroup } from "./composer/SendButtonGroup";
 import { docToBlocks } from "./composer/docToBlocks";
 import { RichComposer } from "./composer/RichComposer";
 import { EmojiPicker } from "./EmojiPicker";
@@ -470,54 +468,13 @@ export function MessageComposer({
           >
             {STRINGS.composer.enterToSend}
           </span>
-          <div className="ml-auto flex items-center gap-0">
-            <Button
-              type="button"
-              disabled={!canSend}
-              onMouseEnter={() => setHover(true)}
-              onMouseLeave={() => setHover(false)}
-              onClick={submitDraft}
-              aria-label={STRINGS.composer.send}
-              className={cn(
-                "focus-ring h-9 rounded-l-md rounded-r-none px-5 text-[13px] font-medium transition-all",
-                canSend
-                  ? "text-white"
-                  : "bg-workbench-line text-workbench-text disabled:opacity-100",
-              )}
-              style={
-                canSend
-                  ? {
-                      background: hover
-                        ? WORKBENCH_ACTION_GRADIENT_HOVER
-                        : WORKBENCH_ACTION_GRADIENT,
-                    }
-                  : undefined
-              }
-            >
-              {STRINGS.composer.send}
-            </Button>
-            <Button
-              type="button"
-              disabled={!canSend}
-              aria-label={STRINGS.composer.sendOptions}
-              className={cn(
-                "focus-ring h-9 rounded-l-none rounded-r-md border-l border-black/20 px-2 transition-all dark:border-white/30",
-                canSend
-                  ? "text-white"
-                  : "bg-workbench-line text-workbench-text disabled:opacity-100",
-              )}
-              style={
-                canSend
-                  ? {
-                      background: hover
-                        ? WORKBENCH_ACTION_GRADIENT_HOVER
-                        : WORKBENCH_ACTION_GRADIENT,
-                    }
-                  : undefined
-              }
-            >
-              <ChevronDown size={12} />
-            </Button>
+          <div className="ml-auto">
+            <SendButtonGroup
+              canSend={canSend}
+              hover={hover}
+              setHover={setHover}
+              onSend={submitDraft}
+            />
           </div>
         </div>
       </div>
