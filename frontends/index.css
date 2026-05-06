@@ -178,6 +178,12 @@
 }
 
 @layer components {
+  /* Numeric utility — collapses `font-numeric tabular-nums` so digits render
+     proportionally and align in columns. Use for timestamps, counts, byte
+     sizes, durations, and contact identifiers. */
+  .wb-num {
+    @apply font-numeric tabular-nums;
+  }
   /* Standard focus ring — apply to every interactive element. */
   .focus-ring {
     @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-workbench-accent/40;
