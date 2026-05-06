@@ -17,7 +17,13 @@ import {
 import { showToast } from "@/components/ui/toast";
 import { cn } from "@/lib/utils";
 
-import { COMPOSER_MAX_HEIGHT, COMPOSER_MIN_HEIGHT, RESIZE_KEYBOARD_STEP } from "./constants";
+import {
+  COMPOSER_MAX_CHARS,
+  COMPOSER_MAX_HEIGHT,
+  COMPOSER_MIN_HEIGHT,
+  COMPOSER_WARN_CHARS,
+  RESIZE_KEYBOARD_STEP,
+} from "./constants";
 import type { Conversation, MessageAttachment, MessageBlock, QuickReply } from "./data";
 import { AiPolishPopover } from "./composer/AiPolishPopover";
 import { SendButtonGroup } from "./composer/SendButtonGroup";
@@ -92,10 +98,14 @@ export function MessageComposer({
   const textBlocks = blocks.filter((b): b is { type: "text"; value: string } => b.type === "text");
   const textJoined = textBlocks.map((b) => b.value).join("\n");
   const hasImageBlocks = blocks.some((b) => b.type === "image");
+  const charLength = Array.from(textJoined).length;
+  const overLimit = charLength > COMPOSER_MAX_CHARS;
+  const nearLimit = charLength >= COMPOSER_WARN_CHARS;
   const canSend =
-    textJoined.trim().length > 0 ||
-    blocks.some((b) => b.type === "image") ||
-    pendingFileAttachments.length > 0;
+    !overLimit &&
+    (textJoined.trim().length > 0 ||
+      blocks.some((b) => b.type === "image") ||
+      pendingFileAttachments.length > 0);
 
   // Keep the composer tall enough to show both the chip tray AND the send row
   // by bumping its height when chips appear and restoring it when they're
@@ -462,10 +472,19 @@ export function MessageComposer({
             }}
           />
           <span
-            aria-hidden
-            className="ml-2 hidden font-numeric text-[11px] tabular-nums text-workbench-text-muted sm:inline"
+            className={cn(
+              "ml-2 inline-flex items-center gap-2 font-numeric text-[11px] tabular-nums text-workbench-text-muted",
+              nearLimit && !overLimit && "text-amber-500",
+              overLimit && "text-workbench-danger",
+            )}
           >
-            {STRINGS.composer.enterToSend}
+            <span aria-live="polite">{STRINGS.composer.charCount(charLength)}</span>
+            <span aria-hidden className="hidden sm:inline">
+              ·
+            </span>
+            <span aria-hidden className="hidden sm:inline">
+              {STRINGS.composer.enterToSend}
+            </span>
           </span>
           <div className="ml-auto">
             <SendButtonGroup canSend={canSend} onSend={submitDraft} />

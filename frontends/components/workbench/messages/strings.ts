@@ -117,6 +117,7 @@ export const STRINGS = {
     sendSilent: "静默发送",
     sendJumpToNext: "发送后跳到下一条",
     sendSilentMain: "静默发送",
+    charCount: (n: number) => `${n} 字`,
     enterToSend: "Enter 发送 · Shift+Enter 换行",
     expandRight: "展开右栏",
     collapseRight: "收起右栏",

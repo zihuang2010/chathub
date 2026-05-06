@@ -33,3 +33,6 @@ export const AT_BOTTOM_THRESHOLD = 24;
 // Time-burst gap: messages from the same sender within this window collapse
 // their avatars/timestamps. 5 minutes follows IM convention (WeChat / iMessage).
 export const TIME_BURST_GAP_MS = 5 * 60 * 1000;
+
+export const COMPOSER_MAX_CHARS = 5000;
+export const COMPOSER_WARN_CHARS = 4500;
