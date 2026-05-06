@@ -66,7 +66,7 @@ function Tabs({ value, onChange }: { value: DetailsTab; onChange: (t: DetailsTab
             tabIndex={active ? 0 : -1}
             onClick={() => onChange(t.value)}
             className={cn(
-              "focus-ring-inset relative flex h-10 items-center justify-center rounded-t-md text-[12.5px] font-medium transition-colors",
+              "focus-ring-inset relative flex h-10 items-center justify-center rounded-t-md text-wb-2xs font-medium transition-colors",
               active
                 ? "text-workbench-text"
                 : "text-workbench-text-muted hover:text-workbench-text",
@@ -113,19 +113,19 @@ function ProfileHeader({ customer }: { customer: Customer }) {
   return (
     <div className="flex items-center gap-2.5">
       <div
-        className="grid size-10 place-items-center rounded-full text-[15px] font-medium text-workbench-text"
+        className="grid size-10 place-items-center rounded-full text-wb-base font-medium text-workbench-text"
         style={{ background: pickAvatarColor(customer.id) }}
       >
         {customer.name.slice(0, 1)}
       </div>
       <div className="flex flex-col gap-0.5">
         <div className="flex items-center gap-1.5">
-          <span className="text-[14px] font-semibold text-workbench-text">{customer.name}</span>
+          <span className="text-wb-sm font-semibold text-workbench-text">{customer.name}</span>
           <span className="text-wb-2xs text-workbench-text-muted">@ {customer.channel}</span>
         </div>
-        <div className="flex items-center gap-1.5 text-[11px] text-workbench-text-secondary">
+        <div className="flex items-center gap-1.5 text-wb-3xs text-workbench-text-secondary">
           <span className="truncate">{customer.account}</span>
-          <span className="rounded-sm bg-workbench-surface-active px-1.5 py-0.5 text-[10px] font-medium text-workbench-accent">
+          <span className="rounded-sm bg-workbench-surface-active px-1.5 py-0.5 text-wb-3xs font-medium text-workbench-accent">
             {STRINGS.customerDetails.fromAccountBadge}
           </span>
         </div>
@@ -174,13 +174,11 @@ function DetailList({ customer }: { customer: Customer }) {
     { label: f.follower, value: customer.follower },
   ];
   return (
-    <dl className="flex flex-col gap-2 text-[12px]">
+    <dl className="flex flex-col gap-2 text-wb-2xs">
       {rows.map((r) => (
         <div key={r.label} className="grid grid-cols-[68px_1fr] items-baseline gap-2.5">
           <dt className="text-workbench-text-muted">{r.label}</dt>
-          <dd className={cn("text-workbench-text", r.numeric && "font-numeric tabular-nums")}>
-            {r.value}
-          </dd>
+          <dd className={cn("text-workbench-text", r.numeric && "wb-num")}>{r.value}</dd>
         </div>
       ))}
     </dl>
@@ -195,7 +193,7 @@ function EmptyTab({ text }: { text: string }) {
       <div className="grid size-12 place-items-center rounded-full bg-workbench-surface-subtle">
         <span className="text-[22px] text-workbench-text-muted">·</span>
       </div>
-      <p className="text-[12px] text-workbench-text-muted">{text}</p>
+      <p className="text-wb-2xs text-workbench-text-muted">{text}</p>
     </div>
   );
 }

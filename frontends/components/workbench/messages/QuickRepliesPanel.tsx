@@ -29,7 +29,7 @@ export function QuickRepliesPanel({ items, onSelect }: QuickRepliesPanelProps) {
   return (
     <section className="flex flex-col gap-2.5">
       <div className="flex items-center justify-between">
-        <span className="text-[13px] font-semibold text-workbench-text">{t.title}</span>
+        <span className="text-wb-xs font-semibold text-workbench-text">{t.title}</span>
         <button
           type="button"
           className="focus-ring rounded px-1 py-0.5 text-wb-2xs font-medium text-workbench-accent transition-colors hover:bg-workbench-surface-subtle"
@@ -42,10 +42,10 @@ export function QuickRepliesPanel({ items, onSelect }: QuickRepliesPanelProps) {
         placeholder={t.searchPlaceholder}
         value={query}
         onChange={(e) => setQuery(e.currentTarget.value)}
-        className="h-8 rounded border-transparent bg-workbench-surface-soft text-[12px]"
+        className="h-8 rounded border-transparent bg-workbench-surface-soft text-wb-2xs"
       />
       {filtered.length === 0 ? (
-        <p className="px-1.5 py-3 text-center text-[12px] text-workbench-text-muted">
+        <p className="px-1.5 py-3 text-center text-wb-2xs text-workbench-text-muted">
           {STRINGS.conversationList.noConversation /* reuse generic empty state */}
         </p>
       ) : (
@@ -64,8 +64,8 @@ export function QuickRepliesPanel({ items, onSelect }: QuickRepliesPanelProps) {
                   }
                 >
                   <div className="min-w-0 flex-1">
-                    <div className="text-[12px] font-medium text-workbench-text">{q.title}</div>
-                    <p className="mt-0.5 truncate text-[11px] text-workbench-text-muted">
+                    <div className="text-wb-2xs font-medium text-workbench-text">{q.title}</div>
+                    <p className="mt-0.5 truncate text-wb-3xs text-workbench-text-muted">
                       {q.preview}
                     </p>
                   </div>

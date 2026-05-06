@@ -377,14 +377,14 @@ function ScrollToBottomButton({
       }
       style={{ bottom: bottomOffset }}
       className={cn(
-        "focus-ring absolute right-4 z-20 inline-flex items-center gap-1.5 rounded-full border border-workbench-line bg-workbench-surface px-2.5 py-1 text-[12px] text-workbench-text-secondary shadow-wb-popover transition-all hover:bg-workbench-surface-subtle hover:text-workbench-accent",
+        "focus-ring absolute right-4 z-20 inline-flex items-center gap-1.5 rounded-full border border-workbench-line bg-workbench-surface px-2.5 py-1 text-wb-2xs text-workbench-text-secondary shadow-wb-popover transition-all hover:bg-workbench-surface-subtle hover:text-workbench-accent",
         "animate-in fade-in slide-in-from-bottom-2",
       )}
     >
       <ArrowDown size={14} className="shrink-0" aria-hidden />
       {hasUnread ? (
         <>
-          <span className="font-numeric font-medium tabular-nums text-workbench-accent">
+          <span className="wb-num font-medium text-workbench-accent">
             {count > 99 ? "99+" : count}
           </span>
           <span>{STRINGS.status.newMessagesBelow(count).replace(/^\d+\+?\s*/, "")}</span>

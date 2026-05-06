@@ -13,14 +13,14 @@ export function ChatHeader({ conversation }: { conversation: Conversation }) {
         <CustomerAvatar name={conversation.name} color={conversation.avatarColor} size="header" />
         <div className="flex min-w-0 flex-col gap-1 leading-tight">
           <div className="flex min-w-0 items-center gap-2">
-            <span className="truncate text-[14px] font-medium text-workbench-text">
+            <span className="truncate text-wb-sm font-medium text-workbench-text">
               {conversation.name}
             </span>
             <span className="shrink-0 rounded bg-workbench-wechat-bg px-1.5 py-px text-wb-3xs font-medium text-workbench-wechat-text">
               {STRINGS.header.fromWeChat}
             </span>
           </div>
-          <span className="truncate text-[12px] leading-[17px] text-workbench-text-muted">
+          <span className="truncate text-wb-2xs text-workbench-text-muted">
             {STRINGS.header.fromAccountLabel}
             <span className="font-medium text-workbench-text">{conversation.account}</span>
           </span>
@@ -78,7 +78,7 @@ function HeaderOverflowMenu() {
 
 function OverflowItem({ icon: Icon, children }: { icon: typeof Phone; children: ReactNode }) {
   return (
-    <DropdownMenu.Item className="flex cursor-default items-center gap-2 rounded px-2 py-1.5 text-[12px] text-workbench-text outline-none transition-colors data-[highlighted]:bg-workbench-surface-subtle">
+    <DropdownMenu.Item className="flex cursor-default items-center gap-2 rounded px-2 py-1.5 text-wb-2xs text-workbench-text outline-none transition-colors data-[highlighted]:bg-workbench-surface-subtle">
       <Icon size={14} />
       {children}
     </DropdownMenu.Item>

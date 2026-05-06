@@ -53,7 +53,7 @@ export function AccountDropdown({
           )}
         >
           {title && (
-            <div className="mb-1 px-1 text-[12px] font-medium text-workbench-text">{title}</div>
+            <div className="mb-1 px-1 text-wb-2xs font-medium text-workbench-text">{title}</div>
           )}
           <AccountOption
             active={!selectedAccount}
@@ -90,7 +90,7 @@ function AccountOption({
       aria-selected={active}
       onClick={onClick}
       className={cn(
-        "focus-ring flex h-9 w-full items-center justify-between gap-2 rounded-md px-2 text-left text-[12px] transition-colors",
+        "focus-ring flex h-9 w-full items-center justify-between gap-2 rounded-md px-2 text-left text-wb-2xs transition-colors",
         active
           ? "bg-workbench-surface-active text-workbench-accent"
           : "text-workbench-text-secondary hover:bg-workbench-surface-subtle",

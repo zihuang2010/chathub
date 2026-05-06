@@ -433,7 +433,7 @@ export function MessageComposer({
                 aria-haspopup="dialog"
                 aria-expanded={quickRepliesOpen}
                 disabled={!quickReplies || quickReplies.length === 0}
-                className="focus-ring inline-flex h-9 items-center gap-1 rounded-md px-2.5 text-[12px] font-medium text-workbench-text-secondary transition-colors hover:bg-workbench-surface-subtle hover:text-workbench-text disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent"
+                className="focus-ring inline-flex h-9 items-center gap-1 rounded-md px-2.5 text-wb-2xs font-medium text-workbench-text-secondary transition-colors hover:bg-workbench-surface-subtle hover:text-workbench-text disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent"
               >
                 <span>{STRINGS.composer.quickReplies}</span>
               </button>
@@ -473,7 +473,7 @@ export function MessageComposer({
           />
           <span
             className={cn(
-              "ml-2 inline-flex items-center gap-2 font-numeric text-[11px] tabular-nums text-workbench-text-muted",
+              "wb-num ml-2 inline-flex items-center gap-2 text-wb-3xs text-workbench-text-muted",
               nearLimit && !overLimit && "text-workbench-warning",
               overLimit && "text-workbench-danger",
             )}
@@ -548,10 +548,10 @@ function FileChip({
         <FileText size={17} strokeWidth={1.55} aria-hidden />
       </span>
       <span className="flex min-w-0 flex-1 flex-col gap-0.5 leading-tight">
-        <span className="truncate text-[12px] font-medium text-workbench-text">
+        <span className="truncate text-wb-2xs font-medium text-workbench-text">
           {attachment.name ?? STRINGS.attachment.file}
         </span>
-        <span className="font-numeric text-[10px] tabular-nums text-workbench-text-muted">
+        <span className="wb-num text-wb-3xs text-workbench-text-muted">
           {formatFileSize(attachment.sizeBytes)}
         </span>
       </span>

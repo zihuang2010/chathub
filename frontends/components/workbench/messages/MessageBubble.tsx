@@ -82,7 +82,7 @@ function RecalledLine({ isOut }: { isOut: boolean }) {
   const label = isOut ? STRINGS.status.recalledByMe : STRINGS.status.recalledByPeer;
   return (
     <div role="status" aria-live="polite" className="flex items-center justify-center py-1.5">
-      <span className="rounded-full bg-workbench-surface-subtle px-2.5 py-0.5 text-[11px] text-workbench-text-muted">
+      <span className="rounded-full bg-workbench-surface-subtle px-2.5 py-0.5 text-wb-3xs text-workbench-text-muted">
         {label}
       </span>
     </div>
@@ -114,7 +114,7 @@ function IncomingBubble({
             role="article"
             aria-label={`${avatarName}: ${message.text}，发送时间 ${fullLabel}`}
             className={cn(
-              "group relative flex flex-col gap-1 rounded-2xl rounded-tl-md border border-workbench-bubble-in-border bg-workbench-bubble-in text-[13px] leading-[1.65] text-workbench-text shadow-wb-bubble focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-workbench-accent/15",
+              "group relative flex flex-col gap-1 rounded-2xl rounded-tl-md border border-workbench-bubble-in-border bg-workbench-bubble-in text-wb-xs text-workbench-text shadow-wb-bubble focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-workbench-accent/15",
               compact ? "px-3 py-1.5" : "px-3.5 py-2",
             )}
           >
@@ -152,7 +152,7 @@ function OutgoingBubble({
             role="article"
             aria-label={`我：${message.text}，发送时间 ${fullLabel}`}
             className={cn(
-              "group relative flex flex-col gap-1 rounded-2xl rounded-tr-md border border-workbench-bubble-out-border bg-workbench-bubble-out text-[13px] leading-[1.65] text-workbench-text shadow-wb-bubble focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-workbench-accent/15",
+              "group relative flex flex-col gap-1 rounded-2xl rounded-tr-md border border-workbench-bubble-out-border bg-workbench-bubble-out text-wb-xs text-workbench-text shadow-wb-bubble focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-workbench-accent/15",
               compact ? "px-3 py-1.5" : "px-3.5 py-2",
             )}
           >
@@ -185,7 +185,7 @@ function ReplyBlock({ target }: { target: ReplyTarget }) {
 function StatusLine({ status, onResend }: { status?: MessageStatus; onResend: () => void }) {
   if (!status) return null;
   return (
-    <div className="mt-0.5 flex items-center gap-1.5 font-numeric text-[10px] tabular-nums leading-none text-workbench-text-muted/80">
+    <div className="wb-num mt-0.5 flex items-center gap-1.5 text-wb-3xs leading-none text-workbench-text-muted/80">
       <StatusIcon status={status} />
       {status === "failed" && (
         <>
@@ -233,7 +233,7 @@ function StatusIcon({ status }: { status?: MessageStatus }) {
 export function DateDivider({ label }: { label: string }) {
   return (
     <div className="flex items-center justify-center py-2">
-      <span className="rounded-full bg-workbench-surface-subtle px-2.5 py-0.5 font-numeric text-[11px] tabular-nums text-workbench-text-muted">
+      <span className="wb-num rounded-full bg-workbench-surface-subtle px-2.5 py-0.5 text-wb-3xs text-workbench-text-muted">
         {label}
       </span>
     </div>
@@ -243,7 +243,7 @@ export function DateDivider({ label }: { label: string }) {
 export function UnreadDivider({ count }: { count: number }) {
   return (
     <div className="flex items-center justify-center py-2" role="separator">
-      <span className="rounded-full bg-workbench-surface-active px-2.5 py-0.5 text-[11px] font-medium text-workbench-accent">
+      <span className="rounded-full bg-workbench-surface-active px-2.5 py-0.5 text-wb-3xs font-medium text-workbench-accent">
         {STRINGS.status.unreadDivider(count)}
       </span>
     </div>
@@ -255,7 +255,7 @@ function MessageTimeTooltip({ label, align }: { label: string; align: "left" | "
     <span
       aria-hidden
       className={cn(
-        "pointer-events-none absolute -top-6 z-10 whitespace-nowrap font-numeric text-[11px] font-medium tabular-nums text-workbench-text-muted opacity-0 transition-opacity duration-150 group-hover:opacity-100 group-focus-visible:opacity-100",
+        "wb-num pointer-events-none absolute -top-6 z-10 whitespace-nowrap text-wb-3xs font-medium text-workbench-text-muted opacity-0 transition-opacity duration-150 group-hover:opacity-100 group-focus-visible:opacity-100",
         align === "right" ? "right-0" : "left-0",
       )}
     >

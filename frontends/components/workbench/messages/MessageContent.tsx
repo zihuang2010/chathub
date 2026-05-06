@@ -118,12 +118,8 @@ function FileAttachment({ attachment }: { attachment: MessageAttachment }) {
         <FileText size={19} strokeWidth={1.55} aria-hidden />
       </span>
       <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-        <span className="truncate text-[12.5px] font-medium leading-[18px] text-workbench-text">
-          {name}
-        </span>
-        <span className="font-numeric text-[11px] tabular-nums text-workbench-text-muted">
-          {size}
-        </span>
+        <span className="truncate text-wb-2xs font-medium text-workbench-text">{name}</span>
+        <span className="wb-num text-wb-3xs text-workbench-text-muted">{size}</span>
       </span>
       <Download
         size={14}
@@ -156,7 +152,7 @@ function VoiceAttachment({ attachment }: { attachment: MessageAttachment }) {
           />
         ))}
       </span>
-      <span className="font-numeric text-[11px] tabular-nums text-workbench-text-muted">
+      <span className="wb-num text-wb-3xs text-workbench-text-muted">
         {STRINGS.attachment.voiceDuration(seconds)}
       </span>
     </button>

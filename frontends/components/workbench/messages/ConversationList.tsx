@@ -75,7 +75,7 @@ export const ConversationList = memo(function ConversationList({
             />
           ))
         ) : (
-          <div className="px-5 py-8 text-center text-[12px] text-workbench-text-muted">
+          <div className="px-5 py-8 text-center text-wb-2xs text-workbench-text-muted">
             {STRINGS.conversationList.noConversation}
           </div>
         )}
@@ -106,7 +106,7 @@ function SearchBar({
             ? STRINGS.conversationList.searchPlaceholderCompact
             : STRINGS.conversationList.searchPlaceholder
         }
-        className="min-w-0 flex-1 bg-transparent text-[12px] font-medium text-workbench-text focus:outline-none"
+        className="min-w-0 flex-1 bg-transparent text-wb-2xs font-medium text-workbench-text focus:outline-none"
       />
     </div>
   );
@@ -139,7 +139,7 @@ function FilterToolbar({
   ];
 
   return (
-    <div className="flex h-9 min-w-0 items-center gap-1 text-[11px] font-medium text-workbench-text-secondary">
+    <div className="flex h-9 min-w-0 items-center gap-1 text-wb-3xs font-medium text-workbench-text-secondary">
       <div
         role="tablist"
         aria-label={STRINGS.conversationList.statusTabsLabel}
@@ -228,19 +228,15 @@ const ConversationItem = memo(function ConversationItem({
       <ConversationAvatar name={name} color={avatarColor} online={online} />
       <div className="min-w-0 pr-11 pt-px">
         <div className="flex min-w-0 items-center">
-          <span className="truncate text-[13.5px] font-medium leading-[18px] text-workbench-text">
-            {name}
-          </span>
+          <span className="truncate text-wb-xs font-medium text-workbench-text">{name}</span>
         </div>
-        <div className="mt-0.5 truncate text-[11.5px] font-normal leading-[17px] text-workbench-text-muted/70">
+        <div className="mt-0.5 truncate text-wb-3xs text-workbench-text-muted/70">
           {unread > 0 && (
-            <span className="font-numeric tabular-nums">
-              {STRINGS.conversationList.unreadPreviewPrefix(unread)}
-            </span>
+            <span className="wb-num">{STRINGS.conversationList.unreadPreviewPrefix(unread)}</span>
           )}
           {preview}
         </div>
-        <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[10px] font-medium leading-[15px]">
+        <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-wb-3xs font-medium">
           <span className="shrink-0 text-workbench-text-muted">
             {STRINGS.conversationList.fromShort}
           </span>
@@ -248,7 +244,7 @@ const ConversationItem = memo(function ConversationItem({
           <WeChatBadge />
         </div>
       </div>
-      <span className="absolute right-3 top-3 w-11 text-right font-numeric text-[11px] tabular-nums leading-[16px] text-workbench-text-muted">
+      <span className="wb-num absolute right-3 top-3 w-11 text-right text-wb-3xs text-workbench-text-muted">
         {time}
       </span>
       {unread > 0 && (

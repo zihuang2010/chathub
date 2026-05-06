@@ -100,7 +100,7 @@ function Item({
     <ContextMenu.Item
       onSelect={onSelect}
       className={cn(
-        "cursor-default rounded px-2 py-1.5 text-[12px] outline-none transition-colors",
+        "cursor-default rounded px-2 py-1.5 text-wb-2xs outline-none transition-colors",
         "data-[highlighted]:bg-workbench-surface-subtle",
         danger
           ? "text-workbench-danger data-[highlighted]:bg-workbench-danger/10"

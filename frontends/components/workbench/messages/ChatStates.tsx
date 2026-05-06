@@ -36,8 +36,8 @@ function SkeletonRow({ side, wide }: { side: "left" | "right"; wide?: boolean })
 export function ChatEmptyState() {
   return (
     <div className="flex flex-1 flex-col items-center justify-center gap-2 bg-workbench-surface px-6 py-10 text-center">
-      <p className="text-[14px] font-medium text-workbench-text">{STRINGS.empty.noMessages}</p>
-      <p className="text-[12px] text-workbench-text-muted">{STRINGS.empty.startChat}</p>
+      <p className="text-wb-sm font-medium text-workbench-text">{STRINGS.empty.noMessages}</p>
+      <p className="text-wb-2xs text-workbench-text-muted">{STRINGS.empty.startChat}</p>
     </div>
   );
 }
@@ -49,12 +49,12 @@ export function ChatErrorState({ error, onRetry }: { error: Error; onRetry: () =
       aria-live="assertive"
       className="flex flex-1 flex-col items-center justify-center gap-3 bg-workbench-surface px-6 py-10 text-center"
     >
-      <p className="text-[14px] font-medium text-workbench-text">{STRINGS.errors.loadFailed}</p>
-      <p className="max-w-sm text-[12px] text-workbench-text-muted">{error.message}</p>
+      <p className="text-wb-sm font-medium text-workbench-text">{STRINGS.errors.loadFailed}</p>
+      <p className="max-w-sm text-wb-2xs text-workbench-text-muted">{error.message}</p>
       <button
         type="button"
         onClick={onRetry}
-        className="focus-ring inline-flex h-9 items-center rounded-md bg-workbench-accent px-3 text-[12px] font-medium text-white transition-colors hover:bg-workbench-accent-hover"
+        className="focus-ring inline-flex h-9 items-center rounded-md bg-workbench-accent px-3 text-wb-2xs font-medium text-white transition-colors hover:bg-workbench-accent-hover"
       >
         {STRINGS.errors.retry}
       </button>

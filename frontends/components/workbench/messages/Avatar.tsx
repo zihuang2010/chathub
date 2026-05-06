@@ -21,7 +21,7 @@ export function CustomerAvatar({ name, color, size }: CustomerAvatarProps) {
     <div
       className={cn(
         "grid size-11 shrink-0 place-items-center rounded-xl font-semibold text-workbench-text shadow-[inset_0_0_0_1px_rgba(255,255,255,0.48)]",
-        size === "header" ? "text-[16px]" : "text-[15px]",
+        size === "header" ? "text-wb-md" : "text-wb-base",
       )}
       style={{ background: resolveAvatarColor(name, color) }}
     >
@@ -33,7 +33,7 @@ export function CustomerAvatar({ name, color, size }: CustomerAvatarProps) {
 export function AgentAvatar({ account }: { account: string }) {
   const operator = extractAccountOperator(account);
   return (
-    <div className="grid size-11 shrink-0 place-items-center rounded-xl bg-workbench-surface-soft text-[12px] font-medium text-workbench-text-secondary shadow-[inset_0_0_0_1px_rgba(255,255,255,0.55)]">
+    <div className="grid size-11 shrink-0 place-items-center rounded-xl bg-workbench-surface-soft text-wb-2xs font-medium text-workbench-text-secondary shadow-[inset_0_0_0_1px_rgba(255,255,255,0.55)]">
       {operator.slice(-2)}
     </div>
   );
@@ -49,7 +49,7 @@ export function ConversationAvatar({ name, color, online }: ConversationAvatarPr
   return (
     <div className="relative shrink-0">
       <div
-        className="grid size-11 place-items-center rounded-xl text-[15px] font-medium text-workbench-text shadow-[inset_0_0_0_1px_rgba(255,255,255,0.45)]"
+        className="grid size-11 place-items-center rounded-xl text-wb-base font-medium text-workbench-text shadow-[inset_0_0_0_1px_rgba(255,255,255,0.45)]"
         style={{ background: resolveAvatarColor(name, color) }}
       >
         {name.slice(0, 1)}

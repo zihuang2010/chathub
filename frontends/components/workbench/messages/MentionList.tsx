@@ -23,7 +23,7 @@ export function MentionList({ query, candidates, onSelect }: MentionListProps) {
 
   if (filtered.length === 0) {
     return (
-      <p className="px-2 py-3 text-center text-[12px] text-workbench-text-muted">
+      <p className="px-2 py-3 text-center text-wb-2xs text-workbench-text-muted">
         {STRINGS.conversationList.noConversation}
       </p>
     );
@@ -46,16 +46,14 @@ export function MentionList({ query, candidates, onSelect }: MentionListProps) {
           >
             <span
               aria-hidden
-              className="grid size-7 shrink-0 place-items-center rounded-full text-[12px] font-medium text-workbench-text"
+              className="grid size-7 shrink-0 place-items-center rounded-full text-wb-2xs font-medium text-workbench-text"
               style={{ background: pickAvatarColor(c.id) }}
             >
               {c.name.slice(0, 1)}
             </span>
             <span className="flex min-w-0 flex-col">
-              <span className="truncate text-[12.5px] font-medium text-workbench-text">
-                {c.name}
-              </span>
-              <span className="truncate text-[10.5px] text-workbench-text-muted">{c.account}</span>
+              <span className="truncate text-wb-2xs font-medium text-workbench-text">{c.name}</span>
+              <span className="truncate text-wb-3xs text-workbench-text-muted">{c.account}</span>
             </span>
           </button>
         </li>
