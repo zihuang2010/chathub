@@ -1,3 +1,4 @@
+import type { JSONContent } from "@tiptap/react";
 import { useCallback, useSyncExternalStore } from "react";
 
 // ─── Persistent draft store ─────────────────────────────────────────────────
@@ -10,14 +11,29 @@ import { useCallback, useSyncExternalStore } from "react";
 //     unbounded; oldest-touched entries fall off via LRU.
 //   - All localStorage access is wrapped in try/catch — Safari private mode,
 //     SSR, and quota-exhausted scenarios degrade gracefully to memory-only.
-//   - Writing an empty string deletes the entry (free up the slot).
+//   - Writing an empty doc deletes the entry (free up the slot).
 
 const STORAGE_PREFIX = "chathub-draft-";
 const STORAGE_INDEX_KEY = "chathub-draft-index";
 const MAX_DRAFTS = 50;
 const WRITE_DEBOUNCE_MS = 500;
 
-const drafts = new Map<string, string>();
+export const EMPTY_DOC: JSONContent = { type: "doc", content: [{ type: "paragraph" }] };
+
+function isEmptyDoc(doc: JSONContent): boolean {
+  if (!doc || doc.type !== "doc") return true;
+  const content = doc.content;
+  if (!content || content.length === 0) return true;
+  if (content.length === 1) {
+    const only = content[0];
+    if (only.type === "paragraph" && (!only.content || only.content.length === 0)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+const drafts = new Map<string, JSONContent>();
 // LRU order — most recently touched at the END.
 const order: string[] = [];
 const listeners = new Set<() => void>();
@@ -25,6 +41,12 @@ const pendingWrites = new Map<string, ReturnType<typeof setTimeout>>();
 
 function safeWindow(): Window | null {
   return typeof window !== "undefined" ? window : null;
+}
+
+function isValidJSONContent(value: unknown): value is JSONContent {
+  return (
+    typeof value === "object" && value !== null && (value as { type?: unknown }).type === "doc"
+  );
 }
 
 function readFromStorage(): void {
@@ -36,10 +58,17 @@ function readFromStorage(): void {
     const ids = JSON.parse(indexRaw) as string[];
     if (!Array.isArray(ids)) return;
     for (const id of ids) {
-      const value = w.localStorage.getItem(STORAGE_PREFIX + id);
-      if (typeof value === "string" && value.length > 0) {
-        drafts.set(id, value);
-        order.push(id);
+      const raw = w.localStorage.getItem(STORAGE_PREFIX + id);
+      if (typeof raw === "string" && raw.length > 0) {
+        try {
+          const parsed: unknown = JSON.parse(raw);
+          if (isValidJSONContent(parsed)) {
+            drafts.set(id, parsed);
+            order.push(id);
+          }
+        } catch {
+          // Corrupted or old-format string draft — skip silently.
+        }
       }
     }
   } catch {
@@ -57,14 +86,14 @@ function writeIndex(): void {
   }
 }
 
-function persist(id: string, value: string): void {
+function persist(id: string, value: JSONContent): void {
   const w = safeWindow();
   if (!w) return;
   try {
-    if (value === "") {
+    if (isEmptyDoc(value)) {
       w.localStorage.removeItem(STORAGE_PREFIX + id);
     } else {
-      w.localStorage.setItem(STORAGE_PREFIX + id, value);
+      w.localStorage.setItem(STORAGE_PREFIX + id, JSON.stringify(value));
     }
     writeIndex();
   } catch {
@@ -72,7 +101,7 @@ function persist(id: string, value: string): void {
   }
 }
 
-function scheduleWrite(id: string, value: string): void {
+function scheduleWrite(id: string, value: JSONContent): void {
   const existing = pendingWrites.get(id);
   if (existing) clearTimeout(existing);
   const handle = setTimeout(() => {
@@ -117,12 +146,12 @@ function subscribe(fn: () => void): () => void {
 // Hydrate once on module load. Safe to call multiple times — Map.set is idempotent.
 readFromStorage();
 
-export function getDraft(conversationId: string): string {
-  return drafts.get(conversationId) ?? "";
+export function getDraft(conversationId: string): JSONContent {
+  return drafts.get(conversationId) ?? EMPTY_DOC;
 }
 
-export function setDraft(conversationId: string, value: string): void {
-  if (value === "") {
+export function setDraft(conversationId: string, value: JSONContent): void {
+  if (isEmptyDoc(value)) {
     drafts.delete(conversationId);
     const idx = order.indexOf(conversationId);
     if (idx !== -1) order.splice(idx, 1);
@@ -135,15 +164,15 @@ export function setDraft(conversationId: string, value: string): void {
 }
 
 export function clearDraft(conversationId: string): void {
-  setDraft(conversationId, "");
+  setDraft(conversationId, EMPTY_DOC);
 }
 
-export function useDraft(conversationId: string): [string, (value: string) => void] {
+export function useDraft(conversationId: string): [JSONContent, (value: JSONContent) => void] {
   const value = useSyncExternalStore(
     subscribe,
     () => getDraft(conversationId),
-    () => "",
+    () => EMPTY_DOC,
   );
-  const setValue = useCallback((v: string) => setDraft(conversationId, v), [conversationId]);
+  const setValue = useCallback((v: JSONContent) => setDraft(conversationId, v), [conversationId]);
   return [value, setValue];
 }
