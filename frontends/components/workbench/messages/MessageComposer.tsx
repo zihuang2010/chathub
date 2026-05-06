@@ -27,7 +27,7 @@ import {
 import type { Conversation, MessageAttachment, MessageBlock, QuickReply } from "./data";
 import { AiPolishPopover } from "./composer/AiPolishPopover";
 import { SendButtonGroup } from "./composer/SendButtonGroup";
-import { docToBlocks } from "./composer/docToBlocks";
+import { blocksToDoc, docToBlocks } from "./composer/docToBlocks";
 import { RichComposer } from "./composer/RichComposer";
 import { EmojiPicker } from "./EmojiPicker";
 import { QuickRepliesPanel } from "./QuickRepliesPanel";
@@ -97,9 +97,8 @@ export function MessageComposer({
   const blocks = docToBlocks(draft);
   const textBlocks = blocks.filter((b): b is { type: "text"; value: string } => b.type === "text");
   const textJoined = textBlocks.map((b) => b.value).join("\n");
-  const hasImageBlocks = blocks.some((b) => b.type === "image");
   const charLength = Array.from(textJoined).length;
-  const overLimit = charLength > COMPOSER_MAX_CHARS;
+  const overLimit = charLength >= COMPOSER_MAX_CHARS;
   const nearLimit = charLength >= COMPOSER_WARN_CHARS;
   const canSend =
     !overLimit &&
@@ -452,23 +451,17 @@ export function MessageComposer({
           </Popover.Root>
           <AiPolishPopover
             originalText={textJoined}
-            disabled={!textJoined.trim() || hasImageBlocks}
-            disabledReason={hasImageBlocks ? STRINGS.composer.polishImageHint : undefined}
+            disabled={!textJoined.trim()}
+            disabledReason={!textJoined.trim() ? STRINGS.composer.aiPolishEmptyHint : undefined}
             onApply={(newText) => {
               if (!editorRef.current) return;
-              editorRef.current
-                .chain()
-                .focus()
-                .setContent({
-                  type: "doc",
-                  content: [
-                    {
-                      type: "paragraph",
-                      content: newText ? [{ type: "text", text: newText }] : [],
-                    },
-                  ],
-                })
-                .run();
+              // polish replaces text content; images keep their original order at the end
+              const currentBlocks = docToBlocks(editorRef.current.getJSON());
+              const imageBlocks = currentBlocks.filter((b) => b.type === "image");
+              const newBlocks: MessageBlock[] = newText
+                ? [{ type: "text", value: newText }, ...imageBlocks]
+                : [...imageBlocks];
+              editorRef.current.chain().focus().setContent(blocksToDoc(newBlocks)).run();
             }}
           />
           <span
