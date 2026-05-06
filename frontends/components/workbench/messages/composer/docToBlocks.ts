@@ -63,6 +63,45 @@ function visit(node: JSONNode, state: AccumulatorState) {
   }
 }
 
+export function blocksToDoc(blocks: MessageBlock[]): JSONNode {
+  if (blocks.length === 0) {
+    return { type: "doc", content: [{ type: "paragraph" }] };
+  }
+  // 把 blocks 序列里的 text 段按 \n 拆段；image 块作为当前段的 inline 节点。
+  const paragraphs: JSONNode[] = [{ type: "paragraph", content: [] }];
+  const currentContent = () => {
+    const last = paragraphs[paragraphs.length - 1];
+    last.content ??= [];
+    return last.content;
+  };
+  const startNewParagraph = () => {
+    paragraphs.push({ type: "paragraph", content: [] });
+  };
+
+  for (const block of blocks) {
+    if (block.type === "image") {
+      currentContent().push({
+        type: "image",
+        attrs: { src: block.url, alt: block.name ?? null },
+      });
+      continue;
+    }
+    const lines = block.value.split("\n");
+    lines.forEach((line, idx) => {
+      if (idx > 0) startNewParagraph();
+      if (line.length > 0) {
+        currentContent().push({ type: "text", text: line });
+      }
+    });
+  }
+
+  // 清理空 content 数组（让 paragraph 输出与上面 round-trip 期望一致）
+  return {
+    type: "doc",
+    content: paragraphs.map((p) => (p.content && p.content.length > 0 ? p : { type: "paragraph" })),
+  };
+}
+
 export function docToBlocks(doc: JSONNode): MessageBlock[] {
   const state: AccumulatorState = { blocks: [], pendingText: "" };
   visit(doc, state);

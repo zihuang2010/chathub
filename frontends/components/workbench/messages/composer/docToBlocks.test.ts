@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { docToBlocks } from "./docToBlocks";
+import { blocksToDoc, docToBlocks } from "./docToBlocks";
 
 describe("docToBlocks", () => {
   it("空文档返回空数组", () => {
@@ -121,5 +121,40 @@ describe("docToBlocks", () => {
         ],
       }),
     ).toEqual([{ type: "text", value: "@小美 处理一下" }]);
+  });
+});
+
+describe("blocksToDoc", () => {
+  it("空数组生成单空段落 doc", () => {
+    expect(blocksToDoc([])).toEqual({
+      type: "doc",
+      content: [{ type: "paragraph" }],
+    });
+  });
+
+  it("纯文本拆段", () => {
+    expect(blocksToDoc([{ type: "text", value: "第一行\n第二行" }])).toEqual({
+      type: "doc",
+      content: [
+        {
+          type: "paragraph",
+          content: [{ type: "text", text: "第一行" }],
+        },
+        {
+          type: "paragraph",
+          content: [{ type: "text", text: "第二行" }],
+        },
+      ],
+    });
+  });
+
+  it("文-图-文 round-trip", () => {
+    const blocks = [
+      { type: "text" as const, value: "你好，" },
+      { type: "image" as const, url: "blob:abc" },
+      { type: "text" as const, value: "结束" },
+    ];
+    const doc = blocksToDoc(blocks);
+    expect(docToBlocks(doc)).toEqual(blocks);
   });
 });
