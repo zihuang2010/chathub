@@ -27,6 +27,15 @@ interface MessageBubbleProps {
 
 const COMPACT_TEXT_LIMIT = 8;
 
+function messageAriaText(message: Message): string {
+  const blockImageCount = message.blocks?.filter((b) => b.type === "image").length ?? 0;
+  const attachmentImageCount = message.attachments?.filter((a) => a.type === "image").length ?? 0;
+  const imageCount = blockImageCount + attachmentImageCount;
+  const trimmed = message.text.trim();
+  if (imageCount === 0) return message.text;
+  return trimmed ? `${trimmed}（含 ${imageCount} 张图片）` : `（含 ${imageCount} 张图片）`;
+}
+
 // Custom equality for memo: timeline rebuilds replyTarget objects fresh each
 // pass, so a reference compare would force every bubble to re-render whenever
 // any sibling changes. Compare by content for replyTarget; reference compare
@@ -112,7 +121,7 @@ function IncomingBubble({
           <article
             tabIndex={0}
             role="article"
-            aria-label={`${avatarName}: ${message.text}，发送时间 ${fullLabel}`}
+            aria-label={`${avatarName}: ${messageAriaText(message)}，发送时间 ${fullLabel}`}
             className={cn(
               "group relative flex flex-col gap-1 rounded-2xl rounded-tl-md border border-workbench-bubble-in-border bg-workbench-bubble-in text-wb-2xs text-workbench-text shadow-wb-bubble focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-workbench-accent/15",
               compact ? "px-3 py-1.5" : "px-3.5 py-2",
@@ -150,7 +159,7 @@ function OutgoingBubble({
           <article
             tabIndex={0}
             role="article"
-            aria-label={`我：${message.text}，发送时间 ${fullLabel}`}
+            aria-label={`我：${messageAriaText(message)}，发送时间 ${fullLabel}`}
             className={cn(
               "group relative flex flex-col gap-1 rounded-2xl rounded-tr-md border border-workbench-bubble-out-border bg-workbench-bubble-out text-wb-2xs text-workbench-text shadow-wb-bubble focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-workbench-accent/15",
               compact ? "px-3 py-1.5" : "px-3.5 py-2",

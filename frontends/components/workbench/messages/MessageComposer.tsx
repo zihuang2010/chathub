@@ -96,7 +96,9 @@ export function MessageComposer({
   // Derive canSend from the TipTap doc and file tray.
   const blocks = docToBlocks(draft);
   const textBlocks = blocks.filter((b): b is { type: "text"; value: string } => b.type === "text");
-  const textJoined = textBlocks.map((b) => b.value).join("\n");
+  // 段间换行已由 docToBlocks 写入单个 text block 的 value 内（"\n"），
+  // 相邻 text block 之间的间隔代表"被图片打断"，此时不该再注入额外换行。
+  const textJoined = textBlocks.map((b) => b.value).join("");
   const charLength = Array.from(textJoined).length;
   const overLimit = charLength >= COMPOSER_MAX_CHARS;
   const nearLimit = charLength >= COMPOSER_WARN_CHARS;
