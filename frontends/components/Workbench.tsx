@@ -3,6 +3,7 @@ import { useState } from "react";
 import { PlaceholderPage } from "@/components/workbench/PlaceholderPage";
 import { Sidebar } from "@/components/workbench/Sidebar";
 import { type Section } from "@/components/workbench/nav";
+import { CustomersPage } from "@/components/workbench/customers/CustomersPage";
 import { MessagesPage } from "@/components/workbench/messages/MessagesPage";
 
 const FONT_BODY =
@@ -27,7 +28,13 @@ export function Workbench() {
         collapsed={sidebarCollapsed}
         onToggleCollapsed={() => setSidebarCollapsed((collapsed) => !collapsed)}
       />
-      {section === "messages" ? <MessagesPage /> : <PlaceholderPage section={section} />}
+      {section === "messages" ? (
+        <MessagesPage />
+      ) : section === "customers" ? (
+        <CustomersPage />
+      ) : (
+        <PlaceholderPage section={section} />
+      )}
     </div>
   );
 }

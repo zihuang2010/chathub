@@ -28,3 +28,149 @@ export function formatMessageTime(sentAt: string): string {
 export function formatMessageDateTime(sentAt: string): string {
   return `${formatMessageDate(sentAt)} ${formatMessageTime(sentAt)}`;
 }
+
+// ─── Rich-text segmentation ─────────────────────────────────────────────────
+//
+// Splits a plain-text message into typed segments so the renderer can wrap
+// links / mentions / emoji shortcodes in the appropriate elements without
+// leaving raw HTML floating around.
+
+export type RichSegment =
+  | { type: "text"; value: string }
+  | { type: "link"; value: string; href: string }
+  | { type: "mention"; value: string; handle: string }
+  | { type: "emoji"; value: string };
+
+const URL_PATTERN = /(https?:\/\/[^\s<>]+)/g;
+const MENTION_PATTERN = /@([一-龥A-Za-z0-9_-]{1,32})/g;
+const EMOJI_PATTERN = /:([a-z_+-]{2,20}):/g;
+
+const EMOJI_MAP: Record<string, string> = {
+  smile: "😊",
+  joy: "😂",
+  laugh: "😆",
+  heart: "❤️",
+  thumbsup: "👍",
+  "+1": "👍",
+  thumbsdown: "👎",
+  "-1": "👎",
+  ok: "👌",
+  fire: "🔥",
+  tada: "🎉",
+  pray: "🙏",
+  rocket: "🚀",
+  eyes: "👀",
+  thinking: "🤔",
+  wave: "👋",
+  check: "✅",
+  warning: "⚠️",
+  bulb: "💡",
+};
+
+interface Match {
+  start: number;
+  end: number;
+  segment: RichSegment;
+}
+
+function collectMatches(
+  text: string,
+  pattern: RegExp,
+  build: (match: RegExpExecArray) => RichSegment | null,
+): Match[] {
+  const out: Match[] = [];
+  pattern.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = pattern.exec(text)) !== null) {
+    const segment = build(m);
+    if (segment) out.push({ start: m.index, end: m.index + m[0].length, segment });
+  }
+  return out;
+}
+
+export function formatRichText(text: string): RichSegment[] {
+  if (!text) return [];
+
+  const matches: Match[] = [
+    ...collectMatches(text, URL_PATTERN, (m) => ({
+      type: "link",
+      value: m[0],
+      href: m[0],
+    })),
+    ...collectMatches(text, MENTION_PATTERN, (m) => ({
+      type: "mention",
+      value: m[0],
+      handle: m[1],
+    })),
+    ...collectMatches(text, EMOJI_PATTERN, (m) => {
+      const emoji = EMOJI_MAP[m[1]];
+      return emoji ? { type: "emoji", value: emoji } : null;
+    }),
+  ].sort((a, b) => a.start - b.start);
+
+  // Drop overlapping matches greedily — first one wins.
+  const filtered: Match[] = [];
+  let cursor = 0;
+  for (const match of matches) {
+    if (match.start < cursor) continue;
+    filtered.push(match);
+    cursor = match.end;
+  }
+
+  const segments: RichSegment[] = [];
+  let pos = 0;
+  for (const match of filtered) {
+    if (match.start > pos) {
+      segments.push({ type: "text", value: text.slice(pos, match.start) });
+    }
+    segments.push(match.segment);
+    pos = match.end;
+  }
+  if (pos < text.length) segments.push({ type: "text", value: text.slice(pos) });
+  return segments;
+}
+
+// ─── Misc helpers ───────────────────────────────────────────────────────────
+
+export function isAtBottom(node: HTMLElement, threshold = 24): boolean {
+  return node.scrollHeight - node.scrollTop - node.clientHeight < threshold;
+}
+
+// Human-readable byte size with locale-aware decimal separator. Falls back to
+// "0 B" for zero/negative inputs to keep the UI stable when sizes are missing.
+export function formatFileSize(bytes?: number): string {
+  if (!bytes || bytes <= 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let i = 0;
+  let n = bytes;
+  while (n >= 1024 && i < units.length - 1) {
+    n /= 1024;
+    i++;
+  }
+  // Whole bytes display without decimals; KB+ gets one decimal so 1.5 MB is
+  // distinguishable from 1.0 MB.
+  return `${i === 0 ? n : n.toFixed(1)} ${units[i]}`;
+}
+
+// Avatar palette used when an entity (e.g. Customer) has no `avatarColor` on
+// its data record. Hashing the id keeps the colour stable across renders.
+// Values are CSS color expressions referencing tokens in index.css, so the
+// palette responds to theme switches without code changes.
+const AVATAR_PALETTE = [
+  "hsl(var(--wb-avatar-1))",
+  "hsl(var(--wb-avatar-2))",
+  "hsl(var(--wb-avatar-3))",
+  "hsl(var(--wb-avatar-4))",
+  "hsl(var(--wb-avatar-5))",
+  "hsl(var(--wb-avatar-6))",
+  "hsl(var(--wb-avatar-7))",
+  "hsl(var(--wb-avatar-8))",
+];
+
+export function pickAvatarColor(seed: string): string {
+  let hash = 0;
+  for (let i = 0; i < seed.length; i++) {
+    hash = (hash * 31 + seed.charCodeAt(i)) >>> 0;
+  }
+  return AVATAR_PALETTE[hash % AVATAR_PALETTE.length];
+}

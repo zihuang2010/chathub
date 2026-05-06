@@ -5,7 +5,11 @@ export interface Conversation {
   id: string;
   name: string;
   /** Tailwind/CSS bg color used as avatar background. */
-  avatarColor: string;
+  /** Optional explicit avatar color override. When omitted, the renderer
+   *  hashes the conversation seed into the wb-avatar-* token palette so all
+   *  avatars stay theme-aware (light/dark) by default. Existing inline hex
+   *  values are kept for design demos but new records can omit this field. */
+  avatarColor?: string;
   preview: string;
   /** The account that received/initiated the conversation, e.g. "杭州企微-小美". */
   account: string;
@@ -13,6 +17,20 @@ export interface Conversation {
   time: string;
   unread: number;
   online: boolean;
+  /** Backend pushes this when the customer is composing; UI shows a typing indicator. */
+  isTyping?: boolean;
+  /** Optional explicit link to the Customer record; falls back to id-based lookup. */
+  customerId?: string;
+}
+
+export type MessageStatus = "sending" | "sent" | "failed";
+
+export interface MessageAttachment {
+  type: "image" | "file" | "voice" | "video";
+  url: string;
+  name?: string;
+  sizeBytes?: number;
+  durationSec?: number;
 }
 
 export interface Message {
@@ -22,25 +40,25 @@ export interface Message {
   text: string;
   /** ISO 8601 timestamp; UI components derive any display label from this. */
   sentAt: string;
-  /** Only meaningful for outgoing messages. */
-  read?: boolean;
+  /** Only meaningful for `out` messages. `in` messages are always treated as read. */
+  status?: MessageStatus;
+  attachments?: MessageAttachment[];
+  /** id of the message being replied to. */
+  replyTo?: string;
+  /** Mentioned user handles parsed from `text` (post-processed by backend). */
+  mentions?: string[];
+  /** `in` only: marker for the unread divider rendered just above the first true entry. */
+  isUnread?: boolean;
+  /** Recalled by sender within the recall window. Renderer collapses the
+   *  bubble into a centered system line ("你撤回了一条消息" / "对方撤回了一条消息"). */
+  isRecalled?: boolean;
 }
 
-export interface Customer {
-  id: string;
-  name: string;
-  /** "微信" / "企微" / etc — shown next to the @ in the customer header. */
-  channel: string;
-  account: string;
-  tags: string[];
-  remark: string;
-  phone: string;
-  weChat: string;
-  company: string;
-  source: string;
-  addedAt: string;
-  follower: string;
-}
+// `Customer` is now defined in `@/lib/types/customer` so the customers page and
+// the messages page share one shape. Re-exported here to keep existing imports
+// (`import type { Customer } from "./data"`) working unchanged.
+import type { Customer } from "@/lib/types/customer";
+export type { Customer };
 
 export interface QuickReply {
   id: string;
@@ -68,6 +86,7 @@ export const MOCK_CONVERSATIONS: Conversation[] = [
     time: "11:01",
     unread: 2,
     online: false,
+    isTyping: true,
   },
   {
     id: "c3",
@@ -266,7 +285,7 @@ export const MOCK_MESSAGES_BY_CONVERSATION: Record<string, Message[]> = {
       direction: "out",
       text: "您好，王女士，很高兴为您服务！",
       sentAt: "2026-05-01T10:20:00+08:00",
-      read: true,
+      status: "sent",
     },
     {
       id: "m3",
@@ -281,7 +300,7 @@ export const MOCK_MESSAGES_BY_CONVERSATION: Record<string, Message[]> = {
       direction: "out",
       text: "支持的，我们可以为您申请 14 天的免费试用，您看可以吗？",
       sentAt: "2026-05-01T10:21:00+08:00",
-      read: true,
+      status: "sent",
     },
     {
       id: "m5",
@@ -296,7 +315,7 @@ export const MOCK_MESSAGES_BY_CONVERSATION: Record<string, Message[]> = {
       direction: "out",
       text: "只需要您提供企业信息，我们这边为您开通试用权限即可。",
       sentAt: "2026-05-01T10:22:00+08:00",
-      read: true,
+      status: "sent",
     },
     {
       id: "m7",
@@ -304,6 +323,14 @@ export const MOCK_MESSAGES_BY_CONVERSATION: Record<string, Message[]> = {
       direction: "in",
       text: "好的，那我要试用一下。",
       sentAt: "2026-05-01T10:24:00+08:00",
+    },
+    {
+      id: "m8",
+      conversationId: "c1",
+      direction: "out",
+      text: "好的，我这边为您安排试用申请。",
+      sentAt: "2026-05-01T10:25:00+08:00",
+      status: "sending",
     },
   ],
   c2: [
@@ -313,6 +340,7 @@ export const MOCK_MESSAGES_BY_CONVERSATION: Record<string, Message[]> = {
       direction: "in",
       text: "你们的产品价格是多少？",
       sentAt: "2026-05-01T10:55:00+08:00",
+      isUnread: true,
     },
     {
       id: "m2",
@@ -320,7 +348,7 @@ export const MOCK_MESSAGES_BY_CONVERSATION: Record<string, Message[]> = {
       direction: "out",
       text: "您好，李先生，我们提供多种套餐，可以根据您的需求来推荐。",
       sentAt: "2026-05-01T10:56:00+08:00",
-      read: true,
+      status: "sent",
     },
     {
       id: "m3",
@@ -328,6 +356,15 @@ export const MOCK_MESSAGES_BY_CONVERSATION: Record<string, Message[]> = {
       direction: "in",
       text: "我们大概 20 人团队使用",
       sentAt: "2026-05-01T11:01:00+08:00",
+      isUnread: true,
+    },
+    {
+      id: "m4",
+      conversationId: "c2",
+      direction: "out",
+      text: "20 人团队推荐用专业版，每月 ¥199/账号。",
+      sentAt: "2026-05-01T11:02:00+08:00",
+      status: "failed",
     },
   ],
   c3: [
@@ -337,7 +374,7 @@ export const MOCK_MESSAGES_BY_CONVERSATION: Record<string, Message[]> = {
       direction: "out",
       text: "张总您好，资料已发您邮箱，请查收。",
       sentAt: "2026-05-01T10:30:00+08:00",
-      read: true,
+      status: "sent",
     },
     {
       id: "m2",
@@ -345,6 +382,15 @@ export const MOCK_MESSAGES_BY_CONVERSATION: Record<string, Message[]> = {
       direction: "in",
       text: "好的，谢谢",
       sentAt: "2026-05-01T10:48:00+08:00",
+    },
+    {
+      id: "m3",
+      conversationId: "c3",
+      direction: "out",
+      text: "另外补充一份案例文档，方便您内部评审。",
+      sentAt: "2026-05-01T10:50:00+08:00",
+      status: "sent",
+      replyTo: "m2",
     },
   ],
   c4: [
@@ -361,7 +407,7 @@ export const MOCK_MESSAGES_BY_CONVERSATION: Record<string, Message[]> = {
       direction: "out",
       text: "感谢您的反馈，有任何问题随时联系我。",
       sentAt: "2026-05-01T09:31:00+08:00",
-      read: true,
+      status: "sent",
     },
     {
       id: "m3",
@@ -369,6 +415,15 @@ export const MOCK_MESSAGES_BY_CONVERSATION: Record<string, Message[]> = {
       direction: "in",
       text: "收到，我再看看",
       sentAt: "2026-05-01T09:32:00+08:00",
+    },
+    {
+      id: "m4",
+      conversationId: "c4",
+      direction: "out",
+      text: "方便的话直接戳 https://chat.example.com/demo @小雨 帮您打开演示 :rocket:",
+      sentAt: "2026-05-01T09:33:00+08:00",
+      status: "sent",
+      mentions: ["小雨"],
     },
   ],
   c5: [
@@ -378,7 +433,7 @@ export const MOCK_MESSAGES_BY_CONVERSATION: Record<string, Message[]> = {
       direction: "out",
       text: "黄先生您好，方便加个微信吗？",
       sentAt: "2026-04-30T16:20:00+08:00",
-      read: true,
+      status: "sent",
     },
     {
       id: "m2",
@@ -395,7 +450,7 @@ export const MOCK_MESSAGES_BY_CONVERSATION: Record<string, Message[]> = {
       direction: "out",
       text: "陈女士，您看下这份合同条款是否清晰？",
       sentAt: "2026-04-30T14:00:00+08:00",
-      read: true,
+      status: "sent",
     },
     {
       id: "m2",
@@ -412,7 +467,7 @@ export const MOCK_MESSAGES_BY_CONVERSATION: Record<string, Message[]> = {
       direction: "out",
       text: "吴先生，资料已经发您邮箱了。",
       sentAt: "2026-04-30T11:00:00+08:00",
-      read: true,
+      status: "sent",
     },
     {
       id: "m2",
@@ -436,7 +491,7 @@ export const MOCK_MESSAGES_BY_CONVERSATION: Record<string, Message[]> = {
       direction: "out",
       text: "可以的，赵经理，我这边先为您创建演示账号。",
       sentAt: "2026-04-30T17:08:00+08:00",
-      read: true,
+      status: "sent",
     },
     {
       id: "m3",
@@ -460,7 +515,7 @@ export const MOCK_MESSAGES_BY_CONVERSATION: Record<string, Message[]> = {
       direction: "out",
       text: "没问题，我整理好版本后发您邮箱。",
       sentAt: "2026-04-30T15:44:00+08:00",
-      read: true,
+      status: "sent",
     },
   ],
   c10: [
@@ -477,7 +532,7 @@ export const MOCK_MESSAGES_BY_CONVERSATION: Record<string, Message[]> = {
       direction: "out",
       text: "支持批量导入，也可以通过模板校验字段。",
       sentAt: "2026-04-28T18:15:00+08:00",
-      read: true,
+      status: "sent",
     },
   ],
   c11: [
@@ -487,7 +542,7 @@ export const MOCK_MESSAGES_BY_CONVERSATION: Record<string, Message[]> = {
       direction: "out",
       text: "郑总，评审材料我已同步到群里。",
       sentAt: "2026-04-28T16:30:00+08:00",
-      read: true,
+      status: "sent",
     },
     {
       id: "m2",
@@ -511,7 +566,7 @@ export const MOCK_MESSAGES_BY_CONVERSATION: Record<string, Message[]> = {
       direction: "out",
       text: "可以，您看明天下午三点是否方便？",
       sentAt: "2026-04-27T14:22:00+08:00",
-      read: true,
+      status: "sent",
     },
   ],
   c13: [
@@ -521,7 +576,7 @@ export const MOCK_MESSAGES_BY_CONVERSATION: Record<string, Message[]> = {
       direction: "out",
       text: "报价单已发送，请您查收。",
       sentAt: "2026-04-27T11:00:00+08:00",
-      read: true,
+      status: "sent",
     },
     {
       id: "m2",
@@ -545,7 +600,7 @@ export const MOCK_MESSAGES_BY_CONVERSATION: Record<string, Message[]> = {
       direction: "out",
       text: "支持，我们可以根据服务器环境提供部署方案。",
       sentAt: "2026-04-28T19:06:00+08:00",
-      read: true,
+      status: "sent",
     },
   ],
   c15: [
@@ -562,7 +617,7 @@ export const MOCK_MESSAGES_BY_CONVERSATION: Record<string, Message[]> = {
       direction: "out",
       text: "好的，马总，我这边马上处理。",
       sentAt: "2026-04-28T10:14:00+08:00",
-      read: true,
+      status: "sent",
     },
   ],
   c16: [
@@ -579,7 +634,7 @@ export const MOCK_MESSAGES_BY_CONVERSATION: Record<string, Message[]> = {
       direction: "out",
       text: "我发您一份最新版文档链接，里面包含鉴权和回调说明。",
       sentAt: "2026-04-27T20:35:00+08:00",
-      read: true,
+      status: "sent",
     },
   ],
   c17: [
@@ -596,7 +651,7 @@ export const MOCK_MESSAGES_BY_CONVERSATION: Record<string, Message[]> = {
       direction: "out",
       text: "可以，我稍后把开票资料清单发给您。",
       sentAt: "2026-04-27T13:25:00+08:00",
-      read: true,
+      status: "sent",
     },
   ],
   c18: [
@@ -613,7 +668,7 @@ export const MOCK_MESSAGES_BY_CONVERSATION: Record<string, Message[]> = {
       direction: "out",
       text: "上线前我们会安排一次管理员培训和一次业务培训。",
       sentAt: "2026-04-26T17:52:00+08:00",
-      read: true,
+      status: "sent",
     },
   ],
   c19: [
@@ -623,7 +678,7 @@ export const MOCK_MESSAGES_BY_CONVERSATION: Record<string, Message[]> = {
       direction: "out",
       text: "采购流程中如果需要资质文件，我可以一起提供。",
       sentAt: "2026-04-26T09:18:00+08:00",
-      read: true,
+      status: "sent",
     },
     {
       id: "m2",
@@ -647,7 +702,7 @@ export const MOCK_MESSAGES_BY_CONVERSATION: Record<string, Message[]> = {
       direction: "out",
       text: "可以，我会补充几份同行业案例给您参考。",
       sentAt: "2026-04-25T16:12:00+08:00",
-      read: true,
+      status: "sent",
     },
   ],
 };

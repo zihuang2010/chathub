@@ -1,10 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent, PointerEvent as ReactPointerEvent } from "react";
 
+import { ErrorBoundary } from "@/components/ErrorBoundary";
+import { ToastViewport } from "@/components/ui/toast";
 import { WorkbenchPanel } from "@/components/workbench/WorkbenchPanel";
 import { cn } from "@/lib/utils";
 
 import { ChatArea } from "./ChatArea";
+import { STRINGS } from "./strings";
 import {
   CHAT_AREA_MIN_WIDTH,
   CONVERSATION_LIST_DEFAULT_WIDTH,
@@ -23,6 +26,7 @@ import {
   MOCK_MESSAGES_BY_CONVERSATION,
   MOCK_QUICK_REPLIES,
 } from "./data";
+import { useChatMessages } from "./useChatMessages";
 import { useDetailsWindow } from "./useDetailsWindow";
 
 export function MessagesPage() {
@@ -47,10 +51,15 @@ export function MessagesPage() {
     () => MOCK_CONVERSATIONS.find((c) => c.id === selectedId) ?? MOCK_CONVERSATIONS[0],
     [selectedId],
   );
-  const messages = useMemo(
-    () => MOCK_MESSAGES_BY_CONVERSATION[conversation.id] ?? [],
-    [conversation.id],
-  );
+  const {
+    messages,
+    loading: messagesLoading,
+    error: messagesError,
+    retry: retryMessages,
+  } = useChatMessages({
+    source: MOCK_MESSAGES_BY_CONVERSATION,
+    conversationId: conversation.id,
+  });
   const customer = useMemo(
     () => MOCK_CUSTOMERS_BY_CONVERSATION[conversation.id] ?? MOCK_CUSTOMERS_BY_CONVERSATION.c1,
     [conversation.id],
@@ -154,20 +163,27 @@ export function MessagesPage() {
     [conversation.account],
   );
 
+  const errorBoundaryProps = {
+    title: STRINGS.errors.pageUnavailable,
+    retryLabel: STRINGS.errors.retry,
+  };
+
   return (
     <WorkbenchPanel panelRef={pageRef} className="relative">
-      <ConversationList
-        conversations={MOCK_CONVERSATIONS}
-        selectedId={selectedId}
-        onSelect={setSelectedId}
-        width={conversationListWidth}
-        accountOptions={accountOptions}
-        selectedAccount={selectedAccount}
-        onAccountChange={handleAccountChange}
-      />
+      <ErrorBoundary {...errorBoundaryProps}>
+        <ConversationList
+          conversations={MOCK_CONVERSATIONS}
+          selectedId={selectedId}
+          onSelect={setSelectedId}
+          width={conversationListWidth}
+          accountOptions={accountOptions}
+          selectedAccount={selectedAccount}
+          onAccountChange={handleAccountChange}
+        />
+      </ErrorBoundary>
       <div
         role="separator"
-        aria-label="调整会话列表宽度"
+        aria-label={STRINGS.resize.listHandle}
         aria-orientation="vertical"
         aria-valuemin={CONVERSATION_LIST_MIN_WIDTH}
         aria-valuemax={CONVERSATION_LIST_MAX_WIDTH}
@@ -176,7 +192,7 @@ export function MessagesPage() {
         onPointerDown={handleResizePointerDown}
         onKeyDown={handleResizeKeyDown}
         className={cn(
-          "group flex h-full w-2 shrink-0 cursor-col-resize justify-center bg-white outline-none transition-colors",
+          "group flex h-full w-2 shrink-0 cursor-col-resize justify-center bg-workbench-surface outline-none transition-colors",
           isResizing
             ? "bg-workbench-surface-subtle"
             : "hover:bg-workbench-surface-subtle focus-visible:bg-workbench-surface-subtle",
@@ -187,8 +203,8 @@ export function MessagesPage() {
           className={cn(
             "h-full w-px transition-colors",
             isResizing
-              ? "bg-workbench-blue-medium"
-              : "bg-workbench-line group-hover:bg-workbench-blue-light group-focus-visible:bg-workbench-blue-medium",
+              ? "bg-workbench-accent-soft"
+              : "bg-workbench-line group-hover:bg-workbench-accent-soft group-focus-visible:bg-workbench-accent-soft",
           )}
         />
       </div>
@@ -197,17 +213,29 @@ export function MessagesPage() {
         className="flex h-full min-w-0 flex-1"
         style={chatWidthLock ? { flex: `0 0 ${chatWidthLock}px`, width: chatWidthLock } : undefined}
       >
-        <ChatArea
-          conversation={conversation}
-          messages={messages}
-          accountOptions={accountOptions}
-          selectedAccount={selectedAccount}
-          onAccountChange={handleAccountChange}
-          detailsOpen={detailsOpen}
-          onToggleDetails={toggleDetails}
-        />
+        <ErrorBoundary {...errorBoundaryProps}>
+          <ChatArea
+            conversation={conversation}
+            messages={messages}
+            accountOptions={accountOptions}
+            selectedAccount={selectedAccount}
+            onAccountChange={handleAccountChange}
+            detailsOpen={detailsOpen}
+            onToggleDetails={toggleDetails}
+            loading={messagesLoading}
+            error={messagesError}
+            onRetry={retryMessages}
+            quickReplies={MOCK_QUICK_REPLIES}
+            mentionCandidates={MOCK_CONVERSATIONS}
+          />
+        </ErrorBoundary>
       </div>
-      {detailsOpen && <CustomerDetails customer={customer} quickReplies={MOCK_QUICK_REPLIES} />}
+      {detailsOpen && (
+        <ErrorBoundary {...errorBoundaryProps}>
+          <CustomerDetails customer={customer} quickReplies={MOCK_QUICK_REPLIES} />
+        </ErrorBoundary>
+      )}
+      <ToastViewport />
     </WorkbenchPanel>
   );
 }

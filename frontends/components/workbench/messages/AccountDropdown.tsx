@@ -3,6 +3,8 @@ import * as Popover from "@radix-ui/react-popover";
 
 import { cn } from "@/lib/utils";
 
+import { STRINGS } from "./strings";
+
 interface AccountDropdownProps {
   accounts: string[];
   selectedAccount: string | null;
@@ -43,8 +45,10 @@ export function AccountDropdown({
           align={align}
           side={side}
           sideOffset={sideOffset}
+          role="listbox"
+          aria-label={title ?? STRINGS.conversationList.accountListLabel}
           className={cn(
-            "z-20 rounded-lg border border-workbench-line bg-white p-2 shadow-[0_12px_32px_rgba(15,23,42,0.10)] outline-none",
+            "z-20 rounded-lg border border-workbench-line bg-workbench-surface p-2 shadow-wb-popover-strong outline-none",
             contentClassName,
           )}
         >
@@ -53,7 +57,7 @@ export function AccountDropdown({
           )}
           <AccountOption
             active={!selectedAccount}
-            label="全部账号"
+            label={STRINGS.rangePill.allAccountsBare}
             onClick={() => handleSelect(null)}
           />
           {accounts.map((account) => (
@@ -82,16 +86,18 @@ function AccountOption({
   return (
     <button
       type="button"
+      role="option"
+      aria-selected={active}
       onClick={onClick}
       className={cn(
-        "flex h-8 w-full items-center justify-between gap-2 rounded-md px-2 text-left text-[12px] transition-colors",
+        "focus-ring flex h-9 w-full items-center justify-between gap-2 rounded-md px-2 text-left text-[12px] transition-colors",
         active
-          ? "bg-workbench-surface-active text-workbench-blue-strong"
+          ? "bg-workbench-surface-active text-workbench-accent"
           : "text-workbench-text-secondary hover:bg-workbench-surface-subtle",
       )}
     >
       <span className="truncate">{label}</span>
-      {active && <span className="size-1.5 rounded-full bg-workbench-blue-strong" />}
+      {active && <span className="size-1.5 rounded-full bg-workbench-accent" />}
     </button>
   );
 }

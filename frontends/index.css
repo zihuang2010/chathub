@@ -24,6 +24,63 @@
     --input: 214.3 31.8% 91.4%;
     --ring: 222.2 84% 4.9%;
     --radius: 0.5rem;
+
+    /* Workbench tokens — light mode (WCAG AA verified) */
+    /* Accent — canonical brand color. Old blue/link tokens alias to these. */
+    --wb-accent: 217 91% 53%;
+    --wb-accent-hover: 220 88% 47%;
+    --wb-accent-soft: 213 93% 68%;
+    /* Legacy aliases — kept so existing components keep working. New code
+       should reference --wb-accent* directly. */
+    --wb-blue: var(--wb-accent);
+    --wb-blue-hover: var(--wb-accent-hover);
+    --wb-blue-light: var(--wb-accent-soft);
+    --wb-blue-medium: var(--wb-accent-soft);
+    --wb-link: var(--wb-accent);
+    --wb-text: 222 18% 17%;
+    --wb-text-secondary: 220 16% 45%;
+    --wb-text-muted: 220 12% 47%;
+    --wb-surface: 0 0% 100%;
+    --wb-surface-subtle: 218 46% 98%;
+    --wb-surface-soft: 218 75% 98%;
+    --wb-surface-active: 218 100% 96%;
+    --wb-bubble-in: 218 46% 98%;
+    --wb-bubble-in-border: 218 35% 92%;
+    --wb-bubble-out: 211 81% 95%;
+    --wb-bubble-out-border: 213 60% 87%;
+    --wb-line: 218 35% 90%;
+    --wb-line-subtle: 218 35% 94%;
+    --wb-line-strong: 213 35% 83%;
+    --wb-wechat: 154 66% 44%;
+    --wb-wechat-bg: 150 54% 96%;
+    --wb-online: 161 84% 35%;
+    /* Softer unread red — less neon than 78%/50%, closer to coral so the
+       indicator reads as informative rather than alarming. Used for the
+       small dot + [N条] preview prefix. */
+    --wb-unread: 0 70% 58%;
+    --wb-success: 158 64% 30%;
+    --wb-warning: 38 92% 50%;
+    --wb-danger: 0 78% 50%;
+    --wb-thumb: 217 16% 81%;
+    --wb-thumb-hover: 217 16% 72%;
+
+    /* Avatar palette — 8 soft tints, hashed by seed in pickAvatarColor(). */
+    --wb-avatar-1: 38 95% 85%;
+    --wb-avatar-2: 217 92% 92%;
+    --wb-avatar-3: 351 100% 95%;
+    --wb-avatar-4: 138 76% 92%;
+    --wb-avatar-5: 270 100% 92%;
+    --wb-avatar-6: 25 95% 83%;
+    --wb-avatar-7: 199 95% 86%;
+    --wb-avatar-8: 327 73% 88%;
+
+    /* Elevation tokens — single source of truth for popover/bubble shadows. */
+    --wb-shadow-popover: 0 8px 24px rgba(15, 23, 42, 0.1);
+    --wb-shadow-popover-strong: 0 12px 32px rgba(15, 23, 42, 0.1);
+    --wb-shadow-bubble: 0 1px 2px rgba(15, 23, 42, 0.04), 0 8px 24px -12px rgba(15, 23, 42, 0.08);
+    --wb-shadow-badge: 0 1px 2px rgba(239, 68, 68, 0.24);
+    --wb-shadow-card: 0 1px 2px rgba(15, 23, 42, 0.06);
+    --wb-shadow-card-soft: 0 1px 3px rgba(15, 23, 42, 0.045);
   }
 
   .dark {
@@ -46,6 +103,60 @@
     --border: 217.2 32.6% 17.5%;
     --input: 217.2 32.6% 17.5%;
     --ring: 212.7 26.8% 83.9%;
+
+    /* Workbench tokens — dark mode */
+    --wb-accent: 217 91% 65%;
+    --wb-accent-hover: 220 88% 70%;
+    --wb-accent-soft: 213 93% 55%;
+    /* Legacy aliases auto-follow accent in dark mode too. */
+    --wb-blue: var(--wb-accent);
+    --wb-blue-hover: var(--wb-accent-hover);
+    --wb-blue-light: var(--wb-accent-soft);
+    --wb-blue-medium: var(--wb-accent-soft);
+    --wb-link: var(--wb-accent);
+    --wb-text: 210 40% 96%;
+    --wb-text-secondary: 217 24% 70%;
+    --wb-text-muted: 217 18% 60%;
+    --wb-surface: 222 18% 11%;
+    --wb-surface-subtle: 222 16% 15%;
+    --wb-surface-soft: 222 16% 13%;
+    --wb-surface-active: 217 50% 22%;
+    --wb-bubble-in: 222 16% 14%;
+    --wb-bubble-in-border: 222 16% 22%;
+    --wb-bubble-out: 217 50% 24%;
+    --wb-bubble-out-border: 217 60% 32%;
+    --wb-line: 222 16% 22%;
+    --wb-line-subtle: 222 16% 18%;
+    --wb-line-strong: 222 16% 32%;
+    --wb-wechat: 152 45% 58%;
+    --wb-wechat-bg: 158 30% 18%;
+    --wb-online: 161 70% 45%;
+    /* Dark mode: keep saturation gentle so the dot doesn't glow on dark. */
+    --wb-unread: 0 60% 62%;
+    --wb-success: 158 70% 50%;
+    --wb-warning: 38 92% 60%;
+    --wb-danger: 0 80% 60%;
+    --wb-thumb: 217 16% 35%;
+    --wb-thumb-hover: 217 16% 45%;
+
+    /* Avatar palette — desaturated for dark surfaces. */
+    --wb-avatar-1: 38 30% 30%;
+    --wb-avatar-2: 217 35% 35%;
+    --wb-avatar-3: 351 30% 32%;
+    --wb-avatar-4: 138 30% 28%;
+    --wb-avatar-5: 270 30% 32%;
+    --wb-avatar-6: 25 30% 30%;
+    --wb-avatar-7: 199 30% 32%;
+    --wb-avatar-8: 327 30% 32%;
+
+    /* Elevation tokens — pure black at higher alpha reads better on dark
+       surfaces than navy-tinted shadows. */
+    --wb-shadow-popover: 0 8px 24px rgba(0, 0, 0, 0.4);
+    --wb-shadow-popover-strong: 0 12px 32px rgba(0, 0, 0, 0.5);
+    --wb-shadow-bubble: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 24px -12px rgba(0, 0, 0, 0.5);
+    --wb-shadow-badge: 0 1px 2px rgba(239, 68, 68, 0.4);
+    --wb-shadow-card: 0 1px 2px rgba(0, 0, 0, 0.3);
+    --wb-shadow-card-soft: 0 1px 3px rgba(0, 0, 0, 0.25);
   }
 }
 
@@ -63,6 +174,34 @@
   }
   body {
     @apply text-foreground;
+  }
+}
+
+@layer components {
+  /* Standard focus ring — apply to every interactive element. */
+  .focus-ring {
+    @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-workbench-accent/40;
+  }
+  /* Inset ring for elements that sit on a colored surface and would clip an
+     outset ring (e.g. tabs flush against a top border). */
+  .focus-ring-inset {
+    @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-workbench-accent/40;
+  }
+  /* Expand the click target to >=44×44 without changing visual size. The
+     pseudo-element extends past the host's box; clicks in that region still
+     hit the host because the pseudo participates in the host's pointer-event
+     surface. Host must NOT have overflow:hidden. */
+  .hit-area-expand {
+    position: relative;
+  }
+  .hit-area-expand::before {
+    content: "";
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: max(100%, 44px);
+    height: max(100%, 44px);
+    transform: translate(-50%, -50%);
   }
 }
 
@@ -84,7 +223,7 @@ html[data-os="mac"] #app-shell {
  */
 * {
   scrollbar-width: thin;
-  scrollbar-color: rgba(15, 23, 42, 0.18) transparent;
+  scrollbar-color: hsl(var(--wb-thumb)) transparent;
 }
 
 *::-webkit-scrollbar {
@@ -95,11 +234,11 @@ html[data-os="mac"] #app-shell {
   background: transparent;
 }
 *::-webkit-scrollbar-thumb {
-  background: rgba(15, 23, 42, 0.16);
+  background: hsl(var(--wb-thumb));
   border-radius: 999px;
 }
 *::-webkit-scrollbar-thumb:hover {
-  background: rgba(15, 23, 42, 0.28);
+  background: hsl(var(--wb-thumb-hover));
 }
 
 /* ─── Splash & Login shared animations ─────────────────────────────────────

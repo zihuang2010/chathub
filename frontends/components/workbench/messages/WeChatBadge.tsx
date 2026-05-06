@@ -1,7 +1,9 @@
+import { STRINGS } from "./strings";
+
 export function WeChatBadge() {
   return (
     <span
-      aria-label="微信"
+      aria-label={STRINGS.status.weChatBadge}
       className="grid size-4 shrink-0 place-items-center rounded bg-workbench-wechat-bg text-workbench-wechat"
     >
       <svg

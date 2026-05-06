@@ -11,9 +11,12 @@ import {
 
 import { cn } from "@/lib/utils";
 
-const SCROLLBAR_MIN_THUMB_HEIGHT = 44;
-const SCROLLBAR_MAX_THUMB_HEIGHT = 160;
-const AT_BOTTOM_THRESHOLD = 24;
+import {
+  AT_BOTTOM_THRESHOLD,
+  SCROLLBAR_MAX_THUMB_HEIGHT,
+  SCROLLBAR_MIN_THUMB_HEIGHT,
+  SCROLLBAR_OVERFLOW_THRESHOLD,
+} from "./constants";
 
 export interface ScrollMetrics {
   scrollTop: number;
@@ -157,7 +160,7 @@ function WorkbenchScrollbar({
     const trackHeight = Math.max(track.clientHeight, 0);
     const maxScrollTop = Math.max(scrollHeight - clientHeight, 0);
 
-    if (trackHeight <= 0 || maxScrollTop <= 1) {
+    if (trackHeight <= 0 || maxScrollTop < SCROLLBAR_OVERFLOW_THRESHOLD) {
       m.visible = false;
       m.maxScrollTop = 0;
       m.maxThumbTop = 0;
@@ -332,8 +335,8 @@ function WorkbenchScrollbar({
         ref={thumbRef}
         onPointerDown={handleThumbPointerDown}
         className={cn(
-          "absolute left-0 top-0 w-full rounded-full bg-[#C4CEDB] transition-colors will-change-transform hover:bg-[#A9B6C6]",
-          isDragging ? "cursor-grabbing bg-[#A9B6C6]" : "cursor-grab",
+          "absolute left-0 top-0 w-full rounded-full bg-workbench-thumb transition-colors will-change-transform hover:bg-workbench-thumb-hover",
+          isDragging ? "cursor-grabbing bg-workbench-thumb-hover" : "cursor-grab",
           !visualState.visible && "pointer-events-none opacity-0",
         )}
         style={{ height: visualState.thumbHeight }}

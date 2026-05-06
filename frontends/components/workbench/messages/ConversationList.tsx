@@ -6,6 +6,7 @@ import { cn } from "@/lib/utils";
 import { AccountDropdown } from "./AccountDropdown";
 import { ConversationAvatar } from "./Avatar";
 import type { Conversation } from "./data";
+import { STRINGS } from "./strings";
 import { extractAccountOperator } from "./utils";
 import { WeChatBadge } from "./WeChatBadge";
 import { WorkbenchScrollArea } from "./WorkbenchScrollArea";
@@ -49,7 +50,7 @@ export const ConversationList = memo(function ConversationList({
   }, [conversations, searchQuery, selectedAccount, statusTab]);
 
   return (
-    <div className="flex h-full shrink-0 flex-col bg-white" style={{ width }}>
+    <div className="flex h-full shrink-0 flex-col bg-workbench-surface" style={{ width }}>
       <div className="flex flex-col gap-2 px-3 pb-1.5 pt-3">
         <SearchBar value={searchQuery} onChange={setSearchQuery} compact={isCompact} />
         <FilterToolbar
@@ -63,11 +64,7 @@ export const ConversationList = memo(function ConversationList({
         />
       </div>
 
-      <WorkbenchScrollArea
-        className="flex-1"
-        viewportClassName="pb-1.5 pt-0.5 pr-2"
-        contentClassName="min-h-full"
-      >
+      <WorkbenchScrollArea className="flex-1" viewportClassName="pb-1.5 pt-0.5 pr-2">
         {filteredConversations.length > 0 ? (
           filteredConversations.map((c) => (
             <ConversationItem
@@ -79,7 +76,7 @@ export const ConversationList = memo(function ConversationList({
           ))
         ) : (
           <div className="px-5 py-8 text-center text-[12px] text-workbench-text-muted">
-            暂无匹配会话
+            {STRINGS.conversationList.noConversation}
           </div>
         )}
       </WorkbenchScrollArea>
@@ -99,12 +96,16 @@ function SearchBar({
   compact: boolean;
 }) {
   return (
-    <div className="flex h-9 items-center gap-2 rounded-lg border border-workbench-line bg-white px-2.5 text-workbench-text-muted transition-colors focus-within:ring-2 focus-within:ring-workbench-blue-strong/10">
+    <div className="flex h-9 items-center gap-2 rounded-lg border border-workbench-line bg-workbench-surface px-2.5 text-workbench-text-muted transition-colors focus-within:border-workbench-accent/40 focus-within:ring-2 focus-within:ring-workbench-accent/20">
       <Search size={15} className="shrink-0" />
       <input
         value={value}
         onChange={(event) => onChange(event.currentTarget.value)}
-        placeholder={compact ? "搜索客户" : "搜索客户 / 账号"}
+        placeholder={
+          compact
+            ? STRINGS.conversationList.searchPlaceholderCompact
+            : STRINGS.conversationList.searchPlaceholder
+        }
         className="min-w-0 flex-1 bg-transparent text-[12px] font-medium text-workbench-text focus:outline-none"
       />
     </div>
@@ -128,33 +129,41 @@ function FilterToolbar({
   accountPickerOpen: boolean;
   onAccountPickerOpenChange: (open: boolean) => void;
 }) {
-  const accountLabel = selectedAccount ? extractAccountOperator(selectedAccount) : "账号";
+  const accountLabel = selectedAccount
+    ? extractAccountOperator(selectedAccount)
+    : STRINGS.conversationList.accountFallback;
   const statusTabs: { value: StatusTab; label: string }[] = [
-    { value: "all", label: "全部" },
-    { value: "unread", label: "未读" },
-    { value: "mentioned", label: "@我" },
+    { value: "all", label: STRINGS.conversationList.statusAll },
+    { value: "unread", label: STRINGS.conversationList.statusUnread },
+    { value: "mentioned", label: STRINGS.conversationList.statusMentioned },
   ];
 
   return (
-    <div className="flex h-8 min-w-0 items-center gap-1 text-[11px] font-medium text-workbench-text-secondary">
-      <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto pr-1 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+    <div className="flex h-9 min-w-0 items-center gap-1 text-[11px] font-medium text-workbench-text-secondary">
+      <div
+        role="tablist"
+        aria-label={STRINGS.conversationList.statusTabsLabel}
+        className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto pr-1 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+      >
         <AccountDropdown
           accounts={accountOptions}
           selectedAccount={selectedAccount}
           onSelect={onAccountChange}
           open={accountPickerOpen}
           onOpenChange={onAccountPickerOpenChange}
-          title="按账号筛选"
+          title={STRINGS.conversationList.accountFilterTitle}
         >
           <button
             type="button"
+            aria-haspopup="listbox"
+            aria-expanded={accountPickerOpen}
             className={cn(
-              "inline-flex h-[30px] max-w-[96px] shrink-0 items-center gap-1 rounded-md px-2 transition-colors",
+              "focus-ring inline-flex h-9 max-w-[96px] shrink-0 items-center gap-1 rounded-md px-2 transition-colors",
               selectedAccount
-                ? "bg-workbench-surface-active text-workbench-blue-strong"
-                : "bg-workbench-surface-soft text-workbench-text hover:bg-workbench-surface-active hover:text-workbench-blue-strong",
+                ? "bg-workbench-surface-active text-workbench-accent"
+                : "bg-workbench-surface-soft text-workbench-text hover:bg-workbench-surface-active hover:text-workbench-accent",
             )}
-            title={selectedAccount ?? "全部账号"}
+            title={selectedAccount ?? STRINGS.rangePill.allAccountsBare}
           >
             <span className="min-w-0 truncate">{accountLabel}</span>
             <ChevronDown size={12} className="shrink-0 text-current opacity-70" />
@@ -166,11 +175,14 @@ function FilterToolbar({
             <button
               key={tab.value}
               type="button"
+              role="tab"
+              aria-selected={active}
+              tabIndex={active ? 0 : -1}
               onClick={() => onStatusChange(tab.value)}
               className={cn(
-                "inline-flex h-[30px] shrink-0 items-center rounded-md px-2 transition-colors",
+                "focus-ring inline-flex h-9 shrink-0 items-center rounded-md px-2 transition-colors",
                 active
-                  ? "bg-workbench-surface-active text-workbench-blue-strong"
+                  ? "bg-workbench-surface-active text-workbench-accent"
                   : "hover:bg-workbench-surface-subtle hover:text-workbench-text",
               )}
             >
@@ -181,9 +193,9 @@ function FilterToolbar({
       </div>
       <button
         type="button"
-        aria-label="筛选"
-        title="筛选"
-        className="grid size-[30px] shrink-0 place-items-center rounded-md text-workbench-text-secondary transition-colors hover:bg-workbench-surface-subtle hover:text-workbench-blue-strong"
+        aria-label={STRINGS.conversationList.filter}
+        title={STRINGS.conversationList.filter}
+        className="focus-ring grid size-9 shrink-0 place-items-center rounded-md text-workbench-text-secondary transition-colors hover:bg-workbench-surface-subtle hover:text-workbench-accent"
       >
         <Menu size={18} strokeWidth={2} />
       </button>
@@ -209,7 +221,7 @@ const ConversationItem = memo(function ConversationItem({
       type="button"
       onClick={() => onSelect(id)}
       className={cn(
-        "group relative mx-2 my-0.5 grid w-[calc(100%-1rem)] grid-cols-[44px_minmax(0,1fr)] items-start gap-3 rounded-xl px-3 py-2.5 text-left transition-colors",
+        "focus-ring group relative mx-2 my-0.5 grid w-[calc(100%-1rem)] grid-cols-[44px_minmax(0,1fr)] items-start gap-3 rounded-xl px-3 py-2.5 text-left transition-colors",
         selected ? "bg-workbench-surface-active" : "hover:bg-workbench-surface-subtle",
       )}
     >
@@ -220,12 +232,19 @@ const ConversationItem = memo(function ConversationItem({
             {name}
           </span>
         </div>
-        <div className="mt-0.5 truncate text-[12px] font-normal leading-[17px] text-workbench-text-muted">
+        <div className="mt-0.5 truncate text-[11.5px] font-normal leading-[17px] text-workbench-text-muted/70">
+          {unread > 0 && (
+            <span className="font-numeric tabular-nums">
+              {STRINGS.conversationList.unreadPreviewPrefix(unread)}
+            </span>
+          )}
           {preview}
         </div>
         <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[10px] font-medium leading-[15px]">
-          <span className="shrink-0 text-workbench-text-muted">来自</span>
-          <span className="min-w-0 truncate font-medium text-workbench-blue">{account}</span>
+          <span className="shrink-0 text-workbench-text-muted">
+            {STRINGS.conversationList.fromShort}
+          </span>
+          <span className="min-w-0 truncate font-medium text-workbench-text">{account}</span>
           <WeChatBadge />
         </div>
       </div>
@@ -233,9 +252,10 @@ const ConversationItem = memo(function ConversationItem({
         {time}
       </span>
       {unread > 0 && (
-        <span className="absolute right-3 top-1/2 grid h-4 min-w-4 translate-y-[-10%] place-items-center rounded-full bg-workbench-unread px-1 text-[10px] font-semibold tabular-nums leading-none text-white shadow-[0_1px_2px_rgba(239,68,68,0.24)]">
-          {unread > 99 ? "99+" : unread}
-        </span>
+        <span
+          aria-label={STRINGS.conversationList.unreadCount(unread)}
+          className="absolute bottom-4 right-3 size-2 rounded-full bg-workbench-unread/85"
+        />
       )}
     </button>
   );

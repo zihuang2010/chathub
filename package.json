@@ -25,6 +25,8 @@
     "backends/**/*.rs": "rustfmt --edition 2021"
   },
   "dependencies": {
+    "@radix-ui/react-context-menu": "^2.2.16",
+    "@radix-ui/react-dropdown-menu": "^2.1.16",
     "@radix-ui/react-popover": "^1.1.15",
     "@radix-ui/react-slot": "^1.2.4",
     "@tauri-apps/api": "^2",

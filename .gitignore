@@ -19,6 +19,9 @@ coverage
 backends/target
 backends/gen/schemas
 
+# Superpowers brainstorming visual companion artifacts
+.superpowers/
+
 # Editor / OS
 .vscode/*
 !.vscode/extensions.json
