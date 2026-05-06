@@ -1,9 +1,10 @@
 import { useEffect, type ComponentType } from "react";
-import { ShieldCheck, Zap, Share2, type LucideProps } from "lucide-react";
+import { ShieldCheck, Zap, Share2, Sparkles, type LucideProps } from "lucide-react";
 
 import {
   BubbleBlue,
   BubbleGreen,
+  BubblePurple,
   BubbleWhite,
   DriftingWave,
   buildWavePath,
@@ -91,6 +92,7 @@ const FEATURES: FeatureSpec[] = [
   { color: "#10B981", bg: "#D1FAE5", stroke: "#6EE7B7", label: "安全可靠", Icon: ShieldCheck },
   { color: "#3B82F6", bg: "#DBEAFE", stroke: "#93C5FD", label: "高效聚合", Icon: Zap },
   { color: "#FB923C", bg: "#FFEDD5", stroke: "#FDBA74", label: "轻量便捷", Icon: Share2 },
+  { color: "#A855F7", bg: "#F3E8FF", stroke: "#D8B4FE", label: "智能助手", Icon: Sparkles },
 ];
 
 // Twinkling satellites around each main bubble
@@ -120,6 +122,14 @@ const SATELLITES_WHITE: Satellite[] = [
   { x: 156, y: 80, size: 7, color: "#E8EDF4", dx: -2, dy: 3, delay: 600, duration: 2900 },
 ];
 
+const SATELLITES_PURPLE: Satellite[] = [
+  { x: -10, y: 24, size: 5, color: "#D8B4FE", dx: 2, dy: -2, delay: 0, duration: 2400 },
+  { x: -6, y: 64, size: 4, color: "#E9D5FF", dx: -2, dy: 3, delay: 700, duration: 2800 },
+  { x: 18, y: -8, size: 4, color: "#C084FC", dx: 2, dy: -2, delay: 300, duration: 2600 },
+  { x: 96, y: 30, size: 5, color: "#C084FC", dx: -3, dy: 2, delay: 1100, duration: 3000 },
+  { x: 92, y: 70, size: 4, color: "#D8B4FE", dx: -2, dy: 3, delay: 500, duration: 2500 },
+];
+
 // Pre-built wave paths for the bottom scene
 const SPLASH_WAVE_BOTTOM = 260;
 const SPLASH_WAVES = [
@@ -143,6 +153,8 @@ export function Splash({ onReady, durationMs = 6500 }: SplashProps) {
       className="absolute inset-0 select-none overflow-hidden bg-white"
       style={{ fontFamily: FONT_BODY }}
     >
+      <VersionBadge />
+
       <main className="relative flex h-full w-full flex-col items-center pt-14">
         <Illustration />
 
@@ -175,9 +187,15 @@ export function Splash({ onReady, durationMs = 6500 }: SplashProps) {
         <div className="mt-8" style={{ animation: "chFadeUp 700ms 720ms backwards ease-out" }}>
           <Features />
         </div>
+
+        <div
+          className="mt-[18px]"
+          style={{ animation: "chFadeUp 700ms 900ms backwards ease-out" }}
+        ></div>
       </main>
 
       <BottomScene />
+      <BrandStrip />
     </div>
   );
 }
@@ -195,6 +213,7 @@ function Illustration() {
         <FloatDot key={i} {...d} />
       ))}
       {/* Stacking order — blue is on top */}
+      <BubblePurple left={410} top={20} width={92} height={84} satellites={SATELLITES_PURPLE} />
       <BubbleWhite left={289.5} top={180} width={150} height={130} satellites={SATELLITES_WHITE} />
       <BubbleGreen left={75} top={195} width={110} height={100} satellites={SATELLITES_GREEN} />
       <BubbleBlue left={120} top={65} width={280} height={240} satellites={SATELLITES_BLUE} />
@@ -273,6 +292,50 @@ function Features() {
           </span>
         </div>
       ))}
+    </div>
+  );
+}
+
+// ─── Version badge (top-right) ────────────────────────────────────────────
+
+function VersionBadge() {
+  return (
+    <div
+      className="absolute right-6 top-5 z-10 flex items-center gap-2"
+      style={{ animation: "chFadeUp 700ms 100ms backwards ease-out" }}
+    >
+      <span
+        className="rounded-full bg-gradient-to-r from-[#A855F7] to-[#3B82F6] px-2 py-[2px] text-[10px] font-semibold text-white shadow-sm"
+        style={{ letterSpacing: "0.08em" }}
+      >
+        BETA
+      </span>
+      <span
+        className="font-numeric text-[11px] tabular-nums text-[#9CA3AF]"
+        style={{ letterSpacing: "0.05em" }}
+      >
+        v0.1.0
+      </span>
+    </div>
+  );
+}
+
+// ─── Brand strip (bottom) ─────────────────────────────────────────────────
+
+function BrandStrip() {
+  return (
+    <div
+      className="pointer-events-none absolute inset-x-0 bottom-3 z-10 flex items-center justify-center gap-2 text-[11px] text-[#9CA3AF]"
+      style={{
+        letterSpacing: "0.06em",
+        animation: "chFadeUp 700ms 1100ms backwards ease-out",
+      }}
+    >
+      <span>© 2026 匠多多</span>
+      <span aria-hidden className="size-1 rounded-full bg-[#D1D5DB]" />
+      <span>企微合规接入</span>
+      <span aria-hidden className="size-1 rounded-full bg-[#D1D5DB]" />
+      <span>数据本地化</span>
     </div>
   );
 }

@@ -14,8 +14,8 @@
     "windows": [
       {
         "title": "ChatHub",
-        "width": 1200,
-        "height": 900,
+        "width": 1250,
+        "height": 850,
         "minWidth": 860,
         "minHeight": 600,
         "decorations": false,

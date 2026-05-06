@@ -115,6 +115,76 @@ export const BubbleGreen = memo(function BubbleGreen({
   );
 });
 
+// ─── Bubble: purple (with sparkle glyph for AI) ─────────────────────────────
+
+export const BubblePurple = memo(function BubblePurple({
+  left,
+  top,
+  width,
+  height,
+  delay = 720,
+  satellites,
+}: BubbleProps) {
+  return (
+    <div className="absolute" style={{ left, top, width, height, animation: popIn(delay) }}>
+      <svg
+        width={width}
+        height={height}
+        viewBox="0 0 110 100"
+        style={dropShadow("#A855F733", 22, 8)}
+      >
+        <defs>
+          <linearGradient id="chBubblePurpleGrad" x1="0%" y1="0%" x2="60%" y2="100%">
+            <stop offset="0%" stopColor="#D8B4FE" />
+            <stop offset="100%" stopColor="#A855F7" />
+          </linearGradient>
+        </defs>
+        <path
+          d="M 55 0 A 55 40 0 0 1 59 80 L 45 92 L 40 78 A 55 40 0 0 1 55 0 Z"
+          fill="url(#chBubblePurpleGrad)"
+        />
+        {/* gloss highlight */}
+        <ellipse cx="55" cy="14" rx="22" ry="4" fill="white" opacity="0.28" filter="blur(1px)" />
+        {/* sparkle glyphs */}
+        <path
+          d="M 50 22 L 54 34 L 66 38 L 54 42 L 50 54 L 46 42 L 34 38 L 46 34 Z"
+          fill="#FFFFFF"
+          opacity="0.95"
+        >
+          <animate attributeName="opacity" values="0.6;1;0.6" dur="2.4s" repeatCount="indefinite" />
+        </path>
+        <path
+          d="M 78 18 L 80 24 L 86 26 L 80 28 L 78 34 L 76 28 L 70 26 L 76 24 Z"
+          fill="#FFFFFF"
+          opacity="0.7"
+        >
+          <animate
+            attributeName="opacity"
+            values="0.3;0.85;0.3"
+            dur="1.8s"
+            begin="0.4s"
+            repeatCount="indefinite"
+          />
+        </path>
+        <path
+          d="M 26 58 L 28 62 L 32 64 L 28 66 L 26 70 L 24 66 L 20 64 L 24 62 Z"
+          fill="#FFFFFF"
+          opacity="0.6"
+        >
+          <animate
+            attributeName="opacity"
+            values="0.25;0.8;0.25"
+            dur="2.1s"
+            begin="0.9s"
+            repeatCount="indefinite"
+          />
+        </path>
+      </svg>
+      {satellites && <SatelliteRing items={satellites} />}
+    </div>
+  );
+});
+
 // ─── Bubble: white (with typing dots) ───────────────────────────────────────
 
 export const BubbleWhite = memo(function BubbleWhite({

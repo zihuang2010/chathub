@@ -23,7 +23,7 @@ export const STRINGS = {
     searchPlaceholder: "搜索客户/账号",
     searchPlaceholderCompact: "搜索客户",
     filter: "筛选",
-    accountFallback: "账号",
+    accountFallback: "全部账号",
     statusAll: "全部",
     statusUnread: "未读",
     statusMentioned: "@我",

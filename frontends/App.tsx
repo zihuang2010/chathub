@@ -6,7 +6,7 @@ import { TitleBar } from "@/components/TitleBar";
 import { Workbench } from "@/components/Workbench";
 import { cn } from "@/lib/utils";
 
-const SPLASH_DURATION_MS = 5000;
+const SPLASH_DURATION_MS = 3000;
 
 function App() {
   const [splashHidden, setSplashHidden] = useState(false);
