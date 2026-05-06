@@ -12,7 +12,6 @@ import {
   PanelRightOpen,
   Paperclip,
   Smile,
-  Sparkles,
   X,
 } from "lucide-react";
 
@@ -23,6 +22,7 @@ import { WORKBENCH_ACTION_GRADIENT, WORKBENCH_ACTION_GRADIENT_HOVER } from "@/li
 
 import { COMPOSER_MAX_HEIGHT, COMPOSER_MIN_HEIGHT, RESIZE_KEYBOARD_STEP } from "./constants";
 import type { Conversation, MessageAttachment, MessageBlock, QuickReply } from "./data";
+import { AiPolishPopover } from "./composer/AiPolishPopover";
 import { docToBlocks } from "./composer/docToBlocks";
 import { RichComposer } from "./composer/RichComposer";
 import { EmojiPicker } from "./EmojiPicker";
@@ -442,23 +442,26 @@ export function MessageComposer({
               </Popover.Content>
             </Popover.Portal>
           </Popover.Root>
-          <button
-            type="button"
-            className="focus-ring inline-flex h-9 items-center gap-1 rounded-md bg-workbench-surface-soft px-2.5 text-[12px] font-medium text-workbench-accent transition-colors hover:bg-workbench-surface-active"
-          >
-            <Sparkles size={12} />
-            <span>{STRINGS.composer.aiPolish}</span>
-            <span className="rounded-sm bg-workbench-accent px-1 py-px text-[9px] font-semibold uppercase leading-none text-white">
-              {STRINGS.composer.aiPolishNew}
-            </span>
-          </button>
-          <button
-            type="button"
-            className="focus-ring inline-flex h-9 items-center gap-1 rounded-md border border-workbench-line px-2.5 text-[12px] text-workbench-text-secondary transition-colors hover:bg-workbench-surface-subtle"
-          >
-            <span>{STRINGS.composer.formal}</span>
-            <ChevronDown size={11} />
-          </button>
+          <AiPolishPopover
+            originalText={textJoined}
+            disabled={!textJoined.trim()}
+            onApply={(newText) => {
+              if (!editorRef.current) return;
+              editorRef.current
+                .chain()
+                .focus()
+                .setContent({
+                  type: "doc",
+                  content: [
+                    {
+                      type: "paragraph",
+                      content: newText ? [{ type: "text", text: newText }] : [],
+                    },
+                  ],
+                })
+                .run();
+            }}
+          />
           <span
             aria-hidden
             className="ml-2 hidden font-numeric text-[11px] tabular-nums text-workbench-text-muted sm:inline"
