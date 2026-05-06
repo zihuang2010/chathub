@@ -33,6 +33,17 @@ export interface MessageAttachment {
   durationSec?: number;
 }
 
+export type MessageBlock =
+  | { type: "text"; value: string }
+  | {
+      type: "image";
+      url: string;
+      name?: string;
+      sizeBytes?: number;
+      width?: number;
+      height?: number;
+    };
+
 export interface Message {
   id: string;
   conversationId: string;
@@ -43,6 +54,9 @@ export interface Message {
   /** Only meaningful for `out` messages. `in` messages are always treated as read. */
   status?: MessageStatus;
   attachments?: MessageAttachment[];
+  /** Rich content blocks (text + inline images). When present, rendering end
+   *  prioritizes blocks; `text` remains as fallback original string. */
+  blocks?: MessageBlock[];
   /** id of the message being replied to. */
   replyTo?: string;
   /** Mentioned user handles parsed from `text` (post-processed by backend). */
