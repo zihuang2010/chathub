@@ -334,9 +334,13 @@ export function MessageComposer({
                 aria-label={STRINGS.composer.emoji}
                 aria-haspopup="dialog"
                 aria-expanded={emojiOpen}
-                className="focus-ring grid size-9 place-items-center rounded-md text-workbench-text-secondary transition-colors hover:bg-workbench-surface-subtle hover:text-workbench-accent"
+                className="focus-ring group relative grid h-9 w-9 place-items-center rounded-lg text-workbench-text-secondary transition-colors hover:bg-workbench-surface-subtle hover:text-workbench-text"
               >
-                <Smile size={20} strokeWidth={1.45} className="-translate-y-px" />
+                <Smile size={18} strokeWidth={1.6} />
+                <span
+                  aria-hidden
+                  className="pointer-events-none absolute bottom-1.5 right-1.5 size-[3px] rounded-full bg-current opacity-0 transition-opacity group-hover:opacity-60"
+                />
               </button>
             </Popover.Trigger>
             <Popover.Portal>
@@ -360,6 +364,7 @@ export function MessageComposer({
             icon={ImagePlus}
             label={STRINGS.composer.image}
             onClick={() => imageInputRef.current?.click()}
+            withHoverDot
           />
           <ToolButton
             icon={Paperclip}
@@ -373,16 +378,16 @@ export function MessageComposer({
             aria-pressed={detailsOpen}
             onClick={onToggleDetails}
             className={cn(
-              "focus-ring relative z-30 ml-auto grid size-9 place-items-center rounded-md transition-colors",
+              "focus-ring relative z-30 ml-auto grid h-9 w-9 place-items-center rounded-lg transition-colors",
               detailsOpen
                 ? "bg-workbench-surface-active text-workbench-accent"
-                : "text-workbench-text-secondary hover:bg-workbench-surface-subtle hover:text-workbench-accent",
+                : "text-workbench-text-secondary hover:bg-workbench-surface-subtle hover:text-workbench-text",
             )}
           >
             {detailsOpen ? (
-              <PanelRightClose size={20} strokeWidth={1.45} className="-translate-y-px" />
+              <PanelRightClose size={18} strokeWidth={1.6} />
             ) : (
-              <PanelRightOpen size={20} strokeWidth={1.45} className="-translate-y-px" />
+              <PanelRightOpen size={18} strokeWidth={1.6} />
             )}
           </button>
         </div>
@@ -519,10 +524,12 @@ function ToolButton({
   icon: Icon,
   label,
   onClick,
+  withHoverDot,
 }: {
   icon: typeof Smile;
   label: string;
   onClick?: () => void;
+  withHoverDot?: boolean;
 }) {
   return (
     <button
@@ -530,9 +537,18 @@ function ToolButton({
       title={label}
       aria-label={label}
       onClick={onClick}
-      className="focus-ring grid size-9 place-items-center rounded-md text-workbench-text-secondary transition-colors hover:bg-workbench-surface-subtle hover:text-workbench-accent"
+      className={cn(
+        "focus-ring grid h-9 w-9 place-items-center rounded-lg text-workbench-text-secondary transition-colors hover:bg-workbench-surface-subtle hover:text-workbench-text",
+        withHoverDot && "group relative",
+      )}
     >
-      <Icon size={20} strokeWidth={1.45} className="-translate-y-px" />
+      <Icon size={18} strokeWidth={1.6} />
+      {withHoverDot && (
+        <span
+          aria-hidden
+          className="pointer-events-none absolute bottom-1.5 right-1.5 size-[3px] rounded-full bg-current opacity-0 transition-opacity group-hover:opacity-60"
+        />
+      )}
     </button>
   );
 }
