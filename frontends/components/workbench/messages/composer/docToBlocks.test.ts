@@ -49,4 +49,77 @@ describe("docToBlocks", () => {
       }),
     ).toEqual([{ type: "text", value: "上半行\n下半行" }]);
   });
+
+  it("文-图-文 混排", () => {
+    expect(
+      docToBlocks({
+        type: "doc",
+        content: [
+          {
+            type: "paragraph",
+            content: [
+              { type: "text", text: "你好，" },
+              { type: "image", attrs: { src: "blob:abc" } },
+              { type: "text", text: "结束" },
+            ],
+          },
+        ],
+      }),
+    ).toEqual([
+      { type: "text", value: "你好，" },
+      { type: "image", url: "blob:abc" },
+      { type: "text", value: "结束" },
+    ]);
+  });
+
+  it("连续图片不被合并", () => {
+    expect(
+      docToBlocks({
+        type: "doc",
+        content: [
+          {
+            type: "paragraph",
+            content: [
+              { type: "image", attrs: { src: "blob:1" } },
+              { type: "image", attrs: { src: "blob:2" } },
+            ],
+          },
+        ],
+      }),
+    ).toEqual([
+      { type: "image", url: "blob:1" },
+      { type: "image", url: "blob:2" },
+    ]);
+  });
+
+  it("纯图片不带任何 text block", () => {
+    expect(
+      docToBlocks({
+        type: "doc",
+        content: [
+          {
+            type: "paragraph",
+            content: [{ type: "image", attrs: { src: "blob:x" } }],
+          },
+        ],
+      }),
+    ).toEqual([{ type: "image", url: "blob:x" }]);
+  });
+
+  it("mention 转成 @label 文本", () => {
+    expect(
+      docToBlocks({
+        type: "doc",
+        content: [
+          {
+            type: "paragraph",
+            content: [
+              { type: "mention", attrs: { label: "小美" } },
+              { type: "text", text: "处理一下" },
+            ],
+          },
+        ],
+      }),
+    ).toEqual([{ type: "text", value: "@小美 处理一下" }]);
+  });
 });
