@@ -114,7 +114,7 @@ function IncomingBubble({
             role="article"
             aria-label={`${avatarName}: ${message.text}，发送时间 ${fullLabel}`}
             className={cn(
-              "group relative flex flex-col gap-1 rounded-2xl rounded-tl-md border border-workbench-bubble-in-border bg-workbench-bubble-in text-wb-3xs text-workbench-text shadow-wb-bubble focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-workbench-accent/15",
+              "group relative flex flex-col gap-1 rounded-2xl rounded-tl-md border border-workbench-bubble-in-border bg-workbench-bubble-in text-wb-4xs text-workbench-text shadow-wb-bubble focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-workbench-accent/15",
               compact ? "px-3 py-1.5" : "px-3.5 py-2",
             )}
           >
@@ -152,7 +152,7 @@ function OutgoingBubble({
             role="article"
             aria-label={`我：${message.text}，发送时间 ${fullLabel}`}
             className={cn(
-              "group relative flex flex-col gap-1 rounded-2xl rounded-tr-md border border-workbench-bubble-out-border bg-workbench-bubble-out text-wb-3xs text-workbench-text shadow-wb-bubble focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-workbench-accent/15",
+              "group relative flex flex-col gap-1 rounded-2xl rounded-tr-md border border-workbench-bubble-out-border bg-workbench-bubble-out text-wb-4xs text-workbench-text shadow-wb-bubble focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-workbench-accent/15",
               compact ? "px-3 py-1.5" : "px-3.5 py-2",
             )}
           >
