@@ -36,4 +36,20 @@ describe("useComposerPrefs hook", () => {
     expect(loadComposerPrefs().silent).toBe(true);
     expect(result.current.prefs.silent).toBe(true);
   });
+
+  it("跨实例同步：A 写入后 B 自动更新", () => {
+    const a = renderHook(() => useComposerPrefs());
+    const b = renderHook(() => useComposerPrefs());
+    act(() => a.result.current.setSilent(true));
+    expect(b.result.current.prefs.silent).toBe(true);
+  });
+
+  it("unmount 后不再被通知", () => {
+    const { result, unmount } = renderHook(() => useComposerPrefs());
+    const lastKnown = result.current.prefs;
+    unmount();
+    // 调用 saveComposerPrefs 不应再让 result.current 反映新值（已 unmount）
+    saveComposerPrefs({ silent: true, jumpToNext: true });
+    expect(result.current.prefs).toEqual(lastKnown);
+  });
 });

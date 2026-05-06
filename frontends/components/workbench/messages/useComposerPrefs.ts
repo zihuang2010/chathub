@@ -43,7 +43,8 @@ export function useComposerPrefs() {
 
   return {
     prefs,
-    setSilent: (next: boolean) => saveComposerPrefs({ ...prefs, silent: next }),
-    setJumpToNext: (next: boolean) => saveComposerPrefs({ ...prefs, jumpToNext: next }),
+    setSilent: (next: boolean) => saveComposerPrefs({ ...loadComposerPrefs(), silent: next }),
+    setJumpToNext: (next: boolean) =>
+      saveComposerPrefs({ ...loadComposerPrefs(), jumpToNext: next }),
   };
 }
