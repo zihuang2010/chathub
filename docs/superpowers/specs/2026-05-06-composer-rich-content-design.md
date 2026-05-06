@@ -308,7 +308,104 @@ const handleSend = (
 - `npx tsc --noEmit` 0 报错
 - 无控制台警告
 
-## 12. 文件清单
+## 12. Typography 一致性整改（覆盖整个 messages 页）
+
+### 12.1 现状审计
+
+`grep` 出 `frontends/components/workbench/messages/*.tsx` 的字号/字重/行高 token 使用密度：
+
+| 类型     | 现状                                                                                                                               | 问题                                       |
+| -------- | ---------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------ |
+| 字号     | 14 个不同 px 值同时存在：`9, 10, 10.5, 11, 11.5, 12, 12.5, 13, 13.5, 14, 15, 16, 18, 22`，与 `wb-3xs/2xs/xs/sm/base/md` token 并行 | 半像素值绕开 token；同页面≥10 种字号       |
+| 字重     | `font-medium`(35) / `font-semibold`(4) / `font-bold` / `font-normal` 混用                                                          | 同类资讯一会 medium 一会 semibold          |
+| 数字字体 | `font-numeric`(12) 与 `tabular-nums`(11) 数量都对不上，部分数字裸跑                                                                | 时间/字节/时长宽度跳动                     |
+| 行高     | `leading-[1.65]`/`leading-[18px]`/`leading-[17px]`/`leading-[16px]`/`leading-[15px]`/`leading-tight`/`leading-none` 同时存在       | 多余的 arbitrary 行高覆盖了 token 自带行高 |
+
+token 已经定义但执行不到位。本次整改不引入新设计语言，只**强制全部消费已有 token**。
+
+### 12.2 字号 token（已存在，无需新增）
+
+```
+text-wb-3xs   11px / 1.5      -- 极小辅助：时间戳、计数、字节、字数、时长、状态文案
+text-wb-2xs   12px / 1.55     -- 二级文字：摘要、副标题、菜单项、按钮文字
+text-wb-xs    13px / 1.65     -- 正文：气泡内容、textarea/编辑器、列表 row 主文字
+text-wb-sm    14px / 1.55     -- 强调正文：会话名、Section 标题
+text-wb-base  15px / 1.5      -- 留作大型卡片正文（messages 页几乎不用）
+text-wb-md    16px / 1.5      -- 标题：客户名、ChatHeader 主标题
+```
+
+### 12.3 旧值 → 新 token 映射
+
+| 旧                                                     | 新             | 备注                              |
+| ------------------------------------------------------ | -------------- | --------------------------------- |
+| `text-[9px]` / `text-[10px]` / `text-[10.5px]`         | `text-wb-3xs`  | 9/10 px 在 hi-DPI 下糊；统一到 11 |
+| `text-[11px]` / `text-[11.5px]`                        | `text-wb-3xs`  |                                   |
+| `text-[12px]` / `text-[12.5px]`                        | `text-wb-2xs`  |                                   |
+| `text-[13px]` / `text-[13.5px]`                        | `text-wb-xs`   |                                   |
+| `text-[14px]`                                          | `text-wb-sm`   |                                   |
+| `text-[15px]`                                          | `text-wb-base` |                                   |
+| `text-[16px]`                                          | `text-wb-md`   |                                   |
+| `text-[18px]` / `text-[22px]`（Avatar 大字、稀有标题） | 保留 arbitrary | 用得 ≤2 处，破例可接受            |
+
+### 12.4 数字字体统一
+
+新增 utility class 收口数字渲染：
+
+```css
+/* frontends/index.css @layer components */
+.wb-num {
+  @apply font-numeric tabular-nums;
+}
+```
+
+**强制使用 `wb-num` 的场景**：
+
+- 时间戳（消息时间、最后联系时间、相对时间）
+- 计数（未读数、字数、@提及数、被选中数）
+- 字节大小（文件大小）
+- 时长（语音秒数、视频秒数）
+- 联系方式（电话、微信号、加好友 ID）
+- 财务/订单（本期不涉及，预留）
+
+替换面：把 `font-numeric tabular-nums` 两个类合一成 `wb-num`，未加的位置补齐。
+
+### 12.5 字重规则
+
+| 用法                                | 字重                 | 说明                  |
+| ----------------------------------- | -------------------- | --------------------- |
+| 正文                                | 默认（不写 font-\*） | 不要 `font-normal`    |
+| 名字 / Section 标题 / 强调标签      | `font-medium`        | 二级强调统一 medium   |
+| 客户名 / Header 主标题 / Modal 标题 | `font-semibold`      | 一级强调统一 semibold |
+| ~~`font-bold`~~                     | 禁用                 | 全部降级为 semibold   |
+
+### 12.6 行高规则
+
+- **默认**：交给 `text-wb-*` token 自带的 lineHeight，**不写 `leading-*`**
+- **例外（保留）**：
+  - `leading-none`：单行 chip / badge 内强制收紧
+  - `leading-tight`（1.25）：多行截断的卡片副文字
+- **禁用**：所有 `leading-[XX px]` 和 `leading-[1.X]` arbitrary 值
+
+### 12.7 整改范围
+
+- 限定在 `frontends/components/workbench/messages/**/*.tsx`
+- 整改方式：grep + 手工核对，每个改动点保留语义不变（不动颜色 / 间距 / 边框）
+- 验收：执行 `grep -E 'text-\[[0-9]+(\.[0-9]+)?px\]|leading-\[' frontends/components/workbench/messages/*.tsx` 应只返回字号 18px/22px 两处（已批准例外），其余必须 0 命中
+
+### 12.8 与 §7 / §8 的对接
+
+§7 工具栏图标已不涉及文字。§8 发送面板中所有具体字号文字明示如下：
+
+| 元素                      | token         |
+| ------------------------- | ------------- |
+| 字数 + 快捷键提示         | `text-wb-3xs` |
+| AI 润色按钮 / 快捷语按钮  | `text-wb-2xs` |
+| 发送按钮文字              | `text-wb-xs`  |
+| 编辑器正文                | `text-wb-xs`  |
+| AI 润色 popover 原文/预览 | `text-wb-2xs` |
+| 发送菜单菜单项            | `text-wb-2xs` |
+
+## 13. 文件清单
 
 ### 改动
 
@@ -320,6 +417,8 @@ const handleSend = (
 - `frontends/components/workbench/messages/useDraftStore.ts`
 - `frontends/components/workbench/messages/strings.ts`
 - `frontends/components/workbench/messages/constants.ts`
+- `frontends/index.css`（新增 `.wb-num` utility）
+- `frontends/components/workbench/messages/**/*.tsx`（typography 整改 sweep，覆盖：ConversationList / MessageBubble / MessageContent / ChatHeader / Avatar / ChatStates / TypingIndicator / RangePill / WeChatBadge / CustomerDetails / QuickRepliesPanel / MentionList / EmojiPicker / MessagesPage / MessageContextMenu）
 - `package.json` / `pnpm-lock.yaml`
 
 ### 新增
@@ -332,8 +431,9 @@ const handleSend = (
 - `frontends/components/workbench/messages/composer/docToBlocks.ts`
 - `frontends/components/workbench/messages/useComposerPrefs.ts`
 
-## 13. 风险与回滚
+## 14. 风险与回滚
 
 - **包体增加 ~80–100KB gzipped**：可接受，TipTap + ProseMirror 是行业标杆
 - **TipTap 学习曲线**：通过把编辑器逻辑全部封装到 `composer/RichComposer` 收口
-- **回滚策略**：data 模型向后兼容，气泡降级路径存在；如发现严重问题可保留新增文件、仅回退 `MessageComposer.tsx` 到旧版本
+- **Typography sweep 风险**：纯样式替换，每处改动对单一 className 的字号/字重/行高，不动布局；每改一个文件就跑一次 `pnpm run lint` 与肉眼比对截图
+- **回滚策略**：data 模型向后兼容，气泡降级路径存在；如发现严重问题可保留新增文件、仅回退 `MessageComposer.tsx` 到旧版本；typography sweep 是独立 commit，可单独 revert
