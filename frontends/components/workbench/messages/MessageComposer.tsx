@@ -1,21 +1,16 @@
 import { useEffect, useRef, useState } from "react";
-import type {
-  ChangeEvent,
-  ClipboardEvent as ReactClipboardEvent,
-  KeyboardEvent,
-  PointerEvent as ReactPointerEvent,
-} from "react";
+import type { ChangeEvent, KeyboardEvent, PointerEvent as ReactPointerEvent } from "react";
 import * as Popover from "@radix-ui/react-popover";
 import { invoke, isTauri } from "@tauri-apps/api/core";
+import type { Editor, JSONContent } from "@tiptap/react";
 import {
+  Camera,
   ChevronDown,
   FileText,
-  FolderOpen,
-  Image as ImageIcon,
-  MoreHorizontal,
+  ImagePlus,
   PanelRightClose,
   PanelRightOpen,
-  Scissors,
+  Paperclip,
   Smile,
   Sparkles,
   X,
@@ -27,9 +22,10 @@ import { cn } from "@/lib/utils";
 import { WORKBENCH_ACTION_GRADIENT, WORKBENCH_ACTION_GRADIENT_HOVER } from "@/lib/theme";
 
 import { COMPOSER_MAX_HEIGHT, COMPOSER_MIN_HEIGHT, RESIZE_KEYBOARD_STEP } from "./constants";
-import type { Conversation, MessageAttachment, QuickReply } from "./data";
+import type { Conversation, MessageAttachment, MessageBlock, QuickReply } from "./data";
+import { docToBlocks } from "./composer/docToBlocks";
+import { RichComposer } from "./composer/RichComposer";
 import { EmojiPicker } from "./EmojiPicker";
-import { MentionList } from "./MentionList";
 import { QuickRepliesPanel } from "./QuickRepliesPanel";
 import { STRINGS } from "./strings";
 import { clearDraft, useDraft } from "./useDraftStore";
@@ -41,17 +37,12 @@ interface MessageComposerProps {
   onHeightChange: (height: number | ((height: number) => number)) => void;
   detailsOpen: boolean;
   onToggleDetails: () => void;
-  /** Called with the trimmed draft text + any pending attachments on submit. */
-  onSend?: (text: string, attachments?: MessageAttachment[]) => void;
+  /** Called with the trimmed draft text + rich blocks + any pending file attachments on submit. */
+  onSend?: (text: string, blocks?: MessageBlock[], attachments?: MessageAttachment[]) => void;
   /** Quick-reply templates available from the composer popover. */
   quickReplies?: QuickReply[];
   /** Contacts shown in the @mention popover when the user types `@`. */
   mentionCandidates?: Conversation[];
-}
-
-interface PendingAttachment extends MessageAttachment {
-  /** Local-only key for chip rendering and removal. Not part of the send payload. */
-  tempId: string;
 }
 
 interface ScreenshotResult {
@@ -64,7 +55,7 @@ function clampComposerHeight(height: number) {
 }
 
 // Extra vertical room the composer needs when the pending-attachment tray is
-// visible: 64px image-chip + 12px gap + ~8px slack for the X-button overhang.
+// visible: 64px file-chip + 12px gap + ~8px slack for the X-button overhang.
 const CHIP_TRAY_FOOTPRINT_PX = 84;
 
 export function MessageComposer({
@@ -82,29 +73,31 @@ export function MessageComposer({
   const [isResizing, setIsResizing] = useState(false);
   const [quickRepliesOpen, setQuickRepliesOpen] = useState(false);
   const [emojiOpen, setEmojiOpen] = useState(false);
-  const [pendingAttachments, setPendingAttachments] = useState<PendingAttachment[]>([]);
-  // @mention is keyed off textarea content + caret position. `mentionState`
-  // is null when no `@<query>` token is currently being typed; otherwise it
-  // holds the start index of the `@` and the partial query after it so the
-  // popover can filter candidates and replace the right slice on commit.
-  const [mentionState, setMentionState] = useState<{ start: number; query: string } | null>(null);
-  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const [pendingFileAttachments, setPendingFileAttachments] = useState<MessageAttachment[]>([]);
+  const editorRef = useRef<Editor | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const imageInputRef = useRef<HTMLInputElement | null>(null);
   const resizeStartRef = useRef({ y: 0, height });
-  const pendingAttachmentsRef = useRef<PendingAttachment[]>([]);
-  const canSend = draft.trim().length > 0 || pendingAttachments.length > 0;
 
-  useEffect(() => {
-    pendingAttachmentsRef.current = pendingAttachments;
-  }, [pendingAttachments]);
-
+  // Cleanup blob URLs on unmount only (do NOT revoke on send — bubbles still need them).
   useEffect(() => {
     return () => {
-      pendingAttachmentsRef.current.forEach((p) => URL.revokeObjectURL(p.url));
-      pendingAttachmentsRef.current = [];
+      pendingFileAttachments.forEach((a) => URL.revokeObjectURL(a.url));
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 仅卸载时回收
   }, []);
+
+  // Derive canSend from the TipTap doc and file tray.
+  // docToBlocks expects JSONNode (type: string), while JSONContent.type is string|undefined.
+  // A valid TipTap doc always has type="doc", so the cast is safe.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const blocks = docToBlocks(draft as any);
+  const textBlocks = blocks.filter((b): b is { type: "text"; value: string } => b.type === "text");
+  const textJoined = textBlocks.map((b) => b.value).join("\n");
+  const canSend =
+    textJoined.trim().length > 0 ||
+    blocks.some((b) => b.type === "image") ||
+    pendingFileAttachments.length > 0;
 
   // Keep the composer tall enough to show both the chip tray AND the send row
   // by bumping its height when chips appear and restoring it when they're
@@ -112,57 +105,69 @@ export function MessageComposer({
   // transition (chip count fluctuating within "has chips" doesn't double-bump).
   const chipBumpAppliedRef = useRef(false);
   useEffect(() => {
-    const shouldBump = pendingAttachments.length > 0;
+    const shouldBump = pendingFileAttachments.length > 0;
     if (shouldBump === chipBumpAppliedRef.current) return;
     chipBumpAppliedRef.current = shouldBump;
     onHeightChange((prev) =>
       clampComposerHeight(prev + (shouldBump ? CHIP_TRAY_FOOTPRINT_PX : -CHIP_TRAY_FOOTPRINT_PX)),
     );
-  }, [pendingAttachments.length, onHeightChange]);
+  }, [pendingFileAttachments.length, onHeightChange]);
 
-  const addPendingAttachments = (files: File[], typeOverride?: "image" | "file") => {
-    if (files.length === 0) return;
-    const next: PendingAttachment[] = files.map((file) => ({
-      tempId: `att-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-      type: typeOverride ?? (file.type.startsWith("image/") ? "image" : "file"),
+  // ─── Attachment helpers ────────────────────────────────────────────────────
+
+  /** Insert image files as inline image nodes in the TipTap editor. */
+  const insertImageFiles = (files: File[]) => {
+    if (!editorRef.current || files.length === 0) return;
+    files.forEach((file) => {
+      const url = URL.createObjectURL(file);
+      editorRef
+        .current!.chain()
+        .focus()
+        .insertContent({
+          type: "image",
+          attrs: { src: url, alt: file.name },
+        })
+        .run();
+    });
+  };
+
+  const handleImagePicker = (event: ChangeEvent<HTMLInputElement>) => {
+    insertImageFiles(Array.from(event.target.files ?? []));
+    event.target.value = "";
+  };
+
+  const handleFilePicker = (event: ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(event.target.files ?? []);
+    const next: MessageAttachment[] = files.map((file) => ({
+      type: "file",
       url: URL.createObjectURL(file),
       name: file.name,
       sizeBytes: file.size,
     }));
-    setPendingAttachments((prev) => [...prev, ...next]);
-  };
-
-  const removePendingAttachment = (tempId: string) => {
-    setPendingAttachments((prev) => {
-      const target = prev.find((p) => p.tempId === tempId);
-      if (target) URL.revokeObjectURL(target.url);
-      return prev.filter((p) => p.tempId !== tempId);
-    });
-  };
-
-  const handleFilePickerChange = (
-    event: ChangeEvent<HTMLInputElement>,
-    typeOverride: "image" | "file",
-  ) => {
-    const files = Array.from(event.target.files ?? []);
-    addPendingAttachments(files, typeOverride);
-    // Reset value so picking the same file twice in a row still triggers change.
+    setPendingFileAttachments((prev) => [...prev, ...next]);
     event.target.value = "";
   };
+
+  const removePendingFileAttachment = (target: MessageAttachment) => {
+    URL.revokeObjectURL(target.url);
+    setPendingFileAttachments((prev) => prev.filter((p) => p !== target));
+  };
+
+  // ─── Screenshot ───────────────────────────────────────────────────────────
 
   const handleScreenshot = async () => {
     // Tauri webviews don't expose getDisplayMedia, so screenshots go through a
     // native Rust command. Outside Tauri (pure web preview), nudge the user to
-    // use the OS screenshot tool + paste into the textarea instead.
+    // use the OS screenshot tool + paste into the editor instead.
     if (!isTauri()) {
       showToast(STRINGS.toast.screenshotPasteHint, { type: "info" });
-      textareaRef.current?.focus();
+      editorRef.current?.commands.focus();
       return;
     }
     try {
       const result = await invoke<ScreenshotResult>("take_screenshot");
       if (result.cancelled) {
-        textareaRef.current?.focus();
+        editorRef.current?.commands.focus();
         return;
       }
 
@@ -177,7 +182,7 @@ export function MessageComposer({
       const blob = new Blob([bytes], { type: "image/png" });
       const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
       const file = new File([blob], `screenshot-${stamp}.png`, { type: "image/png" });
-      addPendingAttachments([file], "image");
+      insertImageFiles([file]);
     } catch (err) {
       // Most common failure on macOS: user has not granted Screen Recording
       // permission yet. The native dialog will surface from the OS; the next
@@ -185,97 +190,24 @@ export function MessageComposer({
       const reason = err instanceof Error ? err.message : String(err);
       showToast(
         `${STRINGS.toast.screenshotFailed}：${reason}。${STRINGS.toast.screenshotPermissionHint}`,
-        {
-          type: "error",
-        },
+        { type: "error" },
       );
     }
   };
 
-  const handleTextareaPaste = (event: ReactClipboardEvent<HTMLTextAreaElement>) => {
-    const items = event.clipboardData?.items;
-    if (!items || items.length === 0) return;
-    const images: File[] = [];
-    for (const item of Array.from(items)) {
-      if (item.kind === "file" && item.type.startsWith("image/")) {
-        const file = item.getAsFile();
-        if (file) images.push(file);
-      }
-    }
-    if (images.length === 0) return;
-    // Prevent the default text paste (some clipboards include a filename string
-    // alongside the image) and route the image into the pending tray instead.
-    event.preventDefault();
-    addPendingAttachments(images, "image");
-  };
+  // ─── Quick replies & emoji ─────────────────────────────────────────────────
 
   const handleQuickReplySelect = (reply: QuickReply) => {
-    // Append (or set) the reply preview text, joining with a newline so
-    // multiple selections stack legibly. Trim trailing whitespace before
-    // append to avoid double-blank lines.
-    setDraftValue((draft.trimEnd() ? draft.trimEnd() + "\n" : "") + reply.preview);
+    editorRef.current?.chain().focus().insertContent(reply.preview).run();
     setQuickRepliesOpen(false);
   };
 
   const handleEmojiSelect = (emoji: string) => {
-    const ta = textareaRef.current;
-    if (!ta) {
-      setDraftValue(draft + emoji);
-    } else {
-      // Insert at caret rather than appending — matches user expectation when
-      // they paused mid-message to pick an emoji.
-      const start = ta.selectionStart ?? draft.length;
-      const end = ta.selectionEnd ?? draft.length;
-      const next = draft.slice(0, start) + emoji + draft.slice(end);
-      setDraftValue(next);
-      // Restore caret AFTER React renders the new value.
-      requestAnimationFrame(() => {
-        ta.focus();
-        const pos = start + emoji.length;
-        ta.setSelectionRange(pos, pos);
-      });
-    }
+    editorRef.current?.chain().focus().insertContent(emoji).run();
     setEmojiOpen(false);
   };
 
-  // Detect "@<query>" tokens at caret. Triggered on every textarea change so
-  // the popover toggles itself based on what the user is typing.
-  const handleDraftChange = (value: string) => {
-    setDraftValue(value);
-    const ta = textareaRef.current;
-    const caret = ta?.selectionStart ?? value.length;
-    const prefix = value.slice(0, caret);
-    const at = prefix.lastIndexOf("@");
-    if (at === -1) {
-      setMentionState(null);
-      return;
-    }
-    // Reject if there's whitespace between `@` and caret — the user has moved
-    // past the mention token (e.g. typed a space) so the popover should close.
-    const between = prefix.slice(at + 1);
-    if (/\s/.test(between)) {
-      setMentionState(null);
-      return;
-    }
-    setMentionState({ start: at, query: between });
-  };
-
-  const handleMentionSelect = (name: string) => {
-    if (!mentionState) return;
-    const ta = textareaRef.current;
-    const caret = ta?.selectionStart ?? draft.length;
-    const before = draft.slice(0, mentionState.start);
-    const after = draft.slice(caret);
-    const inserted = `@${name} `;
-    const next = before + inserted + after;
-    setDraftValue(next);
-    setMentionState(null);
-    requestAnimationFrame(() => {
-      ta?.focus();
-      const pos = before.length + inserted.length;
-      ta?.setSelectionRange(pos, pos);
-    });
-  };
+  // ─── Resize ───────────────────────────────────────────────────────────────
 
   useEffect(() => {
     if (!isResizing) return;
@@ -328,26 +260,29 @@ export function MessageComposer({
     });
   };
 
+  // ─── Submit ───────────────────────────────────────────────────────────────
+
   const submitDraft = () => {
     if (!canSend) return;
-    const attachments: MessageAttachment[] = pendingAttachments.map(
-      ({ tempId: _tempId, ...rest }) => rest,
+    const finalBlocks = blocks.filter((b) => !(b.type === "text" && b.value.trim().length === 0));
+    const fileAttachments = pendingFileAttachments;
+    onSend?.(
+      textJoined.trim(),
+      finalBlocks.length > 0 ? finalBlocks : undefined,
+      fileAttachments.length > 0 ? fileAttachments : undefined,
     );
-    onSend?.(draft.trim(), attachments.length > 0 ? attachments : undefined);
+    // Hand ownership of file blob URLs to the message bubble; do NOT revoke here.
+    setPendingFileAttachments([]);
+    // Reset draft (sets EMPTY_DOC in the store).
     clearDraft(conversationId);
-    // Hand ownership of the blob URLs to the message bubble; do NOT revoke
-    // here or the rendered images/files would break.
-    setPendingAttachments([]);
+    // Also reset the editor's content.
+    editorRef.current?.commands.setContent({
+      type: "doc",
+      content: [{ type: "paragraph" }],
+    });
   };
 
-  const handleTextareaKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
-    // Enter sends; Shift+Enter inserts a newline. Skip when an IME composition
-    // is active (Chinese input picker uses Enter to confirm a candidate).
-    if (event.key !== "Enter" || event.shiftKey) return;
-    if (event.nativeEvent.isComposing || event.keyCode === 229) return;
-    event.preventDefault();
-    submitDraft();
-  };
+  // ─── Render ───────────────────────────────────────────────────────────────
 
   return (
     <div
@@ -379,7 +314,7 @@ export function MessageComposer({
         type="file"
         multiple
         className="hidden"
-        onChange={(e) => handleFilePickerChange(e, "file")}
+        onChange={handleFilePicker}
       />
       <input
         ref={imageInputRef}
@@ -387,7 +322,7 @@ export function MessageComposer({
         multiple
         accept="image/*"
         className="hidden"
-        onChange={(e) => handleFilePickerChange(e, "image")}
+        onChange={handleImagePicker}
       />
       <div className="flex h-full w-full flex-col gap-2 bg-workbench-surface">
         <div className="flex items-center gap-3 text-workbench-text-secondary">
@@ -417,21 +352,20 @@ export function MessageComposer({
             </Popover.Portal>
           </Popover.Root>
           <ToolButton
-            icon={Scissors}
+            icon={Camera}
             label={STRINGS.composer.screenshot}
             onClick={handleScreenshot}
           />
           <ToolButton
-            icon={ImageIcon}
+            icon={ImagePlus}
             label={STRINGS.composer.image}
             onClick={() => imageInputRef.current?.click()}
           />
           <ToolButton
-            icon={FolderOpen}
+            icon={Paperclip}
             label={STRINGS.composer.file}
             onClick={() => fileInputRef.current?.click()}
           />
-          <ToolButton icon={MoreHorizontal} label={STRINGS.composer.moreTools} />
           <button
             type="button"
             title={detailsOpen ? STRINGS.composer.collapseRight : STRINGS.composer.expandRight}
@@ -452,53 +386,32 @@ export function MessageComposer({
             )}
           </button>
         </div>
-        {pendingAttachments.length > 0 && (
+        {pendingFileAttachments.length > 0 && (
           <div className="flex shrink-0 flex-wrap gap-2 pb-0.5 pt-1">
-            {pendingAttachments.map((att) => (
-              <PendingChip
-                key={att.tempId}
+            {pendingFileAttachments.map((att, i) => (
+              <FileChip
+                key={`${att.url}-${i}`}
                 attachment={att}
-                onRemove={() => removePendingAttachment(att.tempId)}
+                onRemove={() => removePendingFileAttachment(att)}
               />
             ))}
           </div>
         )}
-        <Popover.Root
-          open={mentionState !== null && (mentionCandidates?.length ?? 0) > 0}
-          onOpenChange={(open) => {
-            if (!open) setMentionState(null);
+        <RichComposer
+          initialContent={draft}
+          placeholder={STRINGS.composer.placeholder}
+          mentionCandidates={mentionCandidates}
+          onChange={(doc: JSONContent) => setDraftValue(doc)}
+          onSubmit={submitDraft}
+          onPasteFiles={(files) => {
+            insertImageFiles(files);
+            return true;
           }}
-        >
-          <Popover.Anchor asChild>
-            <textarea
-              ref={textareaRef}
-              value={draft}
-              onChange={(e) => handleDraftChange(e.currentTarget.value)}
-              onKeyDown={handleTextareaKeyDown}
-              onPaste={handleTextareaPaste}
-              rows={3}
-              placeholder={STRINGS.composer.placeholder}
-              aria-keyshortcuts="Enter"
-              className="focus-ring min-h-[64px] w-full flex-1 resize-none rounded-md border-0 bg-transparent px-2 py-2 text-[13px] leading-[1.65] text-workbench-text placeholder:text-workbench-text-muted"
-            />
-          </Popover.Anchor>
-          <Popover.Portal>
-            <Popover.Content
-              side="top"
-              align="start"
-              sideOffset={6}
-              collisionPadding={12}
-              onOpenAutoFocus={(e) => e.preventDefault()}
-              className="z-30 w-[260px] rounded-lg border border-workbench-line bg-workbench-surface p-1 shadow-wb-popover-strong outline-none"
-            >
-              <MentionList
-                query={mentionState?.query ?? ""}
-                candidates={mentionCandidates ?? []}
-                onSelect={handleMentionSelect}
-              />
-            </Popover.Content>
-          </Popover.Portal>
-        </Popover.Root>
+          onReady={(editor) => {
+            editorRef.current = editor;
+          }}
+          className="min-h-0 flex-1 overflow-y-auto"
+        />
         <div className="flex items-center gap-2 pt-0.5">
           <Popover.Root open={quickRepliesOpen} onOpenChange={setQuickRepliesOpen}>
             <Popover.Trigger asChild>
@@ -624,42 +537,26 @@ function ToolButton({
   );
 }
 
-function PendingChip({
+function FileChip({
   attachment,
   onRemove,
 }: {
-  attachment: PendingAttachment;
+  attachment: MessageAttachment;
   onRemove: () => void;
 }) {
-  const isImage = attachment.type === "image";
   return (
-    <div
-      className={cn(
-        "group relative flex items-center rounded-xl border border-workbench-line bg-workbench-surface shadow-[0_1px_2px_rgba(15,23,42,0.04)] transition-colors hover:bg-workbench-surface-subtle",
-        isImage ? "size-16 overflow-hidden p-0.5" : "h-14 min-w-[160px] max-w-[240px] gap-2.5 px-3",
-      )}
-    >
-      {isImage ? (
-        <img
-          src={attachment.url}
-          alt={attachment.name ?? STRINGS.attachment.image}
-          className="size-full rounded-[9px] object-cover"
-        />
-      ) : (
-        <>
-          <span className="grid size-9 shrink-0 place-items-center rounded-lg bg-workbench-surface-soft text-workbench-accent">
-            <FileText size={17} strokeWidth={1.55} aria-hidden />
-          </span>
-          <span className="flex min-w-0 flex-1 flex-col gap-0.5 leading-tight">
-            <span className="truncate text-[12px] font-medium text-workbench-text">
-              {attachment.name ?? STRINGS.attachment.file}
-            </span>
-            <span className="font-numeric text-[10px] tabular-nums text-workbench-text-muted">
-              {formatFileSize(attachment.sizeBytes)}
-            </span>
-          </span>
-        </>
-      )}
+    <div className="group relative flex h-14 min-w-[160px] max-w-[240px] items-center gap-2.5 rounded-xl border border-workbench-line bg-workbench-surface px-3 shadow-[0_1px_2px_rgba(15,23,42,0.04)] transition-colors hover:bg-workbench-surface-subtle">
+      <span className="grid size-9 shrink-0 place-items-center rounded-lg bg-workbench-surface-soft text-workbench-accent">
+        <FileText size={17} strokeWidth={1.55} aria-hidden />
+      </span>
+      <span className="flex min-w-0 flex-1 flex-col gap-0.5 leading-tight">
+        <span className="truncate text-[12px] font-medium text-workbench-text">
+          {attachment.name ?? STRINGS.attachment.file}
+        </span>
+        <span className="font-numeric text-[10px] tabular-nums text-workbench-text-muted">
+          {formatFileSize(attachment.sizeBytes)}
+        </span>
+      </span>
       <button
         type="button"
         onClick={onRemove}
