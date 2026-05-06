@@ -333,7 +333,7 @@ function BrandStrip() {
     >
       <span>© 2026 匠多多</span>
       <span aria-hidden className="size-1 rounded-full bg-[#D1D5DB]" />
-      <span>企微合规接入</span>
+      <span>企微智能接入</span>
       <span aria-hidden className="size-1 rounded-full bg-[#D1D5DB]" />
       <span>数据本地化</span>
     </div>
