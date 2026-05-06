@@ -474,16 +474,23 @@ export function MessageComposer({
           <span
             className={cn(
               "ml-2 inline-flex items-center gap-2 font-numeric text-[11px] tabular-nums text-workbench-text-muted",
-              nearLimit && !overLimit && "text-amber-500",
+              nearLimit && !overLimit && "text-workbench-warning",
               overLimit && "text-workbench-danger",
             )}
           >
-            <span aria-live="polite">{STRINGS.composer.charCount(charLength)}</span>
+            <span aria-hidden>{STRINGS.composer.charCount(charLength)}</span>
             <span aria-hidden className="hidden sm:inline">
               ·
             </span>
             <span aria-hidden className="hidden sm:inline">
               {STRINGS.composer.enterToSend}
+            </span>
+            <span role="status" aria-live="polite" className="sr-only">
+              {overLimit
+                ? STRINGS.composer.charLimitOver
+                : nearLimit
+                  ? STRINGS.composer.charLimitNear
+                  : ""}
             </span>
           </span>
           <div className="ml-auto">

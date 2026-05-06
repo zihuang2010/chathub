@@ -118,6 +118,8 @@ export const STRINGS = {
     sendJumpToNext: "发送后跳到下一条",
     sendSilentMain: "静默发送",
     charCount: (n: number) => `${n} 字`,
+    charLimitNear: "接近字数上限",
+    charLimitOver: "已超过字数上限，无法发送",
     enterToSend: "Enter 发送 · Shift+Enter 换行",
     expandRight: "展开右栏",
     collapseRight: "收起右栏",
