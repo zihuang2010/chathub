@@ -121,7 +121,11 @@ function IncomingBubble({
             <MessageTimeTooltip label={fullLabel} align="left" />
             {replyTarget && <ReplyBlock target={replyTarget} />}
             <span className="whitespace-pre-wrap break-words">
-              <MessageContent text={message.text} attachments={message.attachments} />
+              <MessageContent
+                text={message.text}
+                blocks={message.blocks}
+                attachments={message.attachments}
+              />
             </span>
           </article>
         </MessageContextMenu>
@@ -155,7 +159,11 @@ function OutgoingBubble({
             <MessageTimeTooltip label={fullLabel} align="right" />
             {replyTarget && <ReplyBlock target={replyTarget} />}
             <span className="whitespace-pre-wrap break-words">
-              <MessageContent text={message.text} attachments={message.attachments} />
+              <MessageContent
+                text={message.text}
+                blocks={message.blocks}
+                attachments={message.attachments}
+              />
             </span>
           </article>
         </MessageContextMenu>

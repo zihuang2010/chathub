@@ -7,7 +7,7 @@ import { cn } from "@/lib/utils";
 import { ChatEmptyState, ChatErrorState, ChatLoadingState } from "./ChatStates";
 import { ChatHeader } from "./ChatHeader";
 import { COMPOSER_DEFAULT_HEIGHT, TIME_BURST_GAP_MS } from "./constants";
-import type { Conversation, Message, MessageAttachment, QuickReply } from "./data";
+import type { Conversation, Message, MessageAttachment, MessageBlock, QuickReply } from "./data";
 import { DateDivider, MessageBubble, type ReplyTarget, UnreadDivider } from "./MessageBubble";
 import { MessageComposer } from "./MessageComposer";
 import { type MessageActionType } from "./MessageContextMenu";
@@ -221,13 +221,14 @@ export const ChatArea = memo(function ChatArea({
   }, []);
 
   const handleSend = useCallback(
-    (text: string, attachments?: MessageAttachment[]) => {
+    (text: string, blocks?: MessageBlock[], attachments?: MessageAttachment[]) => {
       const id = `local-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
       const newMessage: Message = {
         id,
         conversationId: conversation.id,
         direction: "out",
         text,
+        blocks: blocks && blocks.length > 0 ? blocks : undefined,
         sentAt: new Date().toISOString(),
         status: "sending",
         attachments: attachments && attachments.length > 0 ? attachments : undefined,
