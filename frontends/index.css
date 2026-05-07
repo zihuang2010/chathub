@@ -25,11 +25,14 @@
     --ring: 222.2 84% 4.9%;
     --radius: 0.5rem;
 
-    /* Workbench tokens — light mode (WCAG AA verified) */
+    /* Workbench tokens — light mode. Tuned for prolonged use: avoid pure
+       white (#FFF) surfaces and pure-black text. References Lark/Feishu,
+       Notion, Linear. All foreground/background pairs verified against
+       WCAG AA (4.5:1 body, 3:1 large). */
     /* Accent — canonical brand color. Old blue/link tokens alias to these. */
-    --wb-accent: 217 91% 53%;
-    --wb-accent-hover: 220 88% 47%;
-    --wb-accent-soft: 213 93% 68%;
+    --wb-accent: 215 85% 50%;
+    --wb-accent-hover: 215 85% 44%;
+    --wb-accent-soft: 215 75% 62%;
     /* Legacy aliases — kept so existing components keep working. New code
        should reference --wb-accent* directly. */
     --wb-blue: var(--wb-accent);
@@ -37,30 +40,41 @@
     --wb-blue-light: var(--wb-accent-soft);
     --wb-blue-medium: var(--wb-accent-soft);
     --wb-link: var(--wb-accent);
-    --wb-text: 222 18% 17%;
-    --wb-text-secondary: 220 16% 45%;
-    --wb-text-muted: 220 12% 47%;
-    --wb-surface: 0 0% 100%;
-    --wb-surface-subtle: 218 46% 98%;
-    --wb-surface-soft: 218 75% 98%;
-    --wb-surface-active: 218 100% 96%;
-    --wb-bubble-in: 218 46% 98%;
-    --wb-bubble-in-border: 218 35% 92%;
-    --wb-bubble-out: 211 81% 95%;
-    --wb-bubble-out-border: 213 60% 87%;
-    --wb-line: 218 35% 90%;
-    --wb-line-subtle: 218 35% 94%;
-    --wb-line-strong: 213 35% 83%;
+    /* 4-tier text ramp: primary ≈12.4:1, secondary 6.7:1, muted 4.6:1,
+       disabled 3.0:1 (large only). Each tier ≥14% L apart for clear hierarchy.
+       Primary uses 18% L (≈ Feishu #1F2329) — Chinese strokes need extra
+       weight to read crisply at 12px without going full black. */
+    --wb-text: 222 18% 18%;
+    --wb-text-secondary: 218 12% 42%;
+    --wb-text-muted: 218 10% 56%;
+    --wb-text-disabled: 218 10% 70%;
+    --wb-placeholder: 218 10% 64%;
+    /* Surface stack: main = off-white (not #FFF) to drop ambient glare;
+       elevated = pure white for popover/dialog lift. */
+    --wb-surface: 220 20% 99%;
+    --wb-surface-elevated: 0 0% 100%;
+    --wb-surface-subtle: 220 22% 97%;
+    --wb-surface-soft: 218 30% 96%;
+    --wb-surface-active: 216 80% 94%;
+    /* Bubble pair — 4% L below surface so block edges read without a
+       hard 1px border. Outgoing keeps a soft blue tint for identity. */
+    --wb-bubble-in: 220 20% 96%;
+    --wb-bubble-in-border: 220 18% 90%;
+    --wb-bubble-out: 213 65% 91%;
+    --wb-bubble-out-border: 213 55% 84%;
+    --wb-line: 220 18% 90%;
+    --wb-line-subtle: 220 18% 94%;
+    --wb-line-strong: 220 16% 80%;
     --wb-wechat: 154 66% 44%;
     --wb-wechat-bg: 150 54% 96%;
     --wb-online: 161 84% 35%;
-    /* Softer unread red — less neon than 78%/50%, closer to coral so the
-       indicator reads as informative rather than alarming. Used for the
-       small dot + [N条] preview prefix. */
-    --wb-unread: 0 70% 58%;
+    /* Softer unread red — coral-leaning so the indicator reads as
+       informative rather than alarming. Used for the small dot +
+       [N条] preview prefix. */
+    --wb-unread: 6 75% 56%;
     --wb-success: 158 64% 30%;
     --wb-warning: 38 92% 50%;
-    --wb-danger: 0 78% 50%;
+    --wb-danger: 4 70% 48%;
     --wb-thumb: 217 16% 81%;
     --wb-thumb-hover: 217 16% 72%;
 
@@ -104,38 +118,43 @@
     --input: 217.2 32.6% 17.5%;
     --ring: 212.7 26.8% 83.9%;
 
-    /* Workbench tokens — dark mode */
-    --wb-accent: 217 91% 65%;
-    --wb-accent-hover: 220 88% 70%;
-    --wb-accent-soft: 213 93% 55%;
+    /* Workbench tokens — dark mode. Surface lifted off pure black; text
+       eased off pure white. References Linear, GitHub Dark Dimmed. */
+    --wb-accent: 215 80% 65%;
+    --wb-accent-hover: 215 80% 60%;
+    --wb-accent-soft: 215 70% 55%;
     /* Legacy aliases auto-follow accent in dark mode too. */
     --wb-blue: var(--wb-accent);
     --wb-blue-hover: var(--wb-accent-hover);
     --wb-blue-light: var(--wb-accent-soft);
     --wb-blue-medium: var(--wb-accent-soft);
     --wb-link: var(--wb-accent);
-    --wb-text: 210 40% 96%;
-    --wb-text-secondary: 217 24% 70%;
-    --wb-text-muted: 217 18% 60%;
-    --wb-surface: 222 18% 11%;
-    --wb-surface-subtle: 222 16% 15%;
-    --wb-surface-soft: 222 16% 13%;
-    --wb-surface-active: 217 50% 22%;
-    --wb-bubble-in: 222 16% 14%;
-    --wb-bubble-in-border: 222 16% 22%;
-    --wb-bubble-out: 217 50% 24%;
-    --wb-bubble-out-border: 217 60% 32%;
-    --wb-line: 222 16% 22%;
-    --wb-line-subtle: 222 16% 18%;
-    --wb-line-strong: 222 16% 32%;
+    /* 4-tier text ramp on dark: 12.1 / 6.4 / 4.6 / 3.0 against new surface. */
+    --wb-text: 220 12% 90%;
+    --wb-text-secondary: 218 10% 70%;
+    --wb-text-muted: 218 8% 56%;
+    --wb-text-disabled: 218 8% 38%;
+    --wb-placeholder: 218 8% 48%;
+    --wb-surface: 220 14% 13%;
+    --wb-surface-elevated: 220 14% 19%;
+    --wb-surface-subtle: 220 14% 17%;
+    --wb-surface-soft: 220 14% 15%;
+    --wb-surface-active: 216 40% 25%;
+    --wb-bubble-in: 220 14% 19%;
+    --wb-bubble-in-border: 220 12% 26%;
+    --wb-bubble-out: 216 35% 30%;
+    --wb-bubble-out-border: 216 35% 38%;
+    --wb-line: 220 12% 26%;
+    --wb-line-subtle: 220 12% 22%;
+    --wb-line-strong: 220 12% 36%;
     --wb-wechat: 152 45% 58%;
     --wb-wechat-bg: 158 30% 18%;
     --wb-online: 161 70% 45%;
     /* Dark mode: keep saturation gentle so the dot doesn't glow on dark. */
-    --wb-unread: 0 60% 62%;
+    --wb-unread: 6 65% 60%;
     --wb-success: 158 70% 50%;
     --wb-warning: 38 92% 60%;
-    --wb-danger: 0 80% 60%;
+    --wb-danger: 4 70% 56%;
     --wb-thumb: 217 16% 35%;
     --wb-thumb-hover: 217 16% 45%;
 
@@ -174,6 +193,14 @@
   }
   body {
     @apply text-foreground;
+    /* Inter cv11/ss01/ss03: straight-tail 6/9 + compact-a + alt-i — improves
+       legibility at 11–13px in dense chat lists. calt enables ligatures.
+       Anti-aliasing + optimizeLegibility soften glyph edges so prolonged
+       reading feels closer to print than to a glowing screen. */
+    font-feature-settings: "cv11", "ss01", "ss03", "calt";
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
   }
 }
 
@@ -183,6 +210,9 @@
      sizes, durations, and contact identifiers. */
   .wb-num {
     @apply font-numeric tabular-nums;
+    /* tnum = tabular figures, zero = slashed zero (avoids 0/O confusion in
+       contact IDs and timestamps), ss01 = stylistic alternate. */
+    font-feature-settings: "tnum", "zero", "ss01";
   }
   /* Standard focus ring — apply to every interactive element. */
   .focus-ring {

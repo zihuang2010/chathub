@@ -230,17 +230,21 @@ const ConversationItem = memo(function ConversationItem({
         <div className="flex min-w-0 items-center">
           <span className="truncate text-wb-xs font-medium text-workbench-text">{name}</span>
         </div>
-        <div className="mt-0.5 truncate text-wb-3xs text-workbench-text-muted/70">
+        <div className="mt-0.5 truncate text-wb-2xs text-workbench-text-secondary">
           {unread > 0 && (
-            <span className="wb-num">{STRINGS.conversationList.unreadPreviewPrefix(unread)}</span>
+            <span className="wb-num mr-0.5 font-medium text-workbench-text-secondary">
+              {STRINGS.conversationList.unreadPreviewPrefix(unread)}
+            </span>
           )}
           {preview}
         </div>
-        <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-wb-3xs font-medium">
+        <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-wb-3xs">
           <span className="shrink-0 text-workbench-text-muted">
             {STRINGS.conversationList.fromShort}
           </span>
-          <span className="min-w-0 truncate font-medium text-workbench-text">{account}</span>
+          <span className="min-w-0 truncate font-medium text-workbench-text-secondary">
+            {account}
+          </span>
           <WeChatBadge />
         </div>
       </div>

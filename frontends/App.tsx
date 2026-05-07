@@ -7,7 +7,7 @@ import { Workbench } from "@/components/Workbench";
 import { checkForAppUpdates } from "@/lib/updater";
 import { cn } from "@/lib/utils";
 
-const SPLASH_DURATION_MS = 3000;
+const SPLASH_DURATION_MS = 2000;
 
 function App() {
   const [splashHidden, setSplashHidden] = useState(false);

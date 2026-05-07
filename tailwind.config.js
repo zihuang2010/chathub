@@ -60,7 +60,10 @@ export default {
           text: "hsl(var(--wb-text))",
           "text-secondary": "hsl(var(--wb-text-secondary))",
           "text-muted": "hsl(var(--wb-text-muted))",
+          "text-disabled": "hsl(var(--wb-text-disabled))",
+          placeholder: "hsl(var(--wb-placeholder))",
           surface: "hsl(var(--wb-surface))",
+          "surface-elevated": "hsl(var(--wb-surface-elevated))",
           "surface-subtle": "hsl(var(--wb-surface-subtle))",
           "surface-soft": "hsl(var(--wb-surface-soft))",
           "surface-active": "hsl(var(--wb-surface-active))",
@@ -95,7 +98,19 @@ export default {
         },
       },
       fontFamily: {
-        numeric: ["SFMono-Regular", "SF Mono", "Roboto Mono", "Menlo", "Consolas", "monospace"],
+        // Numeric stack mirrors body font so digits and hint strings (e.g.
+        // "Enter 发送 · Shift+Enter 换行", message timestamps, byte counts)
+        // sit visually next to Chinese glyphs. tabular-nums + tnum/zero from
+        // .wb-num still keep digits column-aligned without forcing a mono
+        // typeface that clashes with the surrounding sans UI.
+        numeric: [
+          "Inter",
+          "PingFang SC",
+          "Hiragino Sans GB",
+          "Microsoft YaHei",
+          "system-ui",
+          "sans-serif",
+        ],
       },
       fontSize: {
         // Workbench type scale — eliminates half-pixel arbitrary values.

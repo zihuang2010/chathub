@@ -123,8 +123,8 @@ function IncomingBubble({
             role="article"
             aria-label={`${avatarName}: ${messageAriaText(message)}，发送时间 ${fullLabel}`}
             className={cn(
-              "group relative flex flex-col gap-1 rounded-2xl rounded-tl-md border border-workbench-bubble-in-border bg-workbench-bubble-in text-wb-2xs text-workbench-text shadow-wb-bubble focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-workbench-accent/15",
-              compact ? "px-3 py-1.5" : "px-3.5 py-2",
+              "group relative flex flex-col gap-1 rounded-2xl rounded-tl-md bg-workbench-bubble-in text-[13.5px] font-[450] leading-[1.65] text-workbench-text shadow-wb-bubble ring-1 ring-workbench-bubble-in-border/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-workbench-accent/40",
+              compact ? "px-3.5 py-2" : "px-4 py-2.5",
             )}
           >
             <MessageTimeTooltip label={fullLabel} align="left" />
@@ -161,8 +161,8 @@ function OutgoingBubble({
             role="article"
             aria-label={`我：${messageAriaText(message)}，发送时间 ${fullLabel}`}
             className={cn(
-              "group relative flex flex-col gap-1 rounded-2xl rounded-tr-md border border-workbench-bubble-out-border bg-workbench-bubble-out text-wb-2xs text-workbench-text shadow-wb-bubble focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-workbench-accent/15",
-              compact ? "px-3 py-1.5" : "px-3.5 py-2",
+              "group relative flex flex-col gap-1 rounded-2xl rounded-tr-md bg-workbench-bubble-out text-[13.5px] font-[450] leading-[1.65] text-workbench-text shadow-wb-bubble ring-1 ring-workbench-bubble-out-border/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-workbench-accent/40",
+              compact ? "px-3.5 py-2" : "px-4 py-2.5",
             )}
           >
             <MessageTimeTooltip label={fullLabel} align="right" />
