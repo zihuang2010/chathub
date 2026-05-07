@@ -1,0 +1,124 @@
+name: build
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            label: macos-arm64
+            bundles: "app,dmg,updater"
+          - os: macos-13
+            target: x86_64-apple-darwin
+            label: macos-x86_64
+            bundles: "app,dmg,updater"
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            label: windows-x86_64
+            bundles: "nsis,updater"
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: backends -> target
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: tauri build
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: pnpm tauri build --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
+
+      - name: collect platform artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT="staging/${{ matrix.label }}"
+          mkdir -p "$OUT"
+          BD="backends/target/${{ matrix.target }}/release/bundle"
+          # macOS: dmg + .app.tar.gz + .sig
+          [ -d "$BD/dmg" ]   && cp -v "$BD"/dmg/*.dmg                "$OUT"/ || true
+          [ -d "$BD/macos" ] && cp -v "$BD"/macos/*.app.tar.gz*      "$OUT"/ || true
+          # Windows: nsis-setup.exe + .nsis.zip + .sig
+          [ -d "$BD/nsis" ]  && cp -v "$BD"/nsis/*-setup.exe         "$OUT"/ || true
+          [ -d "$BD/nsis" ]  && cp -v "$BD"/nsis/*.nsis.zip*         "$OUT"/ || true
+          ls -la "$OUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.label }}
+          path: staging/${{ matrix.label }}
+          if-no-files-found: error
+          retention-days: 7
+
+  package:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: download all platform artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-staging/bundles
+          # no `name`: download all artifacts; each lands in release-staging/bundles/<artifact-name>/
+
+      - name: read version
+        id: ver
+        shell: bash
+        run: echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+
+      - name: generate latest.json
+        env:
+          OSS_BUNDLE_BASE_URL: ${{ vars.OSS_BUNDLE_BASE_URL }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE="${OSS_BUNDLE_BASE_URL:-https://REPLACE-ME.oss-cn-hangzhou.aliyuncs.com/releases}"
+          if [ "$BASE" = "https://REPLACE-ME.oss-cn-hangzhou.aliyuncs.com/releases" ]; then
+            echo "::warning::OSS_BUNDLE_BASE_URL not set as repo Variable; using placeholder. Patch latest.json before upload, or set the Variable and rerun."
+          fi
+          node scripts/make-latest-json.mjs release-staging "$BASE"
+          cat release-staging/latest.json
+
+      - name: bundle release zip
+        shell: bash
+        run: |
+          set -euo pipefail
+          ZIP="chathub-release-${{ steps.ver.outputs.version }}.zip"
+          (cd release-staging && zip -r "../$ZIP" .)
+          ls -la "$ZIP"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: chathub-release-${{ steps.ver.outputs.version }}
+          path: chathub-release-${{ steps.ver.outputs.version }}.zip
+          if-no-files-found: error
+          retention-days: 30

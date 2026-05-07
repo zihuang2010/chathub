@@ -1,9 +1,10 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 import { Login } from "@/components/Login";
 import { Splash } from "@/components/Splash";
 import { TitleBar } from "@/components/TitleBar";
 import { Workbench } from "@/components/Workbench";
+import { checkForAppUpdates } from "@/lib/updater";
 import { cn } from "@/lib/utils";
 
 const SPLASH_DURATION_MS = 3000;
@@ -12,6 +13,10 @@ function App() {
   const [splashHidden, setSplashHidden] = useState(false);
   const [splashFading, setSplashFading] = useState(false);
   const [loggedIn, setLoggedIn] = useState(false);
+
+  useEffect(() => {
+    void checkForAppUpdates({ silent: true });
+  }, []);
 
   const handleSplashReady = useCallback(() => {
     setSplashFading(true);

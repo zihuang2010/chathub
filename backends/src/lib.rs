@@ -87,6 +87,8 @@ fn take_screenshot_impl() -> Result<ScreenshotResult, String> {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .setup(|app| {
             let log_dir = app.path().app_log_dir()?;
             let guard = logging::init(&log_dir)
