@@ -411,3 +411,44 @@ html[data-os="mac"] #app-shell {
     stroke-dashoffset: 11;
   }
 }
+
+/* Sidebar ambient halos — three slow, decorrelated drifts so the sidebar
+   surface feels alive without ever crossing into motion that competes with
+   real content. Different periods (22/28/34s) prevent visible looping. */
+@keyframes chSidebarHaloA {
+  0%,
+  100% {
+    transform: translate(0, 0);
+  }
+  50% {
+    transform: translate(14px, 18px);
+  }
+}
+
+@keyframes chSidebarHaloB {
+  0%,
+  100% {
+    transform: translate(0, 0);
+  }
+  50% {
+    transform: translate(-18px, 22px);
+  }
+}
+
+@keyframes chSidebarHaloC {
+  0%,
+  100% {
+    transform: translate(0, 0);
+  }
+  50% {
+    transform: translate(20px, -14px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* Keep the halos as static colored backdrops — still adds depth without
+     drifting motion. */
+  [style*="chSidebarHalo"] {
+    animation: none !important;
+  }
+}

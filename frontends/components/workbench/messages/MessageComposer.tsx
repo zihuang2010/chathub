@@ -468,7 +468,7 @@ export function MessageComposer({
           />
           <span
             className={cn(
-              "wb-num ml-2 inline-flex items-center gap-2 text-wb-3xs text-workbench-text-muted",
+              "wb-num ml-2 inline-flex items-center gap-2 text-wb-3xs font-medium text-workbench-text-muted",
               nearLimit && !overLimit && "text-workbench-warning",
               overLimit && "text-workbench-danger",
             )}

@@ -18,7 +18,7 @@ export function RangePill({ accountOptions, selectedAccount, onAccountChange }: 
 
   return (
     <div className="bg-workbench-surface px-4 pb-1.5 pt-2">
-      <div className="flex items-center justify-between gap-3 text-wb-2xs">
+      <div className="flex items-center justify-between gap-3 text-wb-2xs font-medium">
         <AccountDropdown
           accounts={accountOptions}
           selectedAccount={selectedAccount}

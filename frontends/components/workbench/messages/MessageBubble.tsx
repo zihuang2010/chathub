@@ -242,7 +242,7 @@ function StatusIcon({ status }: { status?: MessageStatus }) {
 export function DateDivider({ label }: { label: string }) {
   return (
     <div className="flex items-center justify-center py-2">
-      <span className="wb-num rounded-full bg-workbench-surface-subtle px-2.5 py-0.5 text-wb-3xs text-workbench-text-muted">
+      <span className="wb-num rounded-full bg-workbench-surface-subtle px-2.5 py-0.5 text-wb-3xs font-medium text-workbench-text-muted">
         {label}
       </span>
     </div>

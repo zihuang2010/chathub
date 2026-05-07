@@ -230,9 +230,9 @@ const ConversationItem = memo(function ConversationItem({
         <div className="flex min-w-0 items-center">
           <span className="truncate text-wb-xs font-medium text-workbench-text">{name}</span>
         </div>
-        <div className="mt-0.5 truncate text-wb-2xs text-workbench-text-secondary">
+        <div className="mt-0.5 truncate text-wb-2xs font-medium text-workbench-text-muted">
           {unread > 0 && (
-            <span className="wb-num mr-0.5 font-medium text-workbench-text-secondary">
+            <span className="wb-num mr-0.5 font-medium text-workbench-text-muted">
               {STRINGS.conversationList.unreadPreviewPrefix(unread)}
             </span>
           )}

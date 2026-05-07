@@ -90,7 +90,7 @@ function AccountOption({
       aria-selected={active}
       onClick={onClick}
       className={cn(
-        "focus-ring flex h-9 w-full items-center justify-between gap-2 rounded-md px-2 text-left text-wb-2xs transition-colors",
+        "focus-ring flex h-9 w-full items-center justify-between gap-2 rounded-md px-2 text-left text-wb-2xs font-medium transition-colors",
         active
           ? "bg-workbench-surface-active text-workbench-accent"
           : "text-workbench-text-secondary hover:bg-workbench-surface-subtle",

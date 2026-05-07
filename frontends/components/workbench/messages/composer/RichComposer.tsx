@@ -69,7 +69,8 @@ export function RichComposer({
     },
     editorProps: {
       attributes: {
-        class: "min-h-[64px] w-full px-2 py-2 text-wb-xs text-workbench-text outline-none",
+        class:
+          "min-h-[64px] w-full px-2 py-2 text-wb-xs font-medium text-workbench-text outline-none",
       },
       handleKeyDown: (_view, event) => {
         if (
