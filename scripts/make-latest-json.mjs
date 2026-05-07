@@ -6,9 +6,10 @@ import { join, resolve } from "node:path";
 //   staging-root expects:
 //     <staging-root>/bundles/macos-arm64/   *.app.tar.gz(.sig) [+ *.dmg]
 //     <staging-root>/bundles/macos-x86_64/  *.app.tar.gz(.sig) [+ *.dmg]
-//     <staging-root>/bundles/windows-x86_64/*.nsis.zip(.sig)   [+ *-setup.exe]
+//     <staging-root>/bundles/windows-x86_64/*-setup.exe(.sig)
 //   bundle-base-url e.g. https://<bucket>.oss-cn-<region>.aliyuncs.com/releases
 //   final url       =  <base>/<version>/<platform-dir>/<bundle-file>
+// note: Tauri 2 default mode signs *-setup.exe directly (no .nsis.zip wrapper).
 const [stagingRoot, baseUrl] = process.argv.slice(2);
 if (!stagingRoot || !baseUrl) {
   console.error("usage: make-latest-json.mjs <staging-root> <bundle-base-url>");
@@ -21,9 +22,13 @@ const version = JSON.parse(
 ).version;
 
 const platforms = {
-  "darwin-aarch64": { dir: "macos-arm64", ext: ".app.tar.gz" },
-  "darwin-x86_64": { dir: "macos-x86_64", ext: ".app.tar.gz" },
-  "windows-x86_64": { dir: "windows-x86_64", ext: ".nsis.zip" },
+  "darwin-aarch64": { dir: "macos-arm64", match: (f) => f.endsWith(".app.tar.gz") },
+  "darwin-x86_64": { dir: "macos-x86_64", match: (f) => f.endsWith(".app.tar.gz") },
+  "windows-x86_64": {
+    dir: "windows-x86_64",
+    // setup.exe 而非 .nsis.zip（Tauri 2 默认模式直接签 .exe）
+    match: (f) => f.endsWith("-setup.exe"),
+  },
 };
 
 const bundlesRoot = resolve(stagingRoot, "bundles");
@@ -34,7 +39,7 @@ const out = {
   platforms: {},
 };
 
-for (const [key, { dir, ext }] of Object.entries(platforms)) {
+for (const [key, { dir, match }] of Object.entries(platforms)) {
   const p = resolve(bundlesRoot, dir);
   let files;
   try {
@@ -43,10 +48,10 @@ for (const [key, { dir, ext }] of Object.entries(platforms)) {
     console.error(`missing platform dir: ${p}`);
     process.exit(1);
   }
-  const bundle = files.find((f) => f.endsWith(ext));
+  const bundle = files.find(match);
   const sig = bundle && files.find((f) => f === `${bundle}.sig`);
   if (!bundle || !sig) {
-    console.error(`missing ${ext} or .sig in ${p}`);
+    console.error(`missing bundle or .sig in ${p} (saw: ${files.join(", ")})`);
     process.exit(1);
   }
   out.platforms[key] = {

@@ -53,16 +53,16 @@ jobs:
           - os: macos-14
             target: aarch64-apple-darwin
             label: macos-arm64
-            bundles: "app,dmg,updater"
+            bundles: "app,dmg"
           # 同样 macos-14 跑，cross-compile 到 x86_64（避开 macos-13 排队）
           - os: macos-14
             target: x86_64-apple-darwin
             label: macos-x86_64
-            bundles: "app,dmg,updater"
+            bundles: "app,dmg"
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             label: windows-x86_64
-            bundles: "nsis,updater"
+            bundles: "nsis"
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -93,6 +93,20 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: pnpm tauri build --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
 
+      - name: list bundle dir (diagnostic)
+        shell: bash
+        run: |
+          set -euo pipefail
+          BD="backends/target/${{ matrix.target }}/release/bundle"
+          echo "::group::bundle tree at $BD"
+          if [ -d "$BD" ]; then
+            ls -laR "$BD"
+          else
+            echo "(no bundle dir produced)"
+            exit 1
+          fi
+          echo "::endgroup::"
+
       - name: collect platform artifacts
         shell: bash
         run: |
@@ -100,13 +114,29 @@ jobs:
           OUT="staging/${{ matrix.label }}"
           mkdir -p "$OUT"
           BD="backends/target/${{ matrix.target }}/release/bundle"
-          # macOS: dmg + .app.tar.gz + .sig
-          [ -d "$BD/dmg" ]   && cp -v "$BD"/dmg/*.dmg                "$OUT"/ || true
-          [ -d "$BD/macos" ] && cp -v "$BD"/macos/*.app.tar.gz*      "$OUT"/ || true
-          # Windows: nsis-setup.exe + .nsis.zip + .sig
-          [ -d "$BD/nsis" ]  && cp -v "$BD"/nsis/*-setup.exe         "$OUT"/ || true
-          [ -d "$BD/nsis" ]  && cp -v "$BD"/nsis/*.nsis.zip*         "$OUT"/ || true
+          # 用 find -exec 而不是 glob，避免任何文件名静默 miss。
+          # macOS：*.dmg、*.app.tar.gz(.sig)
+          # Windows：*-setup.exe(.sig)（Tauri 2 默认模式直接签 .exe，不再产 .nsis.zip）
+          find "$BD" -type f \
+            \( -name '*.dmg' \
+               -o -name '*.app.tar.gz' -o -name '*.app.tar.gz.sig' \
+               -o -name '*-setup.exe' -o -name '*-setup.exe.sig' \) \
+            -exec cp -v {} "$OUT"/ \;
+          echo "::group::collected artifacts in $OUT"
           ls -la "$OUT"
+          echo "::endgroup::"
+
+          # Sanity guard：每平台都必须有签名文件，否则 updater 没法用
+          case "${{ matrix.label }}" in
+            macos-*)
+              ls "$OUT"/*.app.tar.gz.sig >/dev/null 2>&1 \
+                || { echo "::error::missing *.app.tar.gz.sig — 检查 TAURI_SIGNING_PRIVATE_KEY 是否配置正确"; exit 1; }
+              ;;
+            windows-*)
+              ls "$OUT"/*-setup.exe.sig >/dev/null 2>&1 \
+                || { echo "::error::missing *-setup.exe.sig — 检查 TAURI_SIGNING_PRIVATE_KEY 是否配置正确"; exit 1; }
+              ;;
+          esac
 
       - uses: actions/upload-artifact@v4
         with:
