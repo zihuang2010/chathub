@@ -26,7 +26,7 @@ function App() {
   return (
     <div
       id="app-shell"
-      className="relative h-screen w-screen overflow-hidden bg-background text-foreground"
+      className="relative h-full w-full overflow-hidden bg-[#F1F5F9] text-foreground"
     >
       <TitleBar tone={loggedIn ? "blue" : "transparent"} />
 

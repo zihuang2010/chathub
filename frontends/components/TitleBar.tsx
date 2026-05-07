@@ -3,7 +3,6 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import { cn } from "@/lib/utils";
 import { isMac } from "@/lib/platform";
-import { WORKBENCH_TOP_BG } from "@/lib/theme";
 
 type Tone = "transparent" | "blue";
 
@@ -68,12 +67,20 @@ export function TitleBar({ tone = "transparent" }: TitleBarProps) {
 // ─── macOS layout ───────────────────────────────────────────────────────────
 
 function MacTitleBar({ controls, tone }: { controls: WindowControls; tone: Tone }) {
+  const blurred = tone === "blue";
   return (
     <header
-      className="absolute inset-x-0 top-0 z-[100] flex h-10 select-none items-center"
+      className="absolute inset-x-0 top-0 z-[100] flex h-10 select-none items-center rounded-t-[10px]"
       style={{
         WebkitUserSelect: "none",
-        background: tone === "blue" ? WORKBENCH_TOP_BG : "transparent",
+        // Frosted-glass top bar. Identical color/alpha/blur as the sidebar
+        // so they read as one continuous frosted surface. The rounded top
+        // corners match the app-shell's border-radius — backdrop-filter
+        // creates its own stacking context that does not always honor an
+        // ancestor's border-radius clip, so the corners are rounded here.
+        background: blurred ? "rgba(220,234,248,0.72)" : "transparent",
+        backdropFilter: blurred ? "saturate(160%) blur(20px)" : undefined,
+        WebkitBackdropFilter: blurred ? "saturate(160%) blur(20px)" : undefined,
       }}
     >
       <div className="group flex items-center gap-[8px] pl-[14px]">
@@ -127,12 +134,15 @@ function TrafficLight({ color, symbol, ariaLabel, onClick }: TrafficLightProps) 
 // ─── Windows / Linux layout ─────────────────────────────────────────────────
 
 function WindowsTitleBar({ controls, tone }: { controls: WindowControls; tone: Tone }) {
+  const blurred = tone === "blue";
   return (
     <header
       className="absolute inset-x-0 top-0 z-[100] flex h-10 select-none items-center justify-between"
       style={{
         WebkitUserSelect: "none",
-        background: tone === "blue" ? WORKBENCH_TOP_BG : "transparent",
+        background: blurred ? "rgba(220,234,248,0.72)" : "transparent",
+        backdropFilter: blurred ? "saturate(160%) blur(20px)" : undefined,
+        WebkitBackdropFilter: blurred ? "saturate(160%) blur(20px)" : undefined,
       }}
     >
       {/* drag region — no app-name text */}

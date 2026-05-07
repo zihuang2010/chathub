@@ -256,8 +256,28 @@
  * outside the shell are transparent → desktop shows through, giving the
  * native macOS rounded-window look. On Windows we leave the corners square.
  */
+/*
+ * The macOS native window shadow (`shadow: true`) renders as a hard dark
+ * hairline against transparent windows — the OS computes shadow from the
+ * rectangular bounds, not the rounded CSS shape. We disable the native
+ * shadow in tauri.macos.conf.json and replace it with a soft CSS box-shadow
+ * here. For that shadow to be visible, the app-shell must sit inside an
+ * 8px transparent margin — which is what the body padding below provides.
+ */
+html[data-os="mac"] body {
+  padding: 8px;
+}
+
 html[data-os="mac"] #app-shell {
   border-radius: 10px;
+  /* Real CSS border (not box-shadow spread) so the gray ring follows the
+     rounded corner exactly — box-shadow's 0-spread outline can render
+     subtly off the corner curve and produce the visible artifact at the
+     top-left/bottom-left corners. */
+  border: 1px solid hsl(218 14% 68% / 0.85);
+  box-shadow:
+    0 6px 24px hsl(220 40% 12% / 0.1),
+    0 18px 40px -16px hsl(220 40% 12% / 0.14);
 }
 
 /* ─── TipTap placeholder ──────────────────────────────────────────────────

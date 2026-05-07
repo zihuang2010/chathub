@@ -12,9 +12,6 @@ export const COLOR_MUTED = "#A0AEC0";
 
 export const BLUE_GRADIENT = "linear-gradient(135deg, #5BAEFF 0%, #2196FA 55%, #0F6FE0 100%)";
 export const BLUE_GRADIENT_HOVER = "linear-gradient(135deg, #6FBAFF 0%, #1F8AE5 55%, #0E66CF 100%)";
-export const WORKBENCH_TOP_BG = "#DCEAF8";
-export const WORKBENCH_SIDEBAR_BG =
-  "linear-gradient(180deg, #DCEAF8 0%, #D4E4F5 48%, #CFDFF1 100%)";
 export const WORKBENCH_ACTIVE_BG = "#EAF2FF";
 export const WORKBENCH_HOVER_BG = "#F7FAFD";
 export const WORKBENCH_SOFT_BG = "#F4F8FE";
@@ -23,7 +20,6 @@ export const WORKBENCH_SURFACE_SUBTLE = "#F7FAFD";
 export const WORKBENCH_BLUE = "#348fe9";
 export const WORKBENCH_BLUE_HOVER = "#1D4ED8";
 export const WORKBENCH_BORDER = "#D8E3F0";
-export const WORKBENCH_LINE = "#D8E3F0";
 export const WORKBENCH_LINE_SUBTLE = "#E8EEF6";
 export const WORKBENCH_LINE_STRONG = "#BFD0E7";
 export const WORKBENCH_TEXT_PRIMARY = "#1F2937";

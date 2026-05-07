@@ -24,13 +24,15 @@ export function SendButtonGroup({ canSend, onSend, onScheduleSend }: SendButtonG
     : undefined;
   const mainBtnCls = cn(
     "focus-ring h-9 rounded-l-md rounded-r-none px-5 text-wb-xs font-medium transition-all",
-    canSend ? "text-white" : "bg-workbench-line text-workbench-text disabled:opacity-100",
+    canSend
+      ? "text-workbench-text"
+      : "bg-workbench-line text-workbench-text-muted disabled:opacity-100",
   );
   const chevronBtnCls = cn(
-    "focus-ring h-9 rounded-l-none rounded-r-md border-l border-black/20 px-2 text-wb-xs font-medium transition-all dark:border-white/30",
+    "focus-ring h-9 rounded-l-none rounded-r-md border-l border-black/15 px-2 text-wb-xs font-medium transition-all dark:border-white/25",
     canSend
-      ? "text-white"
-      : "bg-workbench-surface-subtle text-workbench-text hover:bg-workbench-surface-active",
+      ? "text-workbench-text"
+      : "bg-workbench-line text-workbench-text-muted hover:bg-workbench-line-strong",
   );
 
   return (

@@ -2,7 +2,7 @@ import { memo } from "react";
 import { ChevronLeft, ChevronRight, Menu } from "lucide-react";
 
 import { cn } from "@/lib/utils";
-import { WORKBENCH_BLUE, WORKBENCH_NAV_TEXT, WORKBENCH_SIDEBAR_BG } from "@/lib/theme";
+import { WORKBENCH_BLUE, WORKBENCH_NAV_TEXT } from "@/lib/theme";
 
 import { NAV_ITEMS, type NavItem, type Section } from "./nav";
 
@@ -22,12 +22,21 @@ export const Sidebar = memo(function Sidebar({
   return (
     <aside
       className={cn(
-        "relative flex h-full shrink-0 select-none flex-col overflow-hidden transition-[width] duration-200 ease-out",
+        "relative flex h-full shrink-0 select-none flex-col overflow-hidden rounded-bl-[10px] transition-[width] duration-200 ease-out",
         collapsed ? "w-16" : "w-36",
       )}
-      style={{ background: WORKBENCH_SIDEBAR_BG }}
+      style={{
+        // Frosted-glass sidebar: flat translucent surface that matches the
+        // top bar pixel-for-pixel (same color, alpha, blur) so the seam
+        // between them disappears. The rounded bottom-left corner mirrors
+        // the app-shell's rounding — backdrop-filter creates its own
+        // stacking context that does not always honor an ancestor's
+        // border-radius clip, so we round the corner here directly.
+        background: "rgba(220,234,248,0.72)",
+        backdropFilter: "saturate(160%) blur(20px)",
+        WebkitBackdropFilter: "saturate(160%) blur(20px)",
+      }}
     >
-      <SidebarHalos />
       <div className="relative z-10 flex h-full flex-col">
         <UserBadge collapsed={collapsed} onToggleCollapsed={onToggleCollapsed} />
         <nav className={cn("flex flex-col gap-0.5 pt-2", collapsed ? "px-2" : "px-2")}>
@@ -59,39 +68,6 @@ export const Sidebar = memo(function Sidebar({
     </aside>
   );
 });
-
-// ─── Ambient halos ──────────────────────────────────────────────────────────
-
-function SidebarHalos() {
-  return (
-    <div aria-hidden className="pointer-events-none absolute inset-0 z-0 overflow-hidden">
-      <span
-        className="absolute -left-12 -top-10 size-56 rounded-full opacity-60 blur-[40px]"
-        style={{
-          background: "radial-gradient(circle, #FFE2C7 0%, rgba(255,226,199,0) 70%)",
-          animation: "chSidebarHaloA 22s ease-in-out infinite",
-          willChange: "transform",
-        }}
-      />
-      <span
-        className="absolute -right-16 top-1/3 size-60 rounded-full opacity-55 blur-[44px]"
-        style={{
-          background: "radial-gradient(circle, #DCEFE2 0%, rgba(220,239,226,0) 70%)",
-          animation: "chSidebarHaloB 28s ease-in-out infinite",
-          willChange: "transform",
-        }}
-      />
-      <span
-        className="absolute -bottom-12 -left-10 size-64 rounded-full opacity-65 blur-[44px]"
-        style={{
-          background: "radial-gradient(circle, #EEF2FF 0%, rgba(238,242,255,0) 70%)",
-          animation: "chSidebarHaloC 34s ease-in-out infinite",
-          willChange: "transform",
-        }}
-      />
-    </div>
-  );
-}
 
 // ─── User badge ─────────────────────────────────────────────────────────────
 

@@ -10,7 +10,7 @@ import {
   PanelRightClose,
   PanelRightOpen,
   Paperclip,
-  Smile,
+  Laugh,
   X,
 } from "lucide-react";
 
@@ -345,7 +345,7 @@ export function MessageComposer({
                 aria-expanded={emojiOpen}
                 className="focus-ring group relative grid h-9 w-9 place-items-center rounded-lg text-workbench-text-secondary transition-colors hover:bg-workbench-surface-subtle hover:text-workbench-text"
               >
-                <Smile size={18} strokeWidth={1.6} />
+                <Laugh size={18} strokeWidth={1.6} />
                 <span
                   aria-hidden
                   className="pointer-events-none absolute bottom-1.5 right-1.5 size-[3px] rounded-full bg-current opacity-0 transition-opacity group-hover:opacity-60"
