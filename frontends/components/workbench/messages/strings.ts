@@ -10,7 +10,7 @@ export const STRINGS = {
     library: "资料库",
     more: "更多",
     fromWeChat: "@微信",
-    fromAccountLabel: "来自：",
+    fromAccountLabel: "归属于：",
   },
   rangePill: {
     currentRange: "当前范围",
@@ -131,6 +131,7 @@ export const STRINGS = {
     resizeHandle: "调整消息编辑区高度",
     emojiPickerLabel: "选择表情",
     mentionListLabel: "选择联系人",
+    cancelReply: "取消引用",
   },
   customerDetails: {
     tabsLabel: "客户详情视图",

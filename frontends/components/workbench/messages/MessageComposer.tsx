@@ -30,6 +30,7 @@ import { SendButtonGroup } from "./composer/SendButtonGroup";
 import { blocksToDoc, docToBlocks } from "./composer/docToBlocks";
 import { RichComposer } from "./composer/RichComposer";
 import { EmojiPicker } from "./EmojiPicker";
+import type { ReplyTarget } from "./MessageBubble";
 import { QuickRepliesPanel } from "./QuickRepliesPanel";
 import { STRINGS } from "./strings";
 import { clearDraft, useDraft } from "./useDraftStore";
@@ -42,11 +43,20 @@ interface MessageComposerProps {
   detailsOpen: boolean;
   onToggleDetails: () => void;
   /** Called with the trimmed draft text + rich blocks + any pending file attachments on submit. */
-  onSend?: (text: string, blocks?: MessageBlock[], attachments?: MessageAttachment[]) => void;
+  onSend?: (
+    text: string,
+    blocks?: MessageBlock[],
+    attachments?: MessageAttachment[],
+    replyTo?: string,
+  ) => void;
   /** Quick-reply templates available from the composer popover. */
   quickReplies?: QuickReply[];
   /** Contacts shown in the @mention popover when the user types `@`. */
   mentionCandidates?: Conversation[];
+  /** Pinned reply target: when present, renders a quote preview above the toolbar
+   *  and attaches `id` to the next outgoing message via `onSend`'s replyTo arg. */
+  replyDraft?: (ReplyTarget & { id: string }) | null;
+  onCancelReply?: () => void;
 }
 
 interface ScreenshotResult {
@@ -71,6 +81,8 @@ export function MessageComposer({
   onSend,
   quickReplies,
   mentionCandidates,
+  replyDraft,
+  onCancelReply,
 }: MessageComposerProps) {
   const [draft, setDraftValue] = useDraft(conversationId);
   const [isResizing, setIsResizing] = useState(false);
@@ -279,6 +291,7 @@ export function MessageComposer({
       textJoined.trim(),
       finalBlocks.length > 0 ? finalBlocks : undefined,
       fileAttachments.length > 0 ? fileAttachments : undefined,
+      replyDraft?.id,
     );
     // Hand ownership of file blob URLs to the message bubble; do NOT revoke here.
     setPendingFileAttachments([]);
@@ -333,7 +346,16 @@ export function MessageComposer({
         className="hidden"
         onChange={handleImagePicker}
       />
-      <div className="flex h-full w-full flex-col gap-1 bg-workbench-surface">
+      <div
+        className="flex h-full w-full flex-col gap-1 bg-workbench-surface"
+        onKeyDownCapture={(event) => {
+          if (event.key === "Escape" && replyDraft) {
+            event.preventDefault();
+            onCancelReply?.();
+          }
+        }}
+      >
+        {replyDraft && <ReplyPreview draft={replyDraft} onCancel={() => onCancelReply?.()} />}
         <div className="flex items-center gap-0.5 text-workbench-text-secondary">
           <Popover.Root open={emojiOpen} onOpenChange={setEmojiOpen}>
             <Popover.Trigger asChild>
@@ -527,6 +549,38 @@ function ToolButton({
         />
       )}
     </button>
+  );
+}
+
+function ReplyPreview({
+  draft,
+  onCancel,
+}: {
+  draft: ReplyTarget & { id: string };
+  onCancel: () => void;
+}) {
+  return (
+    <div className="flex shrink-0 items-start gap-2 rounded-md bg-workbench-surface-soft px-2.5 py-1.5">
+      <span
+        aria-hidden
+        className="mt-0.5 w-[2px] shrink-0 self-stretch rounded-full bg-workbench-accent/40"
+      />
+      <div className="min-w-0 flex-1 leading-snug">
+        <div className="truncate text-wb-3xs text-workbench-text-secondary">
+          {draft.senderName}：
+        </div>
+        <div className="truncate text-wb-2xs text-workbench-text-muted">{draft.text}</div>
+      </div>
+      <button
+        type="button"
+        onClick={onCancel}
+        title={STRINGS.composer.cancelReply}
+        aria-label={STRINGS.composer.cancelReply}
+        className="focus-ring -mr-1 grid size-6 shrink-0 place-items-center rounded-full text-workbench-text-muted transition-colors hover:bg-workbench-surface-subtle hover:text-workbench-text"
+      >
+        <X size={12} strokeWidth={2} aria-hidden />
+      </button>
+    </div>
   );
 }
 

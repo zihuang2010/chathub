@@ -132,6 +132,9 @@ export const ChatArea = memo(function ChatArea({
   const previousMessageCountRef = useRef(messages.length);
   const [composerHeight, setComposerHeight] = useState(COMPOSER_DEFAULT_HEIGHT);
   const [localMessages, setLocalMessages] = useState<Message[]>(messages);
+  const [replyDraft, setReplyDraft] = useState<
+    (ReplyTarget & { id: string; conversationId: string }) | null
+  >(null);
   // `atBottom` mirrors the ref into render state so the scroll-to-bottom
   // button can show/hide reactively. The ref is still the source of truth
   // for non-render code paths (auto-follow on send).
@@ -193,6 +196,11 @@ export const ChatArea = memo(function ChatArea({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [conversation.id]);
 
+  // Stale drafts from a prior conversation are ignored at render time rather
+  // than cleared via effect — keeps state mutations off the conversation-switch
+  // path and out of React's "setState in effect" lint surface.
+  const activeReplyDraft = replyDraft?.conversationId === conversation.id ? replyDraft : null;
+
   // New messages: auto-follow if at bottom, else bump the unread counter.
   useEffect(() => {
     const previousCount = previousMessageCountRef.current;
@@ -225,7 +233,12 @@ export const ChatArea = memo(function ChatArea({
   }, []);
 
   const handleSend = useCallback(
-    (text: string, blocks?: MessageBlock[], attachments?: MessageAttachment[]) => {
+    (
+      text: string,
+      blocks?: MessageBlock[],
+      attachments?: MessageAttachment[],
+      replyTo?: string,
+    ) => {
       const id = `local-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
       const newMessage: Message = {
         id,
@@ -236,9 +249,11 @@ export const ChatArea = memo(function ChatArea({
         sentAt: new Date().toISOString(),
         status: "sending",
         attachments: attachments && attachments.length > 0 ? attachments : undefined,
+        replyTo,
       };
       setLocalMessages((current) => [...current, newMessage]);
       wasAtBottomRef.current = true;
+      setReplyDraft(null);
       completeMockSend(id);
     },
     [conversation.id, completeMockSend],
@@ -268,6 +283,14 @@ export const ChatArea = memo(function ChatArea({
           // Already handled inside MessageContextMenu; this is just telemetry.
           break;
         case "reply":
+          setReplyDraft({
+            id: message.id,
+            conversationId: conversation.id,
+            senderName:
+              message.direction === "out" ? STRINGS.status.selfSenderName : conversation.name,
+            text: message.text,
+          });
+          break;
         case "forward":
         case "details":
         case "scroll-to":
@@ -277,7 +300,7 @@ export const ChatArea = memo(function ChatArea({
           }
       }
     },
-    [completeMockSend],
+    [completeMockSend, conversation.id, conversation.name],
   );
 
   return (
@@ -353,6 +376,8 @@ export const ChatArea = memo(function ChatArea({
         onSend={handleSend}
         quickReplies={quickReplies}
         mentionCandidates={mentionCandidates}
+        replyDraft={activeReplyDraft}
+        onCancelReply={() => setReplyDraft(null)}
       />
     </div>
   );
