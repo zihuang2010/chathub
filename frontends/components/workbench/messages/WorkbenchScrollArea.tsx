@@ -13,6 +13,7 @@ import { cn } from "@/lib/utils";
 
 import {
   AT_BOTTOM_THRESHOLD,
+  SCROLLBAR_IDLE_HIDE_MS,
   SCROLLBAR_MAX_THUMB_HEIGHT,
   SCROLLBAR_MIN_THUMB_HEIGHT,
   SCROLLBAR_OVERFLOW_THRESHOLD,
@@ -48,9 +49,17 @@ export function WorkbenchScrollArea({
 }: WorkbenchScrollAreaProps) {
   const internalScrollRef = useRef<HTMLDivElement | null>(null);
   const viewportRef = scrollRef ?? internalScrollRef;
+  // Hover lives at the area level (not inside the scrollbar) so the thumb
+  // stays visible when the cursor is over the content, not just the 6px-wide
+  // track. Matches macOS overlay-scrollbar feel.
+  const [isHovering, setIsHovering] = useState(false);
 
   return (
-    <div className={cn("relative min-h-0", className)}>
+    <div
+      className={cn("relative min-h-0", className)}
+      onPointerEnter={() => setIsHovering(true)}
+      onPointerLeave={() => setIsHovering(false)}
+    >
       <div
         ref={viewportRef}
         className={cn(
@@ -60,7 +69,11 @@ export function WorkbenchScrollArea({
       >
         <div className={contentClassName}>{children}</div>
       </div>
-      <WorkbenchScrollbar scrollRef={viewportRef} onScrollMetrics={onScrollMetrics} />
+      <WorkbenchScrollbar
+        scrollRef={viewportRef}
+        onScrollMetrics={onScrollMetrics}
+        isHovering={isHovering}
+      />
     </div>
   );
 }
@@ -85,9 +98,11 @@ interface DragStateRef {
 function WorkbenchScrollbar({
   scrollRef,
   onScrollMetrics,
+  isHovering,
 }: {
   scrollRef: RefObject<HTMLDivElement | null>;
   onScrollMetrics?: (metrics: ScrollMetrics) => void;
+  isHovering: boolean;
 }) {
   const trackRef = useRef<HTMLDivElement | null>(null);
   const thumbRef = useRef<HTMLDivElement | null>(null);
@@ -115,12 +130,35 @@ function WorkbenchScrollbar({
   }, [onScrollMetrics]);
 
   const [isDragging, setIsDragging] = useState(false);
+  // `recentlyScrolled` flips true on each scroll event and back to false
+  // SCROLLBAR_IDLE_HIDE_MS after the last one. Combined with isHovering /
+  // isDragging this drives the auto-hide opacity.
+  const [recentlyScrolled, setRecentlyScrolled] = useState(false);
+  const idleTimerRef = useRef<number | null>(null);
   // Only re-render when these visual props change. Thumb position is updated
   // imperatively via `transform` to keep scroll-driven updates off the React tree.
   const [visualState, setVisualState] = useState<{ visible: boolean; thumbHeight: number }>({
     visible: false,
     thumbHeight: SCROLLBAR_MIN_THUMB_HEIGHT,
   });
+
+  const markActive = useCallback(() => {
+    setRecentlyScrolled((prev) => (prev ? prev : true));
+    if (idleTimerRef.current !== null) window.clearTimeout(idleTimerRef.current);
+    idleTimerRef.current = window.setTimeout(() => {
+      setRecentlyScrolled(false);
+      idleTimerRef.current = null;
+    }, SCROLLBAR_IDLE_HIDE_MS);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (idleTimerRef.current !== null) {
+        window.clearTimeout(idleTimerRef.current);
+        idleTimerRef.current = null;
+      }
+    };
+  }, []);
 
   const writeThumbTransform = useCallback((thumbTop: number) => {
     const thumb = thumbRef.current;
@@ -203,6 +241,8 @@ function WorkbenchScrollbar({
     const clientHeight = node.clientHeight;
     const maxScrollTop = Math.max(scrollHeight - clientHeight, 0);
 
+    markActive();
+
     if (Math.abs(maxScrollTop - m.maxScrollTop) > 0.5) {
       recomputeAll();
       return;
@@ -217,7 +257,7 @@ function WorkbenchScrollbar({
     const thumbTop = (scrollTop / maxScrollTop) * m.maxThumbTop;
     writeThumbTransform(thumbTop);
     emitMetrics(scrollTop, scrollHeight, clientHeight);
-  }, [emitMetrics, recomputeAll, scrollRef, writeThumbTransform]);
+  }, [emitMetrics, markActive, recomputeAll, scrollRef, writeThumbTransform]);
 
   useLayoutEffect(() => {
     const node = scrollRef.current;
@@ -337,14 +377,18 @@ function WorkbenchScrollbar({
     setIsDragging(true);
   };
 
+  // Effective visibility: there must be overflow AND either the user is
+  // currently interacting (hover/drag) or just finished scrolling.
+  const shouldShow = visualState.visible && (isHovering || isDragging || recentlyScrolled);
+
   return (
     <div
       ref={trackRef}
       aria-hidden
       onPointerDown={handleTrackPointerDown}
       className={cn(
-        "absolute bottom-3 right-2 top-3 z-10 w-1.5 rounded-full transition-opacity",
-        visualState.visible ? "opacity-100" : "pointer-events-none opacity-0",
+        "absolute bottom-3 right-2 top-3 z-10 w-1.5 rounded-full transition-opacity duration-200",
+        shouldShow ? "opacity-100" : "pointer-events-none opacity-0",
       )}
     >
       <div
@@ -353,7 +397,7 @@ function WorkbenchScrollbar({
         className={cn(
           "absolute left-0 top-0 w-full rounded-full bg-workbench-thumb transition-colors will-change-transform hover:bg-workbench-thumb-hover",
           isDragging ? "cursor-grabbing bg-workbench-thumb-hover" : "cursor-grab",
-          !visualState.visible && "pointer-events-none opacity-0",
+          !shouldShow && "pointer-events-none",
         )}
         style={{ height: visualState.thumbHeight }}
       />

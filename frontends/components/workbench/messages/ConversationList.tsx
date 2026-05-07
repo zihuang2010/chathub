@@ -220,11 +220,13 @@ const ConversationItem = memo(function ConversationItem({
       type="button"
       onClick={() => onSelect(id)}
       className={cn(
-        "focus-ring group relative mx-2 my-0.5 grid w-[calc(100%-1rem)] grid-cols-[44px_minmax(0,1fr)] items-start gap-3 rounded-xl px-3 py-2.5 text-left transition-colors",
+        "focus-ring group relative mx-2 grid w-[calc(100%-1rem)] grid-cols-[44px_minmax(0,1fr)] items-start gap-3 rounded-xl px-3 py-2 text-left transition-colors",
         selected ? "bg-workbench-surface-active" : "hover:bg-workbench-surface-subtle",
       )}
     >
-      <ConversationAvatar name={name} color={avatarColor} online={online} />
+      <div className="mt-1">
+        <ConversationAvatar name={name} color={avatarColor} online={online} />
+      </div>
       <div className="min-w-0 pr-11 pt-px">
         <div className="flex min-w-0 items-center gap-1.5">
           <span className="truncate text-wb-xs font-medium text-workbench-text">{name}</span>
@@ -249,7 +251,7 @@ const ConversationItem = memo(function ConversationItem({
           </span>
         </div>
       </div>
-      <span className="wb-num absolute right-3 top-3 w-11 text-right text-wb-3xs text-workbench-text-muted">
+      <span className="wb-num absolute right-3 top-2.5 w-11 text-right text-wb-3xs text-workbench-text-muted">
         {time}
       </span>
       {unread > 0 && (

@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { CheckCheck, FolderOpen, MoreHorizontal, Phone, UserPlus, Video } from "lucide-react";
+import { FolderOpen, MoreHorizontal, Phone, UserPlus, Video } from "lucide-react";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 
 import { CustomerAvatar } from "./Avatar";
@@ -29,7 +29,6 @@ export function ChatHeader({ conversation }: { conversation: Conversation }) {
       <div className="flex shrink-0 items-center gap-1 text-workbench-text-secondary">
         <HeaderIconButton icon={Phone} label={STRINGS.header.voiceCall} />
         <HeaderIconButton icon={Video} label={STRINGS.header.videoCall} />
-        <HeaderIconButton icon={CheckCheck} label={STRINGS.header.finishFollowup} />
         <HeaderIconButton icon={UserPlus} label={STRINGS.header.addToGroup} />
         <HeaderOverflowMenu />
       </div>

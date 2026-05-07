@@ -13,7 +13,6 @@ import { MessageComposer } from "./MessageComposer";
 import { type MessageActionType } from "./MessageContextMenu";
 import { RangePill } from "./RangePill";
 import { STRINGS } from "./strings";
-import { TypingIndicator } from "./TypingIndicator";
 import { formatMessageDate, getMessageDayKey } from "./utils";
 import { type ScrollMetrics, WorkbenchScrollArea } from "./WorkbenchScrollArea";
 
@@ -355,7 +354,7 @@ export const ChatArea = memo(function ChatArea({
                   </div>
                 );
               }
-              const spacing = idx === 0 ? "" : item.isFirstInBurst ? "mt-7" : "mt-4";
+              const spacing = idx === 0 ? "" : item.isFirstInBurst ? "mt-7" : "mt-6";
               return (
                 <div key={item.id} className={spacing}>
                   <MessageBubble
@@ -375,11 +374,10 @@ export const ChatArea = memo(function ChatArea({
       {!loading && !error && localMessages.length > 0 && !atBottom && (
         <ScrollToBottomButton
           count={unreadBelow}
-          bottomOffset={composerHeight + (conversation.isTyping ? 36 : 12)}
+          bottomOffset={composerHeight + 12}
           onClick={() => scrollToBottom("smooth")}
         />
       )}
-      {conversation.isTyping && !loading && !error && <TypingIndicator />}
       <MessageComposer
         key={conversation.id}
         conversationId={conversation.id}

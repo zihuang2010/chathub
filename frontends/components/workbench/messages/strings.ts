@@ -5,7 +5,6 @@ export const STRINGS = {
   header: {
     voiceCall: "语音通话",
     videoCall: "视频通话",
-    finishFollowup: "完成跟进",
     addToGroup: "加入群聊",
     library: "资料库",
     more: "更多",
@@ -36,10 +35,8 @@ export const STRINGS = {
     unreadPreviewPrefix: (n: number) => `[${n > 99 ? "99+" : n}条]`,
   },
   status: {
-    typing: "对方正在输入…",
     unreadDivider: (n: number) => `以下为未读消息 (${n})`,
     sending: "发送中",
-    sent: "已发送",
     failed: "发送失败",
     selfSenderName: "我",
     recalledPlaceholder: "(已撤回)",

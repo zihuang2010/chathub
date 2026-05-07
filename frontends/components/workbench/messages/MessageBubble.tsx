@@ -1,5 +1,5 @@
 import { memo } from "react";
-import { Check, Loader2 } from "lucide-react";
+import { Loader2 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 
@@ -161,7 +161,7 @@ function OutgoingBubble({
   return (
     <div className="flex w-full flex-row-reverse items-start gap-2 self-end">
       <AgentAvatar account={account} />
-      <div className="flex min-w-0 max-w-[min(76%,560px)] flex-col items-end">
+      <div className="relative flex min-w-0 max-w-[min(76%,560px)] flex-col items-end">
         <MessageContextMenu message={message} onAction={onAction}>
           <article
             tabIndex={0}
@@ -205,23 +205,34 @@ function ReplyBlock({ target }: { target: ReplyTarget }) {
 }
 
 function StatusLine({ status, onResend }: { status?: MessageStatus; onResend: () => void }) {
-  if (!status) return null;
+  // "sent" used to render a tick — product wants no read-receipt UI, so the
+  // status line is only meaningful while in-flight or after a failure.
+  if (!status || status === "sent") return null;
+  // Sending is transient (~800ms) and used to push the bubble's column up by
+  // ~16px when the status flipped to "sent" — visible as a screen jump. Float
+  // the spinner out of layout so the column height never changes.
+  if (status === "sending") {
+    return (
+      <div
+        aria-live="polite"
+        className="pointer-events-none absolute right-0 top-full mt-1 flex items-center text-wb-3xs leading-none text-workbench-text-muted/80"
+      >
+        <StatusIcon status={status} />
+      </div>
+    );
+  }
   return (
     <div className="wb-num mt-1 flex items-center gap-1.5 text-wb-3xs leading-none text-workbench-text-muted/80">
       <StatusIcon status={status} />
-      {status === "failed" && (
-        <>
-          <span className="font-medium text-workbench-text-muted">{STRINGS.errors.sendFailed}</span>
-          <button
-            type="button"
-            onClick={onResend}
-            title={STRINGS.errors.resend}
-            className="focus-ring rounded font-medium text-workbench-accent transition-colors hover:text-workbench-accent-hover"
-          >
-            {STRINGS.errors.resend}
-          </button>
-        </>
-      )}
+      <span className="font-medium text-workbench-text-muted">{STRINGS.errors.sendFailed}</span>
+      <button
+        type="button"
+        onClick={onResend}
+        title={STRINGS.errors.resend}
+        className="focus-ring rounded font-medium text-workbench-accent transition-colors hover:text-workbench-accent-hover"
+      >
+        {STRINGS.errors.resend}
+      </button>
     </div>
   );
 }
@@ -237,12 +248,10 @@ function StatusIcon({ status }: { status?: MessageStatus }) {
           aria-label={STRINGS.status.sending}
         />
       );
-    case "sent":
-      return (
-        <Check size={12} className="text-workbench-text-muted" aria-label={STRINGS.status.sent} />
-      );
     case "failed":
       return <FailedBadge />;
+    default:
+      return null;
   }
 }
 
@@ -291,7 +300,7 @@ function MessageTimeTooltip({ label, align }: { label: string; align: "left" | "
     <span
       aria-hidden
       className={cn(
-        "wb-num pointer-events-none absolute -top-6 z-10 whitespace-nowrap text-wb-3xs font-medium text-workbench-text-muted opacity-0 transition-opacity duration-150 group-hover:opacity-100 group-focus-visible:opacity-100",
+        "wb-num pointer-events-none absolute -top-5 z-10 whitespace-nowrap text-wb-3xs font-medium leading-none text-workbench-text-muted opacity-0 transition-opacity duration-150 group-hover:opacity-100 group-focus-visible:opacity-100",
         align === "right" ? "right-0" : "left-0",
       )}
     >

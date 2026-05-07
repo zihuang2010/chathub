@@ -14,7 +14,6 @@ import {
   CONVERSATION_LIST_MAX_WIDTH,
   CONVERSATION_LIST_MIN_WIDTH,
   CUSTOMER_DETAILS_WIDTH,
-  DETAILS_AUTO_CLOSE_MIN_WIDTH,
   RESIZE_HANDLE_WIDTH,
   RESIZE_KEYBOARD_STEP,
 } from "./constants";
@@ -40,8 +39,9 @@ export function MessagesPage() {
   const chatAreaRef = useRef<HTMLDivElement | null>(null);
   const dragStartRef = useRef({ x: 0, width: CONVERSATION_LIST_DEFAULT_WIDTH });
 
-  const { detailsOpen, chatWidthLock, toggleDetails, closeDueToResize, markManualResizeIfNeeded } =
-    useDetailsWindow({ chatAreaRef });
+  const { detailsOpen, chatWidthLock, toggleDetails, markManualResizeIfNeeded } = useDetailsWindow({
+    chatAreaRef,
+  });
 
   const accountOptions = useMemo(
     () => Array.from(new Set(MOCK_CONVERSATIONS.map((c) => c.account))),
@@ -88,11 +88,6 @@ export function MessagesPage() {
   // `handleWindowResize()` call below.
   useEffect(() => {
     const handleWindowResize = () => {
-      const pageWidth = pageRef.current?.clientWidth ?? 0;
-      if (detailsOpen && pageWidth > 0 && pageWidth < DETAILS_AUTO_CLOSE_MIN_WIDTH) {
-        closeDueToResize();
-        return;
-      }
       if (detailsOpen) markManualResizeIfNeeded();
       setConversationListWidth((width) => clampConversationListWidth(width));
     };
@@ -100,7 +95,7 @@ export function MessagesPage() {
     handleWindowResize();
     window.addEventListener("resize", handleWindowResize);
     return () => window.removeEventListener("resize", handleWindowResize);
-  }, [clampConversationListWidth, closeDueToResize, detailsOpen, markManualResizeIfNeeded]);
+  }, [clampConversationListWidth, detailsOpen, markManualResizeIfNeeded]);
 
   useEffect(() => {
     if (!isResizing) return;

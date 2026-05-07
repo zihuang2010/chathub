@@ -6,6 +6,7 @@ import { TitleBar } from "@/components/TitleBar";
 import { Workbench } from "@/components/Workbench";
 import { checkForAppUpdates } from "@/lib/updater";
 import { cn } from "@/lib/utils";
+import { useWindowMaxSize } from "@/lib/useWindowMaxSize";
 
 const SPLASH_DURATION_MS = 2000;
 
@@ -13,6 +14,8 @@ function App() {
   const [splashHidden, setSplashHidden] = useState(false);
   const [splashFading, setSplashFading] = useState(false);
   const [loggedIn, setLoggedIn] = useState(false);
+
+  useWindowMaxSize();
 
   useEffect(() => {
     void checkForAppUpdates({ silent: true });

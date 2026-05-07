@@ -49,8 +49,6 @@ interface UseDetailsWindowResult {
   /** Pixel width to pin the chat area at while details panel is opening/closing; null otherwise. */
   chatWidthLock: number | null;
   toggleDetails: () => void;
-  /** Imperatively close when an external listener (e.g. window resize) decides we no longer fit. */
-  closeDueToResize: () => void;
   /** Tell the hook the user might have manually resized the Tauri window so we shouldn't auto-restore. */
   markManualResizeIfNeeded: () => void;
 }
@@ -119,6 +117,16 @@ export function useDetailsWindow({ chatAreaRef }: UseDetailsWindowOptions): UseD
       const targetContentWidth = contentSize.width + detailsWidth;
       const targetWindowWidth = windowSize.width + detailsWidth;
       const workArea = monitor?.workArea;
+
+      // If the work area can't fit a wider window, open the panel anyway and
+      // let it squeeze the chat area within the current window — the
+      // alternative (refusing to open) is worse UX than a tighter chat column.
+      // No window mutation here, so detailsWindowStateRef stays null and the
+      // close path becomes a no-op.
+      if (workArea && targetWindowWidth > workArea.size.width) {
+        if (wasMaximized) await win.maximize();
+        return true;
+      }
 
       if (workArea) {
         const workRight = workArea.position.x + workArea.size.width;
@@ -231,19 +239,10 @@ export function useDetailsWindow({ chatAreaRef }: UseDetailsWindowOptions): UseD
     })();
   }, [closeDetailsWithWindowResize, lockCurrentChatWidth, openDetailsWithWindowResize]);
 
-  const closeDueToResize = useCallback(() => {
-    detailsOpenRef.current = false;
-    detailsResizePhaseRef.current = "closed";
-    detailsWindowStateRef.current = null;
-    setDetailsOpen(false);
-    setChatWidthLock(null);
-  }, []);
-
   return {
     detailsOpen,
     chatWidthLock,
     toggleDetails,
-    closeDueToResize,
     markManualResizeIfNeeded,
   };
 }

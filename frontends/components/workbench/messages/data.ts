@@ -17,8 +17,6 @@ export interface Conversation {
   time: string;
   unread: number;
   online: boolean;
-  /** Backend pushes this when the customer is composing; UI shows a typing indicator. */
-  isTyping?: boolean;
   /** Optional explicit link to the Customer record; falls back to id-based lookup. */
   customerId?: string;
 }
@@ -100,7 +98,6 @@ export const MOCK_CONVERSATIONS: Conversation[] = [
     time: "11:01",
     unread: 2,
     online: false,
-    isTyping: true,
   },
   {
     id: "c3",
