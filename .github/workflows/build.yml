@@ -6,16 +6,56 @@ on:
   workflow_dispatch:
 
 jobs:
+  verify:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: verify versions agree (and match tag if pushed)
+        id: v
+        shell: bash
+        run: |
+          set -euo pipefail
+          PKG_VER=$(node -p "require('./package.json').version")
+          TAURI_VER=$(node -p "require('./backends/tauri.conf.json').version")
+          CARGO_VER=$(grep -m1 '^version = ' backends/Cargo.toml | sed 's/.*"\(.*\)"/\1/')
+          echo "package.json:    $PKG_VER"
+          echo "tauri.conf.json: $TAURI_VER"
+          echo "Cargo.toml:      $CARGO_VER"
+
+          if [ "$PKG_VER" != "$TAURI_VER" ] || [ "$PKG_VER" != "$CARGO_VER" ]; then
+            echo "::error::version mismatch: package.json=$PKG_VER tauri.conf.json=$TAURI_VER Cargo.toml=$CARGO_VER (run: pnpm version:bump <semver>)"
+            exit 1
+          fi
+
+          if [ "${GITHUB_EVENT_NAME}" = "push" ]; then
+            TAG_VER="${GITHUB_REF_NAME#v}"
+            if [ "$PKG_VER" != "$TAG_VER" ]; then
+              echo "::error::tag $GITHUB_REF_NAME does not match version $PKG_VER (expected tag v$PKG_VER)"
+              exit 1
+            fi
+            echo "tag $GITHUB_REF_NAME matches version $PKG_VER"
+          else
+            echo "manual dispatch: skipping tag/version match check"
+          fi
+
+          echo "version=$PKG_VER" >> "$GITHUB_OUTPUT"
+
   build:
+    needs: verify
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: macos-latest
+          # macos-14 是 Apple Silicon runner，arm64 原生构建
+          - os: macos-14
             target: aarch64-apple-darwin
             label: macos-arm64
             bundles: "app,dmg,updater"
-          - os: macos-13
+          # 同样 macos-14 跑，cross-compile 到 x86_64（避开 macos-13 排队）
+          - os: macos-14
             target: x86_64-apple-darwin
             label: macos-x86_64
             bundles: "app,dmg,updater"
@@ -43,6 +83,7 @@ jobs:
       - uses: swatinem/rust-cache@v2
         with:
           workspaces: backends -> target
+          key: ${{ matrix.target }}
 
       - run: pnpm install --frozen-lockfile
 
@@ -75,7 +116,7 @@ jobs:
           retention-days: 7
 
   package:
-    needs: build
+    needs: [verify, build]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -89,11 +130,6 @@ jobs:
         with:
           path: release-staging/bundles
           # no `name`: download all artifacts; each lands in release-staging/bundles/<artifact-name>/
-
-      - name: read version
-        id: ver
-        shell: bash
-        run: echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
 
       - name: generate latest.json
         env:
@@ -109,16 +145,18 @@ jobs:
           cat release-staging/latest.json
 
       - name: bundle release zip
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
         shell: bash
         run: |
           set -euo pipefail
-          ZIP="chathub-release-${{ steps.ver.outputs.version }}.zip"
+          ZIP="chathub-release-${VERSION}.zip"
           (cd release-staging && zip -r "../$ZIP" .)
           ls -la "$ZIP"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: chathub-release-${{ steps.ver.outputs.version }}
-          path: chathub-release-${{ steps.ver.outputs.version }}.zip
+          name: chathub-release-${{ needs.verify.outputs.version }}
+          path: chathub-release-${{ needs.verify.outputs.version }}.zip
           if-no-files-found: error
           retention-days: 30
