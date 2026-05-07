@@ -14,7 +14,7 @@ import { type MessageActionType } from "./MessageContextMenu";
 import { RangePill } from "./RangePill";
 import { STRINGS } from "./strings";
 import { TypingIndicator } from "./TypingIndicator";
-import { formatMessageDate } from "./utils";
+import { formatMessageDate, getMessageDayKey } from "./utils";
 import { type ScrollMetrics, WorkbenchScrollArea } from "./WorkbenchScrollArea";
 
 interface ChatAreaProps {
@@ -54,7 +54,7 @@ const MOCK_SEND_LATENCY_MS = 800;
 
 function buildTimelineItems(messages: Message[], conversation: Conversation): TimelineItem[] {
   const items: TimelineItem[] = [];
-  let previousDate: string | null = null;
+  let previousDayKey: string | null = null;
 
   let firstUnreadIdx: number | null = null;
   let unreadCount = 0;
@@ -68,10 +68,14 @@ function buildTimelineItems(messages: Message[], conversation: Conversation): Ti
   for (let i = 0; i < messages.length; i++) {
     const message = messages[i];
 
-    const dateLabel = formatMessageDate(message.sentAt);
-    if (dateLabel !== previousDate) {
-      items.push({ type: "date-divider", id: `date-${dateLabel}-${message.id}`, label: dateLabel });
-      previousDate = dateLabel;
+    const dayKey = getMessageDayKey(message.sentAt);
+    if (dayKey !== previousDayKey) {
+      items.push({
+        type: "date-divider",
+        id: `date-${dayKey}-${message.id}`,
+        label: formatMessageDate(message.sentAt),
+      });
+      previousDayKey = dayKey;
     }
 
     if (i === firstUnreadIdx && unreadCount > 0) {
@@ -302,19 +306,19 @@ export const ChatArea = memo(function ChatArea({
             {timelineItems.map((item, idx) => {
               if (item.type === "date-divider") {
                 return (
-                  <div key={item.id} className={idx === 0 ? "" : "mt-3"}>
+                  <div key={item.id} className={idx === 0 ? "" : "mt-7"}>
                     <DateDivider label={item.label} />
                   </div>
                 );
               }
               if (item.type === "unread-divider") {
                 return (
-                  <div key={item.id} className={idx === 0 ? "" : "mt-3"}>
+                  <div key={item.id} className={idx === 0 ? "" : "mt-7"}>
                     <UnreadDivider count={item.count} />
                   </div>
                 );
               }
-              const spacing = idx === 0 ? "" : item.isFirstInBurst ? "mt-3" : "mt-1";
+              const spacing = idx === 0 ? "" : item.isFirstInBurst ? "mt-7" : "mt-4";
               return (
                 <div key={item.id} className={spacing}>
                   <MessageBubble
@@ -377,7 +381,7 @@ function ScrollToBottomButton({
       }
       style={{ bottom: bottomOffset }}
       className={cn(
-        "focus-ring absolute right-4 z-20 inline-flex items-center gap-1.5 rounded-full border border-workbench-line bg-workbench-surface px-2.5 py-1 text-wb-2xs text-workbench-text-secondary shadow-wb-popover transition-all hover:bg-workbench-surface-subtle hover:text-workbench-accent",
+        "focus-ring absolute right-4 z-20 inline-flex items-center gap-1.5 rounded-full border border-workbench-line bg-workbench-surface px-2.5 py-1 text-wb-2xs font-medium text-workbench-text-secondary shadow-wb-popover transition-all hover:bg-workbench-surface-subtle hover:text-workbench-accent",
         "animate-in fade-in slide-in-from-bottom-2",
       )}
     >

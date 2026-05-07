@@ -1,11 +1,9 @@
-import { cn } from "@/lib/utils";
+import { extractAccountOperator, pickAvatarColor, pickCustomerAvatarImage } from "./utils";
 
-import { extractAccountOperator, pickAvatarColor } from "./utils";
-
-// Resolve the background fill for an avatar. Explicit `color` wins (lets a
-// caller pin a specific brand color or override during e.g. onboarding flows);
-// otherwise we hash the seed onto the wb-avatar-* token palette. Returning a
-// CSS color string keeps the call site agnostic to the underlying theme.
+// Customers render as illustrated portraits sourced from public/avatars/.
+// We keep the legacy `avatarColor` (or hashed palette token) as the underlying
+// background fill so a missing or slow-loading image degrades to a soft tint
+// rather than a blank white square.
 function resolveAvatarColor(seed: string, color?: string): string {
   return color && color.length > 0 ? color : pickAvatarColor(seed);
 }
@@ -16,17 +14,17 @@ interface CustomerAvatarProps {
   size: "header" | "sm";
 }
 
-export function CustomerAvatar({ name, color, size }: CustomerAvatarProps) {
+export function CustomerAvatar({ name, color }: CustomerAvatarProps) {
   return (
     <div
-      className={cn(
-        "grid size-11 shrink-0 place-items-center rounded-xl font-semibold text-workbench-text shadow-[inset_0_0_0_1px_rgba(255,255,255,0.48)]",
-        size === "header" ? "text-wb-md" : "text-wb-base",
-      )}
-      style={{ background: resolveAvatarColor(name, color) }}
-    >
-      {name.slice(0, 1)}
-    </div>
+      role="img"
+      aria-label={name}
+      className="size-11 shrink-0 rounded-xl bg-cover bg-center shadow-[inset_0_0_0_1px_rgba(255,255,255,0.48)]"
+      style={{
+        backgroundColor: resolveAvatarColor(name, color),
+        backgroundImage: `url(${pickCustomerAvatarImage(name)})`,
+      }}
+    />
   );
 }
 
@@ -49,11 +47,14 @@ export function ConversationAvatar({ name, color, online }: ConversationAvatarPr
   return (
     <div className="relative shrink-0">
       <div
-        className="grid size-11 place-items-center rounded-xl text-wb-base font-medium text-workbench-text shadow-[inset_0_0_0_1px_rgba(255,255,255,0.45)]"
-        style={{ background: resolveAvatarColor(name, color) }}
-      >
-        {name.slice(0, 1)}
-      </div>
+        role="img"
+        aria-label={name}
+        className="size-11 rounded-xl bg-cover bg-center shadow-[inset_0_0_0_1px_rgba(255,255,255,0.45)]"
+        style={{
+          backgroundColor: resolveAvatarColor(name, color),
+          backgroundImage: `url(${pickCustomerAvatarImage(name)})`,
+        }}
+      />
       {online && (
         <span
           aria-hidden

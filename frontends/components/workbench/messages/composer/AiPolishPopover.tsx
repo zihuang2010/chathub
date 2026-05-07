@@ -66,7 +66,7 @@ export function AiPolishPopover({
                   aria-checked={tone === k}
                   onClick={() => setTone(k)}
                   className={cn(
-                    "focus-ring h-7 rounded-full px-3 text-wb-3xs transition-colors",
+                    "focus-ring h-7 rounded-full px-3 text-wb-3xs font-medium transition-colors",
                     tone === k
                       ? "bg-workbench-accent text-workbench-surface"
                       : "bg-workbench-surface-subtle text-workbench-text-secondary hover:bg-workbench-surface-active",
@@ -77,7 +77,7 @@ export function AiPolishPopover({
               ))}
             </div>
             <Section label={STRINGS.composer.polishOriginal}>
-              <p className="line-clamp-3 text-wb-2xs text-workbench-text-muted">
+              <p className="line-clamp-3 text-wb-2xs font-medium text-workbench-text-muted">
                 {originalText || "—"}
               </p>
             </Section>

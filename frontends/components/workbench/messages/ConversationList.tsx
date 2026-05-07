@@ -8,7 +8,6 @@ import { ConversationAvatar } from "./Avatar";
 import type { Conversation } from "./data";
 import { STRINGS } from "./strings";
 import { extractAccountOperator } from "./utils";
-import { WeChatBadge } from "./WeChatBadge";
 import { WorkbenchScrollArea } from "./WorkbenchScrollArea";
 
 type StatusTab = "all" | "unread" | "mentioned";
@@ -227,8 +226,11 @@ const ConversationItem = memo(function ConversationItem({
     >
       <ConversationAvatar name={name} color={avatarColor} online={online} />
       <div className="min-w-0 pr-11 pt-px">
-        <div className="flex min-w-0 items-center">
+        <div className="flex min-w-0 items-center gap-1.5">
           <span className="truncate text-wb-xs font-medium text-workbench-text">{name}</span>
+          <span className="shrink-0 rounded px-1 py-px text-wb-3xs font-medium text-workbench-wechat-text">
+            {STRINGS.header.fromWeChat}
+          </span>
         </div>
         <div className="mt-0.5 truncate text-wb-2xs font-medium text-workbench-text-muted">
           {unread > 0 && (
@@ -239,13 +241,12 @@ const ConversationItem = memo(function ConversationItem({
           {preview}
         </div>
         <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-wb-3xs">
-          <span className="shrink-0 text-workbench-text-muted">
+          <span className="shrink-0 font-medium text-workbench-text-muted">
             {STRINGS.conversationList.fromShort}
           </span>
           <span className="min-w-0 truncate font-medium text-workbench-text-secondary">
             {account}
           </span>
-          <WeChatBadge />
         </div>
       </div>
       <span className="wb-num absolute right-3 top-3 w-11 text-right text-wb-3xs text-workbench-text-muted">

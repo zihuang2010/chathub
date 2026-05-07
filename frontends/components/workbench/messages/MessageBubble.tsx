@@ -1,5 +1,5 @@
 import { memo } from "react";
-import { AlertCircle, Check, Loader2 } from "lucide-react";
+import { Check, Loader2 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 
@@ -184,9 +184,15 @@ function OutgoingBubble({
 
 function ReplyBlock({ target }: { target: ReplyTarget }) {
   return (
-    <blockquote className="mb-0.5 max-w-full overflow-hidden rounded border-l-2 border-workbench-accent-soft bg-workbench-surface-subtle px-2 py-1 text-wb-2xs text-workbench-text-secondary">
-      <span className="block truncate font-medium text-workbench-text">{target.senderName}</span>
-      <span className="line-clamp-2 break-words">{target.text}</span>
+    <blockquote className="mb-1 flex max-w-full gap-2 text-wb-2xs leading-relaxed text-workbench-text-secondary">
+      <span
+        aria-hidden
+        className="w-[2px] shrink-0 self-stretch rounded-full bg-workbench-accent/40"
+      />
+      <div className="min-w-0 flex-1">
+        <div className="truncate">{target.senderName}：</div>
+        <div className="line-clamp-2 break-words">{target.text}</div>
+      </div>
     </blockquote>
   );
 }
@@ -194,16 +200,16 @@ function ReplyBlock({ target }: { target: ReplyTarget }) {
 function StatusLine({ status, onResend }: { status?: MessageStatus; onResend: () => void }) {
   if (!status) return null;
   return (
-    <div className="wb-num mt-0.5 flex items-center gap-1.5 text-wb-3xs leading-none text-workbench-text-muted/80">
+    <div className="wb-num mt-1 flex items-center gap-1.5 text-wb-3xs leading-none text-workbench-text-muted/80">
       <StatusIcon status={status} />
       {status === "failed" && (
         <>
-          <span className="font-medium text-workbench-danger">{STRINGS.errors.sendFailed}</span>
+          <span className="font-medium text-workbench-text-muted">{STRINGS.errors.sendFailed}</span>
           <button
             type="button"
             onClick={onResend}
             title={STRINGS.errors.resend}
-            className="focus-ring inline-flex items-center gap-0.5 rounded border border-workbench-danger/40 bg-workbench-danger/5 px-1.5 py-0.5 font-medium text-workbench-danger transition-colors hover:bg-workbench-danger/10"
+            className="focus-ring rounded font-medium text-workbench-accent transition-colors hover:text-workbench-accent-hover"
           >
             {STRINGS.errors.resend}
           </button>
@@ -229,14 +235,28 @@ function StatusIcon({ status }: { status?: MessageStatus }) {
         <Check size={12} className="text-workbench-text-muted" aria-label={STRINGS.status.sent} />
       );
     case "failed":
-      return (
-        <AlertCircle
-          size={12}
-          className="text-workbench-danger"
-          aria-label={STRINGS.status.failed}
-        />
-      );
+      return <FailedBadge />;
   }
+}
+
+// Inline filled-circle "!" badge — designed at 12px so the mark reads crisply
+// without the optical mush of lucide's AlertCircle outline at small sizes.
+// Uses the softer coral red (workbench-unread) instead of saturated danger red
+// to fit the pastel surface palette without losing the warning semantic.
+function FailedBadge() {
+  return (
+    <svg
+      role="img"
+      aria-label={STRINGS.status.failed}
+      viewBox="0 0 12 12"
+      className="size-3 shrink-0 text-workbench-unread"
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      <circle cx="6" cy="6" r="6" fill="currentColor" />
+      <rect x="5.4" y="2.9" width="1.2" height="3.7" rx="0.6" fill="white" />
+      <circle cx="6" cy="8.7" r="0.85" fill="white" />
+    </svg>
+  );
 }
 
 export function DateDivider({ label }: { label: string }) {

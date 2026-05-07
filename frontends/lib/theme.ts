@@ -33,10 +33,14 @@ export const WORKBENCH_MUTED_TEXT = "#8A96A8";
 export const WORKBENCH_NAV_TEXT = "#2F4566";
 export const WORKBENCH_OUT_BUBBLE = "#E7F1FC";
 export const WORKBENCH_OUT_BUBBLE_BORDER = "#C7DBF2";
-export const WORKBENCH_ACTION_GRADIENT =
-  "linear-gradient(135deg, #4F8FEA 0%, #2563EB 58%, #1D4ED8 100%)";
-export const WORKBENCH_ACTION_GRADIENT_HOVER =
-  "linear-gradient(135deg, #5B9AF2 0%, #245FE0 58%, #1E40AF 100%)";
+// Primary action surface — pastel-leaning blue tuned to sit alongside the
+// soft chat bubble palette without screaming. Earlier tokens used Tailwind
+// blue-500/700 (high saturation) and clashed with the surrounding pastel
+// theme; this gradient stays in the same hue family but at lower saturation
+// and lighter values so the button reads as primary without overpowering
+// the conversation.
+export const WORKBENCH_ACTION_GRADIENT = "linear-gradient(135deg, #B7D2EA 0%, #97B7D7 100%)";
+export const WORKBENCH_ACTION_GRADIENT_HOVER = "linear-gradient(135deg, #A6C4E1 0%, #82A6CB 100%)";
 
 // Pastel halo colors used as ambient backdrops.
 export const HALO_BLUE = "#EEF2FF";

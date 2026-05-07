@@ -6,7 +6,7 @@ import { cn } from "@/lib/utils";
 import type { Customer, QuickReply } from "./data";
 import { QuickRepliesPanel } from "./QuickRepliesPanel";
 import { STRINGS } from "./strings";
-import { pickAvatarColor } from "./utils";
+import { pickAvatarColor, pickCustomerAvatarImage } from "./utils";
 
 type DetailsTab = "profile" | "replies" | "trace";
 
@@ -113,11 +113,14 @@ function ProfileHeader({ customer }: { customer: Customer }) {
   return (
     <div className="flex items-center gap-2.5">
       <div
-        className="grid size-10 place-items-center rounded-full text-wb-base font-medium text-workbench-text"
-        style={{ background: pickAvatarColor(customer.id) }}
-      >
-        {customer.name.slice(0, 1)}
-      </div>
+        role="img"
+        aria-label={customer.name}
+        className="size-10 shrink-0 rounded-full bg-cover bg-center"
+        style={{
+          backgroundColor: pickAvatarColor(customer.id),
+          backgroundImage: `url(${pickCustomerAvatarImage(customer.name)})`,
+        }}
+      />
       <div className="flex flex-col gap-0.5">
         <div className="flex items-center gap-1.5">
           <span className="text-wb-sm font-semibold text-workbench-text">{customer.name}</span>

@@ -20,7 +20,7 @@ export function ChatHeader({ conversation }: { conversation: Conversation }) {
               {STRINGS.header.fromWeChat}
             </span>
           </div>
-          <span className="truncate text-wb-2xs text-workbench-text-muted">
+          <span className="truncate text-wb-2xs font-medium text-workbench-text-muted">
             {STRINGS.header.fromAccountLabel}
             <span className="font-medium text-workbench-text">{conversation.account}</span>
           </span>

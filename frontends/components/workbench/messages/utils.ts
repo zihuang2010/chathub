@@ -17,8 +17,32 @@ const timeFormatter = new Intl.DateTimeFormat("zh-CN", {
   hour12: false,
 });
 
+function isSameLocalDay(a: Date, b: Date): boolean {
+  return (
+    a.getFullYear() === b.getFullYear() &&
+    a.getMonth() === b.getMonth() &&
+    a.getDate() === b.getDate()
+  );
+}
+
+// Stable day key for grouping/divider detection. Independent of the user-facing
+// label, so today's messages all share one key (and thus one divider) even
+// though their display labels are time-based and differ per message.
+export function getMessageDayKey(sentAt: string): string {
+  const d = new Date(sentAt);
+  return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+}
+
+// Returns the time-only label for messages sent today and the full date label
+// otherwise. The date divider and the hover tooltip both consume this — when
+// the conversation is happening today the year/month/day prefix is redundant
+// noise, so we collapse to just HH:mm.
 export function formatMessageDate(sentAt: string): string {
-  return dateFormatter.format(new Date(sentAt));
+  const date = new Date(sentAt);
+  if (isSameLocalDay(date, new Date())) {
+    return timeFormatter.format(date);
+  }
+  return dateFormatter.format(date);
 }
 
 export function formatMessageTime(sentAt: string): string {
@@ -26,7 +50,11 @@ export function formatMessageTime(sentAt: string): string {
 }
 
 export function formatMessageDateTime(sentAt: string): string {
-  return `${formatMessageDate(sentAt)} ${formatMessageTime(sentAt)}`;
+  // For today's messages, formatMessageDate already yields the time, so
+  // concatenating with another time would print the same value twice.
+  const datePart = formatMessageDate(sentAt);
+  const timePart = formatMessageTime(sentAt);
+  return datePart === timePart ? timePart : `${datePart} ${timePart}`;
 }
 
 // ─── Rich-text segmentation ─────────────────────────────────────────────────
@@ -173,4 +201,18 @@ export function pickAvatarColor(seed: string): string {
     hash = (hash * 31 + seed.charCodeAt(i)) >>> 0;
   }
   return AVATAR_PALETTE[hash % AVATAR_PALETTE.length];
+}
+
+// Customer avatars use illustrated portraits served from public/avatars/.
+// Drop files named a01.png … a05.png in that directory; seed-based hashing
+// keeps the assignment stable per customer across renders.
+const CUSTOMER_AVATAR_IMAGE_COUNT = 5;
+
+export function pickCustomerAvatarImage(seed: string): string {
+  let hash = 0;
+  for (let i = 0; i < seed.length; i++) {
+    hash = (hash * 31 + seed.charCodeAt(i)) >>> 0;
+  }
+  const index = (hash % CUSTOMER_AVATAR_IMAGE_COUNT) + 1;
+  return `/avatars/a${String(index).padStart(2, "0")}.png`;
 }

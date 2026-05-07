@@ -65,7 +65,9 @@
     --wb-line: 220 18% 90%;
     --wb-line-subtle: 220 18% 94%;
     --wb-line-strong: 220 16% 80%;
-    --wb-wechat: 154 66% 44%;
+    /* WeChat brand green (#07C160 ≈ hsl(153, 93%, 39%)) — matches the
+       official badge color so the @微信 tag reads as authentic. */
+    --wb-wechat: 153 93% 39%;
     --wb-wechat-bg: 150 54% 96%;
     --wb-online: 161 84% 35%;
     /* Softer unread red — coral-leaning so the indicator reads as
@@ -81,7 +83,7 @@
     /* Avatar palette — 8 soft tints, hashed by seed in pickAvatarColor(). */
     --wb-avatar-1: 38 95% 85%;
     --wb-avatar-2: 217 92% 92%;
-    --wb-avatar-3: 351 100% 95%;
+    --wb-avatar-3: 0 90% 88%;
     --wb-avatar-4: 138 76% 92%;
     --wb-avatar-5: 270 100% 92%;
     --wb-avatar-6: 25 95% 83%;
@@ -161,7 +163,7 @@
     /* Avatar palette — desaturated for dark surfaces. */
     --wb-avatar-1: 38 30% 30%;
     --wb-avatar-2: 217 35% 35%;
-    --wb-avatar-3: 351 30% 32%;
+    --wb-avatar-3: 0 35% 32%;
     --wb-avatar-4: 138 30% 28%;
     --wb-avatar-5: 270 30% 32%;
     --wb-avatar-6: 25 30% 30%;
@@ -183,6 +185,7 @@
   * {
     @apply border-border;
   }
+
   html,
   body,
   #root {
@@ -191,8 +194,9 @@
     background: transparent;
     overflow: hidden;
   }
+
   body {
-    @apply text-foreground;
+    @apply font-medium text-foreground;
     /* Inter cv11/ss01/ss03: straight-tail 6/9 + compact-a + alt-i — improves
        legibility at 11–13px in dense chat lists. calt enables ligatures.
        Anti-aliasing + optimizeLegibility soften glyph edges so prolonged
@@ -214,15 +218,18 @@
        contact IDs and timestamps), ss01 = stylistic alternate. */
     font-feature-settings: "tnum", "zero", "ss01";
   }
+
   /* Standard focus ring — apply to every interactive element. */
   .focus-ring {
     @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-workbench-accent/40;
   }
+
   /* Inset ring for elements that sit on a colored surface and would clip an
      outset ring (e.g. tabs flush against a top border). */
   .focus-ring-inset {
     @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-workbench-accent/40;
   }
+
   /* Expand the click target to >=44×44 without changing visual size. The
      pseudo-element extends past the host's box; clicks in that region still
      hit the host because the pseudo participates in the host's pointer-event
@@ -230,6 +237,7 @@
   .hit-area-expand {
     position: relative;
   }
+
   .hit-area-expand::before {
     content: "";
     position: absolute;
@@ -252,6 +260,21 @@ html[data-os="mac"] #app-shell {
   border-radius: 10px;
 }
 
+/* ─── TipTap placeholder ──────────────────────────────────────────────────
+ * The Placeholder extension marks the empty first paragraph with both
+ * `is-editor-empty` and `is-empty` classes plus a `data-placeholder` attr.
+ * Surface that attribute as muted hint text via ::before. Both selectors
+ * are listed so the rule fires on either class regardless of TipTap version.
+ */
+.ProseMirror p.is-editor-empty:first-child::before,
+.ProseMirror p.is-empty:first-child::before {
+  content: attr(data-placeholder);
+  color: hsl(var(--wb-placeholder));
+  pointer-events: none;
+  float: left;
+  height: 0;
+}
+
 /* ─── Thin custom scrollbars ───────────────────────────────────────────────
  * Applied globally so every scrollable area in the workbench (conversation
  * list, chat history, customer panel, placeholder pages) has a light, narrow
@@ -266,13 +289,16 @@ html[data-os="mac"] #app-shell {
   width: 6px;
   height: 6px;
 }
+
 *::-webkit-scrollbar-track {
   background: transparent;
 }
+
 *::-webkit-scrollbar-thumb {
   background: hsl(var(--wb-thumb));
   border-radius: 999px;
 }
+
 *::-webkit-scrollbar-thumb:hover {
   background: hsl(var(--wb-thumb-hover));
 }
@@ -287,6 +313,7 @@ html[data-os="mac"] #app-shell {
     opacity: 0;
     transform: translateY(12px);
   }
+
   to {
     opacity: 1;
     transform: translateY(0);
@@ -298,6 +325,7 @@ html[data-os="mac"] #app-shell {
     opacity: 0;
     transform: translateY(8px);
   }
+
   to {
     opacity: 1;
     transform: translateY(0);
@@ -309,6 +337,7 @@ html[data-os="mac"] #app-shell {
     opacity: 0;
     transform: translateY(20px) scale(0.985);
   }
+
   to {
     opacity: 1;
     transform: translateY(0) scale(1);
@@ -320,6 +349,7 @@ html[data-os="mac"] #app-shell {
     opacity: 0;
     transform: translateY(-12px) scale(0.98);
   }
+
   to {
     opacity: 1;
     transform: translateY(0) scale(1);
@@ -331,6 +361,7 @@ html[data-os="mac"] #app-shell {
     opacity: 0;
     transform: scale(0.6);
   }
+
   to {
     opacity: 1;
     transform: scale(1);
@@ -344,6 +375,7 @@ html[data-os="mac"] #app-shell {
     transform: translateY(0);
     opacity: 0.55;
   }
+
   30% {
     transform: translateY(-3px);
     opacity: 1;
@@ -354,6 +386,7 @@ html[data-os="mac"] #app-shell {
   from {
     transform: rotate(0deg);
   }
+
   to {
     transform: rotate(360deg);
   }
@@ -364,6 +397,7 @@ html[data-os="mac"] #app-shell {
   100% {
     transform: translateY(0);
   }
+
   50% {
     transform: translateY(-3px);
   }
@@ -375,6 +409,7 @@ html[data-os="mac"] #app-shell {
     opacity: 0.25;
     transform: translate(0, 0) scale(0.7);
   }
+
   50% {
     opacity: 1;
     transform: translate(var(--dx, 0), var(--dy, 0)) scale(1);
@@ -387,6 +422,7 @@ html[data-os="mac"] #app-shell {
     opacity: 0.62;
     transform: scale(1);
   }
+
   50% {
     opacity: 0.78;
     transform: scale(1.04);
@@ -398,6 +434,7 @@ html[data-os="mac"] #app-shell {
   100% {
     transform: translate(0, 0);
   }
+
   50% {
     transform: translate(-2px, -3px);
   }
@@ -407,6 +444,7 @@ html[data-os="mac"] #app-shell {
   from {
     stroke-dashoffset: 0;
   }
+
   to {
     stroke-dashoffset: 11;
   }
@@ -420,6 +458,7 @@ html[data-os="mac"] #app-shell {
   100% {
     transform: translate(0, 0);
   }
+
   50% {
     transform: translate(14px, 18px);
   }
@@ -430,6 +469,7 @@ html[data-os="mac"] #app-shell {
   100% {
     transform: translate(0, 0);
   }
+
   50% {
     transform: translate(-18px, 22px);
   }
@@ -440,6 +480,7 @@ html[data-os="mac"] #app-shell {
   100% {
     transform: translate(0, 0);
   }
+
   50% {
     transform: translate(20px, -14px);
   }

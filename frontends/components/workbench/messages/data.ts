@@ -84,7 +84,7 @@ export const MOCK_CONVERSATIONS: Conversation[] = [
   {
     id: "c1",
     name: "王女士",
-    avatarColor: "#FCE7B8",
+    avatarColor: "#FCA5A5",
     preview: "好的，我明白了",
     account: "杭州企微-小美",
     time: "11:24",
@@ -225,7 +225,7 @@ export const MOCK_CONVERSATIONS: Conversation[] = [
   {
     id: "c15",
     name: "马总",
-    avatarColor: "#BFDBFE",
+    avatarColor: "#FDA4AF",
     preview: "先给我开一个测试账号",
     account: "成都企微-小周",
     time: "4/28",

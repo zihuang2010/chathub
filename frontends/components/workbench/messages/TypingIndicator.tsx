@@ -5,7 +5,7 @@ export function TypingIndicator() {
     <div
       role="status"
       aria-live="polite"
-      className="flex shrink-0 items-center gap-2 border-t border-workbench-line bg-workbench-surface px-4 py-1.5 text-wb-2xs text-workbench-text-muted"
+      className="flex shrink-0 items-center gap-2 border-t border-workbench-line bg-workbench-surface px-4 py-1.5 text-wb-2xs font-medium text-workbench-text-muted"
     >
       <span className="flex items-center gap-1" aria-hidden>
         <Dot delay="0s" />

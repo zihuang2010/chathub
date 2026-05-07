@@ -43,7 +43,6 @@ export const STRINGS = {
     failed: "发送失败",
     selfSenderName: "我",
     recalledPlaceholder: "(已撤回)",
-    weChatBadge: "微信",
     scrollToBottom: "回到底部",
     newMessagesBelow: (n: number) => `${n > 99 ? "99+" : n} 条新消息`,
     recalledByMe: "你撤回了一条消息",
@@ -96,7 +95,7 @@ export const STRINGS = {
     openImage: "查看大图",
   },
   composer: {
-    placeholder: "输入消息内容…",
+    placeholder: "请输入消息",
     quickReplies: "快捷回复",
     polishTitle: "AI 润色",
     polishTones: {

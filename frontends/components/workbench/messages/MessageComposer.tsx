@@ -333,8 +333,8 @@ export function MessageComposer({
         className="hidden"
         onChange={handleImagePicker}
       />
-      <div className="flex h-full w-full flex-col gap-2 bg-workbench-surface">
-        <div className="flex items-center gap-3 text-workbench-text-secondary">
+      <div className="flex h-full w-full flex-col gap-1 bg-workbench-surface">
+        <div className="flex items-center gap-0.5 text-workbench-text-secondary">
           <Popover.Root open={emojiOpen} onOpenChange={setEmojiOpen}>
             <Popover.Trigger asChild>
               <button
@@ -503,7 +503,7 @@ function ToolButton({
   onClick,
   withHoverDot,
 }: {
-  icon: typeof Smile;
+  icon: typeof Camera;
   label: string;
   onClick?: () => void;
   withHoverDot?: boolean;
