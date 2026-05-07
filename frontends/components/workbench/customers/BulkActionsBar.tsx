@@ -47,9 +47,7 @@ export const BulkActionsBar = memo(function BulkActionsBar({
       <ReassignPopover onSubmit={onReassign} />
 
       <ActionButton onClick={onToggleStar} icon={<Star size={13} />}>
-        {allStarred
-          ? STRINGS.toasts.unstarred(selectedCount)
-          : STRINGS.toasts.starred(selectedCount)}
+        {STRINGS.bulk.starToggle(allStarred)}
       </ActionButton>
 
       <ActionButton onClick={onExport} icon={<Download size={13} />}>

@@ -46,17 +46,10 @@ export default {
           foreground: "hsl(var(--card-foreground))",
         },
         workbench: {
-          // Canonical accent (use this going forward).
+          // Canonical accent — use exclusively going forward.
           accent: "hsl(var(--wb-accent))",
           "accent-hover": "hsl(var(--wb-accent-hover))",
           "accent-soft": "hsl(var(--wb-accent-soft))",
-          // Legacy blue aliases (variables resolve to --wb-accent* in index.css).
-          blue: "hsl(var(--wb-blue))",
-          "blue-strong": "hsl(var(--wb-blue))",
-          "blue-hover": "hsl(var(--wb-blue-hover))",
-          "blue-light": "hsl(var(--wb-blue-light))",
-          "blue-medium": "hsl(var(--wb-blue-medium))",
-          link: "hsl(var(--wb-link))",
           text: "hsl(var(--wb-text))",
           "text-secondary": "hsl(var(--wb-text-secondary))",
           "text-muted": "hsl(var(--wb-text-muted))",
@@ -71,9 +64,6 @@ export default {
           "bubble-in-border": "hsl(var(--wb-bubble-in-border))",
           "bubble-out": "hsl(var(--wb-bubble-out))",
           "bubble-out-border": "hsl(var(--wb-bubble-out-border))",
-          // Legacy aliases — keep until all callers migrate.
-          "out-bubble": "hsl(var(--wb-bubble-out))",
-          "out-bubble-border": "hsl(var(--wb-bubble-out-border))",
           line: "hsl(var(--wb-line))",
           "line-subtle": "hsl(var(--wb-line-subtle))",
           "line-strong": "hsl(var(--wb-line-strong))",

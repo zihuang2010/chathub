@@ -132,10 +132,12 @@ export function matchSearch(c: Customer, term: string): boolean {
     .some((v) => v.includes(t));
 }
 
-/** 是否含全部要求的标签（AND 语义；空则恒真）。 */
-export function matchAllTags(c: Customer, requiredTags: readonly string[]): boolean {
+/** 是否命中任一要求的标签（OR 语义，与账号过滤一致；空则恒真）。
+ *  改 OR 的原因：用户在 chip 选择器里选 N 个标签时心智模型是"任一即可"，
+ *  AND 要求"全部命中"在 N≥3 时几乎必空、UI 又不暗示，被审计标记为反直觉。 */
+export function matchAnyTag(c: Customer, requiredTags: readonly string[]): boolean {
   if (requiredTags.length === 0) return true;
-  return requiredTags.every((t) => c.tags.includes(t));
+  return requiredTags.some((t) => c.tags.includes(t));
 }
 
 export function compareCustomers(a: Customer, b: Customer, key: SortKey): number {

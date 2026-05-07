@@ -22,6 +22,10 @@ interface CustomerListProps {
   onToggleMultiSelect: (id: string) => void;
   onSelectAllInView: () => void;
   onClearSelection: () => void;
+  /** 当前是否有任意非 Tab 过滤生效（账号/标签/搜索）。空列表时区分"无数据" vs "过滤无结果"。 */
+  hasActiveFilters: boolean;
+  /** "清除筛选" CTA 的回调；hasActiveFilters=true 且列表为空时展示。 */
+  onClearFilters: () => void;
 }
 
 export const CustomerList = memo(function CustomerList({
@@ -37,6 +41,8 @@ export const CustomerList = memo(function CustomerList({
   onToggleMultiSelect,
   onSelectAllInView,
   onClearSelection,
+  hasActiveFilters,
+  onClearFilters,
 }: CustomerListProps) {
   const accountMap = useMemo(() => {
     const map = new Map<string, Account>();
@@ -45,7 +51,11 @@ export const CustomerList = memo(function CustomerList({
   }, [accounts]);
 
   if (customers.length === 0) {
-    return <EmptyList tab={activeTab} />;
+    return hasActiveFilters ? (
+      <FilteredEmpty onClearFilters={onClearFilters} />
+    ) : (
+      <EmptyList tab={activeTab} />
+    );
   }
 
   return (
@@ -149,6 +159,24 @@ function EmptyList({ tab }: { tab: CustomerTab }) {
     <div className="flex flex-1 flex-col items-center justify-center gap-2 px-6 py-16 text-center">
       <p className="text-[14px] font-medium text-workbench-text">{empty.title}</p>
       <p className="max-w-[280px] text-[12px] text-workbench-text-muted">{empty.hint}</p>
+    </div>
+  );
+}
+
+function FilteredEmpty({ onClearFilters }: { onClearFilters: () => void }) {
+  return (
+    <div className="flex flex-1 flex-col items-center justify-center gap-3 px-6 py-16 text-center">
+      <p className="text-[14px] font-medium text-workbench-text">没有匹配的客户</p>
+      <p className="max-w-[280px] text-[12px] text-workbench-text-muted">
+        当前的搜索 / 账号 / 标签筛选条件下没有结果。
+      </p>
+      <button
+        type="button"
+        onClick={onClearFilters}
+        className="focus-ring mt-1 inline-flex h-7 items-center rounded-md bg-workbench-surface-active px-3 text-wb-2xs font-medium text-workbench-accent transition-colors hover:bg-workbench-accent hover:text-white"
+      >
+        清除筛选
+      </button>
     </div>
   );
 }

@@ -67,7 +67,9 @@ function AddTag({
   const submit = (raw: string) => {
     const next = raw.trim();
     if (!next) return;
-    if (!existing.includes(next)) onAdd(next);
+    // 大小写不敏感查重——避免 "VIP" 与 "vip" 同时存在污染过滤 chips。
+    const folded = next.toLocaleLowerCase();
+    if (!existing.some((t) => t.toLocaleLowerCase() === folded)) onAdd(next);
     close();
   };
 
@@ -103,7 +105,9 @@ function AddTag({
         type="text"
         value={value}
         onChange={(e) => setValue(e.target.value)}
-        onBlur={() => submit(value)}
+        // blur 视为放弃，丢弃残缺输入。原版 onBlur 触发 submit 会在用户按 Tab
+        // 离开输入框继续工作时，把残缺文本"VI"误存为标签。提交只在 Enter。
+        onBlur={close}
         onKeyDown={onKeyDown}
         placeholder={STRINGS.detail.addTagPlaceholder}
         className="focus-ring h-6 w-[140px] rounded-full border border-workbench-line bg-workbench-surface px-2 text-wb-2xs text-workbench-text"

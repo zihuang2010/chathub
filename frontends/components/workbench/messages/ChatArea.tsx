@@ -130,6 +130,8 @@ export const ChatArea = memo(function ChatArea({
   const wasAtBottomRef = useRef(true);
   const sendTimersRef = useRef<Map<string, number>>(new Map());
   const previousMessageCountRef = useRef(messages.length);
+  // 记录当前活动会话，给定时器/异步回调判断"我所属的会话是否还活着"。
+  const activeConversationIdRef = useRef(conversation.id);
   const [composerHeight, setComposerHeight] = useState(COMPOSER_DEFAULT_HEIGHT);
   const [localMessages, setLocalMessages] = useState<Message[]>(messages);
   const [replyDraft, setReplyDraft] = useState<
@@ -143,16 +145,17 @@ export const ChatArea = memo(function ChatArea({
   // Cleared when the user clicks the floating button or returns to bottom.
   const [unreadBelow, setUnreadBelow] = useState(0);
 
-  // Replace local copy when the parent swaps in a different conversation's data.
-  useEffect(() => {
-    let cancelled = false;
-    queueMicrotask(() => {
-      if (!cancelled) setLocalMessages(messages);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [messages]);
+  // 当父组件传入新会话的 messages 时，把本地副本同步过去。原版用
+  // useEffect + queueMicrotask 包裹会引入一帧 stale 渲染；改用 React 官方
+  // "渲染期同步"模式：把上一次同步过的 props 也存进 useState，渲染中比对、
+  // 不一致就 setState——React 会丢弃当前渲染并立即用新 state 重新渲染，
+  // 不产生 stale 帧、也不会无限循环。
+  // 参考 https://react.dev/reference/react/useState#storing-information-from-previous-renders
+  const [lastSyncedMessages, setLastSyncedMessages] = useState(messages);
+  if (lastSyncedMessages !== messages) {
+    setLastSyncedMessages(messages);
+    setLocalMessages(messages);
+  }
 
   // Clean up pending mock send timers on unmount.
   useEffect(() => {
@@ -184,6 +187,7 @@ export const ChatArea = memo(function ChatArea({
 
   // Switching conversations always jumps to the latest message.
   useLayoutEffect(() => {
+    activeConversationIdRef.current = conversation.id;
     const node = scrollRef.current;
     if (!node) return;
     node.scrollTop = node.scrollHeight;
@@ -222,15 +226,24 @@ export const ChatArea = memo(function ChatArea({
     }
   }, [localMessages]);
 
-  const completeMockSend = useCallback((messageId: string) => {
-    const timer = window.setTimeout(() => {
-      setLocalMessages((current) =>
-        current.map((m) => (m.id === messageId ? { ...m, status: "sent" } : m)),
-      );
-      sendTimersRef.current.delete(messageId);
-    }, MOCK_SEND_LATENCY_MS);
-    sendTimersRef.current.set(messageId, timer);
-  }, []);
+  const completeMockSend = useCallback(
+    (messageId: string) => {
+      // 把发送时所属会话 id 闭包进 timer，触发时与 ref 中的"当前活跃会话"比对。
+      // 若 800ms 内用户切到其他会话，跳过 setState——localMessages 已被 sync 覆盖，
+      // 误更新会污染当前会话状态。接入真后端后该判断同样适用（请求 settle
+      // 必须按 conversationId 路由，避免响应回到错误会话）。
+      const owningConversationId = conversation.id;
+      const timer = window.setTimeout(() => {
+        sendTimersRef.current.delete(messageId);
+        if (owningConversationId !== activeConversationIdRef.current) return;
+        setLocalMessages((current) =>
+          current.map((m) => (m.id === messageId ? { ...m, status: "sent" } : m)),
+        );
+      }, MOCK_SEND_LATENCY_MS);
+      sendTimersRef.current.set(messageId, timer);
+    },
+    [conversation.id],
+  );
 
   const handleSend = useCallback(
     (
@@ -270,6 +283,9 @@ export const ChatArea = memo(function ChatArea({
           break;
         case "delete":
           setLocalMessages((current) => current.filter((m) => m.id !== message.id));
+          // 若引用预览正指向被删消息，发送时 replyTo 会指向不存在的 id
+          // → buildTimelineItems 解析不到 replyTarget 静默丢失。同步清空。
+          setReplyDraft((draft) => (draft?.id === message.id ? null : draft));
           break;
         case "recall":
           setLocalMessages((current) =>
@@ -277,6 +293,8 @@ export const ChatArea = memo(function ChatArea({
               m.id === message.id ? { ...m, isRecalled: true, status: undefined } : m,
             ),
           );
+          // 撤回的消息不再适合作为引用对象，同样清空。
+          setReplyDraft((draft) => (draft?.id === message.id ? null : draft));
           showToast(STRINGS.toast.recallSuccess, { type: "success" });
           break;
         case "copy":
@@ -291,13 +309,9 @@ export const ChatArea = memo(function ChatArea({
             text: message.text,
           });
           break;
-        case "forward":
-        case "details":
         case "scroll-to":
-        default:
-          if (typeof console !== "undefined") {
-            console.warn(`[ChatArea] action "${action}" not yet wired for ${message.id}`);
-          }
+          // 由 ChatHeader 的内部跳转处理，此处不需要额外动作。
+          break;
       }
     },
     [completeMockSend, conversation.id, conversation.name],

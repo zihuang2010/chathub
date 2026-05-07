@@ -5,9 +5,7 @@ import { Sidebar } from "@/components/workbench/Sidebar";
 import { type Section } from "@/components/workbench/nav";
 import { CustomersPage } from "@/components/workbench/customers/CustomersPage";
 import { MessagesPage } from "@/components/workbench/messages/MessagesPage";
-
-const FONT_BODY =
-  "'Inter', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', system-ui, sans-serif";
+import { FONT_BODY } from "@/lib/theme";
 
 export function Workbench() {
   const [section, setSection] = useState<Section>("messages");

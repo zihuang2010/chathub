@@ -43,6 +43,14 @@ export function CustomersPage() {
     exitSelection();
   }, [exitSelection, filters.activeTab]);
 
+  // 任意筛选变化（账号/标签/搜索/Tab）会改变可见集，把当前选中收敛到交集。
+  // 否则用户对"看不见的项"批量操作的语义不可控（导出/移交/星标都会包含隐藏行）。
+  const pruneSelection = selection.pruneTo;
+  useEffect(() => {
+    const visibleIds = new Set(filters.filteredCustomers.map((c) => c.id));
+    pruneSelection(visibleIds);
+  }, [filters.filteredCustomers, pruneSelection]);
+
   const activeCustomer = useMemo(
     () => store.customers.find((c) => c.id === activeCustomerId) ?? null,
     [activeCustomerId, store.customers],
@@ -57,24 +65,33 @@ export function CustomersPage() {
     return MOCK_RECENT_MESSAGES.filter((m) => m.customerId === activeCustomer.id);
   }, [activeCustomer]);
 
+  const selectExactly = selection.selectExactly;
   const onSelectAllInView = useCallback(() => {
-    selection.selectMany(filters.filteredCustomers.map((c) => c.id));
-  }, [filters.filteredCustomers, selection]);
+    // 用 selectExactly 而非 selectMany：用户期望"全选"产生与可见集精确相等
+    // 的选中，并集语义会保留之前在其他过滤下选中的不可见项。
+    // 仅依赖具体方法（稳定 ref）而非整个 selection 对象——后者每次选中变化都
+    // 改 identity，会让 memoized CustomerListRow 全部 re-render。
+    selectExactly(filters.filteredCustomers.map((c) => c.id));
+  }, [filters.filteredCustomers, selectExactly]);
 
   const allSelectedInView = useMemo(() => {
     if (filters.filteredCustomers.length === 0) return false;
     return filters.filteredCustomers.every((c) => selection.selectedIds.has(c.id));
   }, [filters.filteredCustomers, selection.selectedIds]);
 
+  // 拆出方法引用，深依赖 selection 对象会让该 callback 每次选中改变都重建
+  // → 传给 memoized CustomerListRow 的 onSelect 也跟着抖，memo 失效。
+  const isMultiSelectActive = selection.isMultiSelectActive;
+  const toggleSelection = selection.toggle;
   const handleSelectCustomer = useCallback(
     (id: string) => {
-      if (selection.isMultiSelectActive) {
-        selection.toggle(id);
+      if (isMultiSelectActive) {
+        toggleSelection(id);
       } else {
         setRequestedCustomerId(id);
       }
     },
-    [selection],
+    [isMultiSelectActive, toggleSelection],
   );
 
   const handleToggleStar = useCallback(
@@ -93,7 +110,9 @@ export function CustomersPage() {
   const handleAddTag = useCallback(
     (tag: string) => {
       if (!activeCustomer) return;
-      if (activeCustomer.tags.includes(tag)) return;
+      // case-insensitive 查重，与 CustomerTagsEditor 保持一致。
+      const folded = tag.toLocaleLowerCase();
+      if (activeCustomer.tags.some((t) => t.toLocaleLowerCase() === folded)) return;
       store.patchCustomer(activeCustomer.id, { tags: [...activeCustomer.tags, tag] });
     },
     [activeCustomer, store],
@@ -169,6 +188,17 @@ export function CustomersPage() {
     showToast(STRINGS.toasts.exported(rows.length));
   }, [selectedIdsArray, store.customers]);
 
+  const hasActiveFilters =
+    filters.searchTerm.trim().length > 0 ||
+    filters.selectedAccountIds.size > 0 ||
+    filters.tagFilters.length > 0;
+
+  const handleClearFilters = useCallback(() => {
+    filters.setSearchTerm("");
+    filters.clearAccounts();
+    filters.clearTags();
+  }, [filters]);
+
   return (
     <ErrorBoundary>
       <WorkbenchPanel>
@@ -222,6 +252,8 @@ export function CustomersPage() {
                 onToggleMultiSelect={selection.toggle}
                 onSelectAllInView={onSelectAllInView}
                 onClearSelection={selection.clear}
+                hasActiveFilters={hasActiveFilters}
+                onClearFilters={handleClearFilters}
               />
             </div>
             <CustomerDetailPanel

@@ -227,14 +227,30 @@ function WorkbenchScrollbar({
     node.addEventListener("scroll", syncOnScroll, { passive: true });
     window.addEventListener("resize", recomputeAll);
 
-    const observer = new ResizeObserver(recomputeAll);
-    observer.observe(node);
-    if (node.firstElementChild) observer.observe(node.firstElementChild);
+    // ResizeObserver 监听 viewport + 当前 firstElementChild。后者会在 ChatArea
+    // 的 loading/empty/log 状态切换时被替换，原版只在 effect 挂载时绑一次，
+    // 之后切到不同 child 就停止追踪内容高度，scrollbar thumb 大小停止更新。
+    // 用 MutationObserver 监听 viewport 子节点变化，重新绑定到新的 firstChild。
+    const resizeObserver = new ResizeObserver(recomputeAll);
+    resizeObserver.observe(node);
+    let observedChild: Element | null = node.firstElementChild;
+    if (observedChild) resizeObserver.observe(observedChild);
+
+    const childObserver = new MutationObserver(() => {
+      const next = node.firstElementChild;
+      if (next === observedChild) return;
+      if (observedChild) resizeObserver.unobserve(observedChild);
+      if (next) resizeObserver.observe(next);
+      observedChild = next;
+      recomputeAll();
+    });
+    childObserver.observe(node, { childList: true });
 
     return () => {
       node.removeEventListener("scroll", syncOnScroll);
       window.removeEventListener("resize", recomputeAll);
-      observer.disconnect();
+      resizeObserver.disconnect();
+      childObserver.disconnect();
     };
   }, [recomputeAll, scrollRef, syncOnScroll]);
 

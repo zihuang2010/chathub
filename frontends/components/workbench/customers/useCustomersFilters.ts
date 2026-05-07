@@ -3,7 +3,7 @@ import { useCallback, useMemo, useState } from "react";
 import type { Customer } from "@/lib/types/customer";
 
 import type { CustomerTab, SortKey } from "./constants";
-import { compareCustomers, isNewFriend, matchAllTags, matchSearch, needsFollowUp } from "./utils";
+import { compareCustomers, isNewFriend, matchAnyTag, matchSearch, needsFollowUp } from "./utils";
 
 export interface CustomersFiltersState {
   activeTab: CustomerTab;
@@ -26,14 +26,10 @@ export interface CustomersFiltersResult extends CustomersFiltersState {
   setActiveTab: (tab: CustomerTab) => void;
   toggleAccountId: (id: string) => void;
   clearAccounts: () => void;
-  setAccountIds: (ids: ReadonlySet<string>) => void;
   setSearchTerm: (term: string) => void;
   toggleTag: (tag: string) => void;
   clearTags: () => void;
   setSortKey: (key: SortKey) => void;
-
-  /** 占位字段，方便后续接入异步数据时不改 UI。 */
-  isLoading: boolean;
 }
 
 interface Options {
@@ -79,7 +75,7 @@ export function useCustomersFilters({
         if (!c.accountId || !selectedAccountIds.has(c.accountId)) return false;
       }
       if (!matchesTab(c, activeTab)) return false;
-      if (!matchAllTags(c, tagFilters)) return false;
+      if (!matchAnyTag(c, tagFilters)) return false;
       if (!matchSearch(c, searchTerm)) return false;
       return true;
     });
@@ -114,7 +110,7 @@ export function useCustomersFilters({
     const counts: Record<string, number> = {};
     for (const c of source) {
       if (!matchesTab(c, activeTab)) continue;
-      if (!matchAllTags(c, tagFilters)) continue;
+      if (!matchAnyTag(c, tagFilters)) continue;
       if (!matchSearch(c, searchTerm)) continue;
       const id = c.accountId ?? "__unknown";
       counts[id] = (counts[id] ?? 0) + 1;
@@ -133,10 +129,6 @@ export function useCustomersFilters({
 
   const clearAccounts = useCallback(() => {
     setSelectedAccountIds(EMPTY_ACCOUNTS);
-  }, []);
-
-  const setAccountIds = useCallback((ids: ReadonlySet<string>) => {
-    setSelectedAccountIds(new Set(ids));
   }, []);
 
   const toggleTag = useCallback((tag: string) => {
@@ -160,11 +152,9 @@ export function useCustomersFilters({
     setActiveTab,
     toggleAccountId,
     clearAccounts,
-    setAccountIds,
     setSearchTerm,
     toggleTag,
     clearTags,
     setSortKey,
-    isLoading: false,
   };
 }

@@ -40,6 +40,13 @@ function messageAriaText(message: Message): string {
 // pass, so a reference compare would force every bubble to re-render whenever
 // any sibling changes. Compare by content for replyTarget; reference compare
 // for everything else (Message/onAction are stable across normal renders).
+//
+// ⚠️ 这里依赖**消息以 immutable update 的方式更新**——`current.map(m =>
+// m.id === id ? {...m, status: "sent"} : m)` 会产生新引用，prev.message ===
+// next.message 才能正确判断变化。如果未来贡献者用 in-place mutation
+// （如 `message.status = "sent"`），这里会静默漏更新，气泡 UI 不会刷新。
+// 维护规约：messages 数组中的 Message 对象一旦发出，不允许直接 mutate；
+// 必须用对象展开重建。
 function arePropsEqual(prev: MessageBubbleProps, next: MessageBubbleProps): boolean {
   return (
     prev.message === next.message &&

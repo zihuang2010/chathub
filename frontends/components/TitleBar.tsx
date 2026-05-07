@@ -1,8 +1,9 @@
 import { useEffect, useState, type ButtonHTMLAttributes, type ReactNode } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
-import { cn } from "@/lib/utils";
 import { isMac } from "@/lib/platform";
+import { FROSTED_GLASS_STYLE } from "@/lib/theme";
+import { cn } from "@/lib/utils";
 
 type Tone = "transparent" | "blue";
 
@@ -73,14 +74,10 @@ function MacTitleBar({ controls, tone }: { controls: WindowControls; tone: Tone 
       className="absolute inset-x-0 top-0 z-[100] flex h-10 select-none items-center rounded-t-[10px]"
       style={{
         WebkitUserSelect: "none",
-        // Frosted-glass top bar. Identical color/alpha/blur as the sidebar
-        // so they read as one continuous frosted surface. The rounded top
-        // corners match the app-shell's border-radius — backdrop-filter
-        // creates its own stacking context that does not always honor an
-        // ancestor's border-radius clip, so the corners are rounded here.
-        background: blurred ? "rgba(220,234,248,0.72)" : "transparent",
-        backdropFilter: blurred ? "saturate(160%) blur(20px)" : undefined,
-        WebkitBackdropFilter: blurred ? "saturate(160%) blur(20px)" : undefined,
+        // 与 Sidebar 共用 FROSTED_GLASS_STYLE，保证两者像素级一致——色差带的
+        // 排查史在 plans 文件里。圆角在此处是因为 backdrop-filter 自带 stacking
+        // context，不总能遵守祖先的 border-radius。
+        ...(blurred ? FROSTED_GLASS_STYLE : { background: "transparent" }),
       }}
     >
       <div className="group flex items-center gap-[8px] pl-[14px]">
@@ -140,9 +137,7 @@ function WindowsTitleBar({ controls, tone }: { controls: WindowControls; tone: T
       className="absolute inset-x-0 top-0 z-[100] flex h-10 select-none items-center justify-between"
       style={{
         WebkitUserSelect: "none",
-        background: blurred ? "rgba(220,234,248,0.72)" : "transparent",
-        backdropFilter: blurred ? "saturate(160%) blur(20px)" : undefined,
-        WebkitBackdropFilter: blurred ? "saturate(160%) blur(20px)" : undefined,
+        ...(blurred ? FROSTED_GLASS_STYLE : { background: "transparent" }),
       }}
     >
       {/* drag region — no app-name text */}

@@ -14,7 +14,6 @@ export const STRINGS = {
   toolbar: {
     searchPlaceholder: "搜索 客户姓名 / 公司 / 备注",
     tagFilter: "标签",
-    tagFilterAll: "所有标签",
     sortLabel: "排序",
     sortMenuTitle: "排序方式",
     enterBulk: "批量",
@@ -29,12 +28,9 @@ export const STRINGS = {
   accountChips: {
     label: "账号筛选",
     allAccounts: "全部账号",
-    countSuffix: "个",
   },
   list: {
     selectAll: (n: number) => `选择当前视图全部 ${n} 位客户`,
-    selectedCountLabel: (n: number) => `已选 ${n} 位客户`,
-    rowFollowUpDot: "待跟进",
     overflowTagsLabel: (n: number) => `+${n}`,
   },
   emptyStates: {
@@ -60,7 +56,6 @@ export const STRINGS = {
     },
   },
   detail: {
-    sectionStatus: "客户状态",
     sectionTags: "标签",
     sectionNote: "备注",
     sectionContact: "联系方式",
@@ -99,9 +94,6 @@ export const STRINGS = {
       starOn: "★ 关注",
       starOff: "已关注",
       more: "更多",
-      reassign: "移交跟进人",
-      copyContact: "复制信息",
-      openInWindow: "在新窗口打开",
     },
     addTag: "+ 添加标签",
     addTagPlaceholder: "输入标签后回车",
@@ -110,15 +102,13 @@ export const STRINGS = {
     expand: "展开",
     collapse: "收起",
     seeAllMessages: "查看全部 →",
-    noRecentMessages: "暂无会话",
-    fromAccount: "来自",
   },
   bulk: {
     barTitle: (n: number) => `已选 ${n} 位客户`,
     cancel: "取消",
     addRemoveTag: "标签",
     reassign: "移交跟进人",
-    starToggle: "关注 / 取消",
+    starToggle: (allStarred: boolean) => (allStarred ? "取消关注" : "关注"),
     exportCsv: "导出 CSV",
     addRemoveTagDialog: {
       title: "为选中客户更新标签",

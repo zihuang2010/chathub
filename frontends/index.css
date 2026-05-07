@@ -33,13 +33,6 @@
     --wb-accent: 215 85% 50%;
     --wb-accent-hover: 215 85% 44%;
     --wb-accent-soft: 215 75% 62%;
-    /* Legacy aliases — kept so existing components keep working. New code
-       should reference --wb-accent* directly. */
-    --wb-blue: var(--wb-accent);
-    --wb-blue-hover: var(--wb-accent-hover);
-    --wb-blue-light: var(--wb-accent-soft);
-    --wb-blue-medium: var(--wb-accent-soft);
-    --wb-link: var(--wb-accent);
     /* 4-tier text ramp: primary ≈12.4:1, secondary 6.7:1, muted 4.6:1,
        disabled 3.0:1 (large only). Each tier ≥14% L apart for clear hierarchy.
        Primary uses 18% L (≈ Feishu #1F2329) — Chinese strokes need extra
@@ -125,12 +118,6 @@
     --wb-accent: 215 80% 65%;
     --wb-accent-hover: 215 80% 60%;
     --wb-accent-soft: 215 70% 55%;
-    /* Legacy aliases auto-follow accent in dark mode too. */
-    --wb-blue: var(--wb-accent);
-    --wb-blue-hover: var(--wb-accent-hover);
-    --wb-blue-light: var(--wb-accent-soft);
-    --wb-blue-medium: var(--wb-accent-soft);
-    --wb-link: var(--wb-accent);
     /* 4-tier text ramp on dark: 12.1 / 6.4 / 4.6 / 3.0 against new surface. */
     --wb-text: 220 12% 90%;
     --wb-text-secondary: 218 10% 70%;

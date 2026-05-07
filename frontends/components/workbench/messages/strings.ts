@@ -51,10 +51,8 @@ export const STRINGS = {
   contextMenu: {
     copy: "复制",
     reply: "引用回复",
-    forward: "转发",
     recall: "撤回",
     delete: "删除",
-    details: "查看详情",
   },
   toast: {
     copySuccess: "已复制到剪贴板",

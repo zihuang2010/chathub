@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 
 import { showToast } from "@/components/ui/toast";
+import { useEscKey } from "@/lib/useEscKey";
 import { cn } from "@/lib/utils";
 
 import {
@@ -90,20 +91,32 @@ export function MessageComposer({
   const [emojiOpen, setEmojiOpen] = useState(false);
   const [pendingFileAttachments, setPendingFileAttachments] = useState<MessageAttachment[]>([]);
   const editorRef = useRef<Editor | null>(null);
-  const pendingFileAttachmentsRef = useRef<MessageAttachment[]>([]);
-  useEffect(() => {
-    pendingFileAttachmentsRef.current = pendingFileAttachments;
-  }, [pendingFileAttachments]);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const imageInputRef = useRef<HTMLInputElement | null>(null);
   const resizeStartRef = useRef({ y: 0, height });
 
-  // Cleanup blob URLs on unmount only (do NOT revoke on send — bubbles still need them).
+  // 跟踪 composer 创建的所有 blob: URL（含 inline 图片 + 待发送文件附件）。
+  // submitDraft 把已交付给消息气泡的 url 从 set 中删除（ownership 转移），
+  // unmount 时 set 内剩下的均是从未发送的 → 全部 revoke 释放内存。
+  const createdBlobUrlsRef = useRef<Set<string>>(new Set());
+  const trackBlobUrl = (url: string) => {
+    createdBlobUrlsRef.current.add(url);
+  };
   useEffect(() => {
+    const tracked = createdBlobUrlsRef.current;
     return () => {
-      pendingFileAttachmentsRef.current.forEach((a) => URL.revokeObjectURL(a.url));
+      tracked.forEach((url) => URL.revokeObjectURL(url));
+      tracked.clear();
     };
   }, []);
+
+  // Esc 取消引用回复。skipIfInInput=false 因为编辑器是 contenteditable，用户
+  // 在编辑器中正是最常按 Esc 取消引用的场景；IME composition 与 popover dismiss
+  // 由 useEscKey 默认配置兜底。
+  useEscKey(() => onCancelReply?.(), {
+    enabled: !!replyDraft,
+    skipIfInInput: false,
+  });
 
   // Derive canSend from the TipTap doc and file tray.
   const blocks = docToBlocks(draft);
@@ -134,6 +147,18 @@ export function MessageComposer({
     );
   }, [pendingFileAttachments.length, onHeightChange]);
 
+  // 父组件持有 composerHeight 且按 conversation.id 重挂载本组件。若用户在会话 A
+  // 加附件 → 高度 +84，切到 B 时本组件 unmount 但父高度仍是 +84，下一会话开局
+  // 偏高。unmount cleanup 中若 bump 仍生效则回退，保证高度跨会话不漂移。
+  useEffect(() => {
+    return () => {
+      if (chipBumpAppliedRef.current) {
+        onHeightChange((prev) => clampComposerHeight(prev - CHIP_TRAY_FOOTPRINT_PX));
+      }
+    };
+    // 仅依赖 onHeightChange；卸载时执行一次。父组件应保证 onHeightChange 引用稳定。
+  }, [onHeightChange]);
+
   // ─── Attachment helpers ────────────────────────────────────────────────────
 
   /** Insert image files as inline image nodes in the TipTap editor. */
@@ -141,6 +166,7 @@ export function MessageComposer({
     if (!editorRef.current || files.length === 0) return;
     files.forEach((file) => {
       const url = URL.createObjectURL(file);
+      trackBlobUrl(url);
       editorRef
         .current!.chain()
         .focus()
@@ -159,18 +185,23 @@ export function MessageComposer({
 
   const handleFilePicker = (event: ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(event.target.files ?? []);
-    const next: MessageAttachment[] = files.map((file) => ({
-      type: "file",
-      url: URL.createObjectURL(file),
-      name: file.name,
-      sizeBytes: file.size,
-    }));
+    const next: MessageAttachment[] = files.map((file) => {
+      const url = URL.createObjectURL(file);
+      trackBlobUrl(url);
+      return {
+        type: "file",
+        url,
+        name: file.name,
+        sizeBytes: file.size,
+      };
+    });
     setPendingFileAttachments((prev) => [...prev, ...next]);
     event.target.value = "";
   };
 
   const removePendingFileAttachment = (target: MessageAttachment) => {
     URL.revokeObjectURL(target.url);
+    createdBlobUrlsRef.current.delete(target.url);
     setPendingFileAttachments((prev) => prev.filter((p) => p !== target));
   };
 
@@ -293,7 +324,12 @@ export function MessageComposer({
       fileAttachments.length > 0 ? fileAttachments : undefined,
       replyDraft?.id,
     );
-    // Hand ownership of file blob URLs to the message bubble; do NOT revoke here.
+    // 把已交付给气泡的 blob URL 从跟踪 set 中移除（ownership 转移），
+    // 否则 unmount cleanup 会把消息里仍在用的图片/附件 url 撤销，导致显示空白。
+    finalBlocks.forEach((block) => {
+      if (block.type === "image") createdBlobUrlsRef.current.delete(block.url);
+    });
+    fileAttachments.forEach((att) => createdBlobUrlsRef.current.delete(att.url));
     setPendingFileAttachments([]);
     // Reset draft (sets EMPTY_DOC in the store).
     clearDraft(conversationId);
@@ -346,15 +382,7 @@ export function MessageComposer({
         className="hidden"
         onChange={handleImagePicker}
       />
-      <div
-        className="flex h-full w-full flex-col gap-1 bg-workbench-surface"
-        onKeyDownCapture={(event) => {
-          if (event.key === "Escape" && replyDraft) {
-            event.preventDefault();
-            onCancelReply?.();
-          }
-        }}
-      >
+      <div className="flex h-full w-full flex-col gap-1 bg-workbench-surface">
         {replyDraft && <ReplyPreview draft={replyDraft} onCancel={() => onCancelReply?.()} />}
         <div className="flex items-center gap-0.5 text-workbench-text-secondary">
           <Popover.Root open={emojiOpen} onOpenChange={setEmojiOpen}>

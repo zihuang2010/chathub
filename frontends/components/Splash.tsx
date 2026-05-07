@@ -10,14 +10,12 @@ import {
   buildWavePath,
   type Satellite,
 } from "@/components/illustrations";
+import { FONT_BODY } from "@/lib/theme";
 
 interface SplashProps {
   onReady?: () => void;
   durationMs?: number;
 }
-
-const FONT_BODY =
-  "'Inter', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', system-ui, sans-serif";
 
 // ─── Data ─────────────────────────────────────────────────────────────────
 
@@ -187,11 +185,6 @@ export function Splash({ onReady, durationMs = 6500 }: SplashProps) {
         <div className="mt-8" style={{ animation: "chFadeUp 700ms 720ms backwards ease-out" }}>
           <Features />
         </div>
-
-        <div
-          className="mt-[18px]"
-          style={{ animation: "chFadeUp 700ms 900ms backwards ease-out" }}
-        ></div>
       </main>
 
       <BottomScene />

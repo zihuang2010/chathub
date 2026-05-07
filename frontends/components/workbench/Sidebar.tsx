@@ -1,8 +1,8 @@
 import { memo } from "react";
 import { ChevronLeft, ChevronRight, Menu } from "lucide-react";
 
+import { FROSTED_GLASS_STYLE, WORKBENCH_BLUE, WORKBENCH_NAV_TEXT } from "@/lib/theme";
 import { cn } from "@/lib/utils";
-import { WORKBENCH_BLUE, WORKBENCH_NAV_TEXT } from "@/lib/theme";
 
 import { NAV_ITEMS, type NavItem, type Section } from "./nav";
 
@@ -26,20 +26,15 @@ export const Sidebar = memo(function Sidebar({
         collapsed ? "w-16" : "w-36",
       )}
       style={{
-        // Frosted-glass sidebar: flat translucent surface that matches the
-        // top bar pixel-for-pixel (same color, alpha, blur) so the seam
-        // between them disappears. The rounded bottom-left corner mirrors
-        // the app-shell's rounding — backdrop-filter creates its own
-        // stacking context that does not always honor an ancestor's
-        // border-radius clip, so we round the corner here directly.
-        background: "rgba(220,234,248,0.72)",
-        backdropFilter: "saturate(160%) blur(20px)",
-        WebkitBackdropFilter: "saturate(160%) blur(20px)",
+        // 与 TitleBar 共用 FROSTED_GLASS_STYLE，保证两者像素级一致——任何一方
+        // 偏移都会在交界处产生色差带。圆角在此处而非由 app-shell 裁切是因为
+        // backdrop-filter 自带 stacking context，不总能遵守祖先的 border-radius。
+        ...FROSTED_GLASS_STYLE,
       }}
     >
       <div className="relative z-10 flex h-full flex-col">
         <UserBadge collapsed={collapsed} onToggleCollapsed={onToggleCollapsed} />
-        <nav className={cn("flex flex-col gap-0.5 pt-2", collapsed ? "px-2" : "px-2")}>
+        <nav className="flex flex-col gap-0.5 px-2 pt-2">
           {NAV_ITEMS.map((item) => (
             <NavButton
               key={item.value}

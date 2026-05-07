@@ -9,15 +9,7 @@ import { STRINGS } from "./strings";
 
 const RECALL_WINDOW_MS = 2 * 60 * 1000;
 
-export type MessageActionType =
-  | "copy"
-  | "reply"
-  | "forward"
-  | "recall"
-  | "delete"
-  | "details"
-  | "resend"
-  | "scroll-to";
+export type MessageActionType = "copy" | "reply" | "recall" | "delete" | "resend" | "scroll-to";
 
 interface MessageContextMenuProps {
   message: Message;
@@ -72,12 +64,12 @@ export function MessageContextMenu({ message, onAction, children }: MessageConte
         >
           <Item onSelect={handleCopy}>{STRINGS.contextMenu.copy}</Item>
           <Item onSelect={() => onAction("reply", message)}>{STRINGS.contextMenu.reply}</Item>
-          <Item onSelect={() => onAction("forward", message)}>{STRINGS.contextMenu.forward}</Item>
           {recallable && (
-            <Item onSelect={() => onAction("recall", message)}>{STRINGS.contextMenu.recall}</Item>
+            <>
+              <Item onSelect={() => onAction("recall", message)}>{STRINGS.contextMenu.recall}</Item>
+              <Separator />
+            </>
           )}
-          <Separator />
-          <Item onSelect={() => onAction("details", message)}>{STRINGS.contextMenu.details}</Item>
           <Item onSelect={() => onAction("delete", message)} danger>
             {STRINGS.contextMenu.delete}
           </Item>
