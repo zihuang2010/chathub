@@ -29,6 +29,10 @@ export const CustomerNoteEditor = memo(function CustomerNoteEditor({
     }
   }, [editing]);
 
+  // 三种状态（编辑/空/已填）共用相同 min-height，避免切换时跳动。
+  // 88px ≈ rows={4} + py-2 上下内边距。
+  const SHARED_BOX = "min-h-[88px] rounded-lg px-3 py-2 text-[12px] leading-relaxed";
+
   if (editing) {
     return (
       <textarea
@@ -37,14 +41,22 @@ export const CustomerNoteEditor = memo(function CustomerNoteEditor({
         onChange={(e) => onChange(e.target.value)}
         placeholder={STRINGS.detail.notePlaceholder}
         rows={4}
-        className="focus-ring w-full resize-y rounded-lg border border-workbench-line bg-workbench-surface px-3 py-2 text-[12px] leading-relaxed text-workbench-text placeholder:text-workbench-text-muted"
+        className={cn(
+          "focus-ring w-full resize-y border border-workbench-line bg-workbench-surface text-workbench-text placeholder:text-workbench-text-muted",
+          SHARED_BOX,
+        )}
       />
     );
   }
 
   if (!value) {
     return (
-      <p className="rounded-lg bg-workbench-surface px-3 py-2 text-[12px] text-workbench-text-muted">
+      <p
+        className={cn(
+          "border border-dashed border-workbench-line bg-workbench-surface text-workbench-text-muted",
+          SHARED_BOX,
+        )}
+      >
         {STRINGS.detail.noteEmpty}
       </p>
     );
@@ -56,7 +68,12 @@ export const CustomerNoteEditor = memo(function CustomerNoteEditor({
   const displayed = !expanded && overflows ? lines.slice(0, NOTE_COLLAPSE_LINES).join("\n") : value;
 
   return (
-    <div className="rounded-lg border border-workbench-line bg-workbench-surface px-3 py-2 text-[12px] leading-relaxed text-workbench-text shadow-wb-card-soft">
+    <div
+      className={cn(
+        "border border-workbench-line bg-workbench-surface text-workbench-text shadow-wb-card-soft",
+        SHARED_BOX,
+      )}
+    >
       <p className={cn("whitespace-pre-wrap", !expanded && overflows && "line-clamp-4")}>
         {displayed}
       </p>

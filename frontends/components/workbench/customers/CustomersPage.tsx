@@ -4,7 +4,6 @@ import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { ToastViewport, showToast } from "@/components/ui/toast";
 import { WorkbenchPanel } from "@/components/workbench/WorkbenchPanel";
 
-import { BulkActionsBar } from "./BulkActionsBar";
 import { CustomerDetailPanel } from "./CustomerDetailPanel";
 import { CustomerList } from "./CustomerList";
 import { CustomersHeader } from "./CustomersHeader";
@@ -37,7 +36,7 @@ export function CustomersPage() {
     return filters.filteredCustomers[0].id;
   }, [requestedCustomerId, filters.filteredCustomers]);
 
-  // 切 Tab 时退出多选模式（计划 §10）。
+  // 切 Tab 时退出多选模式。
   const exitSelection = selection.exit;
   useEffect(() => {
     exitSelection();
@@ -65,14 +64,21 @@ export function CustomersPage() {
     return MOCK_RECENT_MESSAGES.filter((m) => m.customerId === activeCustomer.id);
   }, [activeCustomer]);
 
+  // ── 选中相关 ─────────────────────────────────────────────────────────────
   const selectExactly = selection.selectExactly;
+  const isMultiSelectActive = selection.isMultiSelectActive;
+  const toggleSelectionMode = selection.toggleMode;
+
+  /**
+   * 工具栏 master checkbox：未在多选时点击 → 进入多选并选中可见全部；
+   * 已选完则清空回到 0；否则补齐到全选可见集。
+   */
   const onSelectAllInView = useCallback(() => {
-    // 用 selectExactly 而非 selectMany：用户期望"全选"产生与可见集精确相等
-    // 的选中，并集语义会保留之前在其他过滤下选中的不可见项。
-    // 仅依赖具体方法（稳定 ref）而非整个 selection 对象——后者每次选中变化都
-    // 改 identity，会让 memoized CustomerListRow 全部 re-render。
+    if (!isMultiSelectActive) {
+      toggleSelectionMode();
+    }
     selectExactly(filters.filteredCustomers.map((c) => c.id));
-  }, [filters.filteredCustomers, selectExactly]);
+  }, [filters.filteredCustomers, isMultiSelectActive, selectExactly, toggleSelectionMode]);
 
   const allSelectedInView = useMemo(() => {
     if (filters.filteredCustomers.length === 0) return false;
@@ -81,7 +87,6 @@ export function CustomersPage() {
 
   // 拆出方法引用，深依赖 selection 对象会让该 callback 每次选中改变都重建
   // → 传给 memoized CustomerListRow 的 onSelect 也跟着抖，memo 失效。
-  const isMultiSelectActive = selection.isMultiSelectActive;
   const toggleSelection = selection.toggle;
   const handleSelectCustomer = useCallback(
     (id: string) => {
@@ -110,7 +115,6 @@ export function CustomersPage() {
   const handleAddTag = useCallback(
     (tag: string) => {
       if (!activeCustomer) return;
-      // case-insensitive 查重，与 CustomerTagsEditor 保持一致。
       const folded = tag.toLocaleLowerCase();
       if (activeCustomer.tags.some((t) => t.toLocaleLowerCase() === folded)) return;
       store.patchCustomer(activeCustomer.id, { tags: [...activeCustomer.tags, tag] });
@@ -137,8 +141,6 @@ export function CustomersPage() {
   );
 
   const handleOpenChat = useCallback((customerId: string) => {
-    // 真实实现需要切到 messages 页并定位到对应会话。当前 Workbench 没有跨段路由
-    // API，先用 toast 提示，后续接通时只改这里一处。
     showToast(`将打开与该客户的会话（${customerId}）`, { type: "info" });
   }, []);
 
@@ -202,11 +204,15 @@ export function CustomersPage() {
   return (
     <ErrorBoundary>
       <WorkbenchPanel>
-        <div className="flex h-full min-w-0 flex-1 flex-col overflow-hidden bg-workbench-surface">
+        <div className="flex h-full min-w-0 flex-1 flex-col overflow-hidden">
           <CustomersHeader
             activeTab={filters.activeTab}
             onTabChange={filters.setActiveTab}
             tabCounts={filters.tabCounts}
+            sortKey={filters.sortKey}
+            onSortChange={filters.setSortKey}
+            searchTerm={filters.searchTerm}
+            onSearchChange={filters.setSearchTerm}
             accounts={MOCK_ACCOUNTS}
             selectedAccountIds={filters.selectedAccountIds}
             accountCounts={filters.accountCounts}
@@ -216,29 +222,12 @@ export function CustomersPage() {
             tagFilters={filters.tagFilters}
             onToggleTag={filters.toggleTag}
             onClearTags={filters.clearTags}
-            sortKey={filters.sortKey}
-            onSortChange={filters.setSortKey}
-            searchTerm={filters.searchTerm}
-            onSearchChange={filters.setSearchTerm}
             isMultiSelectActive={selection.isMultiSelectActive}
             onToggleBulk={selection.toggleMode}
           />
 
-          {selection.isMultiSelectActive && (
-            <BulkActionsBar
-              selectedCount={selection.count}
-              allStarred={allSelectedStarred}
-              knownTags={filters.knownTags}
-              onApplyTagDiff={handleBulkApplyTagDiff}
-              onReassign={handleBulkReassign}
-              onToggleStar={handleBulkToggleStar}
-              onExport={handleBulkExport}
-              onCancel={selection.exit}
-            />
-          )}
-
           <div className="flex min-h-0 flex-1 overflow-hidden">
-            <div className="flex min-w-0 flex-1 flex-col">
+            <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
               <CustomerList
                 customers={filters.filteredCustomers}
                 accounts={MOCK_ACCOUNTS}
@@ -247,11 +236,19 @@ export function CustomersPage() {
                 multiSelectActive={selection.isMultiSelectActive}
                 selectedIds={selection.selectedIds}
                 allSelectedInView={allSelectedInView}
+                selectedCount={selection.count}
+                allSelectedStarred={allSelectedStarred}
                 onSelectCustomer={handleSelectCustomer}
                 onToggleStar={handleToggleStar}
                 onToggleMultiSelect={selection.toggle}
                 onSelectAllInView={onSelectAllInView}
                 onClearSelection={selection.clear}
+                onCancelBulk={selection.exit}
+                onApplyTagDiff={handleBulkApplyTagDiff}
+                onReassign={handleBulkReassign}
+                onBulkToggleStar={handleBulkToggleStar}
+                onExport={handleBulkExport}
+                knownTags={filters.knownTags}
                 hasActiveFilters={hasActiveFilters}
                 onClearFilters={handleClearFilters}
               />

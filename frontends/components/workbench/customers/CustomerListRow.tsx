@@ -4,16 +4,17 @@ import { Star } from "lucide-react";
 import type { Customer } from "@/lib/types/customer";
 import { cn } from "@/lib/utils";
 
-import { ROW_MAX_TAGS } from "./constants";
+import { ROW_GRID_TEMPLATE } from "./constants";
+import { STAGE_BADGE_CLASS, resolveStageBadge } from "./stageBadge";
 import { STRINGS } from "./strings";
 import { formatNextFollowUp, formatRelativeTime, type FollowUpTone } from "./utils";
 
 const FOLLOW_UP_TONE_CLASS: Record<FollowUpTone, string> = {
-  overdue: "text-workbench-danger font-medium",
-  today: "text-workbench-danger font-medium",
-  tomorrow: "text-workbench-warning font-medium",
-  soon: "text-workbench-text-secondary",
-  later: "text-workbench-text-muted",
+  overdue: "text-workbench-danger font-semibold",
+  today: "text-workbench-danger font-semibold",
+  tomorrow: "text-workbench-warning font-semibold",
+  soon: "text-workbench-text font-medium",
+  later: "text-workbench-text-secondary font-medium",
 };
 
 interface CustomerListRowProps {
@@ -22,7 +23,7 @@ interface CustomerListRowProps {
   multiSelectActive: boolean;
   multiSelected: boolean;
   showFollowUpReason: boolean;
-  /** 头像配色 token，决定头像底色。 */
+  /** 客户头像配色 token，决定头像底色。 */
   avatarColorToken?: number;
   onSelect: (id: string) => void;
   onToggleStar: (id: string) => void;
@@ -40,13 +41,8 @@ export const CustomerListRow = memo(function CustomerListRow({
   onToggleStar,
   onToggleMultiSelect,
 }: CustomerListRowProps) {
-  const visibleTags = customer.tags.slice(0, ROW_MAX_TAGS);
-  const overflow = customer.tags.length - visibleTags.length;
   const followUp = formatNextFollowUp(customer.nextFollowUpAt);
-  const lastTimeLabel = formatRelativeTime(customer.lastContactAt ?? customer.addedAt);
-  const timeLabel = followUp?.label ?? lastTimeLabel;
-  const timeClass = followUp ? FOLLOW_UP_TONE_CLASS[followUp.tone] : "text-workbench-text-muted";
-  const timeAriaLabel = followUp ? `下次跟进 ${followUp.label}` : `最近联系 ${lastTimeLabel}`;
+  const stageBadge = resolveStageBadge(customer);
   const meta = [customer.company, customer.follower && `跟进人 ${customer.follower}`]
     .filter(Boolean)
     .join(" · ");
@@ -63,8 +59,9 @@ export const CustomerListRow = memo(function CustomerListRow({
           onSelect(customer.id);
         }
       }}
+      style={{ gridTemplateColumns: ROW_GRID_TEMPLATE }}
       className={cn(
-        "group relative grid h-[60px] cursor-pointer grid-cols-[28px_36px_minmax(0,1fr)_auto] items-center gap-3 px-4 transition-colors",
+        "group relative grid h-[60px] cursor-pointer items-center gap-3 px-4 transition-colors",
         "hover:bg-workbench-surface-subtle focus-visible:bg-workbench-surface-subtle focus-visible:outline-none",
         selected && !multiSelectActive && "bg-workbench-surface-active",
         multiSelected && "bg-workbench-surface-active/70",
@@ -96,10 +93,8 @@ export const CustomerListRow = memo(function CustomerListRow({
       <Avatar name={customer.name} colorToken={avatarColorToken} />
 
       <div className="min-w-0">
-        <div className="flex items-center gap-1.5">
-          <span className="truncate text-[13px] font-semibold text-workbench-text">
-            {customer.name}
-          </span>
+        <div className="truncate text-[13px] font-semibold text-workbench-text">
+          {customer.name}
         </div>
         <div className="flex items-center gap-1 truncate text-[11px] text-workbench-text-secondary">
           <span className="truncate">{meta}</span>
@@ -112,32 +107,67 @@ export const CustomerListRow = memo(function CustomerListRow({
         </div>
       </div>
 
-      <div className="flex shrink-0 items-center gap-3">
-        <div className="hidden min-w-[88px] items-center justify-end gap-1 sm:flex">
-          {visibleTags.map((tag) => (
-            <span
-              key={tag}
-              className="rounded-full border border-workbench-line bg-workbench-surface-subtle px-2 py-0.5 text-wb-3xs text-workbench-text-secondary"
-            >
-              {tag}
-            </span>
-          ))}
-          {overflow > 0 && (
-            <span className="text-wb-3xs text-workbench-text-muted">
-              {STRINGS.list.overflowTagsLabel(overflow)}
-            </span>
-          )}
-        </div>
-        <span
-          aria-label={timeAriaLabel}
-          className={cn("min-w-[56px] text-right font-numeric text-wb-3xs tabular-nums", timeClass)}
-        >
-          {timeLabel}
-        </span>
+      <div className="min-w-0">
+        {stageBadge && (
+          <span
+            className={cn(
+              "inline-flex max-w-full items-center truncate rounded-full px-2 py-0.5 text-[11.5px] font-medium ring-1",
+              STAGE_BADGE_CLASS[stageBadge.tone],
+            )}
+          >
+            {stageBadge.label}
+          </span>
+        )}
       </div>
+
+      <FollowUpCell followUp={followUp} fallbackTime={customer.lastContactAt ?? customer.addedAt} />
     </div>
   );
 });
+
+function FollowUpCell({
+  followUp,
+  fallbackTime,
+}: {
+  followUp: { label: string; tone: FollowUpTone } | null;
+  fallbackTime: string | null | undefined;
+}) {
+  // 双行版式：上行小灰字标签（下次跟进 / 最近联系），下行带 tone 着色的值。
+  // 以前只渲染单行的值，但 92px 宽的列原本就是为双行设计的（见 constants），
+  // 而且没有标签时"超期 4 天"和"3 天前"难以区分语义，导致用户要么记规则要么误读。
+  if (followUp) {
+    const caption = STRINGS.list.columnNextFollowUp;
+    return (
+      <div
+        aria-label={`${caption} ${followUp.label}`}
+        className="flex flex-col items-end gap-2.5 text-right leading-tight"
+      >
+        <span className="text-[10.5px] text-workbench-text-muted">{caption}</span>
+        <span
+          className={cn(
+            "wb-num truncate text-[10.5px] tabular-nums",
+            FOLLOW_UP_TONE_CLASS[followUp.tone],
+          )}
+        >
+          {followUp.label}
+        </span>
+      </div>
+    );
+  }
+  const lastTimeLabel = formatRelativeTime(fallbackTime);
+  const caption = STRINGS.list.columnLastContact;
+  return (
+    <div
+      aria-label={`${caption} ${lastTimeLabel}`}
+      className="flex flex-col items-end gap-2.5 text-right leading-tight"
+    >
+      <span className="text-[10.5px] text-workbench-text-muted">{caption}</span>
+      <span className="wb-num truncate text-[10.5px] font-medium tabular-nums text-workbench-text-secondary">
+        {lastTimeLabel}
+      </span>
+    </div>
+  );
+}
 
 function StarToggle({
   starred,

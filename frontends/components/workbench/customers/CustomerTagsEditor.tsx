@@ -1,4 +1,4 @@
-import { memo, useState, type KeyboardEvent } from "react";
+import { forwardRef, memo, useImperativeHandle, useRef, useState, type KeyboardEvent } from "react";
 import { Plus, X } from "lucide-react";
 
 import { cn } from "@/lib/utils";
@@ -13,51 +13,69 @@ interface CustomerTagsEditorProps {
   onRemove: (tag: string) => void;
 }
 
-export const CustomerTagsEditor = memo(function CustomerTagsEditor({
-  tags,
-  editing,
-  onAdd,
-  onRemove,
-}: CustomerTagsEditorProps) {
-  return (
-    <div className="flex flex-wrap items-center gap-1.5">
-      {tags.map((tag) => (
-        <span
-          key={tag}
-          className={cn(
-            "inline-flex items-center gap-1 rounded-full border border-workbench-line bg-workbench-surface-subtle px-2 py-0.5 text-wb-2xs text-workbench-text-secondary",
-          )}
-        >
-          {tag}
-          {editing && (
-            <button
-              type="button"
-              onClick={() => onRemove(tag)}
-              aria-label={`移除标签 ${tag}`}
-              className="focus-ring grid size-3.5 place-items-center rounded-full hover:bg-workbench-line"
-            >
-              <X size={10} />
-            </button>
-          )}
-        </span>
-      ))}
-      {editing && <AddTag onAdd={onAdd} existing={tags} />}
-      {!editing && tags.length === 0 && (
-        <span className="text-wb-2xs text-workbench-text-muted">尚未打标签</span>
-      )}
-    </div>
-  );
-});
+export interface CustomerTagsEditorHandle {
+  /** 打开"添加标签"输入框（外部 ActionRow 中的"添加标签"按钮使用）。 */
+  openInput: () => void;
+}
 
-function AddTag({
-  onAdd,
-  existing,
-}: {
-  onAdd: (tag: string) => void;
-  existing: readonly string[];
-}) {
+export const CustomerTagsEditor = memo(
+  forwardRef<CustomerTagsEditorHandle, CustomerTagsEditorProps>(function CustomerTagsEditor(
+    { tags, editing, onAdd, onRemove },
+    ref,
+  ) {
+    const addRef = useRef<AddTagHandle>(null);
+    useImperativeHandle(ref, () => ({
+      openInput: () => addRef.current?.open(),
+    }));
+
+    return (
+      <div className="flex flex-wrap items-center gap-1.5">
+        {tags.map((tag) => (
+          <span
+            key={tag}
+            className={cn(
+              "inline-flex items-center gap-1 rounded-full border border-workbench-line bg-workbench-surface-subtle px-2 py-0.5 text-wb-2xs text-workbench-text-secondary",
+            )}
+          >
+            {tag}
+            {editing && (
+              <button
+                type="button"
+                onClick={() => onRemove(tag)}
+                aria-label={`移除标签 ${tag}`}
+                className="focus-ring grid size-3.5 place-items-center rounded-full hover:bg-workbench-line"
+              >
+                <X size={10} />
+              </button>
+            )}
+          </span>
+        ))}
+        {editing && <AddTag ref={addRef} onAdd={onAdd} existing={tags} />}
+        {!editing && tags.length === 0 && (
+          <span className="text-wb-2xs text-workbench-text-muted">尚未打标签</span>
+        )}
+      </div>
+    );
+  }),
+);
+
+interface AddTagHandle {
+  open: () => void;
+}
+
+const AddTag = forwardRef<
+  AddTagHandle,
+  {
+    onAdd: (tag: string) => void;
+    existing: readonly string[];
+  }
+>(function AddTag({ onAdd, existing }, ref) {
   const [open, setOpen] = useState(false);
   const [value, setValue] = useState("");
+
+  useImperativeHandle(ref, () => ({
+    open: () => setOpen(true),
+  }));
 
   const close = () => {
     setOpen(false);
@@ -127,4 +145,4 @@ function AddTag({
       ))}
     </div>
   );
-}
+});

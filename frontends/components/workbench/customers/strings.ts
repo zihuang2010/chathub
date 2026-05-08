@@ -12,18 +12,24 @@ export const STRINGS = {
     starred: "我的关注",
   },
   toolbar: {
-    searchPlaceholder: "搜索 客户姓名 / 公司 / 备注",
+    searchPlaceholder: "搜索客户、联系人、标签、备注等",
     tagFilter: "标签",
     sortLabel: "排序",
     sortMenuTitle: "排序方式",
     enterBulk: "批量",
     exitBulk: "退出批量",
+    bulkActions: "批量操作",
+    filtersTrigger: "筛选",
   },
   sort: {
-    lastContact: "最近联系",
-    addedAt: "添加时间",
-    company: "公司",
-    follower: "跟进人",
+    lastContact: "按跟进时间",
+    addedAt: "按添加时间",
+    company: "按公司",
+    follower: "按跟进人",
+  },
+  rowMore: {
+    star: "关注",
+    unstar: "取消关注",
   },
   accountChips: {
     label: "账号筛选",
@@ -32,6 +38,11 @@ export const STRINGS = {
   list: {
     selectAll: (n: number) => `选择当前视图全部 ${n} 位客户`,
     overflowTagsLabel: (n: number) => `+${n}`,
+    columnCustomer: "客户信息",
+    columnStage: "客户阶段",
+    columnNextFollowUp: "下次跟进",
+    columnLastContact: "最近联系",
+    columnFollower: "跟进人",
   },
   emptyStates: {
     all: {
@@ -82,8 +93,9 @@ export const STRINGS = {
       phone: "手机",
       company: "公司",
       source: "来源",
-      addedAt: "添加于",
-      follower: "跟进人",
+      addedAt: "添加时间",
+      follower: "负责人",
+      account: "归属账号",
     },
     actions: {
       openChat: "打开会话",

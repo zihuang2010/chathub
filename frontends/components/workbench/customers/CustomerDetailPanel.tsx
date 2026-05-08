@@ -1,5 +1,5 @@
-import { memo, useState } from "react";
-import { Copy, MessageCircle, MoreHorizontal, Pencil, Star } from "lucide-react";
+import { memo, useRef, useState } from "react";
+import { Copy, MessageCircle, MoreHorizontal, Pencil, Star, Tag as TagIcon } from "lucide-react";
 
 import type { Account } from "@/lib/types/account";
 import type { Customer } from "@/lib/types/customer";
@@ -9,7 +9,7 @@ import { cn } from "@/lib/utils";
 import { WorkbenchScrollArea } from "../messages/WorkbenchScrollArea";
 import { CustomerNoteEditor } from "./CustomerNoteEditor";
 import { CustomerStatusCard } from "./CustomerStatusCard";
-import { CustomerTagsEditor } from "./CustomerTagsEditor";
+import { CustomerTagsEditor, type CustomerTagsEditorHandle } from "./CustomerTagsEditor";
 import { CustomerTimeline } from "./CustomerTimeline";
 import { DETAIL_PANEL_WIDTH, RECENT_MESSAGE_LIMIT } from "./constants";
 import type { CustomerRecentMessage } from "./data";
@@ -60,7 +60,7 @@ function EmptyDetail() {
   return (
     <aside
       style={{ width: DETAIL_PANEL_WIDTH }}
-      className="flex h-full shrink-0 flex-col items-center justify-center gap-2 border-l border-workbench-line bg-workbench-surface-subtle px-8 text-center"
+      className="flex h-full shrink-0 flex-col items-center justify-center gap-2 border-l border-workbench-line bg-workbench-surface px-8 text-center"
     >
       <p className="text-[14px] font-medium text-workbench-text">
         {STRINGS.emptyStates.detail.title}
@@ -91,6 +91,7 @@ function DetailBody({
 }) {
   const [editing, setEditing] = useState(false);
   const [draftRemark, setDraftRemark] = useState(customer.remark);
+  const tagsRef = useRef<CustomerTagsEditorHandle>(null);
 
   const hasChat = Boolean(customer.lastContactAt);
 
@@ -106,6 +107,14 @@ function DetailBody({
     setEditing(false);
   };
 
+  const handleAddTagShortcut = () => {
+    setEditing(true);
+    // 等下一帧再调，确保 editing=true 让 AddTag 已挂载。
+    requestAnimationFrame(() => {
+      tagsRef.current?.openInput();
+    });
+  };
+
   const handleCopy = (label: string, value: string) => {
     if (!navigator?.clipboard) return;
     void navigator.clipboard.writeText(value).then(() => {
@@ -116,23 +125,27 @@ function DetailBody({
   return (
     <aside
       style={{ width: DETAIL_PANEL_WIDTH }}
-      className="flex h-full shrink-0 flex-col border-l border-workbench-line bg-workbench-surface-subtle"
+      className="flex h-full shrink-0 flex-col border-l border-workbench-line bg-workbench-surface"
     >
       <WorkbenchScrollArea
         className="flex-1"
         viewportClassName="px-0"
-        contentClassName="flex flex-col gap-4 p-5 pb-6"
+        contentClassName="flex flex-col gap-4 p-4 pb-6"
       >
-        <Header customer={customer} account={account} />
+        <Header
+          customer={customer}
+          account={account}
+          starred={Boolean(customer.starred)}
+          onToggleStar={onToggleStar}
+        />
 
         <ActionRow
-          customer={customer}
           editing={editing}
           hasChat={hasChat}
-          onToggleStar={onToggleStar}
           onEdit={() => setEditing(true)}
           onCancel={onCancel}
           onSave={onSave}
+          onAddTagShortcut={handleAddTagShortcut}
           onOpenChat={() => onOpenChat(customer.id)}
         />
 
@@ -140,6 +153,7 @@ function DetailBody({
 
         <Section label={STRINGS.detail.sectionTags}>
           <CustomerTagsEditor
+            ref={tagsRef}
             tags={customer.tags}
             editing={editing}
             onAdd={onAddTag}
@@ -184,119 +198,188 @@ function DetailBody({
   );
 }
 
-function Header({ customer, account }: { customer: Customer; account: Account | undefined }) {
+function Header({
+  customer,
+  account,
+  starred,
+  onToggleStar,
+}: {
+  customer: Customer;
+  account: Account | undefined;
+  starred: boolean;
+  onToggleStar: () => void;
+}) {
   const colorToken = account?.colorToken ?? 1;
   const meta = [customer.company, customer.channel, account && `@${account.name}`]
     .filter(Boolean)
     .join(" · ");
   return (
-    <div className="flex items-center gap-3">
+    <div className="flex items-start gap-2.5">
       <div
-        className="grid size-12 shrink-0 place-items-center rounded-full text-[18px] font-medium text-workbench-text shadow-[inset_0_0_0_1px_rgba(255,255,255,0.45)]"
+        className="grid size-10 shrink-0 place-items-center rounded-full text-[16px] font-medium text-workbench-text shadow-[inset_0_0_0_1px_rgba(255,255,255,0.45)]"
         style={{ background: `hsl(var(--wb-avatar-${colorToken}))` }}
       >
         {customer.name.slice(0, 1)}
       </div>
-      <div className="flex min-w-0 flex-col gap-0.5">
-        <span className="truncate text-[16px] font-semibold text-workbench-text">
+      <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+        <span className="truncate text-[15px] font-semibold text-workbench-text">
           {customer.name}
         </span>
         {meta && <span className="truncate text-[11px] text-workbench-text-secondary">{meta}</span>}
+      </div>
+      <div className="flex shrink-0 items-center gap-0.5">
+        <IconButton
+          aria-label={starred ? STRINGS.rowMore.unstar : STRINGS.rowMore.star}
+          onClick={onToggleStar}
+          active={starred}
+        >
+          <Star
+            size={14}
+            fill={starred ? "currentColor" : "none"}
+            className={starred ? "text-workbench-warning" : undefined}
+          />
+        </IconButton>
+        <IconButton aria-label={STRINGS.detail.actions.more}>
+          <MoreHorizontal size={14} />
+        </IconButton>
       </div>
     </div>
   );
 }
 
+function IconButton({
+  children,
+  active,
+  ...rest
+}: React.ButtonHTMLAttributes<HTMLButtonElement> & { active?: boolean }) {
+  return (
+    <button
+      type="button"
+      {...rest}
+      className={cn(
+        "focus-ring grid size-7 place-items-center rounded-md transition-colors",
+        active
+          ? "text-workbench-warning hover:bg-workbench-surface-subtle"
+          : "text-workbench-text-secondary hover:bg-workbench-surface-subtle hover:text-workbench-text",
+      )}
+    >
+      {children}
+    </button>
+  );
+}
+
 function ActionRow({
-  customer,
   editing,
   hasChat,
-  onToggleStar,
   onEdit,
   onCancel,
   onSave,
+  onAddTagShortcut,
   onOpenChat,
 }: {
-  customer: Customer;
   editing: boolean;
   hasChat: boolean;
-  onToggleStar: () => void;
   onEdit: () => void;
   onCancel: () => void;
   onSave: () => void;
+  onAddTagShortcut: () => void;
   onOpenChat: () => void;
 }) {
+  if (editing) {
+    return (
+      <div className="grid grid-cols-2 gap-2">
+        <PrimaryButton onClick={onSave}>{STRINGS.detail.actions.saveEdit}</PrimaryButton>
+        <OutlineButton onClick={onCancel}>{STRINGS.detail.actions.cancelEdit}</OutlineButton>
+      </div>
+    );
+  }
   return (
-    <div className="flex flex-wrap items-center gap-1">
-      <button
-        type="button"
+    <div className="flex items-center gap-1.5">
+      <PrimaryButton
         disabled={!hasChat}
         onClick={onOpenChat}
-        className={cn(
-          "focus-ring inline-flex h-8 items-center gap-1.5 rounded-md px-3 text-[12px] font-medium transition-colors",
-          hasChat
-            ? "bg-workbench-accent text-workbench-surface hover:bg-workbench-accent-hover"
-            : "cursor-not-allowed bg-workbench-surface-subtle text-workbench-text-muted",
-        )}
-        aria-label={
-          hasChat ? STRINGS.detail.actions.openChat : STRINGS.detail.actions.openChatDisabled
-        }
+        aria-label={STRINGS.detail.actions.openChat}
+        title={hasChat ? undefined : STRINGS.detail.actions.openChatDisabled}
+        icon={<MessageCircle size={13} />}
+        className="min-w-0 flex-1"
       >
-        <MessageCircle size={13} />
-        {hasChat ? STRINGS.detail.actions.openChat : STRINGS.detail.actions.openChatDisabled}
-      </button>
-
-      {editing ? (
-        <>
-          <GhostButton onClick={onSave} variant="primary">
-            {STRINGS.detail.actions.saveEdit}
-          </GhostButton>
-          <GhostButton onClick={onCancel}>{STRINGS.detail.actions.cancelEdit}</GhostButton>
-        </>
-      ) : (
-        <GhostButton onClick={onEdit}>
-          <Pencil size={12} className="mr-1" />
-          {STRINGS.detail.actions.edit}
-        </GhostButton>
-      )}
-
-      <GhostButton onClick={onToggleStar}>
-        <Star
-          size={12}
-          className={cn("mr-1", customer.starred && "text-workbench-warning")}
-          fill={customer.starred ? "currentColor" : "none"}
-        />
-        {customer.starred ? STRINGS.detail.actions.starOff : STRINGS.detail.actions.starOn}
-      </GhostButton>
-
-      <GhostButton aria-label={STRINGS.detail.actions.more} className="ml-auto">
-        <MoreHorizontal size={14} />
-      </GhostButton>
+        {STRINGS.detail.actions.openChat}
+      </PrimaryButton>
+      <OutlineIconButton onClick={onEdit} ariaLabel={STRINGS.detail.actions.edit}>
+        <Pencil size={14} />
+      </OutlineIconButton>
+      <OutlineIconButton
+        onClick={onAddTagShortcut}
+        ariaLabel={STRINGS.detail.addTag.replace("+ ", "")}
+      >
+        <TagIcon size={14} />
+      </OutlineIconButton>
     </div>
   );
 }
 
-function GhostButton({
+function OutlineIconButton({
   children,
-  onClick,
-  className,
-  variant,
+  ariaLabel,
   ...rest
-}: React.ButtonHTMLAttributes<HTMLButtonElement> & { variant?: "primary" }) {
+}: React.ButtonHTMLAttributes<HTMLButtonElement> & { ariaLabel: string }) {
   return (
     <button
       type="button"
-      onClick={onClick}
+      aria-label={ariaLabel}
+      title={ariaLabel}
       {...rest}
       className={cn(
-        "focus-ring inline-flex h-8 items-center rounded-md px-2.5 text-[12px] transition-colors",
-        variant === "primary"
-          ? "bg-workbench-accent text-workbench-surface hover:bg-workbench-accent-hover"
-          : "text-workbench-text-secondary hover:bg-workbench-surface-subtle hover:text-workbench-text",
-        className,
+        "focus-ring grid size-9 shrink-0 place-items-center rounded-md border border-workbench-line bg-workbench-surface text-workbench-text-secondary transition-colors",
+        "hover:border-workbench-line-strong hover:bg-workbench-surface-subtle hover:text-workbench-text",
       )}
     >
       {children}
+    </button>
+  );
+}
+
+function PrimaryButton({
+  children,
+  icon,
+  className,
+  ...rest
+}: React.ButtonHTMLAttributes<HTMLButtonElement> & { icon?: React.ReactNode }) {
+  return (
+    <button
+      type="button"
+      {...rest}
+      className={cn(
+        "focus-ring inline-flex h-9 items-center justify-center gap-1.5 rounded-md px-3 text-[12px] font-medium transition-colors",
+        rest.disabled
+          ? "cursor-not-allowed bg-workbench-surface-subtle text-workbench-text-muted"
+          : "bg-workbench-accent text-workbench-surface hover:bg-workbench-accent-hover",
+        className,
+      )}
+    >
+      {icon}
+      <span>{children}</span>
+    </button>
+  );
+}
+
+function OutlineButton({
+  children,
+  icon,
+  className,
+  ...rest
+}: React.ButtonHTMLAttributes<HTMLButtonElement> & { icon?: React.ReactNode }) {
+  return (
+    <button
+      type="button"
+      {...rest}
+      className={cn(
+        "focus-ring inline-flex h-9 items-center justify-center gap-1.5 rounded-md border border-workbench-line bg-workbench-surface px-3 text-[12px] text-workbench-text transition-colors hover:border-workbench-line-strong hover:bg-workbench-surface-subtle",
+        className,
+      )}
+    >
+      {icon}
+      <span>{children}</span>
     </button>
   );
 }
@@ -332,13 +415,13 @@ function ContactList({
 }) {
   const f = STRINGS.detail.fields;
   const rows: { label: string; value: string; numeric?: boolean; copy?: boolean }[] = [
+    { label: f.follower, value: customer.follower, copy: true },
     { label: f.weChat, value: customer.weChat, numeric: true, copy: true },
     { label: f.phone, value: customer.phone, numeric: true, copy: true },
     { label: f.company, value: customer.company },
     { label: f.source, value: customer.source },
     { label: f.addedAt, value: customer.addedAt, numeric: true },
-    { label: f.follower, value: customer.follower },
-    ...(account ? [{ label: "归属账号", value: account.name }] : []),
+    ...(account ? [{ label: f.account, value: account.name }] : []),
   ];
 
   return (

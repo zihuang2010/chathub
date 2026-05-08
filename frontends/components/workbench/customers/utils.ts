@@ -27,7 +27,7 @@ const RELATIVE_FORMATTER = new Intl.DateTimeFormat("zh-CN", {
 export type FollowUpTone = "overdue" | "today" | "tomorrow" | "soon" | "later";
 
 export interface FollowUpDescriptor {
-  /** 用于行内/状态卡的简短文案，例如「今天」「3 天后」「逾期 2 天」。 */
+  /** 用于行内/状态卡的简短文案，例如「今天」「3 天后」「超期 2 天」。 */
   label: string;
   tone: FollowUpTone;
 }
@@ -50,7 +50,7 @@ export function formatNextFollowUp(
   const dayDiff = Math.round((startOfTarget.getTime() - startOfToday.getTime()) / DAY_MS);
 
   if (dayDiff < 0) {
-    return { label: `逾期 ${Math.abs(dayDiff)} 天`, tone: "overdue" };
+    return { label: `超期 ${Math.abs(dayDiff)} 天`, tone: "overdue" };
   }
   if (dayDiff === 0) return { label: "今天", tone: "today" };
   if (dayDiff === 1) return { label: "明天", tone: "tomorrow" };

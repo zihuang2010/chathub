@@ -333,11 +333,20 @@ export function MessageComposer({
     setPendingFileAttachments([]);
     // Reset draft (sets EMPTY_DOC in the store).
     clearDraft(conversationId);
-    // Also reset the editor's content.
-    editorRef.current?.commands.setContent({
-      type: "doc",
-      content: [{ type: "paragraph" }],
-    });
+    // Reset the editor's content AND collapse the selection back to position 0.
+    // setContent alone doesn't move the caret — when the previous draft was tall
+    // enough to scroll the editor, the browser keeps painting the caret at the
+    // old DOM y-coordinate, leaving a phantom cursor floating in the empty
+    // composer until the user clicks somewhere. focus('start') re-anchors both
+    // ProseMirror's selection and the visible caret to the new empty paragraph.
+    editorRef.current
+      ?.chain()
+      .setContent({
+        type: "doc",
+        content: [{ type: "paragraph" }],
+      })
+      .focus("start")
+      .run();
   };
 
   // ─── Render ───────────────────────────────────────────────────────────────

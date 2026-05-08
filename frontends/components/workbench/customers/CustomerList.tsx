@@ -2,8 +2,8 @@ import { memo, useMemo } from "react";
 
 import type { Account } from "@/lib/types/account";
 import type { Customer } from "@/lib/types/customer";
-import { cn } from "@/lib/utils";
 
+import { BulkActionsBar } from "./BulkActionsBar";
 import { WorkbenchScrollArea } from "../messages/WorkbenchScrollArea";
 import type { CustomerTab } from "./constants";
 import { CustomerListRow } from "./CustomerListRow";
@@ -14,17 +14,31 @@ interface CustomerListProps {
   accounts: readonly Account[];
   activeTab: CustomerTab;
   activeCustomerId: string | null;
+
+  // multi-select
   multiSelectActive: boolean;
   selectedIds: ReadonlySet<string>;
   allSelectedInView: boolean;
+  selectedCount: number;
+  allSelectedStarred: boolean;
   onSelectCustomer: (id: string) => void;
   onToggleStar: (id: string) => void;
   onToggleMultiSelect: (id: string) => void;
   onSelectAllInView: () => void;
   onClearSelection: () => void;
-  /** 当前是否有任意非 Tab 过滤生效（账号/标签/搜索）。空列表时区分"无数据" vs "过滤无结果"。 */
+  onCancelBulk: () => void;
+
+  // bulk actions
+  onApplyTagDiff: (diff: { addTags?: string[]; removeTags?: string[] }) => void;
+  onReassign: (follower: string) => void;
+  onBulkToggleStar: () => void;
+  onExport: () => void;
+
+  /** 标签筛选已知列表，BulkActionsBar 内的标签 popover 用。 */
+  knownTags: readonly string[];
+  /** 是否存在任意非 Tab 过滤。空列表时区分"无数据" vs "过滤无结果"。 */
   hasActiveFilters: boolean;
-  /** "清除筛选" CTA 的回调；hasActiveFilters=true 且列表为空时展示。 */
+  /** "清除筛选" CTA 的回调。 */
   onClearFilters: () => void;
 }
 
@@ -36,11 +50,19 @@ export const CustomerList = memo(function CustomerList({
   multiSelectActive,
   selectedIds,
   allSelectedInView,
+  selectedCount,
+  allSelectedStarred,
   onSelectCustomer,
   onToggleStar,
   onToggleMultiSelect,
   onSelectAllInView,
   onClearSelection,
+  onCancelBulk,
+  onApplyTagDiff,
+  onReassign,
+  onBulkToggleStar,
+  onExport,
+  knownTags,
   hasActiveFilters,
   onClearFilters,
 }: CustomerListProps) {
@@ -50,55 +72,67 @@ export const CustomerList = memo(function CustomerList({
     return map;
   }, [accounts]);
 
-  if (customers.length === 0) {
-    return hasActiveFilters ? (
-      <FilteredEmpty onClearFilters={onClearFilters} />
-    ) : (
-      <EmptyList tab={activeTab} />
-    );
-  }
-
   return (
-    <WorkbenchScrollArea
-      className="flex-1"
-      viewportClassName="px-0"
-      contentClassName="flex flex-col"
-    >
+    <div className="flex min-h-0 flex-1 flex-col">
       {multiSelectActive && (
-        <SelectAllRow
-          totalVisible={customers.length}
-          allSelected={allSelectedInView}
-          onSelectAll={onSelectAllInView}
-          onClear={onClearSelection}
+        <BulkActionsBar
+          selectedCount={selectedCount}
+          allStarred={allSelectedStarred}
+          knownTags={knownTags}
+          onApplyTagDiff={onApplyTagDiff}
+          onReassign={onReassign}
+          onToggleStar={onBulkToggleStar}
+          onExport={onExport}
+          onCancel={onCancelBulk}
         />
       )}
-      <ul role="listbox" aria-label="客户列表" className="flex flex-col">
-        {customers.map((customer) => {
-          const account = customer.accountId ? accountMap.get(customer.accountId) : undefined;
-          return (
-            <li
-              key={customer.id}
-              className={cn(
-                "border-b border-workbench-line-subtle last:border-b-0",
-                multiSelectActive && "border-workbench-line-subtle/60",
-              )}
-            >
-              <CustomerListRow
-                customer={customer}
-                avatarColorToken={account?.colorToken}
-                selected={!multiSelectActive && customer.id === activeCustomerId}
-                multiSelectActive={multiSelectActive}
-                multiSelected={selectedIds.has(customer.id)}
-                showFollowUpReason={activeTab === "needs-followup"}
-                onSelect={onSelectCustomer}
-                onToggleStar={onToggleStar}
-                onToggleMultiSelect={onToggleMultiSelect}
-              />
-            </li>
-          );
-        })}
-      </ul>
-    </WorkbenchScrollArea>
+
+      {customers.length === 0 ? (
+        hasActiveFilters ? (
+          <FilteredEmpty onClearFilters={onClearFilters} />
+        ) : (
+          <EmptyList tab={activeTab} />
+        )
+      ) : (
+        <WorkbenchScrollArea
+          className="flex-1"
+          viewportClassName="px-0"
+          contentClassName="flex flex-col"
+        >
+          {multiSelectActive && (
+            <SelectAllRow
+              totalVisible={customers.length}
+              allSelected={allSelectedInView}
+              onSelectAll={onSelectAllInView}
+              onClear={onClearSelection}
+            />
+          )}
+          <ul role="listbox" aria-label="客户列表" className="flex flex-col">
+            {customers.map((customer) => {
+              const account = customer.accountId ? accountMap.get(customer.accountId) : undefined;
+              return (
+                <li
+                  key={customer.id}
+                  className="border-b border-workbench-line-subtle last:border-b-0"
+                >
+                  <CustomerListRow
+                    customer={customer}
+                    avatarColorToken={account?.colorToken}
+                    selected={!multiSelectActive && customer.id === activeCustomerId}
+                    multiSelectActive={multiSelectActive}
+                    multiSelected={selectedIds.has(customer.id)}
+                    showFollowUpReason={activeTab === "needs-followup"}
+                    onSelect={onSelectCustomer}
+                    onToggleStar={onToggleStar}
+                    onToggleMultiSelect={onToggleMultiSelect}
+                  />
+                </li>
+              );
+            })}
+          </ul>
+        </WorkbenchScrollArea>
+      )}
+    </div>
   );
 });
 
@@ -121,12 +155,11 @@ function SelectAllRow({
         className="focus-ring inline-flex items-center gap-2 rounded-md px-1 py-0.5 hover:bg-workbench-surface"
       >
         <span
-          className={cn(
-            "grid size-4 place-items-center rounded-[4px] border",
+          className={
             allSelected
-              ? "border-workbench-accent bg-workbench-accent text-workbench-surface"
-              : "border-workbench-line",
-          )}
+              ? "grid size-4 place-items-center rounded-[4px] border border-workbench-accent bg-workbench-accent text-workbench-surface"
+              : "grid size-4 place-items-center rounded-[4px] border border-workbench-line"
+          }
         >
           {allSelected && (
             <svg viewBox="0 0 12 12" className="size-2.5" aria-hidden>

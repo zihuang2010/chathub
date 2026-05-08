@@ -4,6 +4,7 @@ import { CalendarCheck, Clock, TrendingUp, Wallet, type LucideProps } from "luci
 import type { Customer } from "@/lib/types/customer";
 import { cn } from "@/lib/utils";
 
+import { STAGE_BADGE_CLASS, resolveStageBadge } from "./stageBadge";
 import { STRINGS } from "./strings";
 import { formatNextFollowUp, parseDate, type FollowUpTone } from "./utils";
 
@@ -41,15 +42,7 @@ interface CustomerStatusCardProps {
 
 export function CustomerStatusCard({ customer }: CustomerStatusCardProps) {
   const c = STRINGS.detail.statusCard;
-  const stageLabel = customer.stage ? STRINGS.detail.stageLabels[customer.stage] : c.empty;
-  const stageTone: Tone =
-    customer.stage === "deal-won"
-      ? "emerald"
-      : customer.stage === "deal-lost"
-        ? "slate"
-        : customer.stage === "intent" || customer.stage === "negotiating"
-          ? "blue"
-          : "slate";
+  const stageBadge = resolveStageBadge(customer);
 
   const dealAmountLabel = customer.dealAmount != null ? formatCny(customer.dealAmount) : c.empty;
   const signedLabel = customer.contractSignedAt
@@ -59,7 +52,26 @@ export function CustomerStatusCard({ customer }: CustomerStatusCardProps) {
 
   return (
     <div className="grid grid-cols-2 gap-2 rounded-lg border border-workbench-line bg-workbench-surface p-2">
-      <Cell icon={TrendingUp} tone={stageTone} label={c.stage} value={stageLabel} />
+      <Cell
+        icon={TrendingUp}
+        tone="emerald"
+        label={c.stage}
+        value={stageBadge?.label ?? c.empty}
+        renderValue={
+          stageBadge
+            ? () => (
+                <span
+                  className={cn(
+                    "inline-flex max-w-full items-center truncate rounded-full px-2 py-0.5 text-[11.5px] font-medium ring-1",
+                    STAGE_BADGE_CLASS[stageBadge.tone],
+                  )}
+                >
+                  {stageBadge.label}
+                </span>
+              )
+            : undefined
+        }
+      />
       <Cell icon={Wallet} tone="violet" label={c.dealAmount} value={dealAmountLabel} />
       <Cell icon={CalendarCheck} tone="blue" label={c.contractSignedAt} value={signedLabel} />
       <Cell
@@ -81,6 +93,7 @@ function Cell({
   value,
   valueClassName,
   badge,
+  renderValue,
 }: {
   icon: ComponentType<LucideProps>;
   tone: Tone;
@@ -88,6 +101,7 @@ function Cell({
   value: string;
   valueClassName?: string;
   badge?: string;
+  renderValue?: () => React.ReactNode;
 }) {
   return (
     <div className="flex items-center gap-2.5 rounded-md p-1.5">
@@ -97,11 +111,18 @@ function Cell({
       <div className="flex min-w-0 flex-col gap-0.5">
         <span className="text-[11px] text-workbench-text-muted">{label}</span>
         <div className="flex min-w-0 items-center gap-1">
-          <span
-            className={cn("truncate text-[13px] font-semibold text-workbench-text", valueClassName)}
-          >
-            {value}
-          </span>
+          {renderValue ? (
+            renderValue()
+          ) : (
+            <span
+              className={cn(
+                "truncate text-[13px] font-semibold text-workbench-text",
+                valueClassName,
+              )}
+            >
+              {value}
+            </span>
+          )}
           {badge && (
             <span className="shrink-0 rounded bg-rose-50 px-1 py-px text-[10px] font-medium text-rose-600">
               {badge}
