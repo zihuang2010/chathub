@@ -22,18 +22,22 @@ export const Sidebar = memo(function Sidebar({
   return (
     <aside
       className={cn(
-        "relative flex h-full shrink-0 select-none flex-col overflow-hidden rounded-bl-[10px] transition-[width] duration-200 ease-out",
+        // overflow-visible 是为了让 EdgeHandle 的药丸能外探到右侧消息列表之上；
+        // z-10 让外探部分盖在 MessagesPage 的左边沿上方，否则同级 flex 子元素
+        // 默认按 DOM 顺序堆叠会被后面的兄弟节点遮住。rounded-bl-[10px] 仍留在
+        // aside 上，因为 backdrop-filter 自带 stacking context，圆角必须由它
+        // 的元素本身承担。
+        "relative z-10 flex h-full shrink-0 select-none flex-col overflow-visible rounded-bl-[10px] transition-[width] duration-200 ease-out",
         collapsed ? "w-16" : "w-36",
       )}
       style={{
         // 与 TitleBar 共用 FROSTED_GLASS_STYLE，保证两者像素级一致——任何一方
-        // 偏移都会在交界处产生色差带。圆角在此处而非由 app-shell 裁切是因为
-        // backdrop-filter 自带 stacking context，不总能遵守祖先的 border-radius。
+        // 偏移都会在交界处产生色差带。
         ...FROSTED_GLASS_STYLE,
       }}
     >
-      <div className="relative z-10 flex h-full flex-col">
-        <UserBadge collapsed={collapsed} onToggleCollapsed={onToggleCollapsed} />
+      <div className="relative z-10 flex h-full flex-col overflow-hidden rounded-bl-[10px]">
+        <UserBadge collapsed={collapsed} />
         <nav className="flex flex-col gap-0.5 px-2 pt-2">
           {NAV_ITEMS.map((item) => (
             <NavButton
@@ -60,32 +64,18 @@ export const Sidebar = memo(function Sidebar({
           </button>
         </div>
       </div>
+      <EdgeHandle collapsed={collapsed} onToggle={onToggleCollapsed} />
     </aside>
   );
 });
 
 // ─── User badge ─────────────────────────────────────────────────────────────
 
-function UserBadge({
-  collapsed,
-  onToggleCollapsed,
-}: {
-  collapsed: boolean;
-  onToggleCollapsed: () => void;
-}) {
+function UserBadge({ collapsed }: { collapsed: boolean }) {
   if (collapsed) {
     return (
-      <div className="flex flex-col items-center gap-2 px-2 pb-2 pt-3">
+      <div className="flex flex-col items-center px-2 pb-2 pt-3">
         <AvatarMark />
-        <button
-          type="button"
-          onClick={onToggleCollapsed}
-          className="grid size-8 place-items-center rounded-md text-[#4B6284] transition-colors hover:bg-white/45 hover:text-[#1F2937] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#60A5FA]/35"
-          aria-label="展开侧边栏"
-          aria-expanded={false}
-        >
-          <ChevronRight size={16} />
-        </button>
       </div>
     );
   }
@@ -96,15 +86,6 @@ function UserBadge({
       <div className="flex min-w-0 flex-1 flex-col leading-tight">
         <span className="truncate text-[13px] font-semibold text-[#1F2937]">匠多多</span>
       </div>
-      <button
-        type="button"
-        onClick={onToggleCollapsed}
-        className="grid size-7 shrink-0 place-items-center rounded-md text-[#4B6284] transition-colors hover:bg-white/60 hover:text-[#1F2937] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#60A5FA]/35"
-        aria-label="收起侧边栏"
-        aria-expanded={true}
-      >
-        <ChevronLeft size={14} />
-      </button>
     </div>
   );
 }
@@ -123,6 +104,38 @@ function AvatarMark() {
         className="absolute bottom-[-2px] right-[-2px] size-[10px] rounded-full border-2 border-[#EEF6FF] bg-[#10B981]"
       />
     </div>
+  );
+}
+
+// ─── Edge handle ────────────────────────────────────────────────────────────
+
+function EdgeHandle({ collapsed, onToggle }: { collapsed: boolean; onToggle: () => void }) {
+  return (
+    <>
+      {/* 透明的 hover 触发区，水平骑跨右边线、左右各 7px 感应。
+         peer 让相邻按钮在 hover 它时也保持可见。 */}
+      <div aria-hidden className="peer absolute bottom-0 right-0 top-0 w-3.5 translate-x-1/2" />
+      <button
+        type="button"
+        onClick={onToggle}
+        aria-label={collapsed ? "展开侧边栏" : "收起侧边栏"}
+        aria-expanded={!collapsed}
+        className={cn(
+          "absolute right-0 top-1/2 z-20",
+          "-translate-y-1/2 translate-x-1/2",
+          "grid h-10 w-4 place-items-center",
+          "rounded-full border border-[rgba(15,23,42,0.06)] bg-white",
+          "shadow-[0_1px_2px_rgba(15,23,42,0.06)]",
+          "text-[#4B6284] transition-opacity duration-150 ease-out hover:text-[#1F2937]",
+          "pointer-events-none opacity-0",
+          "hover:pointer-events-auto hover:opacity-100",
+          "peer-hover:pointer-events-auto peer-hover:opacity-100",
+          "focus-visible:pointer-events-auto focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#60A5FA]/35",
+        )}
+      >
+        {collapsed ? <ChevronRight size={12} /> : <ChevronLeft size={12} />}
+      </button>
+    </>
   );
 }
 
