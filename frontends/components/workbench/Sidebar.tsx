@@ -74,7 +74,7 @@ export const Sidebar = memo(function Sidebar({
 function UserBadge({ collapsed }: { collapsed: boolean }) {
   if (collapsed) {
     return (
-      <div className="flex flex-col items-center gap-2 px-2 pb-2 pt-3">
+      <div className="flex flex-col items-center px-2 pb-2 pt-3">
         <AvatarMark />
       </div>
     );
@@ -127,8 +127,10 @@ function EdgeHandle({ collapsed, onToggle }: { collapsed: boolean; onToggle: () 
           "rounded-full border border-[rgba(15,23,42,0.06)] bg-white",
           "shadow-[0_1px_2px_rgba(15,23,42,0.06)]",
           "text-[#4B6284] transition-opacity duration-150 ease-out hover:text-[#1F2937]",
-          "opacity-0 hover:opacity-100 peer-hover:opacity-100",
-          "focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#60A5FA]/35",
+          "pointer-events-none opacity-0",
+          "hover:pointer-events-auto hover:opacity-100",
+          "peer-hover:pointer-events-auto peer-hover:opacity-100",
+          "focus-visible:pointer-events-auto focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#60A5FA]/35",
         )}
       >
         {collapsed ? <ChevronRight size={12} /> : <ChevronLeft size={12} />}
