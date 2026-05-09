@@ -45,7 +45,6 @@ interface CustomersFilterBarProps {
   sortKey: SortKey;
   onSortChange: (key: SortKey) => void;
 
-  hasActiveFilters: boolean;
   onReset: () => void;
 
   onCreateCustomer: () => void;
@@ -95,7 +94,6 @@ export const CustomersFilterBar = memo(function CustomersFilterBar({
   onClearFollowUps,
   sortKey,
   onSortChange,
-  hasActiveFilters,
   onReset,
   onCreateCustomer,
   onToggleView,
@@ -142,15 +140,14 @@ export const CustomersFilterBar = memo(function CustomersFilterBar({
 
       <MoreFiltersPopover sortKey={sortKey} onSortChange={onSortChange} />
 
-      {hasActiveFilters && (
-        <button
-          type="button"
-          onClick={onReset}
-          className="focus-ring inline-flex h-9 items-center px-1 text-[13px] text-workbench-text-secondary transition-colors hover:text-workbench-accent hover:underline"
-        >
-          {STRINGS.toolbar.reset}
-        </button>
-      )}
+      {/* v5：重置 link 常驻可见，与原型一致；无活动筛选时点击为 no-op */}
+      <button
+        type="button"
+        onClick={onReset}
+        className="focus-ring inline-flex h-9 items-center px-1 text-[13px] text-workbench-text-secondary transition-colors hover:text-workbench-accent hover:underline"
+      >
+        {STRINGS.toolbar.reset}
+      </button>
 
       <span aria-hidden className="ml-auto" />
 

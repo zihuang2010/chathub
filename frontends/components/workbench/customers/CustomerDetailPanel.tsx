@@ -30,7 +30,6 @@ interface CustomerDetailPanelProps {
   onToggleStar: () => void;
   onOpenChat: (customerId: string) => void;
   onEditCustomer: (customerId: string) => void;
-  onFollowUpHistory: (customerId: string) => void;
 }
 
 export const CustomerDetailPanel = memo(function CustomerDetailPanel({
@@ -43,7 +42,6 @@ export const CustomerDetailPanel = memo(function CustomerDetailPanel({
   onToggleStar,
   onOpenChat,
   onEditCustomer,
-  onFollowUpHistory,
 }: CustomerDetailPanelProps) {
   if (!customer) {
     return <EmptyDetail />;
@@ -61,7 +59,6 @@ export const CustomerDetailPanel = memo(function CustomerDetailPanel({
       onToggleStar={onToggleStar}
       onOpenChat={onOpenChat}
       onEditCustomer={onEditCustomer}
-      onFollowUpHistory={onFollowUpHistory}
     />
   );
 });
@@ -70,7 +67,7 @@ function EmptyDetail() {
   return (
     <aside
       style={{ width: DETAIL_PANEL_WIDTH }}
-      className="flex h-full shrink-0 flex-col items-center justify-center gap-2 border-l border-workbench-line bg-workbench-surface px-8 text-center"
+      className="flex h-full shrink-0 flex-col items-center justify-center gap-2 px-8 text-center"
     >
       <p className="text-[14px] font-medium text-workbench-text">
         {STRINGS.emptyStates.detail.title}
@@ -89,7 +86,6 @@ function DetailBody({
   onToggleStar,
   onOpenChat,
   onEditCustomer,
-  onFollowUpHistory,
 }: {
   customer: Customer;
   account: Account | undefined;
@@ -100,7 +96,6 @@ function DetailBody({
   onToggleStar: () => void;
   onOpenChat: (id: string) => void;
   onEditCustomer: (id: string) => void;
-  onFollowUpHistory: (id: string) => void;
 }) {
   const [activeSubTab, setActiveSubTab] = useState<DetailTab>("info");
   const starred = Boolean(customer.starred);
@@ -115,10 +110,7 @@ function DetailBody({
   void onRemoveTag;
 
   return (
-    <aside
-      style={{ width: DETAIL_PANEL_WIDTH }}
-      className="flex h-full shrink-0 flex-col border-l border-workbench-line bg-workbench-surface"
-    >
+    <aside style={{ width: DETAIL_PANEL_WIDTH }} className="flex h-full shrink-0 flex-col">
       <DetailHeaderBar />
 
       <WorkbenchScrollArea
@@ -160,7 +152,6 @@ function DetailBody({
       <FooterActions
         onStartChat={() => onOpenChat(customer.id)}
         onEdit={() => onEditCustomer(customer.id)}
-        onFollowUpHistory={() => onFollowUpHistory(customer.id)}
       />
     </aside>
   );
@@ -522,39 +513,24 @@ function PlaceholderTab() {
   );
 }
 
-function FooterActions({
-  onStartChat,
-  onEdit,
-  onFollowUpHistory,
-}: {
-  onStartChat: () => void;
-  onEdit: () => void;
-  onFollowUpHistory: () => void;
-}) {
-  // v3：3 按钮，primary 角色由「跟进记录」承担（参考稿设计），与 v2 的 startChat
-  // primary 不同 — 这是日常最高频操作的视觉强调。
+function FooterActions({ onStartChat, onEdit }: { onStartChat: () => void; onEdit: () => void }) {
+  // v5：回退到 2 按钮，与 image 11 原型一致 — 发起会话 primary（蓝）+ 编辑客户 outline。
+  // 跟进记录 仍作为详情面板顶部的 5 个 sub-tab 之一。
   return (
     <div className="flex flex-shrink-0 gap-2 border-t border-workbench-line px-4 py-3">
       <button
         type="button"
         onClick={onStartChat}
-        className="focus-ring inline-flex h-9 flex-1 items-center justify-center rounded-md border border-workbench-line bg-workbench-surface px-2 text-[12.5px] text-workbench-text transition-colors hover:border-workbench-line-strong hover:bg-workbench-surface-subtle"
+        className="focus-ring inline-flex h-9 flex-1 items-center justify-center rounded-md bg-workbench-accent px-3 text-[13px] font-medium text-workbench-surface transition-colors hover:bg-workbench-accent-hover"
       >
         {STRINGS.detail.actions.startChat}
       </button>
       <button
         type="button"
         onClick={onEdit}
-        className="focus-ring inline-flex h-9 flex-1 items-center justify-center rounded-md border border-workbench-line bg-workbench-surface px-2 text-[12.5px] text-workbench-text transition-colors hover:border-workbench-line-strong hover:bg-workbench-surface-subtle"
+        className="focus-ring inline-flex h-9 flex-1 items-center justify-center rounded-md border border-workbench-line bg-workbench-surface px-3 text-[13px] text-workbench-text transition-colors hover:border-workbench-line-strong hover:bg-workbench-surface-subtle"
       >
         {STRINGS.detail.actions.editCustomer}
-      </button>
-      <button
-        type="button"
-        onClick={onFollowUpHistory}
-        className="focus-ring inline-flex h-9 flex-1 items-center justify-center rounded-md bg-workbench-accent px-2 text-[12.5px] font-medium text-workbench-surface transition-colors hover:bg-workbench-accent-hover"
-      >
-        {STRINGS.detail.actions.followUpHistory}
       </button>
     </div>
   );

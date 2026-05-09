@@ -40,7 +40,6 @@ interface CustomersHeaderProps {
   sortKey: SortKey;
   onSortChange: (key: SortKey) => void;
 
-  hasActiveFilters: boolean;
   onReset: () => void;
 
   onCreateCustomer: () => void;
@@ -84,7 +83,6 @@ export const CustomersHeader = memo(function CustomersHeader(props: CustomersHea
           onClearFollowUps={props.onClearFollowUps}
           sortKey={props.sortKey}
           onSortChange={props.onSortChange}
-          hasActiveFilters={props.hasActiveFilters}
           onReset={props.onReset}
           onCreateCustomer={props.onCreateCustomer}
           onToggleView={props.onToggleView}

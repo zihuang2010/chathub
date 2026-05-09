@@ -247,9 +247,6 @@ export function CustomersPage({
   const handleRowMore = useCallback((id: string) => {
     showToast(`更多操作菜单（${id}）`, { type: "info" });
   }, []);
-  const handleFollowUpHistory = useCallback((id: string) => {
-    showToast(`将打开跟进记录（${id}）`, { type: "info" });
-  }, []);
 
   return (
     <ErrorBoundary>
@@ -278,15 +275,14 @@ export function CustomersPage({
             onClearFollowUps={filters.clearFollowUps}
             sortKey={filters.sortKey}
             onSortChange={filters.setSortKey}
-            hasActiveFilters={hasActiveFilters}
             onReset={handleClearFilters}
             onCreateCustomer={handleCreateCustomer}
             onToggleView={handleToggleView}
             onExport={handleStubExport}
           />
 
-          <div className="flex min-h-0 flex-1 overflow-hidden">
-            <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
+          <div className="flex min-h-0 flex-1 gap-3 overflow-hidden bg-workbench-surface-subtle p-3">
+            <div className="flex min-w-0 flex-1 flex-col overflow-hidden rounded-lg border border-workbench-line bg-workbench-surface shadow-wb-card">
               <CustomerList
                 paginatedCustomers={filters.paginatedCustomers}
                 filteredTotal={filters.filteredCustomers.length}
@@ -320,20 +316,21 @@ export function CustomersPage({
                 onClearFilters={handleClearFilters}
               />
             </div>
-            <CustomerDetailPanel
-              customer={activeCustomer}
-              account={activeAccount}
-              recentMessages={recentMessages}
-              onPatch={handlePatch}
-              onAddTag={handleAddTag}
-              onRemoveTag={handleRemoveTag}
-              onToggleStar={() => {
-                if (activeCustomer) handleToggleStar(activeCustomer.id);
-              }}
-              onOpenChat={handleOpenChat}
-              onEditCustomer={handleEditCustomer}
-              onFollowUpHistory={handleFollowUpHistory}
-            />
+            <div className="overflow-hidden rounded-lg border border-workbench-line bg-workbench-surface shadow-wb-card">
+              <CustomerDetailPanel
+                customer={activeCustomer}
+                account={activeAccount}
+                recentMessages={recentMessages}
+                onPatch={handlePatch}
+                onAddTag={handleAddTag}
+                onRemoveTag={handleRemoveTag}
+                onToggleStar={() => {
+                  if (activeCustomer) handleToggleStar(activeCustomer.id);
+                }}
+                onOpenChat={handleOpenChat}
+                onEditCustomer={handleEditCustomer}
+              />
+            </div>
           </div>
         </div>
         <ToastViewport />
