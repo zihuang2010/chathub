@@ -1,24 +1,34 @@
-import type { LucideProps } from "lucide-react";
-import type { ComponentType } from "react";
-import { Star, UserCheck, UserPlus, Users } from "lucide-react";
-
 import { STRINGS } from "./strings";
 
-export type CustomerTab = "all" | "needs-followup" | "new-friend" | "starred";
+/**
+ * 客户管理页 6 个 KPI Tab。语义：
+ * - all          全部客户（仅按账号过滤计数）
+ * - key          重点客户：tags 含 "重点客户" / "VIP" 或 level === "A"
+ * - today-new    今日新增：addedAt 落在本地"今天"
+ * - stale-30d    30 天未跟进：lastContactAt > 30 天前 或为 null
+ * - pending-sign 待签约：stage === "negotiating"
+ * - lost         流失：stage === "deal-lost"
+ */
+export type CustomerTab = "all" | "key" | "today-new" | "stale-30d" | "pending-sign" | "lost";
 
 export interface TabOption {
   value: CustomerTab;
   label: string;
-  Icon: ComponentType<LucideProps>;
 }
 
 export const TAB_OPTIONS: TabOption[] = [
-  { value: "all", label: STRINGS.tabs.all, Icon: Users },
-  { value: "needs-followup", label: STRINGS.tabs.needsFollowUp, Icon: UserCheck },
-  { value: "new-friend", label: STRINGS.tabs.newFriend, Icon: UserPlus },
-  { value: "starred", label: STRINGS.tabs.starred, Icon: Star },
+  { value: "all", label: STRINGS.tabs.all },
+  { value: "key", label: STRINGS.tabs.key },
+  { value: "today-new", label: STRINGS.tabs.todayNew },
+  { value: "stale-30d", label: STRINGS.tabs.stale30d },
+  { value: "pending-sign", label: STRINGS.tabs.pendingSign },
+  { value: "lost", label: STRINGS.tabs.lost },
 ];
 
+/**
+ * 排序键。Header 顶层排序按钮在 v2 中下沉到「更多筛选」popover；类型与
+ * compareCustomers 仍保留，让 useCustomersFilters 与现有 utils 不需要破坏性改动。
+ */
 export type SortKey = "lastContact" | "addedAt" | "company" | "follower";
 
 export interface SortOption {
@@ -34,29 +44,32 @@ export const SORT_OPTIONS: SortOption[] = [
 ];
 
 /** 列表行的固定高度（像素）。 */
-export const ROW_HEIGHT = 60;
+export const ROW_HEIGHT = 64;
 
 /**
  * 列表行 grid 模板。从左至右：
- * 1) 28px star/checkbox
- * 2) 36px avatar
- * 3) flex 客户信息（姓名 + meta：公司 · 跟进人 名）
- * 4) 100px 客户阶段（pill 含 +N 溢出）
- * 5) 92px 下次跟进（"下次跟进" + 状态 双行；或仅相对时间单行）
+ * 1) 32px  master checkbox / 单行 checkbox
+ * 2) 200px 客户名称（avatar + name + 性别 + 手机号副行）
+ * 3) 180px 所属账号（公司名 + follower 副行）
+ * 4) 100px 客户阶段 badge
+ * 5) 96px  跟进状态 badge
+ * 6) 1fr   标签列（最少 120px，超出走 +N 溢出）
+ * 7) 132px 最近跟进（日期 + follower 副行）
+ * 8) 96px  操作（chat / 编辑 / 更多）
  */
-export const ROW_GRID_TEMPLATE = "28px 36px minmax(0,1fr) 110px 92px";
+export const ROW_GRID_TEMPLATE = "32px 200px 180px 100px 96px minmax(120px,1fr) 132px 96px";
 
 /** 详情侧栏宽度（像素），与 messages 页 CustomerDetails 对齐（324px）以保持视觉一致。 */
 export const DETAIL_PANEL_WIDTH = 324;
 
-/** 「新加好友」Tab 默认包含最近多少天添加的客户。 */
-export const NEW_FRIEND_DAYS = 7;
-
 /** 「待跟进」判定：lastContactAt 超过多少小时未联系。 */
 export const FOLLOW_UP_HOURS_THRESHOLD = 72;
 
-/** 列表行最多展示多少个标签，超过显示 +N。重构后行内不再展示标签，由独立的"客户阶段"列承担。 */
-export const ROW_MAX_TAGS = 0;
+/** 「30 天未跟进」Tab 阈值。 */
+export const STALE_DAYS_THRESHOLD = 30;
+
+/** 列表行最多展示多少个标签，超过显示 +N。 */
+export const ROW_MAX_TAGS = 2;
 
 /** 备注未编辑态最多显示多少行后折叠。 */
 export const NOTE_COLLAPSE_LINES = 4;
@@ -66,3 +79,28 @@ export const RECENT_MESSAGE_LIMIT = 2;
 
 /** 详情中"客户轨迹"展示的最多条数。 */
 export const TIMELINE_LIMIT = 5;
+
+/** 分页可选页大小。 */
+export const PAGE_SIZE_OPTIONS = [20, 50, 100] as const;
+
+/** 默认每页条数。 */
+export const DEFAULT_PAGE_SIZE = 20;
+
+/**
+ * 详情面板内的 5 个子 tab。仅 `info` 会渲染真实内容，其余渲染占位
+ * 以便和参考图视觉一致并预留未来扩展。
+ */
+export type DetailTab = "info" | "follow-up" | "contacts" | "orders" | "more";
+
+export interface DetailTabOption {
+  value: DetailTab;
+  label: string;
+}
+
+export const DETAIL_TAB_OPTIONS: DetailTabOption[] = [
+  { value: "info", label: STRINGS.detail.subTabs.info },
+  { value: "follow-up", label: STRINGS.detail.subTabs.followUp },
+  { value: "contacts", label: STRINGS.detail.subTabs.contacts },
+  { value: "orders", label: STRINGS.detail.subTabs.orders },
+  { value: "more", label: STRINGS.detail.subTabs.more },
+];

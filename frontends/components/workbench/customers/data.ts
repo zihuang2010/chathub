@@ -1,7 +1,13 @@
 // 客户管理页 mock 数据。后端接入前由前端独立维护，互不影响 messages 页 mock。
 
 import type { Account } from "@/lib/types/account";
-import type { Customer, CustomerStage } from "@/lib/types/customer";
+import type {
+  Customer,
+  CustomerGender,
+  CustomerLevel,
+  CustomerStage,
+  FollowUpStatus,
+} from "@/lib/types/customer";
 
 import { STRINGS } from "./strings";
 
@@ -428,8 +434,8 @@ const SEED: SeedRow[] = [
     addedAt: "2026-04-29 08:08",
     follower: "小贝",
     starred: true,
-    lastContactAt: "2026-04-30T10:14:00+08:00",
-    followUpReason: STRINGS.followUpReason.noReply(72),
+    lastContactAt: "2026-04-01T10:14:00+08:00",
+    followUpReason: STRINGS.followUpReason.longSilence,
     timeline: [{ at: "2026-04-29", text: "通过官网线索添加" }],
   },
   {
@@ -543,7 +549,7 @@ const SEED: SeedRow[] = [
     addedAt: "2024-09-11 10:34",
     follower: "小贝",
     starred: false,
-    lastContactAt: "2026-04-26T09:00:00+08:00",
+    lastContactAt: "2026-03-22T09:00:00+08:00",
     followUpReason: STRINGS.followUpReason.longSilence,
     timeline: [{ at: "2024-09-11", text: "通过公司官网添加" }],
   },
@@ -657,7 +663,7 @@ const SEED: SeedRow[] = [
     addedAt: "2024-04-15 11:00",
     follower: "小美",
     starred: false,
-    lastContactAt: "2026-04-22T17:45:00+08:00",
+    lastContactAt: "2026-03-15T17:45:00+08:00",
     followUpReason: STRINGS.followUpReason.longSilence,
     timeline: [{ at: "2024-04-15", text: "通过公司官网添加" }],
   },
@@ -701,7 +707,7 @@ const BIZ_BY_NAME: Record<string, BizProgress> = {
     contractSignedAt: "2024-09-15",
     nextFollowUpAt: "2026-05-04 11:00",
   },
-  汤砚: { stage: "lead", nextFollowUpAt: "2026-05-05 09:30" },
+  汤砚: { stage: "deal-lost" },
   范行知: { stage: "intent", nextFollowUpAt: "2026-05-04 15:00" },
   纪向北: {
     stage: "deal-won",
@@ -716,7 +722,7 @@ const BIZ_BY_NAME: Record<string, BizProgress> = {
     nextFollowUpAt: "2026-06-01 14:00",
   },
   贺秋月: { stage: "negotiating", nextFollowUpAt: "2026-05-08 16:00" },
-  苗远: { stage: "lead" },
+  苗远: { stage: "deal-lost" },
   盛清: {
     stage: "deal-won",
     dealAmount: 98000,
@@ -724,7 +730,7 @@ const BIZ_BY_NAME: Record<string, BizProgress> = {
     nextFollowUpAt: "2026-05-12 10:00",
   },
   陆江南: { stage: "intent", nextFollowUpAt: "2026-05-02 14:00" },
-  邵岸: { stage: "contacting" },
+  邵岸: { stage: "deal-lost" },
   齐韫: {
     stage: "deal-won",
     dealAmount: 150000,
@@ -733,6 +739,180 @@ const BIZ_BY_NAME: Record<string, BizProgress> = {
   },
   魏星言: { stage: "intent", nextFollowUpAt: "2026-05-06 10:30" },
   钟书淮: { stage: "negotiating", nextFollowUpAt: "2026-04-28 14:00" },
+};
+
+// 客户管理页 v2 新增的描述性字段（级别 / 行业 / 地区 / 详细地址 / 跟进状态 / 性别），
+// 与 BIZ_BY_NAME 类似按姓名映射，避免侵入 SeedRow，便于后端接入时整体替换。
+interface ExtraInfo {
+  level?: CustomerLevel;
+  industry?: string;
+  region?: string;
+  address?: string;
+  followUpStatus?: FollowUpStatus;
+  gender?: CustomerGender;
+}
+
+const EXTRA_BY_NAME: Record<string, ExtraInfo> = {
+  林知言: {
+    level: "A",
+    gender: "male",
+    industry: "互联网 / SaaS",
+    region: "杭州市 西湖区",
+    address: "杭州市西湖区文三路 269 号华星科技大厦",
+    followUpStatus: "done",
+  },
+  陈雪舟: {
+    level: "B",
+    gender: "male",
+    industry: "金融 / 投资",
+    region: "北京市 朝阳区",
+    address: "北京市朝阳区建国路 79 号华贸中心 2 座",
+    followUpStatus: "in-progress",
+  },
+  王锐: {
+    level: "A",
+    gender: "male",
+    industry: "通信 / 网络设备",
+    region: "深圳市 南山区",
+    address: "深圳市南山区科技园南区高新南一道 6 号",
+    followUpStatus: "done",
+  },
+  韩雪: {
+    level: "B",
+    gender: "female",
+    industry: "医药 / 医疗",
+    region: "杭州市 余杭区",
+    address: "杭州市余杭区文一西路 1818 号",
+    followUpStatus: "done",
+  },
+  沈砚之: {
+    level: "C",
+    gender: "male",
+    industry: "文化娱乐",
+    region: "南京市 鼓楼区",
+    address: "南京市鼓楼区中央路 201 号",
+    followUpStatus: "pending",
+  },
+  苏皖: {
+    level: "B",
+    gender: "female",
+    industry: "互联网 / 云计算",
+    region: "广州市 天河区",
+    address: "广州市天河区珠江新城冼村路 11 号",
+    followUpStatus: "in-progress",
+  },
+  周嘉行: {
+    level: "C",
+    gender: "male",
+    industry: "金融 / 投资",
+    region: "成都市 武侯区",
+    address: "成都市武侯区天府大道北段 1700 号",
+    followUpStatus: "in-progress",
+  },
+  顾岚: {
+    level: "A",
+    gender: "male",
+    industry: "医美 / 医疗",
+    region: "杭州市 滨江区",
+    address: "杭州市滨江区江南大道 3850 号海康威视科技园",
+    followUpStatus: "done",
+  },
+  汤砚: {
+    level: "D",
+    gender: "female",
+    industry: "互联网 / 信息服务",
+    region: "北京市 海淀区",
+    address: "北京市海淀区中关村大街 27 号",
+    followUpStatus: "pending",
+  },
+  范行知: {
+    level: "B",
+    gender: "male",
+    industry: "人工智能",
+    region: "深圳市 福田区",
+    address: "深圳市福田区福华路 168 号深圳国际商会大厦",
+    followUpStatus: "in-progress",
+  },
+  纪向北: {
+    level: "B",
+    gender: "male",
+    industry: "科研 / 教育",
+    region: "成都市 高新区",
+    address: "成都市高新区天府软件园 C 区 5 栋",
+    followUpStatus: "done",
+  },
+  于知微: {
+    level: "A",
+    gender: "male",
+    industry: "互联网 / SaaS",
+    region: "南京市 玄武区",
+    address: "南京市玄武区珠江路 88 号新世界中心",
+    followUpStatus: "done",
+  },
+  贺秋月: {
+    level: "B",
+    gender: "female",
+    industry: "教育培训",
+    region: "广州市 越秀区",
+    address: "广州市越秀区东风中路 410 号",
+    followUpStatus: "in-progress",
+  },
+  苗远: {
+    level: "C",
+    gender: "female",
+    industry: "电商 / 零售",
+    region: "杭州市 拱墅区",
+    address: "杭州市拱墅区莫干山路 100 号",
+    followUpStatus: "pending",
+  },
+  盛清: {
+    level: "A",
+    gender: "female",
+    industry: "金融 / 投资",
+    region: "深圳市 福田区",
+    address: "深圳市福田区中心四路 1 号嘉里建设广场",
+    followUpStatus: "done",
+  },
+  陆江南: {
+    level: "C",
+    gender: "male",
+    industry: "文化娱乐",
+    region: "北京市 东城区",
+    address: "北京市东城区东直门外大街 48 号",
+    followUpStatus: "in-progress",
+  },
+  邵岸: {
+    level: "D",
+    gender: "male",
+    industry: "文化传媒",
+    region: "成都市 锦江区",
+    address: "成都市锦江区红星路三段 1 号 IFS 国际金融中心",
+    followUpStatus: "pending",
+  },
+  齐韫: {
+    level: "B",
+    gender: "female",
+    industry: "互联网 / SaaS",
+    region: "南京市 建邺区",
+    address: "南京市建邺区江东中路 88 号华泰证券广场",
+    followUpStatus: "in-progress",
+  },
+  魏星言: {
+    level: "C",
+    gender: "male",
+    industry: "文化传媒",
+    region: "广州市 海珠区",
+    address: "广州市海珠区琶洲会展东路 2 号保利世界贸易中心",
+    followUpStatus: "in-progress",
+  },
+  钟书淮: {
+    level: "B",
+    gender: "male",
+    industry: "互联网 / SaaS",
+    region: "杭州市 滨江区",
+    address: "杭州市滨江区网商路 599 号",
+    followUpStatus: "in-progress",
+  },
 };
 
 // 把若干"较新的"客户的 addedAt 重写为相对今天的近 7 日时间戳。这样无论 app
@@ -764,7 +944,7 @@ export const MOCK_CUSTOMERS: Customer[] = SEED.map((row, i) => ({
   remark: row.remark,
   phone: row.phone,
   weChat: row.weChat,
-  company: row.company,
+  company: row.company || "—",
   source: row.source,
   addedAt: RECENT_ADDED_AT[row.name] ?? row.addedAt,
   follower: row.follower,
@@ -773,6 +953,7 @@ export const MOCK_CUSTOMERS: Customer[] = SEED.map((row, i) => ({
   followUpReason: row.followUpReason,
   timeline: row.timeline,
   ...BIZ_BY_NAME[row.name],
+  ...EXTRA_BY_NAME[row.name],
 }));
 
 /** 客户最近会话（最多 N 条），用于详情侧栏的"最近会话"段；mock 仅给少量。 */

@@ -6,14 +6,26 @@ import type { Customer } from "@/lib/types/customer";
 import { BulkActionsBar } from "./BulkActionsBar";
 import { WorkbenchScrollArea } from "../messages/WorkbenchScrollArea";
 import type { CustomerTab } from "./constants";
+import { CustomerListHeader } from "./CustomerListHeader";
 import { CustomerListRow } from "./CustomerListRow";
+import { CustomersPagination } from "./CustomersPagination";
 import { STRINGS } from "./strings";
 
 interface CustomerListProps {
-  customers: readonly Customer[];
+  /** 当前页可见行（已分页切片）。 */
+  paginatedCustomers: readonly Customer[];
+  /** 所有过滤后的总数（跨页），用于 master checkbox 的「全选可见」语义。 */
+  filteredTotal: number;
   accounts: readonly Account[];
   activeTab: CustomerTab;
   activeCustomerId: string | null;
+
+  // pagination
+  page: number;
+  pageCount: number;
+  pageSize: number;
+  onPageChange: (page: number) => void;
+  onPageSizeChange: (size: number) => void;
 
   // multi-select
   multiSelectActive: boolean;
@@ -22,7 +34,6 @@ interface CustomerListProps {
   selectedCount: number;
   allSelectedStarred: boolean;
   onSelectCustomer: (id: string) => void;
-  onToggleStar: (id: string) => void;
   onToggleMultiSelect: (id: string) => void;
   onSelectAllInView: () => void;
   onClearSelection: () => void;
@@ -34,6 +45,11 @@ interface CustomerListProps {
   onBulkToggleStar: () => void;
   onExport: () => void;
 
+  // row actions
+  onOpenChat: (id: string) => void;
+  onEditCustomer: (id: string) => void;
+  onMoreRowAction: (id: string) => void;
+
   /** 标签筛选已知列表，BulkActionsBar 内的标签 popover 用。 */
   knownTags: readonly string[];
   /** 是否存在任意非 Tab 过滤。空列表时区分"无数据" vs "过滤无结果"。 */
@@ -43,17 +59,22 @@ interface CustomerListProps {
 }
 
 export const CustomerList = memo(function CustomerList({
-  customers,
+  paginatedCustomers,
+  filteredTotal,
   accounts,
   activeTab,
   activeCustomerId,
+  page,
+  pageCount,
+  pageSize,
+  onPageChange,
+  onPageSizeChange,
   multiSelectActive,
   selectedIds,
   allSelectedInView,
   selectedCount,
   allSelectedStarred,
   onSelectCustomer,
-  onToggleStar,
   onToggleMultiSelect,
   onSelectAllInView,
   onClearSelection,
@@ -62,6 +83,9 @@ export const CustomerList = memo(function CustomerList({
   onReassign,
   onBulkToggleStar,
   onExport,
+  onOpenChat,
+  onEditCustomer,
+  onMoreRowAction,
   knownTags,
   hasActiveFilters,
   onClearFilters,
@@ -71,6 +95,8 @@ export const CustomerList = memo(function CustomerList({
     for (const a of accounts) map.set(a.id, a);
     return map;
   }, [accounts]);
+
+  const showPagination = filteredTotal > 0 && pageCount > 1;
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -87,105 +113,77 @@ export const CustomerList = memo(function CustomerList({
         />
       )}
 
-      {customers.length === 0 ? (
+      {filteredTotal === 0 ? (
         hasActiveFilters ? (
           <FilteredEmpty onClearFilters={onClearFilters} />
         ) : (
           <EmptyList tab={activeTab} />
         )
       ) : (
-        <WorkbenchScrollArea
-          className="flex-1"
-          viewportClassName="px-0"
-          contentClassName="flex flex-col"
-        >
-          {multiSelectActive && (
-            <SelectAllRow
-              totalVisible={customers.length}
-              allSelected={allSelectedInView}
-              onSelectAll={onSelectAllInView}
-              onClear={onClearSelection}
+        <>
+          <WorkbenchScrollArea
+            className="flex-1"
+            viewportClassName="px-0"
+            contentClassName="flex flex-col"
+          >
+            <CustomerListHeader
+              totalVisible={filteredTotal}
+              selectedCount={selectedCount}
+              allSelectedInView={allSelectedInView}
+              onToggleSelectAll={
+                allSelectedInView && multiSelectActive ? onClearSelection : onSelectAllInView
+              }
+            />
+            <ul role="listbox" aria-label="客户列表" className="flex flex-col">
+              {paginatedCustomers.map((customer) => {
+                const account = customer.accountId ? accountMap.get(customer.accountId) : undefined;
+                return (
+                  <li
+                    key={customer.id}
+                    className="border-b border-workbench-line-subtle last:border-b-0"
+                  >
+                    <CustomerListRow
+                      customer={customer}
+                      account={account}
+                      avatarColorToken={account?.colorToken}
+                      selected={!multiSelectActive && customer.id === activeCustomerId}
+                      multiSelectActive={multiSelectActive}
+                      multiSelected={selectedIds.has(customer.id)}
+                      onSelect={onSelectCustomer}
+                      onToggleMultiSelect={onToggleMultiSelect}
+                      onOpenChat={onOpenChat}
+                      onEditCustomer={onEditCustomer}
+                      onMore={onMoreRowAction}
+                    />
+                  </li>
+                );
+              })}
+            </ul>
+          </WorkbenchScrollArea>
+          {showPagination && (
+            <CustomersPagination
+              page={page}
+              pageCount={pageCount}
+              pageSize={pageSize}
+              totalCount={filteredTotal}
+              onPageChange={onPageChange}
+              onPageSizeChange={onPageSizeChange}
             />
           )}
-          <ul role="listbox" aria-label="客户列表" className="flex flex-col">
-            {customers.map((customer) => {
-              const account = customer.accountId ? accountMap.get(customer.accountId) : undefined;
-              return (
-                <li
-                  key={customer.id}
-                  className="border-b border-workbench-line-subtle last:border-b-0"
-                >
-                  <CustomerListRow
-                    customer={customer}
-                    avatarColorToken={account?.colorToken}
-                    selected={!multiSelectActive && customer.id === activeCustomerId}
-                    multiSelectActive={multiSelectActive}
-                    multiSelected={selectedIds.has(customer.id)}
-                    showFollowUpReason={activeTab === "needs-followup"}
-                    onSelect={onSelectCustomer}
-                    onToggleStar={onToggleStar}
-                    onToggleMultiSelect={onToggleMultiSelect}
-                  />
-                </li>
-              );
-            })}
-          </ul>
-        </WorkbenchScrollArea>
+        </>
       )}
     </div>
   );
 });
 
-function SelectAllRow({
-  totalVisible,
-  allSelected,
-  onSelectAll,
-  onClear,
-}: {
-  totalVisible: number;
-  allSelected: boolean;
-  onSelectAll: () => void;
-  onClear: () => void;
-}) {
-  return (
-    <div className="sticky top-0 z-[1] flex items-center gap-3 border-b border-workbench-line bg-workbench-surface-subtle px-4 py-2 text-[12px] text-workbench-text">
-      <button
-        type="button"
-        onClick={allSelected ? onClear : onSelectAll}
-        className="focus-ring inline-flex items-center gap-2 rounded-md px-1 py-0.5 hover:bg-workbench-surface"
-      >
-        <span
-          className={
-            allSelected
-              ? "grid size-4 place-items-center rounded-[4px] border border-workbench-accent bg-workbench-accent text-workbench-surface"
-              : "grid size-4 place-items-center rounded-[4px] border border-workbench-line"
-          }
-        >
-          {allSelected && (
-            <svg viewBox="0 0 12 12" className="size-2.5" aria-hidden>
-              <path
-                d="M2.5 6.2 5 8.6 9.6 3.4"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth={2}
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              />
-            </svg>
-          )}
-        </span>
-        <span>{STRINGS.list.selectAll(totalVisible)}</span>
-      </button>
-    </div>
-  );
-}
-
 function EmptyList({ tab }: { tab: CustomerTab }) {
   const map: Record<CustomerTab, { title: string; hint: string }> = {
     all: STRINGS.emptyStates.all,
-    "needs-followup": STRINGS.emptyStates.needsFollowUp,
-    "new-friend": STRINGS.emptyStates.newFriend,
-    starred: STRINGS.emptyStates.starred,
+    key: STRINGS.emptyStates.key,
+    "today-new": STRINGS.emptyStates.todayNew,
+    "stale-30d": STRINGS.emptyStates.stale30d,
+    "pending-sign": STRINGS.emptyStates.pendingSign,
+    lost: STRINGS.emptyStates.lost,
   };
   const empty = map[tab];
   return (
@@ -201,7 +199,7 @@ function FilteredEmpty({ onClearFilters }: { onClearFilters: () => void }) {
     <div className="flex flex-1 flex-col items-center justify-center gap-3 px-6 py-16 text-center">
       <p className="text-[14px] font-medium text-workbench-text">没有匹配的客户</p>
       <p className="max-w-[280px] text-[12px] text-workbench-text-muted">
-        当前的搜索 / 账号 / 标签筛选条件下没有结果。
+        当前的搜索 / 账号 / 标签 / 阶段 / 跟进状态筛选条件下没有结果。
       </p>
       <button
         type="button"

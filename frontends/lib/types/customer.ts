@@ -16,6 +16,18 @@ export type CustomerStage =
   | "deal-won" // 已成交
   | "deal-lost"; // 已流失
 
+/** 客户当前的跟进状态（与业务阶段解耦：阶段=漏斗位置，状态=跟进节奏）。 */
+export type FollowUpStatus =
+  | "pending" // 待跟进
+  | "in-progress" // 跟进中
+  | "done"; // 已跟进
+
+/** 客户级别（A/B/C/D）。A 视为重点客户的子集之一。 */
+export type CustomerLevel = "A" | "B" | "C" | "D";
+
+/** 客户性别，仅 UI 角标使用。 */
+export type CustomerGender = "male" | "female";
+
 export interface Customer {
   id: string;
   name: string;
@@ -53,4 +65,18 @@ export interface Customer {
   contractSignedAt?: string;
   /** 下次跟进的计划时间（ISO 或 "YYYY-MM-DD HH:mm"）。 */
   nextFollowUpAt?: string;
+
+  // ── 客户管理页 v2 新增字段（详情面板「客户信息」+ 列表筛选用）────────────
+  /** 客户级别。A 视为「重点客户」的强信号之一。 */
+  level?: CustomerLevel;
+  /** 客户当前跟进状态；与 stage 解耦，可独立筛选。 */
+  followUpStatus?: FollowUpStatus;
+  /** 性别，仅 UI 头像旁的角标。 */
+  gender?: CustomerGender;
+  /** 所属行业，例：互联网 / 云计算。 */
+  industry?: string;
+  /** 所在地区，例：北京市 海淀区。 */
+  region?: string;
+  /** 详细地址。 */
+  address?: string;
 }

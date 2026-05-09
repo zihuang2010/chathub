@@ -1,6 +1,8 @@
 import type { Customer } from "@/lib/types/customer";
 
-import { FOLLOW_UP_HOURS_THRESHOLD, NEW_FRIEND_DAYS, type SortKey } from "./constants";
+import { FOLLOW_UP_HOURS_THRESHOLD, STALE_DAYS_THRESHOLD, type SortKey } from "./constants";
+
+export { isKeyCustomer, KEY_CUSTOMER_TAGS } from "./customerLabels";
 
 const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * HOUR_MS;
@@ -106,19 +108,36 @@ function formatHHMM(d: Date) {
 
 // ─── 视图判定 ───────────────────────────────────────────────────────────────
 
-/** 是否在"新加好友"窗口内（默认最近 7 天）。 */
-export function isNewFriend(c: Customer, now: Date = new Date()): boolean {
-  const added = parseDate(c.addedAt);
-  if (!added) return false;
-  return now.getTime() - added.getTime() < NEW_FRIEND_DAYS * DAY_MS;
-}
-
-/** 是否需要跟进。规则：显式 followUpReason，或 lastContactAt 超过阈值。 */
+/** 是否需要跟进（用于详情面板的 followUpReason / 行尾标记，与 Tab 谓词解耦）。 */
 export function needsFollowUp(c: Customer, now: Date = new Date()): boolean {
   if (c.followUpReason && c.followUpReason.length > 0) return true;
   const last = parseDate(c.lastContactAt ?? null);
   if (!last) return false;
   return now.getTime() - last.getTime() > FOLLOW_UP_HOURS_THRESHOLD * HOUR_MS;
+}
+
+/** Tab：今日新增 — addedAt 在本地"今天"。 */
+export function isTodayNew(c: Customer, now: Date = new Date()): boolean {
+  const added = parseDate(c.addedAt);
+  if (!added) return false;
+  return sameDay(added, now);
+}
+
+/** Tab：30 天未跟进 — lastContactAt 早于阈值，或从未发起会话（null）。 */
+export function isStale30d(c: Customer, now: Date = new Date()): boolean {
+  const last = parseDate(c.lastContactAt ?? null);
+  if (!last) return true;
+  return now.getTime() - last.getTime() > STALE_DAYS_THRESHOLD * DAY_MS;
+}
+
+/** Tab：待签约 — 业务阶段 = "negotiating"（谈单中）。 */
+export function isPendingSign(c: Customer): boolean {
+  return c.stage === "negotiating";
+}
+
+/** Tab：流失 — 业务阶段 = "deal-lost"。 */
+export function isLost(c: Customer): boolean {
+  return c.stage === "deal-lost";
 }
 
 // ─── 过滤 / 搜索 / 排序 ─────────────────────────────────────────────────────

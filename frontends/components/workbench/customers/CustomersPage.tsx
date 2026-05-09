@@ -219,13 +219,34 @@ export function CustomersPage({
   const hasActiveFilters =
     filters.searchTerm.trim().length > 0 ||
     filters.selectedAccountIds.size > 0 ||
-    filters.tagFilters.length > 0;
+    filters.tagFilters.length > 0 ||
+    filters.stageFilter.size > 0 ||
+    filters.followUpFilter.size > 0;
 
   const handleClearFilters = useCallback(() => {
     filters.setSearchTerm("");
     filters.clearAccounts();
     filters.clearTags();
+    filters.clearStages();
+    filters.clearFollowUps();
   }, [filters]);
+
+  const handleCreateCustomer = useCallback(() => {
+    showToast(STRINGS.toasts.newCustomerStub, { type: "info" });
+  }, []);
+  const handleToggleView = useCallback(() => {
+    showToast(STRINGS.toasts.viewToggleStub, { type: "info" });
+  }, []);
+  const handleStubExport = useCallback(() => {
+    showToast(STRINGS.toasts.exportStub, { type: "info" });
+  }, []);
+
+  const handleEditCustomer = useCallback((id: string) => {
+    showToast(`将打开客户编辑面板（${id}）`, { type: "info" });
+  }, []);
+  const handleRowMore = useCallback((id: string) => {
+    showToast(`更多操作菜单（${id}）`, { type: "info" });
+  }, []);
 
   return (
     <ErrorBoundary>
@@ -235,8 +256,6 @@ export function CustomersPage({
             activeTab={filters.activeTab}
             onTabChange={filters.setActiveTab}
             tabCounts={filters.tabCounts}
-            sortKey={filters.sortKey}
-            onSortChange={filters.setSortKey}
             searchTerm={filters.searchTerm}
             onSearchChange={filters.setSearchTerm}
             accounts={MOCK_ACCOUNTS}
@@ -244,28 +263,44 @@ export function CustomersPage({
             accountCounts={filters.accountCounts}
             onToggleAccount={filters.toggleAccountId}
             onClearAccounts={filters.clearAccounts}
+            stageFilter={filters.stageFilter}
+            onToggleStage={filters.toggleStage}
+            onClearStages={filters.clearStages}
             knownTags={filters.knownTags}
             tagFilters={filters.tagFilters}
             onToggleTag={filters.toggleTag}
             onClearTags={filters.clearTags}
-            isMultiSelectActive={selection.isMultiSelectActive}
-            onToggleBulk={selection.toggleMode}
+            followUpFilter={filters.followUpFilter}
+            onToggleFollowUp={filters.toggleFollowUp}
+            onClearFollowUps={filters.clearFollowUps}
+            sortKey={filters.sortKey}
+            onSortChange={filters.setSortKey}
+            hasActiveFilters={hasActiveFilters}
+            onReset={handleClearFilters}
+            onCreateCustomer={handleCreateCustomer}
+            onToggleView={handleToggleView}
+            onExport={handleStubExport}
           />
 
           <div className="flex min-h-0 flex-1 overflow-hidden">
             <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
               <CustomerList
-                customers={filters.filteredCustomers}
+                paginatedCustomers={filters.paginatedCustomers}
+                filteredTotal={filters.filteredCustomers.length}
                 accounts={MOCK_ACCOUNTS}
                 activeTab={filters.activeTab}
                 activeCustomerId={activeCustomerId}
+                page={filters.page}
+                pageCount={filters.pageCount}
+                pageSize={filters.pageSize}
+                onPageChange={filters.setPage}
+                onPageSizeChange={filters.setPageSize}
                 multiSelectActive={selection.isMultiSelectActive}
                 selectedIds={selection.selectedIds}
                 allSelectedInView={allSelectedInView}
                 selectedCount={selection.count}
                 allSelectedStarred={allSelectedStarred}
                 onSelectCustomer={handleSelectCustomer}
-                onToggleStar={handleToggleStar}
                 onToggleMultiSelect={selection.toggle}
                 onSelectAllInView={onSelectAllInView}
                 onClearSelection={selection.clear}
@@ -274,6 +309,9 @@ export function CustomersPage({
                 onReassign={handleBulkReassign}
                 onBulkToggleStar={handleBulkToggleStar}
                 onExport={handleBulkExport}
+                onOpenChat={handleOpenChat}
+                onEditCustomer={handleEditCustomer}
+                onMoreRowAction={handleRowMore}
                 knownTags={filters.knownTags}
                 hasActiveFilters={hasActiveFilters}
                 onClearFilters={handleClearFilters}
@@ -286,8 +324,11 @@ export function CustomersPage({
               onPatch={handlePatch}
               onAddTag={handleAddTag}
               onRemoveTag={handleRemoveTag}
-              onToggleStar={() => activeCustomer && handleToggleStar(activeCustomer.id)}
+              onToggleStar={() => {
+                if (activeCustomer) handleToggleStar(activeCustomer.id);
+              }}
               onOpenChat={handleOpenChat}
+              onEditCustomer={handleEditCustomer}
             />
           </div>
         </div>
