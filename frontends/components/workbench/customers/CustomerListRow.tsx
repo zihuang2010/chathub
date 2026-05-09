@@ -2,28 +2,14 @@ import { memo } from "react";
 import { Mars, MessageCircle, MoreHorizontal, Pencil, Venus } from "lucide-react";
 
 import type { Account } from "@/lib/types/account";
-import type { Customer, CustomerStage } from "@/lib/types/customer";
+import type { Customer } from "@/lib/types/customer";
 import { cn } from "@/lib/utils";
 
 import { CustomerAvatar } from "./CustomerAvatar";
 import { ROW_GRID_TEMPLATE, ROW_HEIGHT, ROW_MAX_TAGS } from "./constants";
-import { FOLLOW_UP_BADGE_CLASS, resolveFollowUpBadge } from "./followUpBadge";
-import { STAGE_BADGE_CLASS, type StageBadgeTone } from "./stageBadge";
 import { STRINGS } from "./strings";
+import { tagColorClass } from "./tagColor";
 import { parseDate } from "./utils";
-
-/**
- * 列表行的 stage 列着色：与详情面板状态卡共用同一 tone 表，但 *不* 走 stageBadge.ts
- * 的 PROMOTED_TAGS 升格逻辑（该升格只用于详情面板头部的「重点客户」chip）。
- */
-const STAGE_TONE: Record<CustomerStage, StageBadgeTone> = {
-  lead: "slate",
-  contacting: "slate",
-  intent: "amber",
-  negotiating: "blue",
-  "deal-won": "emerald",
-  "deal-lost": "rose",
-};
 
 interface CustomerListRowProps {
   customer: Customer;
@@ -41,9 +27,9 @@ interface CustomerListRowProps {
 }
 
 /**
- * 客户列表的 8 列行（v3 修订：加回 客户阶段 + 跟进状态 列，去掉 来源 列）：
+ * 客户列表的 7 列行（v6 修订：去掉 客户阶段 + 跟进状态，标签后增加 来源）：
  *   ☐  客户名称(avatar+name+性别+phone)  所属账号(company+owner)
- *   客户阶段 badge  跟进状态 badge  标签 chips(+N)  最近跟进(date+follower)  操作图标
+ *   彩色标签 chips(+N)  来源 chip  最近跟进(date+follower)  操作图标
  */
 export const CustomerListRow = memo(function CustomerListRow({
   customer,
@@ -58,9 +44,6 @@ export const CustomerListRow = memo(function CustomerListRow({
   onEditCustomer,
   onMore,
 }: CustomerListRowProps) {
-  const stageTone = customer.stage ? STAGE_TONE[customer.stage] : null;
-  const stageLabel = customer.stage ? STRINGS.detail.stageLabels[customer.stage] : null;
-  const followUpBadge = resolveFollowUpBadge(customer);
   const visibleTags = customer.tags.slice(0, ROW_MAX_TAGS);
   const overflowTags = customer.tags.length - visibleTags.length;
   const lastContactDate = formatLastContact(customer.lastContactAt ?? null);
@@ -79,7 +62,7 @@ export const CustomerListRow = memo(function CustomerListRow({
       }}
       style={{ gridTemplateColumns: ROW_GRID_TEMPLATE, height: ROW_HEIGHT }}
       className={cn(
-        "group relative grid cursor-pointer items-center gap-3 px-4 transition-colors",
+        "group relative grid cursor-pointer items-center gap-2 px-3 transition-colors",
         "hover:bg-workbench-surface-subtle focus-visible:bg-workbench-surface-subtle focus-visible:outline-none",
         selected && !multiSelectActive && "bg-workbench-surface-active",
         multiSelected && "bg-workbench-surface-active/70",
@@ -105,7 +88,7 @@ export const CustomerListRow = memo(function CustomerListRow({
           customerId={customer.id}
           name={customer.name}
           colorToken={avatarColorToken}
-          size={32}
+          size={28}
           online={account?.status === "online"}
         />
         <div className="min-w-0 flex-1">
@@ -133,52 +116,36 @@ export const CustomerListRow = memo(function CustomerListRow({
         )}
       </div>
 
-      {/* col 4: 客户阶段 */}
-      <div className="min-w-0">
-        {stageLabel && stageTone && (
-          <span
-            className={cn(
-              "inline-flex max-w-full items-center truncate whitespace-nowrap rounded-full px-2 py-0.5 text-[11.5px] font-medium ring-1",
-              STAGE_BADGE_CLASS[stageTone],
-            )}
-          >
-            {stageLabel}
-          </span>
-        )}
-      </div>
-
-      {/* col 5: 跟进状态 */}
-      <div className="min-w-0">
-        {followUpBadge && (
-          <span
-            className={cn(
-              "inline-flex max-w-full items-center truncate whitespace-nowrap rounded-full px-2 py-0.5 text-[11.5px] font-medium ring-1",
-              FOLLOW_UP_BADGE_CLASS[followUpBadge.tone],
-            )}
-          >
-            {followUpBadge.label}
-          </span>
-        )}
-      </div>
-
-      {/* col 6: 标签 */}
+      {/* col 4: 彩色标签 */}
       <div className="flex min-w-0 flex-wrap items-center gap-1 overflow-hidden">
         {visibleTags.map((tag) => (
           <span
             key={tag}
-            className="inline-flex max-w-full items-center truncate whitespace-nowrap rounded bg-slate-100 px-1.5 py-0.5 text-[11px] text-slate-700"
+            className={cn(
+              "inline-flex max-w-full items-center truncate whitespace-nowrap rounded px-1.5 py-0.5 text-[11px] font-medium",
+              tagColorClass(tag),
+            )}
           >
             {tag}
           </span>
         ))}
         {overflowTags > 0 && (
-          <span className="inline-flex shrink-0 items-center whitespace-nowrap rounded bg-slate-100 px-1.5 py-0.5 text-[11px] text-slate-500">
+          <span className="inline-flex shrink-0 items-center whitespace-nowrap rounded bg-slate-100 px-1.5 py-0.5 text-[11px] text-slate-500 ring-1 ring-inset ring-slate-200/60">
             {STRINGS.list.overflowTagsLabel(overflowTags)}
           </span>
         )}
       </div>
 
-      {/* col 7: 最近跟进 — 空字段不渲染（保留 grid cell 占位） */}
+      {/* col 5: 来源 — 空字段不渲染（保留 grid cell 占位） */}
+      <div className="min-w-0">
+        {customer.source && (
+          <span className="inline-flex max-w-full items-center truncate whitespace-nowrap rounded bg-slate-50 px-1.5 py-0.5 text-[11px] text-slate-600 ring-1 ring-inset ring-slate-200/70">
+            {customer.source}
+          </span>
+        )}
+      </div>
+
+      {/* col 6: 最近跟进 — 空字段不渲染（保留 grid cell 占位） */}
       <div className="min-w-0">
         {lastContactDate && (
           <div className="wb-num truncate text-[12px] tabular-nums text-workbench-text">
@@ -190,7 +157,7 @@ export const CustomerListRow = memo(function CustomerListRow({
         )}
       </div>
 
-      {/* col 8: 操作 — pr-1.5 与列头同步，避免 header 与 icons 6px 错位 */}
+      {/* col 7: 操作 — pr-1.5 与列头同步，避免 header 与 icons 6px 错位 */}
       <div className="flex items-center justify-end gap-0.5 pr-1.5">
         <RowIconButton
           ariaLabel={STRINGS.rowMore.chat}
@@ -265,7 +232,7 @@ function RowIconButton({
       title={ariaLabel}
       onClick={onClick}
       className={cn(
-        "focus-ring grid size-7 place-items-center rounded text-workbench-text-muted transition-colors",
+        "focus-ring grid size-6 place-items-center rounded text-workbench-text-muted transition-colors",
         "hover:bg-workbench-surface hover:text-workbench-text",
       )}
     >

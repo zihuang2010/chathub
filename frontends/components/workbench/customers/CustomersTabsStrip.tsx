@@ -24,7 +24,7 @@ export const CustomersTabsStrip = memo(function CustomersTabsStrip({
     <nav
       role="tablist"
       aria-label="客户视图"
-      className="flex min-w-0 items-center gap-6 overflow-x-auto px-4"
+      className="flex min-w-0 items-center gap-5 overflow-x-auto px-3"
     >
       {TAB_OPTIONS.map((tab) => {
         const active = tab.value === activeTab;
@@ -37,7 +37,7 @@ export const CustomersTabsStrip = memo(function CustomersTabsStrip({
             aria-selected={active}
             onClick={() => onTabChange(tab.value)}
             className={cn(
-              "focus-ring relative inline-flex h-12 shrink-0 items-center gap-2 text-[13px] transition-colors",
+              "focus-ring relative inline-flex h-10 shrink-0 items-center gap-1.5 text-[12.5px] transition-colors",
               active
                 ? "font-semibold text-workbench-text"
                 : "text-workbench-text-secondary hover:text-workbench-text",
@@ -46,7 +46,7 @@ export const CustomersTabsStrip = memo(function CustomersTabsStrip({
             <span>{tab.label}</span>
             <span
               className={cn(
-                "wb-num text-[13px] tabular-nums",
+                "wb-num text-[12.5px] tabular-nums",
                 active ? "text-workbench-accent" : "text-workbench-text-muted",
               )}
             >

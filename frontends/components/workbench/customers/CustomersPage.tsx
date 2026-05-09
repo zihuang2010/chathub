@@ -281,7 +281,7 @@ export function CustomersPage({
             onExport={handleStubExport}
           />
 
-          <div className="flex min-h-0 flex-1 gap-3 overflow-hidden bg-workbench-surface-subtle p-3">
+          <div className="flex min-h-0 flex-1 gap-2 overflow-hidden bg-workbench-surface-subtle p-2">
             <div className="flex min-w-0 flex-1 flex-col overflow-hidden rounded-lg border border-workbench-line bg-workbench-surface shadow-wb-card">
               <CustomerList
                 paginatedCustomers={filters.paginatedCustomers}

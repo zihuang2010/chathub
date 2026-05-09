@@ -8,7 +8,8 @@ import { cn } from "@/lib/utils";
 
 import { WorkbenchScrollArea } from "../messages/WorkbenchScrollArea";
 import { CustomerAvatar } from "./CustomerAvatar";
-import { CustomerDetailStatsCards } from "./CustomerDetailStatsCards";
+import { CustomerTimeline } from "./CustomerTimeline";
+import { tagColorClass } from "./tagColor";
 import {
   DETAIL_PANEL_WIDTH,
   DETAIL_TAB_OPTIONS,
@@ -67,7 +68,7 @@ function EmptyDetail() {
   return (
     <aside
       style={{ width: DETAIL_PANEL_WIDTH }}
-      className="flex h-full shrink-0 flex-col items-center justify-center gap-2 px-8 text-center"
+      className="flex h-full shrink-0 flex-col items-center justify-center gap-2 px-6 text-center"
     >
       <p className="text-[14px] font-medium text-workbench-text">
         {STRINGS.emptyStates.detail.title}
@@ -116,7 +117,7 @@ function DetailBody({
       <WorkbenchScrollArea
         className="flex-1"
         viewportClassName="px-0"
-        contentClassName="flex flex-col gap-3 p-4 pb-4"
+        contentClassName="flex flex-col gap-2 p-3 pb-3"
       >
         <ProfileHeader
           customer={customer}
@@ -125,14 +126,12 @@ function DetailBody({
           onToggleStar={onToggleStar}
         />
 
-        <CustomerDetailStatsCards customer={customer} />
-
         <DetailSubTabs active={activeSubTab} onChange={setActiveSubTab} />
 
         {activeSubTab === "info" ? (
           <InfoTabContent customer={customer} onCopy={handleCopy} />
         ) : (
-          <PlaceholderTab />
+          <TimelineTab customer={customer} />
         )}
 
         {activeSubTab === "info" && (
@@ -159,8 +158,8 @@ function DetailBody({
 
 function DetailHeaderBar() {
   return (
-    <div className="flex h-12 shrink-0 items-center justify-between border-b border-workbench-line px-4">
-      <span className="text-[14px] font-semibold text-workbench-text">{STRINGS.detail.title}</span>
+    <div className="flex h-10 shrink-0 items-center justify-between border-b border-workbench-line px-3">
+      <span className="text-[13px] font-semibold text-workbench-text">{STRINGS.detail.title}</span>
     </div>
   );
 }
@@ -179,18 +178,18 @@ function ProfileHeader({
   const colorToken = account?.colorToken ?? 1;
   const isKey = isKeyCustomer(customer);
   return (
-    <div className="flex flex-col gap-2">
-      <div className="flex items-start gap-3">
+    <div className="flex flex-col gap-1.5">
+      <div className="flex items-start gap-2">
         <CustomerAvatar
           customerId={customer.id}
           name={customer.name}
           colorToken={colorToken}
-          size={48}
+          size={36}
           online={account?.status === "online"}
         />
         <div className="flex min-w-0 flex-1 flex-col gap-0.5">
           <div className="flex items-center gap-1.5">
-            <span className="truncate text-[16px] font-semibold text-workbench-text">
+            <span className="truncate text-[14px] font-semibold text-workbench-text">
               {customer.name}
             </span>
             <GenderIcon gender={customer.gender} />
@@ -226,19 +225,35 @@ function ProfileHeader({
         </div>
       </div>
 
-      <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 text-[12px]">
-        {customer.source && (
-          <>
-            <dt className="text-workbench-text-muted">{STRINGS.detail.fields.source}：</dt>
-            <dd className="min-w-0 truncate text-workbench-text">{customer.source}</dd>
-          </>
-        )}
+      {/* 头部 KV 三行：归属账号 / 客户来源 / 客户标签。统一样式，避免再用一组卡片。 */}
+      <dl className="grid grid-cols-[auto_minmax(0,1fr)] items-start gap-x-2 gap-y-1 text-[12px]">
         {account && (
           <>
             <dt className="text-workbench-text-muted">{STRINGS.detail.fields.account}：</dt>
             <dd className="min-w-0 truncate text-workbench-text">
               {account.name}
               {account.ownerName ? ` · ${account.ownerName}` : ""}
+            </dd>
+          </>
+        )}
+        {customer.source && (
+          <>
+            <dt className="text-workbench-text-muted">{STRINGS.detail.fields.source}：</dt>
+            <dd className="min-w-0 truncate text-workbench-text">{customer.source}</dd>
+          </>
+        )}
+        {customer.tags.length > 0 && (
+          <>
+            <dt className="pt-0.5 text-workbench-text-muted">{STRINGS.detail.fields.tags}：</dt>
+            <dd className="flex min-w-0 flex-wrap items-center gap-1">
+              {customer.tags.map((tag) => (
+                <span
+                  key={tag}
+                  className={`inline-flex max-w-full items-center truncate whitespace-nowrap rounded px-1.5 py-0.5 text-[11.5px] font-medium ${tagColorClass(tag)}`}
+                >
+                  {tag}
+                </span>
+              ))}
             </dd>
           </>
         )}
@@ -288,7 +303,7 @@ function DetailSubTabs({
     <nav
       role="tablist"
       aria-label="客户详情视图"
-      className="-mx-4 flex min-w-0 gap-3 overflow-x-auto border-b border-workbench-line px-4"
+      className="-mx-3 flex min-w-0 gap-3 overflow-x-auto border-b border-workbench-line px-3"
     >
       {DETAIL_TAB_OPTIONS.map((tab) => {
         const selected = tab.value === active;
@@ -300,7 +315,7 @@ function DetailSubTabs({
             aria-selected={selected}
             onClick={() => onChange(tab.value)}
             className={cn(
-              "focus-ring relative inline-flex h-9 shrink-0 items-center text-[12.5px] transition-colors",
+              "focus-ring relative inline-flex h-8 shrink-0 items-center text-[12px] transition-colors",
               selected
                 ? "font-semibold text-workbench-text"
                 : "text-workbench-text-secondary hover:text-workbench-text",
@@ -329,7 +344,7 @@ function InfoTabContent({
 }) {
   const f = STRINGS.detail.fields;
   return (
-    <dl className="flex flex-col gap-2 text-[12px]">
+    <dl className="flex flex-col gap-1.5 text-[12px]">
       <FieldRow
         label={f.phone}
         value={customer.phone}
@@ -346,16 +361,6 @@ function InfoTabContent({
       <FieldRow label={f.company} value={customer.company} />
       {customer.region && <FieldRow label={f.region} value={customer.region} />}
       {customer.address && <FieldRow label={f.address} value={customer.address} />}
-      <FieldRow
-        label={f.tags}
-        value={
-          customer.tags.length > 0 ? (
-            <TagChipGroup tags={customer.tags} />
-          ) : (
-            <span className="text-workbench-text-muted">—</span>
-          )
-        }
-      />
       {customer.remark && (
         <FieldRow label={STRINGS.detail.sectionNote} value={customer.remark} multiline />
       )}
@@ -416,24 +421,13 @@ function FieldRow({
   );
 }
 
-function TagChipGroup({ tags }: { tags: readonly string[] }) {
-  const visible = tags.slice(0, 3);
-  const overflow = tags.length - visible.length;
+function TimelineTab({ customer }: { customer: Customer }) {
   return (
-    <div className="flex flex-wrap items-center gap-1">
-      {visible.map((tag) => (
-        <span
-          key={tag}
-          className="inline-flex items-center rounded bg-workbench-surface-subtle px-1.5 py-0.5 text-[11.5px] text-workbench-text-secondary"
-        >
-          {tag}
-        </span>
-      ))}
-      {overflow > 0 && (
-        <span className="inline-flex items-center rounded bg-workbench-surface-subtle px-1.5 py-0.5 text-[11.5px] text-workbench-text-muted">
-          +{overflow}
-        </span>
-      )}
+    <div className="flex flex-col gap-1.5">
+      <h3 className="text-[12px] font-semibold text-workbench-text">
+        {STRINGS.detail.sectionTimeline}
+      </h3>
+      <CustomerTimeline entries={customer.timeline} />
     </div>
   );
 }
@@ -446,11 +440,11 @@ function ContactInfoSection({
   account: Account | undefined;
 }) {
   return (
-    <section className="flex flex-col gap-2 border-t border-workbench-line-subtle pt-3">
+    <section className="flex flex-col gap-1.5 border-t border-workbench-line-subtle pt-2">
       <h3 className="text-[12px] font-semibold text-workbench-text">
         {STRINGS.detail.sectionContactInfo}
       </h3>
-      <dl className="flex flex-col gap-2 text-[12px]">
+      <dl className="flex flex-col gap-1.5 text-[12px]">
         <FieldRow label={STRINGS.detail.fields.follower} value={customer.follower} />
         <FieldRow label={STRINGS.detail.fields.addedAt} value={customer.addedAt} numeric />
         {account && <FieldRow label={STRINGS.detail.fields.account} value={account.name} />}
@@ -467,7 +461,7 @@ function RecentMessagesSection({
   onSeeAll: () => void;
 }) {
   return (
-    <section className="flex flex-col gap-2 border-t border-workbench-line-subtle pt-3">
+    <section className="flex flex-col gap-1.5 border-t border-workbench-line-subtle pt-2">
       <div className="flex items-center justify-between">
         <h3 className="text-[12px] font-semibold text-workbench-text">
           {STRINGS.detail.sectionRecentMessages}
@@ -505,30 +499,22 @@ function RecentMessagesSection({
   );
 }
 
-function PlaceholderTab() {
-  return (
-    <div className="flex flex-1 items-center justify-center py-12 text-[12px] text-workbench-text-muted">
-      {STRINGS.emptyStates.detailTabPlaceholder}
-    </div>
-  );
-}
-
 function FooterActions({ onStartChat, onEdit }: { onStartChat: () => void; onEdit: () => void }) {
   // v5：回退到 2 按钮，与 image 11 原型一致 — 发起会话 primary（蓝）+ 编辑客户 outline。
   // 跟进记录 仍作为详情面板顶部的 5 个 sub-tab 之一。
   return (
-    <div className="flex flex-shrink-0 gap-2 border-t border-workbench-line px-4 py-3">
+    <div className="flex flex-shrink-0 gap-2 border-t border-workbench-line px-3 py-2.5">
       <button
         type="button"
         onClick={onStartChat}
-        className="focus-ring inline-flex h-9 flex-1 items-center justify-center rounded-md bg-workbench-accent px-3 text-[13px] font-medium text-workbench-surface transition-colors hover:bg-workbench-accent-hover"
+        className="focus-ring inline-flex h-8 flex-1 items-center justify-center rounded-md bg-workbench-accent px-3 text-[12.5px] font-medium text-workbench-surface transition-colors hover:bg-workbench-accent-hover"
       >
         {STRINGS.detail.actions.startChat}
       </button>
       <button
         type="button"
         onClick={onEdit}
-        className="focus-ring inline-flex h-9 flex-1 items-center justify-center rounded-md border border-workbench-line bg-workbench-surface px-3 text-[13px] text-workbench-text transition-colors hover:border-workbench-line-strong hover:bg-workbench-surface-subtle"
+        className="focus-ring inline-flex h-8 flex-1 items-center justify-center rounded-md border border-workbench-line bg-workbench-surface px-3 text-[12.5px] text-workbench-text transition-colors hover:border-workbench-line-strong hover:bg-workbench-surface-subtle"
       >
         {STRINGS.detail.actions.editCustomer}
       </button>

@@ -30,7 +30,7 @@ export const CustomerListHeader = memo(function CustomerListHeader({
   return (
     <div
       style={{ gridTemplateColumns: ROW_GRID_TEMPLATE }}
-      className="sticky top-0 z-[1] grid h-9 items-center gap-3 border-b border-workbench-line bg-workbench-surface-subtle px-4 text-[12px] font-medium text-workbench-text-muted"
+      className="sticky top-0 z-[1] grid h-8 items-center gap-2 border-b border-workbench-line bg-workbench-surface-subtle px-3 text-[11.5px] font-medium text-workbench-text-muted"
     >
       <MasterCheckbox
         checked={allSelectedInView}
@@ -40,9 +40,8 @@ export const CustomerListHeader = memo(function CustomerListHeader({
       />
       <span>{STRINGS.list.columnCustomer}</span>
       <span>{STRINGS.list.columnAccount}</span>
-      <span>{STRINGS.list.columnStage}</span>
-      <span>{STRINGS.list.columnFollowUp}</span>
       <span>{STRINGS.list.columnTags}</span>
+      <span>{STRINGS.list.columnSource}</span>
       <span>{STRINGS.list.columnLastContact}</span>
       <span className="pr-1.5 text-right">{STRINGS.list.columnActions}</span>
     </div>

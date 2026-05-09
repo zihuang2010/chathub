@@ -43,30 +43,29 @@ export const SORT_OPTIONS: SortOption[] = [
   { value: "follower", label: STRINGS.sort.follower },
 ];
 
-/** 列表行的固定高度（像素）。v3：64 → 72 提供更舒展的呼吸感。 */
-export const ROW_HEIGHT = 72;
+/** 列表行的固定高度（像素）。v6：72 → 56，向桌面客户端 CRM 对齐密度。 */
+export const ROW_HEIGHT = 56;
 
 /**
- * 列表行 grid 模板（v3 修订：加回 客户阶段 + 跟进状态，去掉 来源 列）。
- * 来源 现在仅在详情面板的 客户来源 字段展示。
+ * 列表行 grid 模板（v7：客户名称 / 所属账号 / 来源 / 最近跟进 / 操作 都按实际
+ * 内容压缩，给 1fr tags 列让位）。
  *
  * 从左至右：
- * 1) 32px  master checkbox / 单行 checkbox
- * 2) 180px 客户名称（avatar + name + 性别 + 手机号副行）
- * 3) 180px 所属账号（公司名 + follower 副行）
- * 4) 96px  客户阶段 badge
- * 5) 96px  跟进状态 badge
- * 6) 1fr   标签列（最少 120px，超出走 +N 溢出）
- * 7) 130px 最近跟进（日期 + follower 副行）
- * 8) 92px  操作（chat / 编辑 / 更多）
+ * 1) 32px  master checkbox / 单行 checkbox（保持手感）
+ * 2) 144px 客户名称（avatar 28 + gap 8 + 两行文本）
+ * 3) 128px 所属账号（公司名 + follower 副行）
+ * 4) 1fr   标签列（彩色 chip，最少 120px，超出走 +N 溢出）
+ * 5) 96px  来源 chip
+ * 6) 124px 最近跟进（日期 16 字 tabular + follower 副行）
+ * 7) 80px  操作（3 个 size-6 图标按钮）
  *
- * 主区可用宽度 = viewport − 324（详情面板）。固定列合 806px + tags(min 120) = 926
- * → 1280px 视口（主区 956px）也能容纳，1fr tags ≈ 150px（1 chip + +N）。
+ * 主区可用宽度 = viewport − 280（详情面板）。固定列合 604px + tags(min 120) = 724
+ * → 1280px 视口（主区 1000px）富余度更高，1fr tags ≈ 396px。
  */
-export const ROW_GRID_TEMPLATE = "32px 180px 180px 96px 96px minmax(120px,1fr) 130px 92px";
+export const ROW_GRID_TEMPLATE = "32px 144px 128px minmax(120px,1fr) 96px 124px 80px";
 
-/** 详情侧栏宽度（像素），与 messages 页 CustomerDetails 对齐（324px）以保持视觉一致。 */
-export const DETAIL_PANEL_WIDTH = 324;
+/** 详情侧栏宽度（像素）。v7：324 → 280，让出 44px 给左侧列表呼吸。messages 页保留 324px。 */
+export const DETAIL_PANEL_WIDTH = 280;
 
 /** 「待跟进」判定：lastContactAt 超过多少小时未联系。 */
 export const FOLLOW_UP_HOURS_THRESHOLD = 72;
@@ -93,10 +92,10 @@ export const PAGE_SIZE_OPTIONS = [20, 50, 100] as const;
 export const DEFAULT_PAGE_SIZE = 20;
 
 /**
- * 详情面板内的 5 个子 tab。仅 `info` 会渲染真实内容，其余渲染占位
- * 以便和参考图视觉一致并预留未来扩展。
+ * 详情面板内的子 tab。v7：跟进记录 / 相关联系人 / 相关订单 暂未交付，先撤掉，
+ * 只留 `info` 与 `timeline` 两个有真实内容的 tab。后续上线时按需再加回。
  */
-export type DetailTab = "info" | "follow-up" | "contacts" | "orders" | "more";
+export type DetailTab = "info" | "timeline";
 
 export interface DetailTabOption {
   value: DetailTab;
@@ -105,8 +104,5 @@ export interface DetailTabOption {
 
 export const DETAIL_TAB_OPTIONS: DetailTabOption[] = [
   { value: "info", label: STRINGS.detail.subTabs.info },
-  { value: "follow-up", label: STRINGS.detail.subTabs.followUp },
-  { value: "contacts", label: STRINGS.detail.subTabs.contacts },
-  { value: "orders", label: STRINGS.detail.subTabs.orders },
-  { value: "more", label: STRINGS.detail.subTabs.more },
+  { value: "timeline", label: STRINGS.detail.subTabs.timeline },
 ];
