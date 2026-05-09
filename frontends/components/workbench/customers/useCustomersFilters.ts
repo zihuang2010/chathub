@@ -26,6 +26,8 @@ export interface CustomersFiltersResult extends CustomersFiltersState {
   setActiveTab: (tab: CustomerTab) => void;
   toggleAccountId: (id: string) => void;
   clearAccounts: () => void;
+  /** 一次性原子写入选中账号集，给跨页跳转（账号页 → 客户页）锁定单账号过滤用。 */
+  setSelectedAccountIdsExact: (ids: ReadonlySet<string>) => void;
   setSearchTerm: (term: string) => void;
   toggleTag: (tag: string) => void;
   clearTags: () => void;
@@ -131,6 +133,10 @@ export function useCustomersFilters({
     setSelectedAccountIds(EMPTY_ACCOUNTS);
   }, []);
 
+  const setSelectedAccountIdsExact = useCallback((ids: ReadonlySet<string>) => {
+    setSelectedAccountIds(ids);
+  }, []);
+
   const toggleTag = useCallback((tag: string) => {
     setTagFilters((prev) => (prev.includes(tag) ? prev.filter((t) => t !== tag) : [...prev, tag]));
   }, []);
@@ -152,6 +158,7 @@ export function useCustomersFilters({
     setActiveTab,
     toggleAccountId,
     clearAccounts,
+    setSelectedAccountIdsExact,
     setSearchTerm,
     toggleTag,
     clearTags,

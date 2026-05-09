@@ -1,8 +1,9 @@
-import { useState } from "react";
+import { useCallback, useState } from "react";
 
 import { PlaceholderPage } from "@/components/workbench/PlaceholderPage";
 import { Sidebar } from "@/components/workbench/Sidebar";
 import { type Section } from "@/components/workbench/nav";
+import { AccountsPage } from "@/components/workbench/accounts/AccountsPage";
 import { CustomersPage } from "@/components/workbench/customers/CustomersPage";
 import { MessagesPage } from "@/components/workbench/messages/MessagesPage";
 import { FONT_BODY } from "@/lib/theme";
@@ -10,6 +11,17 @@ import { FONT_BODY } from "@/lib/theme";
 export function Workbench() {
   const [section, setSection] = useState<Section>("messages");
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  // 跨页跳转用的一次性意图：账号页点卡片 → 客户页消费后清空。
+  const [pendingAccountFilter, setPendingAccountFilter] = useState<string | null>(null);
+
+  const openAccountInCustomers = useCallback((accountId: string) => {
+    setPendingAccountFilter(accountId);
+    setSection("customers");
+  }, []);
+
+  const consumePendingAccountFilter = useCallback(() => {
+    setPendingAccountFilter(null);
+  }, []);
 
   return (
     <div
@@ -29,7 +41,12 @@ export function Workbench() {
       {section === "messages" ? (
         <MessagesPage />
       ) : section === "customers" ? (
-        <CustomersPage />
+        <CustomersPage
+          pendingAccountFilter={pendingAccountFilter}
+          onConsumePendingFilter={consumePendingAccountFilter}
+        />
+      ) : section === "accounts" ? (
+        <AccountsPage onOpenInCustomers={openAccountInCustomers} />
       ) : (
         <PlaceholderPage section={section} />
       )}

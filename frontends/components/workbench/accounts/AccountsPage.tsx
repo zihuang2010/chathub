@@ -1,0 +1,196 @@
+import { useCallback } from "react";
+import { Plus, RefreshCw } from "lucide-react";
+
+import { ErrorBoundary } from "@/components/ErrorBoundary";
+import { ToastViewport, showToast } from "@/components/ui/toast";
+import { WorkbenchPanel } from "@/components/workbench/WorkbenchPanel";
+import { MOCK_ACCOUNTS } from "@/components/workbench/customers/data";
+import { downloadCsv } from "@/components/workbench/customers/utils";
+
+import { AccountCard } from "./AccountCard";
+import { AccountListRow } from "./AccountListRow";
+import { AccountsKpiStrip } from "./AccountsKpiStrip";
+import { AccountsPagination } from "./AccountsPagination";
+import { AccountsTabs } from "./AccountsTabs";
+import { AccountsToolbar } from "./AccountsToolbar";
+import { useAccountsView } from "./useAccountsView";
+import { toAccountsCsv } from "./utils";
+
+interface AccountsPageProps {
+  /** 卡片点击 → 跳客户页并锁定该账号过滤的回调；状态由 Workbench 持有。 */
+  onOpenInCustomers: (accountId: string) => void;
+}
+
+export function AccountsPage({ onOpenInCustomers }: AccountsPageProps) {
+  const view = useAccountsView({ accounts: MOCK_ACCOUNTS });
+
+  const handleExport = useCallback(() => {
+    if (view.filteredRows.length === 0) {
+      showToast("当前筛选下没有可导出的账号", { type: "info" });
+      return;
+    }
+    const csv = toAccountsCsv(view.filteredRows);
+    downloadCsv("accounts", csv);
+    showToast(`已导出 ${view.filteredRows.length} 个账号`, { type: "success" });
+  }, [view.filteredRows]);
+
+  const isFilteredEmpty = view.totalCount === 0 && view.hasActiveFilters;
+  const isTrulyEmpty = view.totalCount === 0 && !view.hasActiveFilters;
+
+  return (
+    <ErrorBoundary>
+      <WorkbenchPanel>
+        <div className="flex h-full min-w-0 flex-1 flex-col overflow-hidden">
+          <PageHeader
+            totalAccounts={view.kpis.totalAccounts}
+            onlineAccounts={view.kpis.onlineAccounts}
+          />
+          <div className="min-h-0 flex-1 overflow-y-auto">
+            <AccountsKpiStrip kpis={view.kpis} />
+
+            <AccountsTabs
+              activeTab={view.activeTab}
+              onTabChange={view.setActiveTab}
+              tabCounts={view.tabCounts}
+            />
+
+            <AccountsToolbar
+              searchTerm={view.searchTerm}
+              onSearchChange={view.setSearchTerm}
+              statusSet={view.statusSet}
+              toggleStatus={view.toggleStatus}
+              clearStatus={view.clearStatus}
+              enterpriseSet={view.enterpriseSet}
+              toggleEnterprise={view.toggleEnterprise}
+              clearEnterprise={view.clearEnterprise}
+              enterpriseOptions={view.enterpriseOptions}
+              ownerSet={view.ownerSet}
+              toggleOwner={view.toggleOwner}
+              clearOwner={view.clearOwner}
+              ownerOptions={view.ownerOptions}
+              dateRange={view.dateRange}
+              setDateRange={view.setDateRange}
+              clearDateRange={view.clearDateRange}
+              hasActiveFilters={view.hasActiveFilters}
+              onReset={view.reset}
+              viewMode={view.viewMode}
+              setViewMode={view.setViewMode}
+              onExport={handleExport}
+            />
+
+            <div className="px-4 pb-4">
+              {isTrulyEmpty ? (
+                <EmptyState />
+              ) : isFilteredEmpty ? (
+                <FilteredEmpty onReset={view.reset} />
+              ) : view.viewMode === "grid" ? (
+                <div
+                  className="grid gap-4"
+                  style={{ gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))" }}
+                >
+                  {view.pageRows.map((row) => (
+                    <AccountCard key={row.id} account={row} onOpen={onOpenInCustomers} />
+                  ))}
+                </div>
+              ) : (
+                <div className="overflow-hidden rounded-lg border border-workbench-line bg-workbench-surface">
+                  {view.pageRows.map((row) => (
+                    <AccountListRow key={row.id} account={row} onOpen={onOpenInCustomers} />
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {view.totalCount > 0 && (
+              <AccountsPagination
+                page={view.page}
+                pageCount={view.pageCount}
+                pageSize={view.pageSize}
+                totalCount={view.totalCount}
+                onPageChange={view.setPage}
+                onPageSizeChange={view.setPageSize}
+              />
+            )}
+          </div>
+        </div>
+        <ToastViewport />
+      </WorkbenchPanel>
+    </ErrorBoundary>
+  );
+}
+
+interface PageHeaderProps {
+  totalAccounts: number;
+  onlineAccounts: number;
+}
+
+function PageHeader({ totalAccounts, onlineAccounts }: PageHeaderProps) {
+  const handleRefresh = () => showToast("已刷新账号状态", { type: "success" });
+  const handleBind = () => showToast("绑定账号功能开发中", { type: "info" });
+
+  return (
+    <header className="flex items-center justify-between gap-4 border-b border-workbench-line bg-workbench-surface px-4 py-4">
+      <div className="min-w-0">
+        <h1 className="text-[16px] font-semibold leading-tight text-workbench-text">账号管理</h1>
+        <p className="mt-1 text-[12px] text-workbench-text-muted">
+          管理已绑定的企业微信账号，共
+          <span className="wb-num mx-0.5 tabular-nums text-workbench-text-secondary">
+            {totalAccounts}
+          </span>
+          个 · 当前
+          <span className="wb-num mx-0.5 tabular-nums text-emerald-600 dark:text-emerald-400">
+            {onlineAccounts}
+          </span>
+          个在线
+        </p>
+      </div>
+      <div className="flex shrink-0 items-center gap-2">
+        <button
+          type="button"
+          onClick={handleRefresh}
+          className="focus-ring inline-flex h-9 items-center gap-1.5 rounded-md border border-workbench-line bg-workbench-surface px-3 text-[13px] text-workbench-text transition-colors hover:border-workbench-line-strong"
+        >
+          <RefreshCw size={14} />
+          刷新
+        </button>
+        <button
+          type="button"
+          onClick={handleBind}
+          className="focus-ring inline-flex h-9 items-center gap-1.5 rounded-md bg-workbench-accent px-3 text-[13px] font-medium text-white transition-colors hover:opacity-90"
+        >
+          <Plus size={14} strokeWidth={2.5} />
+          绑定账号
+        </button>
+      </div>
+    </header>
+  );
+}
+
+function EmptyState() {
+  return (
+    <div className="flex h-[280px] flex-col items-center justify-center gap-2 px-6 text-center">
+      <p className="text-[14px] font-medium text-workbench-text">还没有账号</p>
+      <p className="max-w-[280px] text-[12px] text-workbench-text-muted">
+        绑定企业微信账号后，将在此查看每个账号下的客户活跃情况。
+      </p>
+    </div>
+  );
+}
+
+function FilteredEmpty({ onReset }: { onReset: () => void }) {
+  return (
+    <div className="flex h-[280px] flex-col items-center justify-center gap-3 px-6 text-center">
+      <p className="text-[14px] font-medium text-workbench-text">没有匹配的账号</p>
+      <p className="max-w-[280px] text-[12px] text-workbench-text-muted">
+        当前的搜索 / 状态 / 企业 / 负责人 / 日期 筛选条件下没有结果。
+      </p>
+      <button
+        type="button"
+        onClick={onReset}
+        className="focus-ring mt-1 inline-flex h-7 items-center rounded-md bg-workbench-surface-active px-3 text-[12px] font-medium text-workbench-accent transition-colors hover:bg-workbench-accent hover:text-white"
+      >
+        重置筛选
+      </button>
+    </div>
+  );
+}

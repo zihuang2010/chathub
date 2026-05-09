@@ -14,7 +14,20 @@ import { useCustomersFilters } from "./useCustomersFilters";
 import { useCustomerSelection } from "./useCustomerSelection";
 import { useCustomerStore } from "./useCustomerStore";
 
-export function CustomersPage() {
+interface CustomersPageProps {
+  /**
+   * 来自其他页面（账号页卡片点击）的"锁定该账号过滤"意图。CustomersPage 在
+   * useEffect 中一次性消费并调 onConsumePendingFilter 通知 Workbench 清空，
+   * 之后用户在 AccountPicker 中正常增删该选中集。
+   */
+  pendingAccountFilter?: string | null;
+  onConsumePendingFilter?: () => void;
+}
+
+export function CustomersPage({
+  pendingAccountFilter,
+  onConsumePendingFilter,
+}: CustomersPageProps = {}) {
   const store = useCustomerStore(MOCK_CUSTOMERS);
   const filters = useCustomersFilters({ source: store.customers });
   const selection = useCustomerSelection();
@@ -41,6 +54,19 @@ export function CustomersPage() {
   useEffect(() => {
     exitSelection();
   }, [exitSelection, filters.activeTab]);
+
+  // 一次性消费"账号页跳过来的锁定意图"：写入选中账号集 + 提示，调回调清空，
+  // 让用户后续可以在 AccountPicker 中自由增删。
+  const setSelectedAccountIdsExact = filters.setSelectedAccountIdsExact;
+  useEffect(() => {
+    if (!pendingAccountFilter) return;
+    const account = MOCK_ACCOUNTS.find((a) => a.id === pendingAccountFilter);
+    setSelectedAccountIdsExact(new Set([pendingAccountFilter]));
+    if (account) {
+      showToast(`已锁定账号「${account.name}」的客户列表`, { type: "info" });
+    }
+    onConsumePendingFilter?.();
+  }, [pendingAccountFilter, setSelectedAccountIdsExact, onConsumePendingFilter]);
 
   // 任意筛选变化（账号/标签/搜索/Tab）会改变可见集，把当前选中收敛到交集。
   // 否则用户对"看不见的项"批量操作的语义不可控（导出/移交/星标都会包含隐藏行）。
