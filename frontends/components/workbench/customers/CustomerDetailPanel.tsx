@@ -7,6 +7,7 @@ import { showToast } from "@/components/ui/toast";
 import { cn } from "@/lib/utils";
 
 import { WorkbenchScrollArea } from "../messages/WorkbenchScrollArea";
+import { CustomerAvatar } from "./CustomerAvatar";
 import { CustomerDetailStatsCards } from "./CustomerDetailStatsCards";
 import {
   DETAIL_PANEL_WIDTH,
@@ -189,12 +190,13 @@ function ProfileHeader({
   return (
     <div className="flex flex-col gap-2">
       <div className="flex items-start gap-3">
-        <div
-          className="grid size-12 shrink-0 place-items-center rounded-full text-[18px] font-medium text-workbench-text shadow-[inset_0_0_0_1px_rgba(255,255,255,0.45)]"
-          style={{ background: `hsl(var(--wb-avatar-${colorToken}))` }}
-        >
-          {customer.name.slice(0, 1)}
-        </div>
+        <CustomerAvatar
+          customerId={customer.id}
+          name={customer.name}
+          colorToken={colorToken}
+          size={48}
+          online={account?.status === "online"}
+        />
         <div className="flex min-w-0 flex-1 flex-col gap-0.5">
           <div className="flex items-center gap-1.5">
             <span className="truncate text-[16px] font-semibold text-workbench-text">

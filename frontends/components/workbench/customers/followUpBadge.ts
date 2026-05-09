@@ -26,10 +26,10 @@ export function resolveFollowUpBadge(c: Pick<Customer, "followUpStatus">): Follo
   };
 }
 
-/** Tailwind 类：与 stageBadge 保持视觉同款（pill: bg-50 text-700 ring-1 ring-100）。 */
+/** Tailwind 类：v4 配色加深，参考稿一致（bg-100 + text-700/800 + ring-200）。 */
 export const FOLLOW_UP_BADGE_CLASS: Record<FollowUpBadgeTone, string> = {
-  blue: "bg-blue-50 text-blue-700 ring-blue-100",
-  amber: "bg-amber-50 text-amber-700 ring-amber-100",
-  emerald: "bg-emerald-50 text-emerald-700 ring-emerald-100",
+  blue: "bg-blue-100 text-blue-700 ring-blue-200",
+  amber: "bg-amber-100 text-amber-800 ring-amber-200",
+  emerald: "bg-emerald-100 text-emerald-800 ring-emerald-200",
   slate: "bg-slate-100 text-slate-600 ring-slate-200",
 };

@@ -5,6 +5,7 @@ import type { Account } from "@/lib/types/account";
 import type { Customer, CustomerStage } from "@/lib/types/customer";
 import { cn } from "@/lib/utils";
 
+import { CustomerAvatar } from "./CustomerAvatar";
 import { ROW_GRID_TEMPLATE, ROW_HEIGHT, ROW_MAX_TAGS } from "./constants";
 import { FOLLOW_UP_BADGE_CLASS, resolveFollowUpBadge } from "./followUpBadge";
 import { STAGE_BADGE_CLASS, type StageBadgeTone } from "./stageBadge";
@@ -100,7 +101,13 @@ export const CustomerListRow = memo(function CustomerListRow({
 
       {/* col 2: 客户名称 */}
       <div className="flex min-w-0 items-center gap-2">
-        <Avatar name={customer.name} colorToken={avatarColorToken} />
+        <CustomerAvatar
+          customerId={customer.id}
+          name={customer.name}
+          colorToken={avatarColorToken}
+          size={32}
+          online={account?.status === "online"}
+        />
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-1 truncate">
             <span className="truncate text-[13px] font-semibold text-workbench-text">
@@ -108,21 +115,22 @@ export const CustomerListRow = memo(function CustomerListRow({
             </span>
             <GenderIcon gender={customer.gender} />
           </div>
-          <div className="wb-num truncate text-[11px] tabular-nums text-workbench-text-muted">
-            {customer.phone || "—"}
-          </div>
+          {customer.phone && (
+            <div className="wb-num truncate text-[11px] tabular-nums text-workbench-text-muted">
+              {customer.phone}
+            </div>
+          )}
         </div>
       </div>
 
-      {/* col 3: 所属账号 */}
+      {/* col 3: 所属账号 — online 状态由 avatar 右下角点承担，此 cell 不再画点 */}
       <div className="min-w-0">
-        <div className="truncate text-[13px] text-workbench-text">{customer.company || "—"}</div>
-        <div className="flex items-center gap-1 text-[11px] text-workbench-text-muted">
-          {account?.status === "online" && (
-            <span aria-hidden className="size-1.5 shrink-0 rounded-full bg-emerald-500" />
-          )}
-          <span className="truncate">{account?.ownerName ?? "—"}</span>
-        </div>
+        {customer.company && (
+          <div className="truncate text-[13px] text-workbench-text">{customer.company}</div>
+        )}
+        {account?.ownerName && (
+          <div className="truncate text-[11px] text-workbench-text-muted">{account.ownerName}</div>
+        )}
       </div>
 
       {/* col 4: 客户阶段 */}
@@ -170,18 +178,20 @@ export const CustomerListRow = memo(function CustomerListRow({
         )}
       </div>
 
-      {/* col 7: 最近跟进 */}
+      {/* col 7: 最近跟进 — 空字段不渲染（保留 grid cell 占位） */}
       <div className="min-w-0">
-        <div className="wb-num truncate text-[12px] tabular-nums text-workbench-text">
-          {lastContactDate}
-        </div>
-        <div className="truncate text-[11px] text-workbench-text-muted">
-          {customer.follower || "—"}
-        </div>
+        {lastContactDate && (
+          <div className="wb-num truncate text-[12px] tabular-nums text-workbench-text">
+            {lastContactDate}
+          </div>
+        )}
+        {customer.follower && (
+          <div className="truncate text-[11px] text-workbench-text-muted">{customer.follower}</div>
+        )}
       </div>
 
-      {/* col 8: 操作 */}
-      <div className="flex items-center justify-end gap-0.5">
+      {/* col 8: 操作 — pr-1.5 与列头同步，避免 header 与 icons 6px 错位 */}
+      <div className="flex items-center justify-end gap-0.5 pr-1.5">
         <RowIconButton
           ariaLabel={STRINGS.rowMore.chat}
           onClick={(e) => {
@@ -214,9 +224,9 @@ export const CustomerListRow = memo(function CustomerListRow({
   );
 });
 
-function formatLastContact(value: string | null | undefined): string {
+function formatLastContact(value: string | null | undefined): string | null {
   const d = parseDate(value ?? null);
-  if (!d) return "—";
+  if (!d) return null;
   const Y = d.getFullYear();
   const M = pad(d.getMonth() + 1);
   const D = pad(d.getDate());
@@ -300,17 +310,5 @@ function Checkbox({
         />
       </svg>
     </button>
-  );
-}
-
-function Avatar({ name, colorToken }: { name: string; colorToken?: number }) {
-  const bg = colorToken ? `hsl(var(--wb-avatar-${colorToken}))` : "hsl(var(--wb-surface-active))";
-  return (
-    <div
-      className="grid size-8 shrink-0 place-items-center rounded-full text-[12px] font-medium text-workbench-text"
-      style={{ background: bg }}
-    >
-      {name.slice(0, 1)}
-    </div>
   );
 }
