@@ -6,6 +6,7 @@ import type { CustomerStage, FollowUpStatus } from "@/lib/types/customer";
 import type { CustomerTab, SortKey } from "./constants";
 import { CustomersFilterBar } from "./CustomersFilterBar";
 import { CustomersTabsStrip } from "./CustomersTabsStrip";
+import { STRINGS } from "./strings";
 
 interface CustomersHeaderProps {
   // Tabs
@@ -54,6 +55,9 @@ interface CustomersHeaderProps {
 export const CustomersHeader = memo(function CustomersHeader(props: CustomersHeaderProps) {
   return (
     <header className="flex flex-col border-b border-workbench-line bg-workbench-surface">
+      <div className="flex h-12 items-center border-b border-workbench-line-subtle px-4">
+        <h1 className="text-[15px] font-semibold text-workbench-text">{STRINGS.page.title}</h1>
+      </div>
       <CustomersTabsStrip
         activeTab={props.activeTab}
         onTabChange={props.onTabChange}

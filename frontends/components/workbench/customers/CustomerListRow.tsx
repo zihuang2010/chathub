@@ -2,18 +2,19 @@ import { memo } from "react";
 import { Mars, MessageCircle, MoreHorizontal, Pencil, Venus } from "lucide-react";
 
 import type { Account } from "@/lib/types/account";
-import type { Customer } from "@/lib/types/customer";
+import type { Customer, CustomerStage } from "@/lib/types/customer";
 import { cn } from "@/lib/utils";
 
 import { ROW_GRID_TEMPLATE, ROW_HEIGHT, ROW_MAX_TAGS } from "./constants";
 import { FOLLOW_UP_BADGE_CLASS, resolveFollowUpBadge } from "./followUpBadge";
-import { STAGE_BADGE_CLASS } from "./stageBadge";
+import { STAGE_BADGE_CLASS, type StageBadgeTone } from "./stageBadge";
 import { STRINGS } from "./strings";
 import { parseDate } from "./utils";
 
-import type { CustomerStage } from "@/lib/types/customer";
-import type { StageBadgeTone } from "./stageBadge";
-
+/**
+ * 列表行的 stage 列着色：与详情面板状态卡共用同一 tone 表，但 *不* 走 stageBadge.ts
+ * 的 PROMOTED_TAGS 升格逻辑（该升格只用于详情面板头部的「重点客户」chip）。
+ */
 const STAGE_TONE: Record<CustomerStage, StageBadgeTone> = {
   lead: "slate",
   contacting: "slate",
@@ -39,9 +40,9 @@ interface CustomerListRowProps {
 }
 
 /**
- * 客户列表的 8 列行：
+ * 客户列表的 8 列行（v3 修订：加回 客户阶段 + 跟进状态 列，去掉 来源 列）：
  *   ☐  客户名称(avatar+name+性别+phone)  所属账号(company+owner)
- *   阶段 badge  跟进状态 badge  标签 chips(+N)  最近跟进(date+follower)  操作图标
+ *   客户阶段 badge  跟进状态 badge  标签 chips(+N)  最近跟进(date+follower)  操作图标
  */
 export const CustomerListRow = memo(function CustomerListRow({
   customer,
@@ -129,7 +130,7 @@ export const CustomerListRow = memo(function CustomerListRow({
         {stageLabel && stageTone && (
           <span
             className={cn(
-              "inline-flex max-w-full items-center truncate rounded-full px-2 py-0.5 text-[11.5px] font-medium ring-1",
+              "inline-flex max-w-full items-center truncate whitespace-nowrap rounded-full px-2 py-0.5 text-[11.5px] font-medium ring-1",
               STAGE_BADGE_CLASS[stageTone],
             )}
           >
@@ -143,7 +144,7 @@ export const CustomerListRow = memo(function CustomerListRow({
         {followUpBadge && (
           <span
             className={cn(
-              "inline-flex max-w-full items-center truncate rounded-full px-2 py-0.5 text-[11.5px] font-medium ring-1",
+              "inline-flex max-w-full items-center truncate whitespace-nowrap rounded-full px-2 py-0.5 text-[11.5px] font-medium ring-1",
               FOLLOW_UP_BADGE_CLASS[followUpBadge.tone],
             )}
           >
@@ -157,13 +158,13 @@ export const CustomerListRow = memo(function CustomerListRow({
         {visibleTags.map((tag) => (
           <span
             key={tag}
-            className="inline-flex max-w-full items-center truncate rounded bg-workbench-surface-subtle px-1.5 py-0.5 text-[11px] text-workbench-text-secondary"
+            className="inline-flex max-w-full items-center truncate whitespace-nowrap rounded bg-slate-100 px-1.5 py-0.5 text-[11px] text-slate-700"
           >
             {tag}
           </span>
         ))}
         {overflowTags > 0 && (
-          <span className="inline-flex shrink-0 items-center rounded bg-workbench-surface-subtle px-1.5 py-0.5 text-[11px] text-workbench-text-muted">
+          <span className="inline-flex shrink-0 items-center whitespace-nowrap rounded bg-slate-100 px-1.5 py-0.5 text-[11px] text-slate-500">
             {STRINGS.list.overflowTagsLabel(overflowTags)}
           </span>
         )}

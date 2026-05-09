@@ -96,7 +96,9 @@ export const CustomerList = memo(function CustomerList({
     return map;
   }, [accounts]);
 
-  const showPagination = filteredTotal > 0 && pageCount > 1;
+  // v3：分页器始终常驻底部（即使只有 1 页），与参考稿一致；提供稳定的"共 N 条 + 页大小"
+  // 视觉锚点。空列表时仍跳过（由上面的 EmptyList / FilteredEmpty 占位）。
+  const showPagination = filteredTotal > 0;
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">

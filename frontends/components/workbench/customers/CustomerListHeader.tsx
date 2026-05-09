@@ -44,7 +44,7 @@ export const CustomerListHeader = memo(function CustomerListHeader({
       <span>{STRINGS.list.columnFollowUp}</span>
       <span>{STRINGS.list.columnTags}</span>
       <span>{STRINGS.list.columnLastContact}</span>
-      <span className="text-right">{STRINGS.list.columnActions}</span>
+      <span className="pr-1.5 text-right">{STRINGS.list.columnActions}</span>
     </div>
   );
 });

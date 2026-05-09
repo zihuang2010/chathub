@@ -247,6 +247,9 @@ export function CustomersPage({
   const handleRowMore = useCallback((id: string) => {
     showToast(`更多操作菜单（${id}）`, { type: "info" });
   }, []);
+  const handleFollowUpHistory = useCallback((id: string) => {
+    showToast(`将打开跟进记录（${id}）`, { type: "info" });
+  }, []);
 
   return (
     <ErrorBoundary>
@@ -329,6 +332,7 @@ export function CustomersPage({
               }}
               onOpenChat={handleOpenChat}
               onEditCustomer={handleEditCustomer}
+              onFollowUpHistory={handleFollowUpHistory}
             />
           </div>
         </div>

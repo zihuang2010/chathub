@@ -173,6 +173,7 @@ export const STRINGS = {
       more: "更多",
       startChat: "发起会话",
       editCustomer: "编辑客户",
+      followUpHistory: "跟进记录",
     },
     addTag: "+ 添加标签",
     addTagPlaceholder: "输入标签后回车",

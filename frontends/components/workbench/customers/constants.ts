@@ -43,21 +43,27 @@ export const SORT_OPTIONS: SortOption[] = [
   { value: "follower", label: STRINGS.sort.follower },
 ];
 
-/** 列表行的固定高度（像素）。 */
-export const ROW_HEIGHT = 64;
+/** 列表行的固定高度（像素）。v3：64 → 72 提供更舒展的呼吸感。 */
+export const ROW_HEIGHT = 72;
 
 /**
- * 列表行 grid 模板。从左至右：
+ * 列表行 grid 模板（v3 修订：加回 客户阶段 + 跟进状态，去掉 来源 列）。
+ * 来源 现在仅在详情面板的 客户来源 字段展示。
+ *
+ * 从左至右：
  * 1) 32px  master checkbox / 单行 checkbox
- * 2) 200px 客户名称（avatar + name + 性别 + 手机号副行）
+ * 2) 180px 客户名称（avatar + name + 性别 + 手机号副行）
  * 3) 180px 所属账号（公司名 + follower 副行）
- * 4) 100px 客户阶段 badge
+ * 4) 96px  客户阶段 badge
  * 5) 96px  跟进状态 badge
  * 6) 1fr   标签列（最少 120px，超出走 +N 溢出）
- * 7) 132px 最近跟进（日期 + follower 副行）
- * 8) 96px  操作（chat / 编辑 / 更多）
+ * 7) 130px 最近跟进（日期 + follower 副行）
+ * 8) 92px  操作（chat / 编辑 / 更多）
+ *
+ * 主区可用宽度 = viewport − 324（详情面板）。固定列合 806px + tags(min 120) = 926
+ * → 1280px 视口（主区 956px）也能容纳，1fr tags ≈ 150px（1 chip + +N）。
  */
-export const ROW_GRID_TEMPLATE = "32px 200px 180px 100px 96px minmax(120px,1fr) 132px 96px";
+export const ROW_GRID_TEMPLATE = "32px 180px 180px 96px 96px minmax(120px,1fr) 130px 92px";
 
 /** 详情侧栏宽度（像素），与 messages 页 CustomerDetails 对齐（324px）以保持视觉一致。 */
 export const DETAIL_PANEL_WIDTH = 324;
