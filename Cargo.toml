@@ -5,6 +5,7 @@ members = [
   "backends",
   "backends/crates/chathub-proto",
   "backends/crates/chathub-state",
+  "backends/crates/chathub-net",
 ]
 
 # 所有 workspace 成员共享的依赖版本(Plan 1 只列 chathub-proto 用得着的)

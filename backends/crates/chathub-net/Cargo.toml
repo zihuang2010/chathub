@@ -1,0 +1,23 @@
+[package]
+name        = "chathub-net"
+version     = "0.1.0"
+edition     = "2021"
+description = "ChatHub network layer: gRPC client + token + auth"
+publish     = false
+
+[dependencies]
+chathub-proto = { path = "../chathub-proto" }
+chathub-state = { path = "../chathub-state" }
+
+tonic       = { workspace = true }
+prost       = { workspace = true }
+tokio       = { workspace = true }
+parking_lot = { workspace = true }
+thiserror   = { workspace = true }
+tracing     = { workspace = true }
+serde       = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time", "test-util"] }
+tokio-stream = "0.1"
+serde_json = "1"

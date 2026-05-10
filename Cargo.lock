@@ -636,6 +636,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "chathub-net"
+version = "0.1.0"
+dependencies = [
+ "chathub-proto",
+ "chathub-state",
+ "parking_lot",
+ "prost",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
+ "tokio-stream",
+ "tonic",
+ "tracing",
+]
+
+[[package]]
 name = "chathub-proto"
 version = "0.1.0"
 dependencies = [
