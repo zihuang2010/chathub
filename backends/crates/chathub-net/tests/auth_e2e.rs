@@ -146,3 +146,32 @@ async fn scenario_3_proactive_refresh_when_near_expiry() {
     let _ = kr.clear_refresh_token();
     let _ = kr._clear_device_id_for_test();
 }
+
+#[tokio::test]
+async fn scenario_5_logout_emits_event() {
+    let (addr, state, _h) = start_stub().await;
+    let kr = unique_keyring();
+
+    let ep = chathub_net::build_endpoint(format!("http://{addr}")).expect("ep");
+    let store = TokenStore::new(ep, kr.clone()).expect("store");
+    store.login("alice", "pwd").await.expect("login");
+
+    let mut rx = store.logged_out_subscribe();
+    store.logout().await.expect("logout");
+
+    let reason = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+        .await
+        .expect("timeout")
+        .expect("recv");
+    assert!(matches!(
+        reason,
+        chathub_net::token::LoggedOutReason::Manual
+    ));
+
+    assert!(!store.is_logged_in());
+    assert!(kr.read_refresh_token().unwrap().is_none());
+    assert_eq!(state.lock().unwrap().logout_count, 1);
+
+    let _ = kr.clear_refresh_token();
+    let _ = kr._clear_device_id_for_test();
+}

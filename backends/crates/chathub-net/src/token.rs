@@ -197,6 +197,27 @@ impl TokenStore {
         }
     }
 
+    /// 主动登出:abort refresher → 调 Auth.Logout(best-effort)→ 清 keyring + state → broadcast Manual。
+    pub async fn logout(&self) -> Result<(), AuthError> {
+        use chathub_proto::v1::LogoutRequest;
+
+        self.abort_refresher().await;
+
+        // best-effort RPC
+        if let Ok(Some(refresh)) = self.keyring.read_refresh_token() {
+            let req = LogoutRequest {
+                refresh_token: refresh,
+            };
+            let mut client = self.auth_client.clone();
+            let _ = client.logout(req).await; // 网络错忽略
+        }
+
+        let _ = self.keyring.clear_refresh_token();
+        *self.state.write() = None;
+        let _ = self.logged_out_tx.send(LoggedOutReason::Manual);
+        Ok(())
+    }
+
     pub(crate) async fn do_refresh_inner(&self) -> Result<(), AuthError> {
         use chathub_proto::v1::RefreshTokenRequest;
 
