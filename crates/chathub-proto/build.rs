@@ -1,0 +1,35 @@
+// crates/chathub-proto/build.rs
+//! tonic-build 把 ../../proto/chathub/v1/*.proto 编出 Rust 类型,
+//! 输出到 OUT_DIR,在 src/lib.rs 里通过 tonic::include_proto! 引入。
+
+use std::path::PathBuf;
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // 用 vendored 的 protoc 二进制,避免依赖系统 protoc
+    std::env::set_var("PROTOC", protoc_bin_vendored::protoc_bin_path()?);
+
+    let proto_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../proto");
+
+    let proto_files = [
+        proto_root.join("chathub/v1/common.proto"),
+        proto_root.join("chathub/v1/auth.proto"),
+        proto_root.join("chathub/v1/error.proto"),
+        proto_root.join("chathub/v1/message.proto"),
+        proto_root.join("chathub/v1/event.proto"),
+        proto_root.join("chathub/v1/hub.proto"),
+    ];
+
+    println!("cargo:rerun-if-changed=build.rs");
+    for f in &proto_files {
+        println!("cargo:rerun-if-changed={}", f.display());
+    }
+
+    tonic_build::configure()
+        .build_client(true)
+        .build_server(true) // server 端 Plan 2 stub_relay 测试要用
+        .compile_well_known_types(false)
+        .compile_protos(&proto_files, &[proto_root])?;
+
+    Ok(())
+}

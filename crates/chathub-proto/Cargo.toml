@@ -1,0 +1,17 @@
+# crates/chathub-proto/Cargo.toml
+[package]
+name        = "chathub-proto"
+version     = "0.1.0"
+edition     = "2021"
+description = "ChatHub gRPC contracts (chathub.v1) generated from proto/"
+publish     = false
+
+[dependencies]
+prost       = { workspace = true }
+prost-types = { workspace = true }
+tonic       = { workspace = true }
+bytes       = "1"
+
+[build-dependencies]
+tonic-build         = { workspace = true }
+protoc-bin-vendored = "3"
