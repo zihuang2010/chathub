@@ -1,0 +1,21 @@
+// proto/chathub/v1/message.proto
+syntax = "proto3";
+package chathub.v1;
+
+import "chathub/v1/common.proto";
+
+// MessageBody.kind 在 Plan 3 中扩充(text/image/voice/video/file/location/link/markdown 等)。
+// 现在只放一个最小的文本占位。
+message MessageBody {
+  oneof kind {
+    TextBody text = 1;
+    // 2-49 留给标准消息体
+    // 50+   企微平台特有(模板卡片/小程序卡片等)
+  }
+  ReplyToRef reply_to        = 100;
+  repeated Mention mentions  = 101;
+}
+
+message TextBody {
+  string text = 1;
+}

@@ -1,0 +1,50 @@
+// proto/chathub/v1/error.proto
+syntax = "proto3";
+package chathub.v1;
+
+// Rich error detail,放在 google.rpc.Status / tonic::Status 的 details 列表里。
+message ErrorDetail {
+  oneof body {
+    RetryInfo            retry        = 1;
+    QuotaFailure         quota        = 2;
+    BadRequestViolations bad_request  = 3;
+    PreconditionFailure  precondition = 4;
+    UpgradeRequired      upgrade      = 5;
+    DebugInfo            debug        = 99;
+  }
+}
+
+message RetryInfo {
+  int64 retry_after_ms = 1;
+}
+
+message QuotaFailure {
+  string subject        = 1;
+  string limit          = 2;
+  int64  retry_after_ms = 3;
+}
+
+message Violation {
+  string field       = 1;
+  string description = 2;
+}
+
+message BadRequestViolations {
+  repeated Violation violations = 1;
+}
+
+message PreconditionFailure {
+  string type    = 1;   // "ACCOUNT_DISABLED" | "TOKEN_INVALID" | ...
+  string subject = 2;
+  string detail  = 3;
+}
+
+message UpgradeRequired {
+  string min_client_version = 1;
+  string download_url       = 2;
+}
+
+message DebugInfo {
+  string trace_id   = 1;
+  string stack_hint = 2;
+}

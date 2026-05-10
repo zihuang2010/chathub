@@ -1,0 +1,14 @@
+// proto/chathub/v1/event.proto
+syntax = "proto3";
+package chathub.v1;
+
+// ServerEvent 与子事件在 Plan 3 中扩充(IncomingMsg/MessageRecalled/ReadReceipt/
+// AccountStatus/PresenceChange/MessageStatusChange/SystemSignal)。
+// 现在只放一个空 envelope 占位。
+message ServerEvent {
+  string wecom_account_id = 1;
+  int64  seq              = 2;
+  // 3-9 reserved for envelope-level fields
+  // 10-89 reserved for business events (Plan 3)
+  // 90-99 reserved for system signals (Plan 3)
+}

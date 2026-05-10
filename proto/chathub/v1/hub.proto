@@ -1,0 +1,23 @@
+// proto/chathub/v1/hub.proto
+syntax = "proto3";
+package chathub.v1;
+
+import "chathub/v1/event.proto";
+
+// Hub service:主业务 RPC 集合。Plan 3 填充以下方法:
+//   rpc Subscribe(SubscribeRequest) returns (stream ServerEvent);
+//   rpc Send(SendRequest) returns (SendResponse);
+//   rpc Recall(RecallRequest) returns (RecallResponse);
+//   rpc AckRead(AckReadRequest) returns (AckReadResponse);
+//   rpc FetchHistory(FetchHistoryRequest) returns (FetchHistoryResponse);
+//   rpc ListWecomAccounts/EnableAccount/DisableAccount
+//
+// 现在只放一个最小 Subscribe 接口,确保 buf lint 不报"empty service"。
+service Hub {
+  rpc Subscribe(SubscribeRequest) returns (stream ServerEvent);
+}
+
+message SubscribeRequest {
+  // Plan 3 填充 since_seqs (map<string, int64>)
+  map<string, int64> since_seqs = 1;
+}

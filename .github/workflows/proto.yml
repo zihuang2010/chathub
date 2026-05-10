@@ -1,0 +1,42 @@
+# .github/workflows/proto.yml
+name: proto
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "proto/**"
+      - ".github/workflows/proto.yml"
+  pull_request:
+    paths:
+      - "proto/**"
+      - ".github/workflows/proto.yml"
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: bufbuild/buf-action@v1
+        with:
+          input: proto
+          lint: true
+          format: false
+          breaking: false
+          push: false
+
+  breaking:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: bufbuild/buf-action@v1
+        with:
+          input: proto
+          lint: false
+          format: false
+          breaking: true
+          breaking_against: "https://github.com/${{ github.repository }}.git#branch=main,subdir=proto"
+          push: false

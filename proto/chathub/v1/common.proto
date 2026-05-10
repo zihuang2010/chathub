@@ -1,0 +1,36 @@
+// proto/chathub/v1/common.proto
+syntax = "proto3";
+package chathub.v1;
+
+// 通用引用类型,在多个 message 中复用。
+
+message UserProfile {
+  string user_id      = 1;   // Relay 内部 user id
+  string display_name = 2;
+  string avatar_url   = 3;
+  string role         = 4;   // "operator" | "admin"
+  int64  tenant_id    = 5;
+}
+
+message WecomAccount {
+  string wecom_account_id = 1;   // Relay 内部账号 id
+  string corp_id          = 2;   // 企微 corpid
+  uint32 agent_id         = 3;   // 企微 agentid
+  string display_name     = 4;
+  bool   enabled          = 5;
+}
+
+message Mention {
+  string user_id      = 1;
+  uint32 offset_chars = 2;
+  uint32 length_chars = 3;
+}
+
+message ReplyToRef {
+  string server_msg_id = 1;
+}
+
+message RemoteId {
+  string conversation_id = 1;
+  string server_msg_id   = 2;
+}

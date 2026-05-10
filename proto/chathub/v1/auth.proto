@@ -1,0 +1,45 @@
+// proto/chathub/v1/auth.proto
+syntax = "proto3";
+package chathub.v1;
+
+import "chathub/v1/common.proto";
+
+// Auth service:三个 method 全部不要求 access_token,但要求 chathub-protocol-version
+// 与 chathub-client-version metadata。
+service Auth {
+  rpc Login        (LoginRequest)        returns (LoginResponse);
+  rpc RefreshToken (RefreshTokenRequest) returns (RefreshTokenResponse);
+  rpc Logout       (LogoutRequest)       returns (LogoutResponse);
+}
+
+message LoginRequest {
+  string username    = 1;
+  string password    = 2;
+  string device_id   = 3;   // Tauri 安装唯一 id
+  string device_name = 4;   // "Bob 的 MacBook"
+  string client_ver  = 5;   // 与 metadata 中 chathub-client-version 必须一致
+}
+
+message LoginResponse {
+  string access_token   = 1;   // JWT (RS256), 30min
+  int64  access_exp_ms  = 2;
+  string refresh_token  = 3;   // opaque, 30day, rolling
+  int64  refresh_exp_ms = 4;
+  UserProfile user      = 5;
+  repeated WecomAccount wecom_accounts = 6;
+}
+
+message RefreshTokenRequest {
+  string refresh_token = 1;
+  string device_id     = 2;
+}
+
+message RefreshTokenResponse {
+  string access_token   = 1;
+  int64  access_exp_ms  = 2;
+  string refresh_token  = 3;
+  int64  refresh_exp_ms = 4;
+}
+
+message LogoutRequest  { string refresh_token = 1; }
+message LogoutResponse {}

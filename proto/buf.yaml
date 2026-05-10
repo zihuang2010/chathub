@@ -1,0 +1,13 @@
+# proto/buf.yaml
+version: v2
+modules:
+  - path: .
+lint:
+  use:
+    - DEFAULT
+  except:
+    - PACKAGE_VERSION_SUFFIX # 我们用 chathub.v1 而非 chathub.v1alpha1,不需要
+breaking:
+  use:
+    - FILE
+deps: []
