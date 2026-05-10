@@ -1,5 +1,5 @@
-// crates/chathub-proto/build.rs
-//! tonic-build 把 ../../proto/chathub/v1/*.proto 编出 Rust 类型,
+// backends/crates/chathub-proto/build.rs
+//! tonic-build 把 ../../../proto/chathub/v1/*.proto 编出 Rust 类型,
 //! 输出到 OUT_DIR,在 src/lib.rs 里通过 tonic::include_proto! 引入。
 
 use std::path::PathBuf;
@@ -8,8 +8,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 用 vendored 的 protoc 二进制,避免依赖系统 protoc
     std::env::set_var("PROTOC", protoc_bin_vendored::protoc_bin_path()?);
 
-    let proto_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../proto");
+    let proto_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../proto");
 
     let proto_files = [
         proto_root.join("chathub/v1/common.proto"),

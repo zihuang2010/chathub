@@ -3,7 +3,7 @@
 resolver = "2"
 members = [
   "backends",
-  "crates/chathub-proto",
+  "backends/crates/chathub-proto",
 ]
 
 # 所有 workspace 成员共享的依赖版本(Plan 1 只列 chathub-proto 用得着的)
