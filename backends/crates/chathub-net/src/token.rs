@@ -88,6 +88,50 @@ impl TokenStore {
     pub fn is_logged_in(&self) -> bool {
         self.state.read().is_some()
     }
+
+    /// 同步发起一次 Login RPC,成功后写 keyring + 设置 state。
+    /// **不**启动后台 refresher task(留给 AuthApi::login 决定何时启动)。
+    pub async fn login(
+        &self,
+        username: &str,
+        password: &str,
+    ) -> Result<chathub_proto::v1::LoginResponse, AuthError> {
+        use chathub_proto::v1::LoginRequest;
+
+        let req = LoginRequest {
+            username: username.to_string(),
+            password: password.to_string(),
+            device_id: self.device_id.clone(),
+            device_name: hostname_or_default(),
+            client_ver: env!("CARGO_PKG_VERSION").to_string(),
+        };
+
+        // Channel 内部 Arc,clone 廉价。每次 RPC 用一个本地 &mut 副本。
+        let mut client = self.auth_client.clone();
+        let resp = client.login(req).await?.into_inner();
+
+        // 写 keyring + 内存 state
+        self.keyring.write_refresh_token(&resp.refresh_token)?;
+        let state = TokenState {
+            access_token: resp.access_token.clone(),
+            access_exp_ms: resp.access_exp_ms,
+            refresh_exp_ms: resp.refresh_exp_ms,
+            user_id: resp
+                .user
+                .as_ref()
+                .map(|p| p.user_id.clone())
+                .unwrap_or_default(),
+        };
+        *self.state.write() = Some(state);
+
+        Ok(resp)
+    }
+}
+
+fn hostname_or_default() -> String {
+    std::env::var("CHATHUB_DEVICE_NAME")
+        .ok()
+        .unwrap_or_else(|| "chathub-desktop".into())
 }
 
 pub(crate) fn now_unix_ms() -> i64 {
