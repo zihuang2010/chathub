@@ -126,6 +126,59 @@ impl TokenStore {
 
         Ok(resp)
     }
+
+    /// 强制刷新一次。被动调用(业务拿到 Status::Unauthenticated 时调)。
+    /// 与后台 refresher task 互斥(共享 refresh_lock)。
+    pub async fn force_refresh(&self) -> Result<(), AuthError> {
+        let _g = self.refresh_lock.lock().await;
+        self.do_refresh_inner().await
+    }
+
+    pub(crate) async fn do_refresh_inner(&self) -> Result<(), AuthError> {
+        use chathub_proto::v1::RefreshTokenRequest;
+
+        let refresh_token = match self.keyring.read_refresh_token()? {
+            Some(t) => t,
+            None => return Err(AuthError::Unauthenticated),
+        };
+        let req = RefreshTokenRequest {
+            refresh_token,
+            device_id: self.device_id.clone(),
+        };
+
+        let mut client = self.auth_client.clone();
+        let resp = client.refresh_token(req).await;
+
+        let resp = match resp {
+            Ok(r) => r.into_inner(),
+            Err(s) => {
+                let err = AuthError::from(s);
+                if matches!(err, AuthError::Unauthenticated) {
+                    // 失效:清 keyring,清 state,广播
+                    let _ = self.keyring.clear_refresh_token();
+                    *self.state.write() = None;
+                    let _ = self.logged_out_tx.send(LoggedOutReason::RefreshFailed);
+                }
+                return Err(err);
+            }
+        };
+
+        // 成功:轮换 refresh + 更新 access
+        self.keyring.write_refresh_token(&resp.refresh_token)?;
+        let user_id = self
+            .state
+            .read()
+            .as_ref()
+            .map(|s| s.user_id.clone())
+            .unwrap_or_default();
+        *self.state.write() = Some(TokenState {
+            access_token: resp.access_token,
+            access_exp_ms: resp.access_exp_ms,
+            refresh_exp_ms: resp.refresh_exp_ms,
+            user_id,
+        });
+        Ok(())
+    }
 }
 
 fn hostname_or_default() -> String {
