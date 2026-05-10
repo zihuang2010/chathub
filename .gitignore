@@ -18,6 +18,7 @@ coverage
 
 # Tauri / Rust build artifacts
 backends/target
+target/
 backends/gen/schemas
 
 # Superpowers brainstorming visual companion artifacts
