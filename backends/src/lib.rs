@@ -103,3 +103,10 @@ pub fn run() {
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
+
+// 编译期烟雾测试:确保 chathub_proto 可以被解析。Plan 2 起会被实际通信代码替代。
+#[cfg(test)]
+#[allow(dead_code)]
+fn _chathub_proto_smoke() {
+    let _r = chathub_proto::v1::LoginRequest::default();
+}
