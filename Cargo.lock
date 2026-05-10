@@ -620,7 +620,9 @@ version = "0.1.4"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
+ "chathub-net",
  "chathub-proto",
+ "chathub-state",
  "serde",
  "serde_json",
  "tauri",
