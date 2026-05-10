@@ -10,6 +10,7 @@ message ErrorDetail {
     BadRequestViolations bad_request  = 3;
     PreconditionFailure  precondition = 4;
     UpgradeRequired      upgrade      = 5;
+    // 6-98 reserved for future error detail types
     DebugInfo            debug        = 99;
   }
 }

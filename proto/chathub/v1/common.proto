@@ -9,7 +9,7 @@ message UserProfile {
   string display_name = 2;
   string avatar_url   = 3;
   string role         = 4;   // "operator" | "admin"
-  int64  tenant_id    = 5;
+  string tenant_id    = 5;
 }
 
 message WecomAccount {
