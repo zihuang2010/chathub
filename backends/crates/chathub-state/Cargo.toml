@@ -1,0 +1,22 @@
+[package]
+name        = "chathub-state"
+version     = "0.1.0"
+edition     = "2021"
+description = "Local persistence: SQLite + OS keychain"
+publish     = false
+
+[dependencies]
+chathub-proto = { path = "../chathub-proto" }
+
+deadpool-sqlite     = { workspace = true }
+rusqlite            = { workspace = true }
+rusqlite_migration  = { workspace = true }
+keyring             = { workspace = true }
+uuid                = { workspace = true }
+tokio               = { workspace = true }
+thiserror           = { workspace = true }
+tracing             = { workspace = true }
+serde               = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time", "test-util"] }
