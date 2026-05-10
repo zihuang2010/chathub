@@ -29,6 +29,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .build_client(true)
         .build_server(true) // server 端 Plan 2 stub_relay 测试要用
         .compile_well_known_types(false)
+        .type_attribute(".chathub.v1.UserProfile",  "#[derive(serde::Serialize, serde::Deserialize)]")
+        .type_attribute(".chathub.v1.WecomAccount", "#[derive(serde::Serialize, serde::Deserialize)]")
+        .type_attribute(".chathub.v1.MessageBody",       "#[derive(serde::Serialize, serde::Deserialize)]")
+        .type_attribute(".chathub.v1.MessageBody.Kind",  "#[derive(serde::Serialize, serde::Deserialize)]")
+        .type_attribute(".chathub.v1.TextBody",          "#[derive(serde::Serialize, serde::Deserialize)]")
+        .type_attribute(".chathub.v1.Mention",           "#[derive(serde::Serialize, serde::Deserialize)]")
+        .type_attribute(".chathub.v1.ReplyToRef",        "#[derive(serde::Serialize, serde::Deserialize)]")
+        .type_attribute(".chathub.v1.RemoteId",          "#[derive(serde::Serialize, serde::Deserialize)]")
         .compile_protos(&proto_files, &[proto_root])?;
 
     Ok(())

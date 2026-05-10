@@ -56,4 +56,20 @@ mod tests {
     fn _auth_client_new_signature_exists() {
         let _: fn(Channel) -> AuthClient<Channel> = AuthClient::<Channel>::new;
     }
+
+    #[test]
+    fn user_profile_serializes_to_json() {
+        use super::v1::UserProfile;
+        let p = UserProfile {
+            user_id: "u-1".into(),
+            display_name: "Alice".into(),
+            avatar_url: "".into(),
+            role: "operator".into(),
+            tenant_id: "t-42".into(),
+        };
+        let json = serde_json::to_string(&p).expect("serialize");
+        assert!(json.contains("\"user_id\":\"u-1\""));
+        let back: UserProfile = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back, p);
+    }
 }
