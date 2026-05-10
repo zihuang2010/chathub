@@ -116,3 +116,33 @@ async fn scenario_6_refresh_revoked_emits_event() {
     let _ = kr.clear_refresh_token();
     let _ = kr._clear_device_id_for_test();
 }
+
+#[tokio::test]
+async fn scenario_3_proactive_refresh_when_near_expiry() {
+    let (addr, state, _h) = start_stub().await;
+    // 让 stub 返回非常短的 access_ttl,触发立即 proactive refresh
+    state.lock().unwrap().access_ttl_ms = 1_000; // 1s
+
+    let kr = unique_keyring();
+    let ep = chathub_net::build_endpoint(format!("http://{addr}")).expect("ep");
+    let store = std::sync::Arc::new(TokenStore::new(ep, kr.clone()).expect("store"));
+    store.login("alice", "pwd").await.expect("login");
+
+    // 启动后台 refresher
+    store.spawn_refresher().await;
+
+    // 由于 access 1s 后过期且 threshold 是 5min,refresher 应**立即**触发刷新
+    // 给它 2s 跑一轮 + 一次刷新
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+    let count = state.lock().unwrap().refresh_count;
+    assert!(
+        count >= 1,
+        "refresher should have refreshed at least once, got {count}"
+    );
+
+    store.abort_refresher().await;
+
+    let _ = kr.clear_refresh_token();
+    let _ = kr._clear_device_id_for_test();
+}

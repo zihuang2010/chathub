@@ -134,6 +134,69 @@ impl TokenStore {
         self.do_refresh_inner().await
     }
 
+    /// 启动后台 refresher task。`login()` 与 `try_resume_session()` 成功后调。
+    /// 如果已有运行中的 task,先 abort 再起新的。
+    pub async fn spawn_refresher(self: &Arc<Self>) {
+        self.abort_refresher().await;
+        let me = Arc::clone(self);
+        let h = tokio::spawn(async move {
+            me.refresher_loop().await;
+        });
+        let mut guard = self.refresher.lock().await;
+        *guard = Some(h);
+    }
+
+    pub async fn abort_refresher(&self) {
+        let mut guard = self.refresher.lock().await;
+        if let Some(h) = guard.take() {
+            h.abort();
+        }
+    }
+
+    async fn refresher_loop(self: Arc<Self>) {
+        loop {
+            // 计算下一次 refresh 时机
+            let sleep_ms: i64 = {
+                let guard = self.state.read();
+                match guard.as_ref() {
+                    None => return, // 已登出
+                    Some(s) => {
+                        let until_threshold =
+                            s.access_exp_ms - now_unix_ms() - PROACTIVE_REFRESH_THRESHOLD_MS;
+                        until_threshold.max(0)
+                    }
+                }
+            };
+            if sleep_ms > 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(sleep_ms as u64)).await;
+            }
+
+            // 已到 5min 阈值 → 取 refresh_lock 序列化(可能 force_refresh 已经在跑)
+            let _g = self.refresh_lock.lock().await;
+            // 双检
+            let still_near = {
+                let guard = self.state.read();
+                match guard.as_ref() {
+                    None => return,
+                    Some(s) => s.is_near_expiry(PROACTIVE_REFRESH_THRESHOLD_MS),
+                }
+            };
+            if !still_near {
+                continue;
+            }
+
+            match self.do_refresh_inner().await {
+                Ok(()) => {}                               // 继续 loop
+                Err(AuthError::Unauthenticated) => return, // 已 broadcast、清状态、退出
+                Err(_other) => {
+                    // 网络类:退避重试。简单实现:sleep 5s 然后继续 loop。
+                    drop(_g);
+                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                }
+            }
+        }
+    }
+
     pub(crate) async fn do_refresh_inner(&self) -> Result<(), AuthError> {
         use chathub_proto::v1::RefreshTokenRequest;
 
