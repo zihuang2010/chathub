@@ -57,7 +57,7 @@ impl tonic::service::Interceptor for AuthInterceptor {
 const PLATFORM: &str = "macos";
 #[cfg(target_os = "windows")]
 const PLATFORM: &str = "windows";
-#[cfg(all(target_os = "linux"))]
+#[cfg(target_os = "linux")]
 const PLATFORM: &str = "linux";
 #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
 const PLATFORM: &str = "unknown";

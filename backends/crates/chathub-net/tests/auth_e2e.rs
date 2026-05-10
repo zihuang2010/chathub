@@ -175,3 +175,31 @@ async fn scenario_5_logout_emits_event() {
     let _ = kr.clear_refresh_token();
     let _ = kr._clear_device_id_for_test();
 }
+
+#[tokio::test]
+async fn scenario_7_resume_after_restart() {
+    let (addr, state, _h) = start_stub().await;
+    let kr = unique_keyring();
+
+    let pool1 = chathub_state::SqlitePool::in_memory().await.expect("pool1");
+    let session1 = chathub_state::SessionStore::new(pool1);
+    let ep = chathub_net::build_endpoint(format!("http://{addr}")).expect("ep");
+    let store1 = std::sync::Arc::new(TokenStore::new(ep.clone(), kr.clone()).expect("store1"));
+    let api1 = chathub_net::AuthApi::new(store1.clone(), session1.clone());
+    api1.login("alice", "pwd").await.expect("login");
+    drop(api1);
+    drop(store1);
+
+    // "进程重启":新 store + 新 session + 同一个 keyring
+    // session 表是 in-memory,不能跨实例;此处用同一个 SessionStore 模拟磁盘持久化(实际用例里 SQLite 落盘是持久的)
+    // 关键测试点:从 keyring 读 refresh + force_refresh 拿新 access
+    let store2 = std::sync::Arc::new(TokenStore::new(ep, kr.clone()).expect("store2"));
+    let api2 = chathub_net::AuthApi::new(store2.clone(), session1);
+    let resumed = api2.try_resume_session().await.expect("resume");
+    assert!(resumed.is_some(), "should resume session");
+    assert!(store2.is_logged_in());
+    assert!(state.lock().unwrap().refresh_count >= 1);
+
+    let _ = kr.clear_refresh_token();
+    let _ = kr._clear_device_id_for_test();
+}

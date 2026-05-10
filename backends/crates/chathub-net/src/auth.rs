@@ -58,4 +58,34 @@ impl AuthApi {
     pub fn logged_out_subscribe(&self) -> broadcast::Receiver<TokenLoggedOutReason> {
         self.token_store.logged_out_subscribe()
     }
+
+    /// 进程启动时调用:keyring 有 refresh → 触发 force_refresh 复活会话。
+    /// 失败时(包括 Unauthenticated)返回 Ok(None) 而非 Err,因为这是冷启动场景。
+    pub async fn try_resume_session(&self) -> Result<Option<UserProfile>, AuthError> {
+        // 1. 检查是否有 refresh
+        let has_refresh = match self.token_store.keyring_has_refresh() {
+            true => true,
+            false => return Ok(None),
+        };
+        let _ = has_refresh;
+
+        // 2. 从 SessionStore 读 user_id 提示给 TokenStore(没有也行)
+        let saved_profile = self.session_store.read_current().await.ok().flatten();
+        if let Some(p) = &saved_profile {
+            self.token_store.seed_user_id(&p.user_id);
+        }
+
+        // 3. force_refresh 拉新 access
+        match self.token_store.force_refresh().await {
+            Ok(()) => {
+                self.token_store.spawn_refresher().await;
+                Ok(saved_profile)
+            }
+            Err(AuthError::Unauthenticated) => {
+                let _ = self.session_store.clear().await;
+                Ok(None)
+            }
+            Err(other) => Err(other),
+        }
+    }
 }

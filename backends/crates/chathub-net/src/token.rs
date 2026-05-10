@@ -218,6 +218,25 @@ impl TokenStore {
         Ok(())
     }
 
+    /// 仅供 AuthApi::try_resume_session 用:keyring 是否有 refresh_token。
+    pub fn keyring_has_refresh(&self) -> bool {
+        matches!(self.keyring.read_refresh_token(), Ok(Some(_)))
+    }
+
+    /// 仅供 AuthApi::try_resume_session 用:在 force_refresh 之前先种 user_id 到 state。
+    /// 在 do_refresh_inner 成功时,user_id 会被保留(详见 do_refresh_inner)。
+    pub fn seed_user_id(&self, user_id: &str) {
+        let mut s = self.state.write();
+        if s.is_none() {
+            *s = Some(TokenState {
+                access_token: String::new(), // 占位,refresh 后被覆盖
+                access_exp_ms: 0,
+                refresh_exp_ms: 0,
+                user_id: user_id.to_string(),
+            });
+        }
+    }
+
     pub(crate) async fn do_refresh_inner(&self) -> Result<(), AuthError> {
         use chathub_proto::v1::RefreshTokenRequest;
 
