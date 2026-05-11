@@ -94,7 +94,7 @@ proto/chathub/v1/
   event.proto       ← ServerEvent.body 加 3 个 variant + 3 个 message(MessageRecalled / ReadReceipt / MessageStatusChange)
 
 backends/crates/chathub-proto/
-  build.rs          ← 在已有 13 条 type_attribute 后追加 6 条(覆盖 SendResponse 套路)
+  build.rs          ← 在已有 13 条 type_attribute 后追加 7 条(覆盖 SendResponse 套路)
   src/lib.rs        ← mod tests 加 2 个 JSON 往返 smoke test
 
 backends/crates/chathub-net/
