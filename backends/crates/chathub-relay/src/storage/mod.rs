@@ -1,7 +1,9 @@
 //! Storage — deadpool_sqlite::Pool 包装 + 启动时跑迁移 + PRAGMA WAL。
 
+pub mod events;
 pub mod kv;
 pub mod migrations;
+pub mod seqs;
 pub mod sessions;
 
 use deadpool_sqlite::{Config as PoolCfg, Pool, Runtime};
