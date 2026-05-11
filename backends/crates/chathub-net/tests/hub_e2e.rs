@@ -12,8 +12,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chathub_net::AuthError;
-use chathub_proto::v1::{SendRequest, SendResponse};
-use common::stub_relay::{start_stub_full, SendStubOutcome, SubscribeOutcome};
+use chathub_proto::v1::{RecallRequest, RecallResponse, SendRequest, SendResponse};
+use common::stub_relay::{start_stub_full, RecallStubOutcome, SendStubOutcome, SubscribeOutcome};
 use tonic::Status;
 
 fn fast_backoff() -> BackoffConfig {
@@ -481,4 +481,74 @@ async fn send_unavailable_returns_network_error() {
     let err = hub.send(req).await.expect_err("should fail");
 
     assert!(matches!(err, AuthError::Network { .. }), "got {err:?}");
+}
+
+// ============================ e2e #10 + #11: Recall unary ============================
+
+/// Plan 4 helper:不经 ConnectionManager,直接造 HubClient(unary RPC 路径)
+async fn make_hub_only(addr: std::net::SocketAddr) -> HubClient {
+    let url = format!("http://{}", addr);
+    let endpoint = build_endpoint(&url).expect("endpoint");
+    let channel = endpoint.connect_lazy();
+    let keyring = KeyringTokenStore::new(common::unique_keyring_service());
+    let token_store = Arc::new(TokenStore::new(endpoint, keyring).expect("ts"));
+    force_login(&token_store).await;
+    token_store.force_refresh().await.expect("force_refresh");
+    let interceptor = AuthInterceptor::new(token_store.clone());
+    HubClient::new(channel, interceptor)
+}
+
+#[tokio::test]
+async fn recall_success_returns_recalled_at_ms() {
+    let (addr, _auth, hub_state, _h) = start_stub_full().await;
+    {
+        let mut s = hub_state.lock().unwrap();
+        s.recall_outcome = RecallStubOutcome::Ok(RecallResponse {
+            recalled_at_ms: 1_700_000_000_000,
+        });
+    }
+    let hub = make_hub_only(addr).await;
+
+    let resp = hub
+        .recall(RecallRequest {
+            wecom_account_id: "wxa1".into(),
+            conversation_id: "conv-1".into(),
+            server_msg_id: "sm-1".into(),
+        })
+        .await
+        .expect("recall ok");
+
+    assert_eq!(resp.recalled_at_ms, 1_700_000_000_000);
+
+    let recalls = hub_state.lock().unwrap().recalls.clone();
+    assert_eq!(recalls.len(), 1);
+    assert_eq!(recalls[0].server_msg_id, "sm-1");
+    assert_eq!(recalls[0].wecom_account_id, "wxa1");
+}
+
+#[tokio::test]
+async fn recall_permission_denied_returns_account_disabled() {
+    let (addr, _auth, hub_state, _h) = start_stub_full().await;
+    {
+        let mut s = hub_state.lock().unwrap();
+        s.recall_outcome =
+            RecallStubOutcome::Status(Status::permission_denied("no recall permission"));
+    }
+    let hub = make_hub_only(addr).await;
+
+    let err = hub
+        .recall(RecallRequest {
+            wecom_account_id: "wxa1".into(),
+            conversation_id: "conv-1".into(),
+            server_msg_id: "sm-1".into(),
+        })
+        .await
+        .expect_err("should fail");
+
+    match err {
+        AuthError::AccountDisabled { message } => {
+            assert!(message.contains("no recall permission"), "got {message}");
+        }
+        other => panic!("wrong variant: {other:?}"),
+    }
 }
