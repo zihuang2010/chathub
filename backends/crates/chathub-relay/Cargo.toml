@@ -49,6 +49,7 @@ chathub-proto      = { path = "../chathub-proto" }
 wiremock     = { workspace = true }
 tempfile     = { workspace = true }
 tokio-stream = { workspace = true }
+reqwest      = { workspace = true }
 # 反向用 Plan 1-4 的 HubClient 当 e2e 测试 client
 chathub-net  = { path = "../chathub-net" }
 chathub-state = { path = "../chathub-state" }
