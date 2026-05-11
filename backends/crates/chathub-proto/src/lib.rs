@@ -72,4 +72,46 @@ mod tests {
         let back: UserProfile = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(back, p);
     }
+
+    #[test]
+    fn server_event_with_incoming_serializes_round_trip() {
+        use super::v1::message_body;
+        use super::v1::{server_event, IncomingMsg, MessageBody, ServerEvent, TextBody};
+
+        let evt = ServerEvent {
+            wecom_account_id: "wxa1".into(),
+            seq: 42,
+            body: Some(server_event::Body::Incoming(IncomingMsg {
+                conversation_id: "conv-1".into(),
+                from_user_id: "peer-1".into(),
+                body: Some(MessageBody {
+                    kind: Some(message_body::Kind::Text(TextBody { text: "hi".into() })),
+                    reply_to: None,
+                    mentions: vec![],
+                }),
+                sent_at_ms: 1_700_000_000_000,
+                server_msg_id: "sm-1".into(),
+                remote: None,
+            })),
+        };
+        let json = serde_json::to_string(&evt).expect("serialize");
+        let back: ServerEvent = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back, evt);
+    }
+
+    #[test]
+    fn server_event_with_system_kicked_serializes_round_trip() {
+        use super::v1::{server_event, system_signal, ServerEvent, SystemSignal};
+        let evt = ServerEvent {
+            wecom_account_id: "wxa1".into(),
+            seq: 100,
+            body: Some(server_event::Body::System(SystemSignal {
+                kind: system_signal::Kind::Kicked as i32,
+                detail: "another device".into(),
+            })),
+        };
+        let json = serde_json::to_string(&evt).expect("serialize");
+        let back: ServerEvent = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back, evt);
+    }
 }
