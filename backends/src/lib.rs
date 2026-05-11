@@ -5,9 +5,14 @@ use std::sync::Arc;
 use tauri::{Emitter, Manager, State};
 use tracing::info;
 
-use chathub_net::{AuthApi, AuthError, LoggedOutReason, TokenStore};
-use chathub_proto::v1::UserProfile;
-use chathub_state::{KeyringTokenStore, SessionStore, SqlitePool};
+use chathub_net::{
+    AuthApi, AuthError, AuthInterceptor, BackoffConfig, ConnectionManager, ConnectionState,
+    HubClient, LoggedOutReason, TokenStore,
+};
+use chathub_proto::v1::{
+    message_body, MessageBody, SendRequest, SendResponse, TextBody, UserProfile,
+};
+use chathub_state::{KeyringTokenStore, SeqStore, SessionStore, SqlitePool};
 
 const KEYRING_SERVICE: &str = "com.pis0sion.chathub";
 
@@ -93,20 +98,52 @@ fn take_screenshot_impl() -> Result<ScreenshotResult, String> {
 #[tauri::command]
 async fn login(
     state: State<'_, Arc<AuthApi>>,
+    cm: State<'_, Arc<ConnectionManager>>,
     username: String,
     password: String,
 ) -> Result<UserProfile, AuthError> {
-    state.login(&username, &password).await
+    let profile = state.login(&username, &password).await?;
+    cm.start().await;
+    Ok(profile)
 }
 
 #[tauri::command]
-async fn logout(state: State<'_, Arc<AuthApi>>) -> Result<(), AuthError> {
+async fn logout(
+    state: State<'_, Arc<AuthApi>>,
+    cm: State<'_, Arc<ConnectionManager>>,
+) -> Result<(), AuthError> {
+    cm.stop().await;
     state.logout().await
 }
 
 #[tauri::command]
 async fn current_session(state: State<'_, Arc<AuthApi>>) -> Result<Option<UserProfile>, AuthError> {
     state.current_session().await
+}
+
+#[tauri::command]
+async fn send_message(
+    hub: State<'_, HubClient>,
+    wecom_account_id: String,
+    conversation_id: String,
+    text: String,
+) -> Result<SendResponse, AuthError> {
+    let req = SendRequest {
+        wecom_account_id,
+        conversation_id,
+        client_msg_id: uuid::Uuid::new_v4().to_string(),
+        body: Some(MessageBody {
+            kind: Some(message_body::Kind::Text(TextBody { text })),
+            reply_to: None,
+            mentions: vec![],
+        }),
+    };
+    hub.send(req).await
+}
+
+#[tauri::command]
+async fn hub_state(cm: State<'_, Arc<ConnectionManager>>) -> Result<ConnectionState, ()> {
+    Ok(cm.state_subscribe().borrow().clone())
 }
 
 // ============================== run() ==============================
@@ -130,26 +167,43 @@ pub fn run() {
 
             // tauri::async_runtime::block_on 在 setup 同步完成 SQLite 与 endpoint 初始化。
             // setup 闭包本身不在 async 上下文,block_on 安全可用。
-            let auth_api = tauri::async_runtime::block_on(async {
+            let (auth_api, hub_client, conn_manager) = tauri::async_runtime::block_on(async {
                 std::fs::create_dir_all(&app_data).ok();
                 let pool = SqlitePool::open(app_data.join("state.sqlite"))
                     .await.map_err(|e| e.to_string())?;
-                let session_store = SessionStore::new(pool);
+                let session_store = SessionStore::new(pool.clone());
+                let seq_store = SeqStore::new(pool);
                 let keyring = KeyringTokenStore::new(KEYRING_SERVICE);
                 let endpoint = chathub_net::build_endpoint(chathub_net::RELAY_URL)
                     .map_err(|e| format!("endpoint: {e}"))?;
+                let channel = endpoint.connect_lazy();
                 let token_store = Arc::new(TokenStore::new(endpoint, keyring)
                     .map_err(|e| format!("token_store: {e}"))?);
-                Ok::<_, String>(AuthApi::new(token_store, session_store))
+                let interceptor = AuthInterceptor::new(token_store.clone());
+                let hub_client = HubClient::new(channel, interceptor);
+                let conn_manager = Arc::new(ConnectionManager::new(
+                    hub_client.clone(),
+                    token_store.clone(),
+                    seq_store,
+                    BackoffConfig::default(),
+                ));
+                let auth_api = AuthApi::new(token_store, session_store);
+                Ok::<_, String>((auth_api, hub_client, conn_manager))
             }).map_err(Box::<dyn std::error::Error>::from)?;
             let auth_api = Arc::new(auth_api);
             app.manage(Arc::clone(&auth_api));
+            app.manage(hub_client);
+            app.manage(Arc::clone(&conn_manager));
 
-            // 启动时 try_resume(后台 task,不阻塞 setup)
+            // 启动时 try_resume(后台 task,不阻塞 setup);成功后启动 ConnectionManager
             let api_for_resume = Arc::clone(&auth_api);
+            let cm_for_resume = Arc::clone(&conn_manager);
             tauri::async_runtime::spawn(async move {
                 match api_for_resume.try_resume_session().await {
-                    Ok(Some(p)) => info!(target: "chathub::auth", user_id = %p.user_id, "resumed session"),
+                    Ok(Some(p)) => {
+                        info!(target: "chathub::auth", user_id = %p.user_id, "resumed session");
+                        cm_for_resume.start().await;
+                    }
                     Ok(None)    => info!(target: "chathub::auth", "no session to resume"),
                     Err(e)      => tracing::warn!(target: "chathub::auth", error = %e, "try_resume_session failed"),
                 }
@@ -174,6 +228,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             greet, take_screenshot,
             login, logout, current_session,
+            send_message, hub_state,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
