@@ -11,7 +11,8 @@ use chathub_state::{KeyringTokenStore, SeqStore, SqlitePool};
 use std::sync::Arc;
 use std::time::Duration;
 
-use common::stub_relay::start_stub_full;
+use common::stub_relay::{start_stub_full, SubscribeOutcome};
+use tonic::Status;
 
 fn fast_backoff() -> BackoffConfig {
     BackoffConfig {
@@ -117,6 +118,34 @@ async fn subscribe_success_streams_event() {
         .expect("recv ok");
     assert_eq!(event.wecom_account_id, "wxa1");
     assert_eq!(event.seq, 100);
+
+    cm.stop().await;
+}
+
+#[tokio::test]
+async fn subscribe_unavailable_backoffs_and_reconnects() {
+    let (addr, _auth, hub_state, _h) = start_stub_full().await;
+    {
+        let mut s = hub_state.lock().unwrap();
+        s.subscribe_outcome = SubscribeOutcome::RejectOnce(Status::unavailable("relay down"));
+    }
+    let (cm, token_store, _ss) = make_cm(addr).await;
+    force_login(&token_store).await;
+
+    cm.start().await;
+
+    let mut state_rx = cm.state_subscribe();
+    // 第一次 Connecting → 收到 Unavailable → Disconnected{Network} → backoff → 第二次 Connecting → Subscribed
+    wait_for_state(
+        &mut state_rx,
+        |s| matches!(s, ConnectionState::Subscribed),
+        Duration::from_secs(3),
+    )
+    .await;
+
+    // 断言 stub 至少被 subscribe 过 2 次(第一次拒,第二次成功)
+    let count = hub_state.lock().unwrap().subscribes.len();
+    assert!(count >= 2, "expected ≥2 subscribe attempts, got {count}");
 
     cm.stop().await;
 }

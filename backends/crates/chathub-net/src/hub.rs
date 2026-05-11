@@ -53,7 +53,6 @@ pub enum ConnectionState {
 }
 
 /// run_loop 收到错误后的动作分类(spec §6.3)。
-#[allow(dead_code)]
 #[derive(Debug, PartialEq)]
 pub(crate) enum Action {
     /// Unauthenticated → force_refresh + 立即重连(不退避)
@@ -64,7 +63,6 @@ pub(crate) enum Action {
     Backoff,
 }
 
-#[allow(dead_code)]
 pub(crate) fn classify(err: &AuthError) -> Action {
     match err {
         AuthError::Unauthenticated => Action::ReactiveRefresh,
@@ -229,14 +227,27 @@ impl Inner {
 
             let mut stream = match self.hub.subscribe(since_seqs).await {
                 Ok(s) => s,
-                Err(err) => {
-                    // 占位:Task 13-15 加 classify 分流;现在简单退避后重连
-                    self.state_tx.send_replace(ConnectionState::Disconnected {
-                        last_error: Some(err),
-                    });
-                    tokio::time::sleep(backoff.next()).await;
-                    continue 'reconnect;
-                }
+                Err(err) => match classify(&err) {
+                    Action::ReactiveRefresh => {
+                        // Task 14 实装:force_refresh + 立即重连
+                        let _ = self.token_store.force_refresh().await;
+                        backoff.reset();
+                        continue 'reconnect;
+                    }
+                    Action::Terminate => {
+                        self.state_tx.send_replace(ConnectionState::Disconnected {
+                            last_error: Some(err),
+                        });
+                        return;
+                    }
+                    Action::Backoff => {
+                        self.state_tx.send_replace(ConnectionState::Disconnected {
+                            last_error: Some(err),
+                        });
+                        tokio::time::sleep(backoff.next()).await;
+                        continue 'reconnect;
+                    }
+                },
             };
 
             self.state_tx.send_replace(ConnectionState::Subscribed);
