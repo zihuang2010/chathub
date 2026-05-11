@@ -13,7 +13,8 @@ use std::time::Duration;
 
 use chathub_net::AuthError;
 use chathub_proto::v1::{
-    AckReadRequest, AckReadResponse, FetchHistoryRequest, FetchHistoryResponse, HistoryMessage,
+    message_status_change, AckReadRequest, AckReadResponse, FetchHistoryRequest,
+    FetchHistoryResponse, HistoryMessage, MessageRecalled, MessageStatusChange, ReadReceipt,
     RecallRequest, RecallResponse, SendRequest, SendResponse,
 };
 use common::stub_relay::{
@@ -671,4 +672,109 @@ async fn fetch_history_returns_messages_and_paginates_with_cursor() {
     assert_eq!(reqs.len(), 2);
     assert_eq!(reqs[0].cursor, "");
     assert_eq!(reqs[1].cursor, "page2");
+}
+
+// ============================ e2e #15: 业务 ServerEvent kind 透传 ============================
+
+#[tokio::test]
+async fn server_event_business_kinds_are_forwarded() {
+    let (addr, _auth, hub_state, _h) = start_stub_full().await;
+    let (cm, token_store, _ss) = make_cm(addr).await;
+    force_login(&token_store).await;
+
+    cm.start().await;
+
+    let mut state_rx = cm.state_subscribe();
+    wait_for_state(
+        &mut state_rx,
+        |s| matches!(s, ConnectionState::Subscribed),
+        Duration::from_secs(2),
+    )
+    .await;
+
+    let mut event_rx = cm.event_subscribe();
+
+    // 推 MessageRecalled
+    push_event(
+        &hub_state,
+        ServerEvent {
+            wecom_account_id: "wxa1".into(),
+            seq: 200,
+            body: Some(server_event::Body::Recalled(MessageRecalled {
+                conversation_id: "conv-1".into(),
+                server_msg_id: "sm-10".into(),
+                recalled_at_ms: 1_700_000_000_100,
+                by_user_id: "peer-1".into(),
+            })),
+        },
+    )
+    .await;
+
+    // 推 ReadReceipt
+    push_event(
+        &hub_state,
+        ServerEvent {
+            wecom_account_id: "wxa1".into(),
+            seq: 201,
+            body: Some(server_event::Body::ReadReceipt(ReadReceipt {
+                conversation_id: "conv-1".into(),
+                by_user_id: "peer-1".into(),
+                last_read_server_msg_id: "sm-9".into(),
+                read_at_ms: 1_700_000_000_200,
+            })),
+        },
+    )
+    .await;
+
+    // 推 MessageStatusChange
+    push_event(
+        &hub_state,
+        ServerEvent {
+            wecom_account_id: "wxa1".into(),
+            seq: 202,
+            body: Some(server_event::Body::StatusChange(MessageStatusChange {
+                conversation_id: "conv-1".into(),
+                client_msg_id: "client-uuid-fake".into(),
+                server_msg_id: "sm-11".into(),
+                status: message_status_change::Status::Delivered as i32,
+            })),
+        },
+    )
+    .await;
+
+    // 收 3 个 event,断言 kind
+    let e1 = tokio::time::timeout(Duration::from_secs(2), event_rx.recv())
+        .await
+        .expect("recv1 timeout")
+        .expect("recv1");
+    assert!(
+        matches!(&e1.body, Some(server_event::Body::Recalled(_))),
+        "got {:?}",
+        e1.body
+    );
+    assert_eq!(e1.seq, 200);
+
+    let e2 = tokio::time::timeout(Duration::from_secs(2), event_rx.recv())
+        .await
+        .expect("recv2 timeout")
+        .expect("recv2");
+    assert!(
+        matches!(&e2.body, Some(server_event::Body::ReadReceipt(_))),
+        "got {:?}",
+        e2.body
+    );
+    assert_eq!(e2.seq, 201);
+
+    let e3 = tokio::time::timeout(Duration::from_secs(2), event_rx.recv())
+        .await
+        .expect("recv3 timeout")
+        .expect("recv3");
+    assert!(
+        matches!(&e3.body, Some(server_event::Body::StatusChange(_))),
+        "got {:?}",
+        e3.body
+    );
+    assert_eq!(e3.seq, 202);
+
+    cm.stop().await;
 }
