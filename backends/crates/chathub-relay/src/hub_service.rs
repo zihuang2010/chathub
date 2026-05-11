@@ -11,6 +11,7 @@ use chathub_proto::v1::{
     AckReadRequest, AckReadResponse, FetchHistoryRequest, FetchHistoryResponse, RecallRequest,
     RecallResponse, SendRequest, SendResponse, ServerEvent, SubscribeRequest,
 };
+use prost::Message;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
@@ -95,8 +96,29 @@ impl Hub for HubSvc {
             .get::<UserCtx>()
             .cloned()
             .ok_or_else(|| Status::unauthenticated("missing ctx"))?;
-        let _since = req.into_inner().since_seqs; // T15 才用
+        let since = req.into_inner().since_seqs;
         let (tx, rx) = mpsc::channel(32);
+
+        // 1. **REPLAY 必先于 REGISTER**(spec §8,决策 #11)
+        for (account, s) in &since {
+            if !ctx.accounts.contains(account) {
+                continue;
+            }
+            let rows = self
+                .events
+                .replay_after(account, *s, 200)
+                .await
+                .map_err(|e| Status::from(RelayError::from(e)))?;
+            for (_seq, payload) in rows {
+                let evt = ServerEvent::decode(&payload[..])
+                    .map_err(|e| Status::internal(format!("decode: {e}")))?;
+                if tx.send(Ok(evt)).await.is_err() {
+                    break;
+                }
+            }
+        }
+
+        // 2. register(可能发 KICKED)
         let out = self.router.register(
             StreamTicket {
                 user_id: ctx.user_id,
@@ -195,7 +217,7 @@ mod tests {
         r
     }
 
-    async fn spawn_hub() -> (SocketAddr, Arc<Router>, crate::jwt::Signer) {
+    async fn spawn_hub() -> (SocketAddr, Arc<Router>, crate::jwt::Signer, EventStore) {
         let tmp = tempfile::tempdir().unwrap();
         let db = tmp.path().join("t.db");
         let storage = Storage::open(&db).await.unwrap();
@@ -204,10 +226,11 @@ mod tests {
             .await
             .unwrap();
         let router = Arc::new(Router::new());
+        let events = EventStore::new(storage.clone());
         let svc = HubSvc {
             router: router.clone(),
             seqs: SeqAllocator::new(storage.clone()),
-            events: EventStore::new(storage.clone()),
+            events: events.clone(),
             downstream: Arc::new(
                 crate::downstream::DownstreamClient::new("http://127.0.0.1:9", "x").unwrap(),
             ),
@@ -223,12 +246,12 @@ mod tests {
                 .await;
         });
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        (addr, router, signer)
+        (addr, router, signer, events)
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn subscribe_receives_pushed_event() {
-        let (addr, router, signer) = spawn_hub().await;
+        let (addr, router, signer, _events) = spawn_hub().await;
         let claims = signer.make_claims("u-1", vec!["wa-1".into()], "dev-A", 1800);
         let tok = signer.sign(&claims).unwrap();
         let ep = Endpoint::from_shared(format!("http://{addr}")).unwrap();
@@ -317,7 +340,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn second_subscribe_different_device_kicks_first() {
-        let (addr, _router, signer) = spawn_hub().await;
+        let (addr, _router, signer, _events) = spawn_hub().await;
         let tok1 = signer
             .sign(&signer.make_claims("u-1", vec!["wa-1".into()], "dev-A", 1800))
             .unwrap();
@@ -376,7 +399,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn same_device_reconnect_does_not_emit_kicked() {
-        let (addr, _router, signer) = spawn_hub().await;
+        let (addr, _router, signer, _events) = spawn_hub().await;
         let tok = signer
             .sign(&signer.make_claims("u-1", vec!["wa-1".into()], "dev-A", 1800))
             .unwrap();
@@ -429,5 +452,56 @@ mod tests {
             }
             other => panic!("unexpected: {other:?}"),
         }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn subscribe_replays_strictly_above_since() {
+        let (addr, _router, signer, events) = spawn_hub().await;
+        for s in 1..=5_i64 {
+            let evt = ServerEvent {
+                wecom_account_id: "wa-1".into(),
+                seq: s,
+                body: Some(chathub_proto::v1::server_event::Body::System(
+                    chathub_proto::v1::SystemSignal {
+                        kind: chathub_proto::v1::system_signal::Kind::Unspecified as i32,
+                        detail: format!("{s}"),
+                    },
+                )),
+            };
+            let mut buf = Vec::new();
+            prost::Message::encode(&evt, &mut buf).unwrap();
+            events.record("wa-1", s, buf, s).await.unwrap();
+        }
+        let tok = signer
+            .sign(&signer.make_claims("u-1", vec!["wa-1".into()], "dev-A", 1800))
+            .unwrap();
+        let ep = Endpoint::from_shared(format!("http://{addr}")).unwrap();
+        let channel = ep.connect().await.unwrap();
+        let mut client =
+            RawHubClient::with_interceptor(channel, move |mut r: tonic::Request<()>| {
+                r.metadata_mut()
+                    .insert("chathub-protocol-version", "1".parse().unwrap());
+                r.metadata_mut()
+                    .insert("authorization", format!("Bearer {tok}").parse().unwrap());
+                Ok(r)
+            });
+        let mut since = std::collections::HashMap::new();
+        since.insert("wa-1".to_string(), 2_i64);
+        let stream = client
+            .subscribe(SubscribeRequest { since_seqs: since })
+            .await
+            .unwrap()
+            .into_inner();
+        let mut stream = std::pin::pin!(stream);
+        let mut got_seqs = Vec::new();
+        for _ in 0..3 {
+            let e = tokio::time::timeout(std::time::Duration::from_secs(2), stream.next())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            got_seqs.push(e.seq);
+        }
+        assert_eq!(got_seqs, vec![3, 4, 5]);
     }
 }
