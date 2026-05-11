@@ -1,6 +1,7 @@
 //! Plan 5 e2e:7 个场景。fixture 在 common/mod.rs。
 //! 所有测试 #[tokio::test(flavor = "multi_thread")] — 否则 wiremock + tonic
 //! 共享 runtime 会死锁(spec §12.3,风险 R6)。
+#![allow(clippy::result_large_err)]
 
 mod common;
 

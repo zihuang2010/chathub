@@ -21,7 +21,9 @@ pub struct StreamTicket {
 #[derive(Clone)]
 struct ChannelEntry {
     tx: EventSender,
+    #[allow(dead_code)]
     user_id: String,
+    #[allow(dead_code)]
     device_id: String,
 }
 
