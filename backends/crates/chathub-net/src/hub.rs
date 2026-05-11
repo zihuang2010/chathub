@@ -10,8 +10,9 @@
 use crate::error::AuthError;
 use crate::interceptor::AuthInterceptor;
 use chathub_proto::v1::hub_client::HubClient as RawHubClient;
-use chathub_proto::v1::{SendRequest, SendResponse};
+use chathub_proto::v1::{SendRequest, SendResponse, ServerEvent, SubscribeRequest};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::time::Duration;
 use tonic::codegen::InterceptedService;
 use tonic::transport::Channel;
@@ -86,6 +87,19 @@ impl HubClient {
     pub async fn send(&self, req: SendRequest) -> Result<SendResponse, AuthError> {
         let mut client = self.inner.clone();
         let resp = client.send(tonic::Request::new(req)).await?;
+        Ok(resp.into_inner())
+    }
+
+    /// Server-streaming Subscribe。`since_seqs` 是 (wecom_account_id → last_seq) map,
+    /// 仅供 ConnectionManager 用,不对外公开。
+    #[allow(dead_code)]
+    pub(crate) async fn subscribe(
+        &self,
+        since_seqs: HashMap<String, i64>,
+    ) -> Result<tonic::Streaming<ServerEvent>, AuthError> {
+        let mut client = self.inner.clone();
+        let req = SubscribeRequest { since_seqs };
+        let resp = client.subscribe(tonic::Request::new(req)).await?;
         Ok(resp.into_inner())
     }
 }
