@@ -90,7 +90,7 @@ Plan 4 的目标:**补齐 IM 主路径**(发-收-读-撤-翻)。在 Hub service 
 
 ```
 proto/chathub/v1/
-  hub.proto         ← 加 3 个 RPC + 6 个 message(Recall*/AckRead*/FetchHistory* + HistoryMessage)
+  hub.proto         ← 加 3 个 RPC + 7 个 message(2 Recall + 2 AckRead + 2 FetchHistory + HistoryMessage)
   event.proto       ← ServerEvent.body 加 3 个 variant + 3 个 message(MessageRecalled / ReadReceipt / MessageStatusChange)
 
 backends/crates/chathub-proto/
@@ -687,19 +687,19 @@ Plan 4 e2e 都是 unary RPC + 一次性 ServerEvent 推送,不涉及退避计时
 
 ## 11. Definition of Done
 
-| #   | 验收项                                                                                                          | 验证                                                                   |
-| --- | --------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- | --------------------------------------------------------- |
-| 1   | proto 加 3 个 RPC + 6 个 message(Req/Resp + HistoryMessage)+ 3 个 ServerEvent body variant + 3 个 event message | `cargo build --workspace` + buf lint 0 错(proto.yml CI)                |
-| 2   | chathub-proto build.rs 加 7 条 type_attribute + 2 个 JSON 往返 smoke test                                       | `cargo test -p chathub-proto` 8/8                                      |
-| 3   | AuthError 加 AccountDisabled variant + From<Status> PermissionDenied 翻译 + 1 单元测试                          | `cargo test -p chathub-net --lib error::` 含 6 个测试(Plan 2 5 + 新 1) |
-| 4   | classify 加 AccountDisabled → Terminate + 1 单元测试                                                            | `cargo test -p chathub-net --lib hub::` 含 13 个测试(Plan 3 12 + 新 1) |
-| 5   | HubClient 加 recall / ack_read / fetch_history 三方法                                                           | `cargo build -p chathub-net` 成功;e2e #1-4 涵盖                        |
-| 6   | stub Hub fixture 加 3 个新方法 impl + 3 个 outcome enum                                                         | hub_e2e 跑通                                                           |
-| 7   | 5 个新 e2e 全绿                                                                                                 | `cargo test -p chathub-net --test hub_e2e -- --test-threads=1` 15/15   |
-| 8   | Plan 2 + 3 e2e 不破                                                                                             | `cargo test -p chathub-net --test auth_e2e -- --test-threads=1` 7/7    |
-| 9   | backends 加 3 个 Tauri 命令 + invoke_handler 注册                                                               | `cargo build -p chathub` 成功                                          |
-| 10  | clippy 全绿                                                                                                     | `cargo clippy --workspace --all-targets -- -D warnings` 0 warn         |
-| 11  | Cargo.lock 一致                                                                                                 | `git diff main -- Cargo.lock                                           | grep '^[+-]name = '` 仅含 patch 浮动,无新 top-level crate |
+| #   | 验收项                                                                                                                                       | 验证                                                                   |
+| --- | -------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- | --------------------------------------------------------- |
+| 1   | proto 加 3 个 RPC + 7 个 message(2 Recall + 2 AckRead + 2 FetchHistory + HistoryMessage)+ 3 个 ServerEvent body variant + 3 个 event message | `cargo build --workspace` + buf lint 0 错(proto.yml CI)                |
+| 2   | chathub-proto build.rs 加 7 条 type_attribute + 2 个 JSON 往返 smoke test                                                                    | `cargo test -p chathub-proto` 8/8                                      |
+| 3   | AuthError 加 AccountDisabled variant + From<Status> PermissionDenied 翻译 + 1 单元测试                                                       | `cargo test -p chathub-net --lib error::` 含 6 个测试(Plan 2 5 + 新 1) |
+| 4   | classify 加 AccountDisabled → Terminate + 1 单元测试                                                                                         | `cargo test -p chathub-net --lib hub::` 含 13 个测试(Plan 3 12 + 新 1) |
+| 5   | HubClient 加 recall / ack_read / fetch_history 三方法                                                                                        | `cargo build -p chathub-net` 成功;e2e #1-4 涵盖                        |
+| 6   | stub Hub fixture 加 3 个新方法 impl + 3 个 outcome enum                                                                                      | hub_e2e 跑通                                                           |
+| 7   | 5 个新 e2e 全绿                                                                                                                              | `cargo test -p chathub-net --test hub_e2e -- --test-threads=1` 15/15   |
+| 8   | Plan 2 + 3 e2e 不破                                                                                                                          | `cargo test -p chathub-net --test auth_e2e -- --test-threads=1` 7/7    |
+| 9   | backends 加 3 个 Tauri 命令 + invoke_handler 注册                                                                                            | `cargo build -p chathub` 成功                                          |
+| 10  | clippy 全绿                                                                                                                                  | `cargo clippy --workspace --all-targets -- -D warnings` 0 warn         |
+| 11  | Cargo.lock 一致                                                                                                                              | `git diff main -- Cargo.lock                                           | grep '^[+-]name = '` 仅含 patch 浮动,无新 top-level crate |
 
 ---
 
