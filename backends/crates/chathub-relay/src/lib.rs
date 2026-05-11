@@ -11,5 +11,6 @@ pub mod auth_service;
 pub mod config;
 pub mod downstream;
 pub mod error;
+pub mod hub_service;
 pub mod jwt;
 pub mod storage;
