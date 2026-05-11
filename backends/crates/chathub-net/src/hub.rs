@@ -204,12 +204,16 @@ impl ConnectionManager {
     /// idempotent。abort task,等 abort 真正生效后返回。
     /// abort 后 `JoinHandle::await` 立即得 `Err(JoinError::Cancelled)`,我们吞掉 —
     /// 等待是为了保证 stop 完成后 start 能可靠新建(否则 start 会见 `!is_finished()` no-op)。
+    /// 同时将 state 重置为 Disconnected{None},确保后续 start 的 wait_for_state 不会命中旧状态。
     pub async fn stop(&self) {
         let mut guard = self.inner.task.lock().await;
         if let Some(h) = guard.take() {
             h.abort();
             let _ = h.await;
         }
+        self.inner
+            .state_tx
+            .send_replace(ConnectionState::Disconnected { last_error: None });
     }
 }
 
@@ -265,19 +269,46 @@ impl Inner {
                             if let Err(e) = self.seq_store.upsert(&event.wecom_account_id, event.seq).await {
                                 tracing::warn!(?e, "seq_store upsert failed, ignored on hot path");
                             }
+                            // 检测 SystemSignal::KICKED:emit 后立即终止
+                            let is_kicked = matches!(
+                                &event.body,
+                                Some(chathub_proto::v1::server_event::Body::System(s))
+                                    if s.kind == chathub_proto::v1::system_signal::Kind::Kicked as i32
+                            );
                             let _ = self.event_tx.send(event);
+                            if is_kicked {
+                                self.state_tx.send_replace(ConnectionState::Disconnected { last_error: None });
+                                return;
+                            }
                         }
                         Ok(None) => {
-                            // 占位:Task 13 加 server-close → backoff 重连
+                            // server-close 无错误 → 退避重连
                             self.state_tx.send_replace(ConnectionState::Disconnected { last_error: None });
                             tokio::time::sleep(backoff.next()).await;
                             continue 'reconnect;
                         }
-                        Err(_status) => {
-                            // 占位:Task 13-15 加 classify 分流;现在简单退避
-                            self.state_tx.send_replace(ConnectionState::Disconnected { last_error: None });
-                            tokio::time::sleep(backoff.next()).await;
-                            continue 'reconnect;
+                        Err(status) => {
+                            let err: AuthError = status.into();
+                            match classify(&err) {
+                                Action::ReactiveRefresh => {
+                                    let _ = self.token_store.force_refresh().await;
+                                    backoff.reset();
+                                    continue 'reconnect;
+                                }
+                                Action::Terminate => {
+                                    self.state_tx.send_replace(ConnectionState::Disconnected {
+                                        last_error: Some(err),
+                                    });
+                                    return;
+                                }
+                                Action::Backoff => {
+                                    self.state_tx.send_replace(ConnectionState::Disconnected {
+                                        last_error: Some(err),
+                                    });
+                                    tokio::time::sleep(backoff.next()).await;
+                                    continue 'reconnect;
+                                }
+                            }
                         }
                     }
                 }

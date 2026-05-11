@@ -59,7 +59,9 @@ async fn connection_state_initial_is_disconnected() {
 }
 
 use chathub_proto::v1::message_body;
-use chathub_proto::v1::{server_event, IncomingMsg, MessageBody, ServerEvent, TextBody};
+use chathub_proto::v1::{
+    server_event, system_signal, IncomingMsg, MessageBody, ServerEvent, SystemSignal, TextBody,
+};
 use common::{push_event, wait_for_state};
 
 fn make_incoming(account: &str, seq: i64, text: &str) -> ServerEvent {
@@ -285,6 +287,120 @@ async fn logged_out_during_subscribe_terminates_task() {
     let sub_count = hub_state.lock().unwrap().subscribes.len();
     // 仅一次 subscribe(LoggedOut 后 task 退出,不应重连)
     assert_eq!(sub_count, 1, "task should not reconnect after LoggedOut");
+
+    cm.stop().await;
+}
+
+#[tokio::test]
+async fn subscribe_resumes_with_since_seqs() {
+    let (addr, _auth, hub_state, _h) = start_stub_full().await;
+    let (cm, token_store, _ss) = make_cm(addr).await;
+    force_login(&token_store).await;
+
+    cm.start().await;
+
+    let mut state_rx = cm.state_subscribe();
+    wait_for_state(
+        &mut state_rx,
+        |s| matches!(s, ConnectionState::Subscribed),
+        Duration::from_secs(2),
+    )
+    .await;
+
+    // 推一个 event(seq=10),让 SeqStore 持久化
+    let mut event_rx = cm.event_subscribe();
+    push_event(&hub_state, make_incoming("wxa1", 10, "first")).await;
+    let _ = tokio::time::timeout(Duration::from_secs(1), event_rx.recv())
+        .await
+        .expect("recv timeout")
+        .expect("recv ok");
+
+    // 给 SQLite 一点时间持久化(亚毫秒级,但稳一些)
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // 停 → 启,断言第二次 subscribe 收到 since_seqs={"wxa1":10}
+    // stop().await 已等 task 真停(abort + JoinHandle::await),start 能可靠新建
+    cm.stop().await;
+    cm.start().await;
+
+    // 等到第二次 Subscribed
+    wait_for_state(
+        &mut state_rx,
+        |s| matches!(s, ConnectionState::Subscribed),
+        Duration::from_secs(2),
+    )
+    .await;
+
+    let subs = hub_state.lock().unwrap().subscribes.clone();
+    assert!(
+        subs.len() >= 2,
+        "expected ≥2 subscribes, got {}",
+        subs.len()
+    );
+    let last = subs.last().expect("at least one");
+    assert_eq!(
+        last.get("wxa1"),
+        Some(&10),
+        "since_seqs not resumed correctly: {last:?}"
+    );
+
+    cm.stop().await;
+}
+
+#[tokio::test]
+async fn subscribe_kicked_emits_event_then_terminates() {
+    let (addr, _auth, hub_state, _h) = start_stub_full().await;
+    let (cm, token_store, _ss) = make_cm(addr).await;
+    force_login(&token_store).await;
+
+    cm.start().await;
+
+    let mut state_rx = cm.state_subscribe();
+    wait_for_state(
+        &mut state_rx,
+        |s| matches!(s, ConnectionState::Subscribed),
+        Duration::from_secs(2),
+    )
+    .await;
+
+    let mut event_rx = cm.event_subscribe();
+
+    // 推一个 SystemSignal::KICKED
+    let kicked_event = ServerEvent {
+        wecom_account_id: "wxa1".into(),
+        seq: 999,
+        body: Some(server_event::Body::System(SystemSignal {
+            kind: system_signal::Kind::Kicked as i32,
+            detail: "another device".into(),
+        })),
+    };
+    push_event(&hub_state, kicked_event.clone()).await;
+
+    // 验证 broadcast 收到 KICKED event
+    let event = tokio::time::timeout(Duration::from_secs(2), event_rx.recv())
+        .await
+        .expect("recv timeout")
+        .expect("recv ok");
+    assert_eq!(event.seq, 999);
+    assert!(
+        matches!(&event.body, Some(server_event::Body::System(s)) if s.kind == system_signal::Kind::Kicked as i32)
+    );
+
+    // 验证 state → Disconnected{None}
+    wait_for_state(
+        &mut state_rx,
+        |s| matches!(s, ConnectionState::Disconnected { last_error: None }),
+        Duration::from_secs(2),
+    )
+    .await;
+
+    // 200ms 后断言不再重连
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let sub_count = hub_state.lock().unwrap().subscribes.len();
+    assert_eq!(
+        sub_count, 1,
+        "task should terminate after KICKED, got {sub_count}"
+    );
 
     cm.stop().await;
 }
