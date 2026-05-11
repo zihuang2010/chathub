@@ -12,8 +12,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chathub_net::AuthError;
-use chathub_proto::v1::{RecallRequest, RecallResponse, SendRequest, SendResponse};
-use common::stub_relay::{start_stub_full, RecallStubOutcome, SendStubOutcome, SubscribeOutcome};
+use chathub_proto::v1::{
+    AckReadRequest, AckReadResponse, RecallRequest, RecallResponse, SendRequest, SendResponse,
+};
+use common::stub_relay::{
+    start_stub_full, AckReadStubOutcome, RecallStubOutcome, SendStubOutcome, SubscribeOutcome,
+};
 use tonic::Status;
 
 fn fast_backoff() -> BackoffConfig {
@@ -551,4 +555,34 @@ async fn recall_permission_denied_returns_account_disabled() {
         }
         other => panic!("wrong variant: {other:?}"),
     }
+}
+
+// ============================ e2e #12: AckRead ============================
+
+#[tokio::test]
+async fn ack_read_success_records_last_read_msg() {
+    let (addr, _auth, hub_state, _h) = start_stub_full().await;
+    {
+        let mut s = hub_state.lock().unwrap();
+        s.ack_read_outcome = AckReadStubOutcome::Ok(AckReadResponse {
+            acked_at_ms: 1_700_000_000_500,
+        });
+    }
+    let hub = make_hub_only(addr).await;
+
+    let resp = hub
+        .ack_read(AckReadRequest {
+            wecom_account_id: "wxa1".into(),
+            conversation_id: "conv-1".into(),
+            last_read_server_msg_id: "sm-50".into(),
+        })
+        .await
+        .expect("ack_read ok");
+
+    assert_eq!(resp.acked_at_ms, 1_700_000_000_500);
+
+    let acks = hub_state.lock().unwrap().ack_reads.clone();
+    assert_eq!(acks.len(), 1);
+    assert_eq!(acks[0].last_read_server_msg_id, "sm-50");
+    assert_eq!(acks[0].conversation_id, "conv-1");
 }
