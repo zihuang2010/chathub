@@ -97,7 +97,7 @@ impl Hub for HubSvc {
             .ok_or_else(|| Status::unauthenticated("missing ctx"))?;
         let _since = req.into_inner().since_seqs; // T15 才用
         let (tx, rx) = mpsc::channel(32);
-        let _out = self.router.register(
+        let out = self.router.register(
             StreamTicket {
                 user_id: ctx.user_id,
                 device_id: ctx.device_id,
@@ -105,7 +105,28 @@ impl Hub for HubSvc {
             },
             tx,
         );
-        // T14: _out.prev_senders + kicked 处理
+        if out.kicked {
+            // 真正多端踢:给 prev 发 KICKED
+            for prev in out.prev_senders {
+                let kicked_evt = ServerEvent {
+                    wecom_account_id: String::new(),
+                    seq: 0,
+                    body: Some(chathub_proto::v1::server_event::Body::System(
+                        chathub_proto::v1::SystemSignal {
+                            kind: chathub_proto::v1::system_signal::Kind::Kicked as i32,
+                            detail: "multi-device".into(),
+                        },
+                    )),
+                };
+                let _ = prev.try_send(Ok(kicked_evt));
+                drop(prev);
+            }
+        } else {
+            // 同 device 自重连:静默 drop prev
+            for prev in out.prev_senders {
+                drop(prev);
+            }
+        }
         Ok(Response::new(ReceiverStream::new(rx)))
     }
 
@@ -292,5 +313,121 @@ mod tests {
         assert_eq!(ctx.user_id, "u-1");
         assert_eq!(ctx.device_id, "dev-A");
         assert_eq!(ctx.accounts, vec!["wa-1".to_string()]);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn second_subscribe_different_device_kicks_first() {
+        let (addr, _router, signer) = spawn_hub().await;
+        let tok1 = signer
+            .sign(&signer.make_claims("u-1", vec!["wa-1".into()], "dev-A", 1800))
+            .unwrap();
+        let tok2 = signer
+            .sign(&signer.make_claims("u-1", vec!["wa-1".into()], "dev-B", 1800))
+            .unwrap();
+
+        let make_client = |tok: String| {
+            let ep = Endpoint::from_shared(format!("http://{addr}")).unwrap();
+            async move {
+                let channel = ep.connect().await.unwrap();
+                RawHubClient::with_interceptor(channel, move |mut r: tonic::Request<()>| {
+                    r.metadata_mut()
+                        .insert("chathub-protocol-version", "1".parse().unwrap());
+                    r.metadata_mut()
+                        .insert("authorization", format!("Bearer {tok}").parse().unwrap());
+                    Ok(r)
+                })
+            }
+        };
+        let mut c1 = make_client(tok1).await;
+        let s1 = c1
+            .subscribe(SubscribeRequest {
+                since_seqs: Default::default(),
+            })
+            .await
+            .unwrap()
+            .into_inner();
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+
+        let mut c2 = make_client(tok2).await;
+        let _s2 = c2
+            .subscribe(SubscribeRequest {
+                since_seqs: Default::default(),
+            })
+            .await
+            .unwrap()
+            .into_inner();
+
+        let mut s1 = std::pin::pin!(s1);
+        let got = tokio::time::timeout(std::time::Duration::from_secs(2), s1.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        match got.body {
+            Some(chathub_proto::v1::server_event::Body::System(sig)) => {
+                assert_eq!(
+                    sig.kind,
+                    chathub_proto::v1::system_signal::Kind::Kicked as i32
+                );
+            }
+            other => panic!("expected KICKED, got: {other:?}"),
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn same_device_reconnect_does_not_emit_kicked() {
+        let (addr, _router, signer) = spawn_hub().await;
+        let tok = signer
+            .sign(&signer.make_claims("u-1", vec!["wa-1".into()], "dev-A", 1800))
+            .unwrap();
+        let mk = || {
+            let ep = Endpoint::from_shared(format!("http://{addr}")).unwrap();
+            let tok = tok.clone();
+            async move {
+                let channel = ep.connect().await.unwrap();
+                RawHubClient::with_interceptor(channel, move |mut r: tonic::Request<()>| {
+                    r.metadata_mut()
+                        .insert("chathub-protocol-version", "1".parse().unwrap());
+                    r.metadata_mut()
+                        .insert("authorization", format!("Bearer {tok}").parse().unwrap());
+                    Ok(r)
+                })
+            }
+        };
+        let mut c1 = mk().await;
+        let s1 = c1
+            .subscribe(SubscribeRequest {
+                since_seqs: Default::default(),
+            })
+            .await
+            .unwrap()
+            .into_inner();
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+        let mut c2 = mk().await;
+        let _s2 = c2
+            .subscribe(SubscribeRequest {
+                since_seqs: Default::default(),
+            })
+            .await
+            .unwrap()
+            .into_inner();
+        // s1 应当 EOF(没有 KICKED 事件)
+        let mut s1 = std::pin::pin!(s1);
+        // 给一点时间 server 处理 register 并 drop prev sender
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let next = tokio::time::timeout(std::time::Duration::from_millis(500), s1.next()).await;
+        // 拿到 None(EOF)即可,不能拿到 KICKED 事件
+        match next {
+            Ok(None) => {}
+            Ok(Some(Ok(evt))) => {
+                if let Some(chathub_proto::v1::server_event::Body::System(sig)) = evt.body {
+                    assert_ne!(
+                        sig.kind,
+                        chathub_proto::v1::system_signal::Kind::Kicked as i32
+                    );
+                }
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
     }
 }
