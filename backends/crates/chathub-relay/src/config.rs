@@ -1,5 +1,5 @@
 //! Config — relay 启动配置;`from_env()` 读 12 个 env var(spec §11.1)。
-//! 必填(无默认):RELAY_PUSH_SECRET / RELAY_DOWNSTREAM_URL / RELAY_REFRESH_HASH_PEPPER
+//! 必填(无默认):RELAY_PUSH_SECRET / RELAY_DOWNSTREAM_URL / RELAY_DOWNSTREAM_SECRET / RELAY_REFRESH_HASH_PEPPER
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -38,7 +38,7 @@ impl Config {
                 .unwrap_or_else(|_| "./relay.db".into())
                 .into(),
             downstream_url: required("RELAY_DOWNSTREAM_URL")?,
-            downstream_secret: std::env::var("RELAY_DOWNSTREAM_SECRET").unwrap_or_default(),
+            downstream_secret: required("RELAY_DOWNSTREAM_SECRET")?,
             push_secret: required("RELAY_PUSH_SECRET")?,
             jwt_private_pem: std::env::var("RELAY_JWT_PRIVATE_PEM").ok(),
             jwt_kid: std::env::var("RELAY_JWT_KID").ok(),
@@ -112,6 +112,7 @@ mod tests {
         clear_all();
         std::env::set_var("RELAY_PUSH_SECRET", "ps");
         std::env::set_var("RELAY_DOWNSTREAM_URL", "http://dn.local");
+        std::env::set_var("RELAY_DOWNSTREAM_SECRET", "dn-secret");
         std::env::set_var("RELAY_REFRESH_HASH_PEPPER", "p".repeat(64));
 
         let cfg = Config::from_env().expect("config");
@@ -130,6 +131,7 @@ mod tests {
         let _g = ENV_LOCK.lock();
         clear_all();
         std::env::set_var("RELAY_DOWNSTREAM_URL", "http://dn.local");
+        std::env::set_var("RELAY_DOWNSTREAM_SECRET", "dn-secret");
         std::env::set_var("RELAY_REFRESH_HASH_PEPPER", "p".repeat(64));
         // PUSH_SECRET 故意不设
         let err = Config::from_env().unwrap_err();
@@ -141,11 +143,28 @@ mod tests {
     }
 
     #[test]
+    fn from_env_missing_downstream_secret_errors() {
+        let _g = ENV_LOCK.lock();
+        clear_all();
+        std::env::set_var("RELAY_DOWNSTREAM_URL", "http://dn.local");
+        std::env::set_var("RELAY_PUSH_SECRET", "ps");
+        std::env::set_var("RELAY_REFRESH_HASH_PEPPER", "p".repeat(64));
+        // DOWNSTREAM_SECRET 故意不设
+        let err = Config::from_env().unwrap_err();
+        match err {
+            ConfigError::Missing(v) => assert_eq!(v, "RELAY_DOWNSTREAM_SECRET"),
+            other => panic!("wrong variant: {other:?}"),
+        }
+        clear_all();
+    }
+
+    #[test]
     fn from_env_invalid_grpc_addr_errors() {
         let _g = ENV_LOCK.lock();
         clear_all();
         std::env::set_var("RELAY_PUSH_SECRET", "ps");
         std::env::set_var("RELAY_DOWNSTREAM_URL", "http://dn.local");
+        std::env::set_var("RELAY_DOWNSTREAM_SECRET", "dn-secret");
         std::env::set_var("RELAY_REFRESH_HASH_PEPPER", "p".repeat(64));
         std::env::set_var("RELAY_GRPC_ADDR", "not-an-addr");
         let err = Config::from_env().unwrap_err();

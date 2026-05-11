@@ -10,7 +10,7 @@ Rust gRPC gateway:client ↔ relay ↔ downstream HTTP。
 | `RELAY_PUSH_ADDR`           | no       | `127.0.0.1:50052` |
 | `RELAY_DB_PATH`             | no       | `./relay.db`      |
 | `RELAY_DOWNSTREAM_URL`      | **yes**  | —                 |
-| `RELAY_DOWNSTREAM_SECRET`   | no       | empty             |
+| `RELAY_DOWNSTREAM_SECRET`   | **yes**  | —                 |
 | `RELAY_PUSH_SECRET`         | **yes**  | —                 |
 | `RELAY_JWT_PRIVATE_PEM`     | no       | (gen 后入 kv 表)  |
 | `RELAY_JWT_KID`             | no       | (gen)             |

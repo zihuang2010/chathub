@@ -80,10 +80,29 @@ async fn handle_push(
         tracing::warn!("events.record: {e}");
         return (StatusCode::INTERNAL_SERVER_ERROR, "record").into_response();
     }
-    let no_stream = matches!(
-        state.router.fanout(&body.wecom_account_id, evt),
-        Err(RouterError::NoStream)
-    );
+    let fanout_result = state.router.fanout(&body.wecom_account_id, evt);
+    let no_stream = match fanout_result {
+        Ok(()) => false,
+        Err(RouterError::NoStream) => true,
+        Err(RouterError::Backpressure) => {
+            // 队列填满:发 SERVER_DRAIN 后踢掉该流,客户端收到 no_stream=true 后重连并 replay。
+            let drain_evt = {
+                use chathub_proto::v1::{server_event::Body, system_signal::Kind, SystemSignal};
+                chathub_proto::v1::ServerEvent {
+                    wecom_account_id: body.wecom_account_id.clone(),
+                    seq: 0,
+                    body: Some(Body::System(SystemSignal {
+                        kind: Kind::ServerDrain as i32,
+                        detail: String::new(),
+                    })),
+                }
+            };
+            state
+                .router
+                .evict_account(&body.wecom_account_id, drain_evt);
+            true
+        }
+    };
     (
         StatusCode::ACCEPTED,
         Json(PushResp {
@@ -97,6 +116,7 @@ async fn handle_push(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::router::StreamTicket;
     use crate::storage::Storage;
     use axum::body::Body;
     use axum::http::Request;
@@ -201,5 +221,67 @@ mod tests {
         // event 仍入 ring
         let rows = st.events.replay_after("wa-1", 0, 10).await.unwrap();
         assert_eq!(rows.len(), 1);
+    }
+
+    /// backpressure 路径:mpsc 满 → SERVER_DRAIN + drop → no_stream=true,ring 保留事件。
+    #[tokio::test(flavor = "multi_thread")]
+    async fn push_backpressure_drains_stream_and_returns_no_stream_true() {
+        let st = make_state().await;
+
+        // 注册一个容量为 1 的流,然后先填满它
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        st.router.register(
+            StreamTicket {
+                user_id: "u-1".into(),
+                device_id: "d-1".into(),
+                accounts: vec!["wa-1".into()],
+            },
+            tx.clone(),
+        );
+        // 填满 channel(直接 try_send 而不经过 push endpoint,避免 seq 干扰)
+        {
+            use chathub_proto::v1::{
+                server_event::Body as ProtoBody, system_signal::Kind, SystemSignal,
+            };
+            let filler = chathub_proto::v1::ServerEvent {
+                wecom_account_id: "wa-1".into(),
+                seq: 0,
+                body: Some(ProtoBody::System(SystemSignal {
+                    kind: Kind::Unspecified as i32,
+                    detail: String::new(),
+                })),
+            };
+            let _ = tx.try_send(Ok(filler));
+        }
+        // channel 现在满了;下一次 fanout 会返回 Backpressure
+
+        let app = app(st.clone());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/internal/push")
+                    .header("authorization", "Bearer ps")
+                    .header("content-type", "application/json")
+                    .body(Body::from(json_body("wa-1")))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::ACCEPTED);
+        let resp_body = axum::body::to_bytes(resp.into_body(), 1024).await.unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&resp_body).unwrap();
+        assert_eq!(v["no_stream"], true);
+        // event 仍入 ring(push endpoint 先 record 再 fanout)
+        let rows = st.events.replay_after("wa-1", 0, 10).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        // 流已被清理:再次 fanout → NoStream
+        let probe = chathub_proto::v1::ServerEvent {
+            wecom_account_id: "wa-1".into(),
+            seq: 99,
+            body: None,
+        };
+        let err = st.router.fanout("wa-1", probe).unwrap_err();
+        assert!(matches!(err, RouterError::NoStream));
     }
 }

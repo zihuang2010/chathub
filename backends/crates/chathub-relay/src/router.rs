@@ -21,9 +21,7 @@ pub struct StreamTicket {
 #[derive(Clone)]
 struct ChannelEntry {
     tx: EventSender,
-    #[allow(dead_code)]
     user_id: String,
-    #[allow(dead_code)]
     device_id: String,
 }
 
@@ -137,6 +135,32 @@ impl Router {
             }
         }
     }
+
+    /// 原子驱逐:best-effort 发送 `drain_event` 后 drop 该账号的流。
+    ///
+    /// 步骤:
+    /// 1. 在 `accounts` 读锁下查出 `(user_id, device_id, tx)`;
+    /// 2. 释放读锁后 `try_send` drain_event(忽略结果);
+    /// 3. 调 `drop_stream` 清理注册表。
+    ///
+    /// 若账号不存在则直接返回 `None`。
+    pub fn evict_account(
+        &self,
+        account_id: &str,
+        drain_event: ServerEvent,
+    ) -> Option<(String, String)> {
+        let entry = {
+            let accounts = self.accounts.read();
+            accounts.get(account_id).cloned()
+        };
+        let entry = entry?;
+        let user_id = entry.user_id.clone();
+        let device_id = entry.device_id.clone();
+        // best-effort — 队列可能已满,忽略错误
+        let _ = entry.tx.try_send(Ok(drain_event));
+        self.drop_stream(&user_id, &device_id);
+        Some((user_id, device_id))
+    }
 }
 
 #[cfg(test)]
@@ -244,5 +268,75 @@ mod tests {
         r.fanout("wa-1", evt(5)).unwrap();
         let got = rx.recv().await.unwrap().unwrap();
         assert_eq!(got.seq, 5);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn fanout_full_channel_returns_backpressure() {
+        let r = Router::new();
+        // 容量 1:填满后再 fanout 触发 Backpressure
+        let (tx, _rx) = mpsc::channel(1);
+        r.register(
+            StreamTicket {
+                user_id: "u".into(),
+                device_id: "d".into(),
+                accounts: vec!["wa-1".into()],
+            },
+            tx,
+        );
+        // 填满
+        r.fanout("wa-1", evt(1)).unwrap();
+        // 再推 → Backpressure
+        let err = r.fanout("wa-1", evt(2)).unwrap_err();
+        assert!(matches!(err, RouterError::Backpressure));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn evict_account_sends_drain_and_removes_stream() {
+        let r = Router::new();
+        let (tx, mut rx) = mpsc::channel(4);
+        r.register(
+            StreamTicket {
+                user_id: "u".into(),
+                device_id: "d".into(),
+                accounts: vec!["wa-1".into()],
+            },
+            tx,
+        );
+        let drain_evt = ServerEvent {
+            wecom_account_id: "wa-1".into(),
+            seq: 0,
+            body: Some(chathub_proto::v1::server_event::Body::System(
+                SystemSignal {
+                    kind: Kind::ServerDrain as i32,
+                    detail: String::new(),
+                },
+            )),
+        };
+        let result = r.evict_account("wa-1", drain_evt);
+        assert!(result.is_some());
+        let (uid, did) = result.unwrap();
+        assert_eq!(uid, "u");
+        assert_eq!(did, "d");
+        // drain event が届いているはず
+        let got = rx.recv().await.unwrap().unwrap();
+        assert_eq!(
+            got.body,
+            Some(chathub_proto::v1::server_event::Body::System(
+                SystemSignal {
+                    kind: Kind::ServerDrain as i32,
+                    detail: String::new(),
+                }
+            ))
+        );
+        // ストリームが削除された
+        let err = r.fanout("wa-1", evt(99)).unwrap_err();
+        assert!(matches!(err, RouterError::NoStream));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn evict_account_unknown_returns_none() {
+        let r = Router::new();
+        let result = r.evict_account("wa-unknown", evt(1));
+        assert!(result.is_none());
     }
 }
