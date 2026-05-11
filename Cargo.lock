@@ -631,9 +631,11 @@ dependencies = [
  "tauri-plugin-process",
  "tauri-plugin-updater",
  "time",
+ "tokio",
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
+ "uuid",
  "xcap",
 ]
 
@@ -645,6 +647,7 @@ dependencies = [
  "chathub-state",
  "parking_lot",
  "prost",
+ "rand 0.8.6",
  "serde",
  "serde_json",
  "thiserror 1.0.69",

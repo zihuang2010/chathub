@@ -41,8 +41,10 @@ impl SqlitePool {
     async fn apply_migrations(&self) -> Result<(), StateError> {
         let conn = self.pool.get().await?;
         conn.interact(|c| {
-            let migrations =
-                Migrations::new(vec![M::up(include_str!("../migrations/V1__init.sql"))]);
+            let migrations = Migrations::new(vec![
+                M::up(include_str!("../migrations/V1__init.sql")),
+                M::up(include_str!("../migrations/V2__seqs.sql")),
+            ]);
             migrations
                 .to_latest(c)
                 .map_err(|e| StateError::Migration(e.to_string()))
@@ -68,19 +70,22 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn in_memory_pool_applies_v1_migration() {
+    async fn in_memory_pool_applies_all_migrations() {
         let pool = SqlitePool::in_memory().await.expect("pool open");
 
         let conn = pool.pool().get().await.expect("get conn");
         let table_count: i64 = conn.interact(|c| {
             c.query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN ('current_session', 'wecom_accounts')",
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN ('current_session', 'wecom_accounts', 'wecom_account_seqs')",
                 [],
                 |r| r.get(0),
             )
         }).await.expect("interact").expect("query");
 
-        assert_eq!(table_count, 2, "V1 migration should create both tables");
+        assert_eq!(
+            table_count, 3,
+            "V1+V2 migrations should create three tables"
+        );
     }
 
     #[tokio::test]

@@ -4,7 +4,7 @@
 use chathub_proto::v1::{error_detail, ErrorDetail};
 use prost::Message;
 
-#[derive(thiserror::Error, Debug, serde::Serialize, Clone)]
+#[derive(thiserror::Error, Debug, serde::Serialize, serde::Deserialize, Clone, PartialEq)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum AuthError {
     #[error("invalid credentials")]

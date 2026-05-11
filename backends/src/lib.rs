@@ -5,9 +5,17 @@ use std::sync::Arc;
 use tauri::{Emitter, Manager, State};
 use tracing::info;
 
-use chathub_net::{AuthApi, AuthError, LoggedOutReason, TokenStore};
-use chathub_proto::v1::UserProfile;
-use chathub_state::{KeyringTokenStore, SessionStore, SqlitePool};
+use chathub_net::{
+    AuthApi, AuthError, AuthInterceptor, BackoffConfig, ConnectionManager, ConnectionState,
+    HubClient, LoggedOutReason, TokenStore,
+};
+use chathub_proto::v1::{
+    message_body, server_event, system_signal, MessageBody, SendRequest, SendResponse, TextBody,
+    UserProfile,
+};
+use chathub_state::{KeyringTokenStore, SeqStore, SessionStore, SqlitePool};
+use std::time::{Duration, Instant};
+use tokio::sync::broadcast as tokio_broadcast;
 
 const KEYRING_SERVICE: &str = "com.pis0sion.chathub";
 
@@ -93,20 +101,52 @@ fn take_screenshot_impl() -> Result<ScreenshotResult, String> {
 #[tauri::command]
 async fn login(
     state: State<'_, Arc<AuthApi>>,
+    cm: State<'_, Arc<ConnectionManager>>,
     username: String,
     password: String,
 ) -> Result<UserProfile, AuthError> {
-    state.login(&username, &password).await
+    let profile = state.login(&username, &password).await?;
+    cm.start().await;
+    Ok(profile)
 }
 
 #[tauri::command]
-async fn logout(state: State<'_, Arc<AuthApi>>) -> Result<(), AuthError> {
+async fn logout(
+    state: State<'_, Arc<AuthApi>>,
+    cm: State<'_, Arc<ConnectionManager>>,
+) -> Result<(), AuthError> {
+    cm.stop().await;
     state.logout().await
 }
 
 #[tauri::command]
 async fn current_session(state: State<'_, Arc<AuthApi>>) -> Result<Option<UserProfile>, AuthError> {
     state.current_session().await
+}
+
+#[tauri::command]
+async fn send_message(
+    hub: State<'_, HubClient>,
+    wecom_account_id: String,
+    conversation_id: String,
+    text: String,
+) -> Result<SendResponse, AuthError> {
+    let req = SendRequest {
+        wecom_account_id,
+        conversation_id,
+        client_msg_id: uuid::Uuid::new_v4().to_string(),
+        body: Some(MessageBody {
+            kind: Some(message_body::Kind::Text(TextBody { text })),
+            reply_to: None,
+            mentions: vec![],
+        }),
+    };
+    hub.send(req).await
+}
+
+#[tauri::command]
+async fn hub_state(cm: State<'_, Arc<ConnectionManager>>) -> Result<ConnectionState, ()> {
+    Ok(cm.state_subscribe().borrow().clone())
 }
 
 // ============================== run() ==============================
@@ -130,26 +170,43 @@ pub fn run() {
 
             // tauri::async_runtime::block_on 在 setup 同步完成 SQLite 与 endpoint 初始化。
             // setup 闭包本身不在 async 上下文,block_on 安全可用。
-            let auth_api = tauri::async_runtime::block_on(async {
+            let (auth_api, hub_client, conn_manager) = tauri::async_runtime::block_on(async {
                 std::fs::create_dir_all(&app_data).ok();
                 let pool = SqlitePool::open(app_data.join("state.sqlite"))
                     .await.map_err(|e| e.to_string())?;
-                let session_store = SessionStore::new(pool);
+                let session_store = SessionStore::new(pool.clone());
+                let seq_store = SeqStore::new(pool);
                 let keyring = KeyringTokenStore::new(KEYRING_SERVICE);
                 let endpoint = chathub_net::build_endpoint(chathub_net::RELAY_URL)
                     .map_err(|e| format!("endpoint: {e}"))?;
+                let channel = endpoint.connect_lazy();
                 let token_store = Arc::new(TokenStore::new(endpoint, keyring)
                     .map_err(|e| format!("token_store: {e}"))?);
-                Ok::<_, String>(AuthApi::new(token_store, session_store))
+                let interceptor = AuthInterceptor::new(token_store.clone());
+                let hub_client = HubClient::new(channel, interceptor);
+                let conn_manager = Arc::new(ConnectionManager::new(
+                    hub_client.clone(),
+                    token_store.clone(),
+                    seq_store,
+                    BackoffConfig::default(),
+                ));
+                let auth_api = AuthApi::new(token_store, session_store);
+                Ok::<_, String>((auth_api, hub_client, conn_manager))
             }).map_err(Box::<dyn std::error::Error>::from)?;
             let auth_api = Arc::new(auth_api);
             app.manage(Arc::clone(&auth_api));
+            app.manage(hub_client);
+            app.manage(Arc::clone(&conn_manager));
 
-            // 启动时 try_resume(后台 task,不阻塞 setup)
+            // 启动时 try_resume(后台 task,不阻塞 setup);成功后启动 ConnectionManager
             let api_for_resume = Arc::clone(&auth_api);
+            let cm_for_resume = Arc::clone(&conn_manager);
             tauri::async_runtime::spawn(async move {
                 match api_for_resume.try_resume_session().await {
-                    Ok(Some(p)) => info!(target: "chathub::auth", user_id = %p.user_id, "resumed session"),
+                    Ok(Some(p)) => {
+                        info!(target: "chathub::auth", user_id = %p.user_id, "resumed session");
+                        cm_for_resume.start().await;
+                    }
                     Ok(None)    => info!(target: "chathub::auth", "no session to resume"),
                     Err(e)      => tracing::warn!(target: "chathub::auth", error = %e, "try_resume_session failed"),
                 }
@@ -169,11 +226,67 @@ pub fn run() {
                 }
             });
 
+            // ---- Plan 3:hub:event 桥接(broadcast<ServerEvent> → app.emit) ----
+            let cm_for_event = Arc::clone(&conn_manager);
+            let auth_for_kicked = Arc::clone(&auth_api);
+            let app_for_hub_event = app_handle.clone();
+            tauri::async_runtime::spawn(async move {
+                let mut rx = cm_for_event.event_subscribe();
+                let mut last_lag_reconnect: Option<Instant> = None;
+                loop {
+                    match rx.recv().await {
+                        Ok(event) => {
+                            // 检查是否是 KICKED:在 emit 前先抓住 enum 信息
+                            let is_kicked = matches!(
+                                &event.body,
+                                Some(server_event::Body::System(s))
+                                    if s.kind == system_signal::Kind::Kicked as i32
+                            );
+                            let _ = app_for_hub_event.emit("hub:event", &event);
+                            if is_kicked {
+                                tracing::warn!(target: "chathub::hub", "KICKED received, logging out");
+                                let _ = auth_for_kicked.logout().await;
+                                let _ = app_for_hub_event.emit(
+                                    "auth:logged_out",
+                                    serde_json::json!({ "reason": "kicked" }),
+                                );
+                            }
+                        }
+                        Err(tokio_broadcast::error::RecvError::Lagged(n)) => {
+                            let now = Instant::now();
+                            if last_lag_reconnect.map_or(true, |t| now.duration_since(t) > Duration::from_secs(5)) {
+                                tracing::warn!(target: "chathub::hub", skipped = n, "hub event lag, requesting reconnect");
+                                cm_for_event.stop().await;
+                                cm_for_event.start().await;
+                                last_lag_reconnect = Some(now);
+                            } else {
+                                tracing::warn!(target: "chathub::hub", skipped = n, "hub event lag throttled");
+                            }
+                        }
+                        Err(tokio_broadcast::error::RecvError::Closed) => break,
+                    }
+                }
+            });
+
+            // ---- Plan 3:hub:connection 桥接(watch<ConnectionState> → app.emit) ----
+            let cm_for_state = Arc::clone(&conn_manager);
+            let app_for_state = app_handle.clone();
+            tauri::async_runtime::spawn(async move {
+                let mut rx = cm_for_state.state_subscribe();
+                // 主动 emit 一次初始态(watch::Receiver::changed 不会 fire 第一次值)
+                let _ = app_for_state.emit("hub:connection", &*rx.borrow());
+                while rx.changed().await.is_ok() {
+                    let s = rx.borrow().clone();
+                    let _ = app_for_state.emit("hub:connection", &s);
+                }
+            });
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             greet, take_screenshot,
             login, logout, current_session,
+            send_message, hub_state,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

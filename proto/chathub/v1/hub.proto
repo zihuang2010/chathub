@@ -3,21 +3,29 @@ syntax = "proto3";
 package chathub.v1;
 
 import "chathub/v1/event.proto";
+import "chathub/v1/message.proto";
 
-// Hub service:主业务 RPC 集合。Plan 3 填充以下方法:
-//   rpc Subscribe(SubscribeRequest) returns (stream ServerEvent);
-//   rpc Send(SendRequest) returns (SendResponse);
-//   rpc Recall(RecallRequest) returns (RecallResponse);
-//   rpc AckRead(AckReadRequest) returns (AckReadResponse);
-//   rpc FetchHistory(FetchHistoryRequest) returns (FetchHistoryResponse);
-//   rpc ListWecomAccounts/EnableAccount/DisableAccount
-//
-// 现在只放一个最小 Subscribe 接口,确保 buf lint 不报"empty service"。
+// Hub service:Plan 3 填充 Subscribe + Send。
+// Plan 4 起会加 Recall / AckRead / FetchHistory / ListWecomAccounts /
+// EnableAccount / DisableAccount。
 service Hub {
   rpc Subscribe(SubscribeRequest) returns (stream ServerEvent);
+  rpc Send     (SendRequest)      returns (SendResponse);
 }
 
 message SubscribeRequest {
-  // Plan 3 填充 since_seqs (map<string, int64>)
+  // 客户端持久化的 (wecom_account_id, last_seq);Relay 只补发 seq > last_seq 的事件
   map<string, int64> since_seqs = 1;
+}
+
+message SendRequest {
+  string wecom_account_id = 1;
+  string conversation_id  = 2;
+  string client_msg_id    = 3;   // UUIDv4,客户端生成,服务端用 (account_id, client_msg_id) 幂等去重
+  MessageBody body        = 4;
+}
+
+message SendResponse {
+  string server_msg_id = 1;
+  int64  sent_at_ms    = 2;
 }

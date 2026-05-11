@@ -37,6 +37,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .type_attribute(".chathub.v1.Mention",           "#[derive(serde::Serialize, serde::Deserialize)]")
         .type_attribute(".chathub.v1.ReplyToRef",        "#[derive(serde::Serialize, serde::Deserialize)]")
         .type_attribute(".chathub.v1.RemoteId",          "#[derive(serde::Serialize, serde::Deserialize)]")
+        // ↓↓↓ Plan 3 新增 5 条(SystemSignal.Kind 是 nested regular enum,父 message
+        //      的 attribute 已 cascade,显式加会触发 conflicting impl Serialize)↓↓↓
+        .type_attribute(".chathub.v1.ServerEvent",       "#[derive(serde::Serialize, serde::Deserialize)]")
+        .type_attribute(".chathub.v1.ServerEvent.Body",  "#[derive(serde::Serialize, serde::Deserialize)]")
+        .type_attribute(".chathub.v1.IncomingMsg",       "#[derive(serde::Serialize, serde::Deserialize)]")
+        .type_attribute(".chathub.v1.SystemSignal",      "#[derive(serde::Serialize, serde::Deserialize)]")
+        .type_attribute(".chathub.v1.SendResponse",      "#[derive(serde::Serialize, serde::Deserialize)]")
         .compile_protos(&proto_files, &[proto_root])?;
 
     Ok(())
