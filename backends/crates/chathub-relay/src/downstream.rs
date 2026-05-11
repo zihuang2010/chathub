@@ -138,6 +138,28 @@ impl DownstreamClient {
             })?;
         translate(resp).await
     }
+
+    pub async fn fetch_history(
+        &self,
+        req: FetchHistoryReq<'_>,
+    ) -> Result<FetchHistoryResp, RelayError> {
+        let url = format!("{}/v1/fetch_history", self.base_url);
+        let resp = self
+            .http
+            .post(&url)
+            .bearer_auth(&self.secret)
+            .json(&req)
+            .send()
+            .await
+            .map_err(|e| {
+                if e.is_timeout() || e.is_connect() {
+                    RelayError::Transient
+                } else {
+                    RelayError::Http(e.to_string())
+                }
+            })?;
+        translate(resp).await
+    }
 }
 
 #[derive(Serialize)]
@@ -179,6 +201,22 @@ pub struct AckReadReq<'a> {
 #[derive(Deserialize)]
 pub struct AckReadResp {
     pub acked_at_ms: i64,
+}
+
+#[derive(Serialize)]
+pub struct FetchHistoryReq<'a> {
+    pub user_id: &'a str,
+    pub wecom_account_id: &'a str,
+    pub conversation_id: &'a str,
+    pub limit: u32,
+    pub cursor: &'a str,
+}
+
+#[derive(Deserialize)]
+pub struct FetchHistoryResp {
+    pub messages: Vec<chathub_proto::v1::HistoryMessage>,
+    #[serde(default)]
+    pub next_cursor: String,
 }
 
 /// 通用响应翻译:200 → 反序列化 T;4xx/5xx → 映射错误。

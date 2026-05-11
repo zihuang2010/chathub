@@ -263,9 +263,29 @@ impl Hub for HubSvc {
 
     async fn fetch_history(
         &self,
-        _req: Request<FetchHistoryRequest>,
+        req: Request<FetchHistoryRequest>,
     ) -> Result<Response<FetchHistoryResponse>, Status> {
-        Err(Status::unimplemented("fetch_history: T20"))
+        let ctx = req
+            .extensions()
+            .get::<UserCtx>()
+            .cloned()
+            .ok_or_else(|| Status::unauthenticated("missing ctx"))?;
+        let r = req.into_inner();
+        let resp = self
+            .downstream
+            .fetch_history(crate::downstream::FetchHistoryReq {
+                user_id: &ctx.user_id,
+                wecom_account_id: &r.wecom_account_id,
+                conversation_id: &r.conversation_id,
+                limit: r.limit,
+                cursor: &r.cursor,
+            })
+            .await
+            .map_err(Status::from)?;
+        Ok(Response::new(FetchHistoryResponse {
+            messages: resp.messages,
+            next_cursor: resp.next_cursor,
+        }))
     }
 }
 
