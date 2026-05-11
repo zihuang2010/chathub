@@ -166,6 +166,7 @@ CREATE TABLE sessions(
   refresh_token_hash TEXT NOT NULL UNIQUE,    -- HMAC-SHA256(pepper, token)
   refresh_exp_ms INTEGER NOT NULL,
   kicked_at_ms INTEGER,                       -- tombstone;非空 → refresh 返回 Unauthenticated
+  accounts_json TEXT NOT NULL,                -- JSON array of wecom_account_ids (snapshot at login;refresh 时反序列化用)
   created_at_ms INTEGER NOT NULL,
   UNIQUE(user_id, device_id)                  -- 同 user 同 device 单 session
 );
@@ -244,7 +245,7 @@ Client AuthService.RefreshToken(refresh_token)
       3. session.kicked_at_ms 非空 → Status::Unauthenticated
       4. session.refresh_exp_ms < now → Status::Unauthenticated
       5. 生成新 refresh_token + hash;旧的 sessions.delete(hash) + 新的 upsert
-      6. 新 access JWT(从 session 取回 device_id;accounts 从下游重拉?Plan 5 暂用 session 上次快照)
+      6. 新 access JWT — 从 session 取回 device_id 与 accounts(login 时存的 JSON 快照),重新签名。Plan 6+ 加 AccountStatus event 后,accounts 列可在 push 时同步更新或 refresh 时重拉。
 ```
 
 ### 6.5 logout 流程
@@ -631,6 +632,7 @@ serde_json          = "1"
 hmac                = "0.12"
 sha2                = "0.10"
 hex                 = "0.4"
+base64              = "0.22"        # Ed25519 PKCS#8 → PEM 编码
 tracing-subscriber  = { version = "0.3", features = ["env-filter", "fmt"] }
 
 # dev-deps(只在 chathub-relay/Cargo.toml [dev-dependencies] 显式声明)

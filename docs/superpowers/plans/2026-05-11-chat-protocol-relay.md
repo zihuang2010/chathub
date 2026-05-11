@@ -51,7 +51,7 @@ backends/crates/chathub-relay/
 ### 修改
 
 ```
-Cargo.toml         ← workspace.members += "backends/crates/chathub-relay" + workspace.dependencies 追加 10 条
+Cargo.toml         ← workspace.members += "backends/crates/chathub-relay" + workspace.dependencies 追加 12 条
 ```
 
 ### 不动(承诺)
@@ -183,7 +183,7 @@ EOF
 
 **Files:**
 
-- Modify: `Cargo.toml`(repo root,`[workspace.dependencies]` 追加 10 条)
+- Modify: `Cargo.toml`(repo root,`[workspace.dependencies]` 追加 12 条)
 - Modify: `backends/crates/chathub-relay/Cargo.toml`(deps + dev-deps)
 
 为什么:Plan 5 引入的所有第三方库必须先进 workspace.dependencies 池(项目规范),再由 crate 用 `{ workspace = true }` 引用。一次性入完,后续 task 不再动 Cargo.toml(仅 T6 / T8 / T9 / T16 / T21 触发功能集成,不动版本)。
@@ -202,6 +202,7 @@ serde_json         = "1"
 hmac               = "0.12"
 sha2               = "0.10"
 hex                = "0.4"
+base64             = "0.22"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 # Plan 5 dev-only ----
 wiremock           = "0.6"
@@ -253,6 +254,7 @@ reqwest            = { workspace = true }
 hmac               = { workspace = true }
 sha2               = { workspace = true }
 hex                = { workspace = true }
+base64             = { workspace = true }
 
 # 同 workspace 内 codegen
 chathub-proto      = { path = "../chathub-proto" }
@@ -290,8 +292,8 @@ git add Cargo.toml backends/crates/chathub-relay/Cargo.toml Cargo.lock
 git commit -m "$(cat <<'EOF'
 feat(chathub-relay): wire new workspace + crate deps
 
-- workspace.dependencies 追加 10 条(axum/tower/tower-http/jsonwebtoken/
-  ring/reqwest/serde_json/hmac/sha2/hex/tracing-subscriber)+ 3 条 dev-only
+- workspace.dependencies 追加 12 条(axum/tower/tower-http/jsonwebtoken/
+  ring/reqwest/serde_json/hmac/sha2/hex/base64/tracing-subscriber)+ 3 条 dev-only
   (wiremock/tokio-stream/tempfile)
 - chathub-relay/Cargo.toml 通过 `{ workspace = true }` 引用全部依赖
 - dev-deps 额外引 chathub-net + chathub-state(e2e 反向用 HubClient)
@@ -533,6 +535,7 @@ CREATE TABLE sessions(
   refresh_token_hash TEXT NOT NULL UNIQUE,
   refresh_exp_ms INTEGER NOT NULL,
   kicked_at_ms INTEGER,
+  accounts_json TEXT NOT NULL,                -- JSON array of wecom_account_ids (snapshot at login;refresh 时反序列化用)
   created_at_ms INTEGER NOT NULL,
   UNIQUE(user_id, device_id)
 );
@@ -751,6 +754,7 @@ pub struct Session {
     pub refresh_token_hash: String,
     pub refresh_exp_ms: i64,
     pub kicked_at_ms: Option<i64>,
+    pub accounts: Vec<String>,
     pub created_at_ms: i64,
 }
 
@@ -764,18 +768,21 @@ impl SessionStore {
         Self { storage }
     }
 
-    /// UPSERT by (user_id, device_id):同 device 重登覆盖 hash + exp + kicked=NULL。
+    /// UPSERT by (user_id, device_id):同 device 重登覆盖 hash + exp + kicked=NULL + accounts。
     pub async fn upsert(
         &self,
         user_id: &str,
         device_id: &str,
         refresh_token_hash: &str,
         refresh_exp_ms: i64,
+        accounts: &[String],
         created_at_ms: i64,
     ) -> Result<(), StorageError> {
         let u = user_id.to_string();
         let d = device_id.to_string();
         let h = refresh_token_hash.to_string();
+        let aj = serde_json::to_string(accounts)
+            .map_err(|e| StorageError::Interact(e.to_string()))?;
         let conn = self
             .storage
             .pool()
@@ -784,13 +791,14 @@ impl SessionStore {
             .map_err(|e| StorageError::Pool(e.to_string()))?;
         conn.interact(move |c| -> Result<(), rusqlite::Error> {
             c.execute(
-                "INSERT INTO sessions(user_id, device_id, refresh_token_hash, refresh_exp_ms, kicked_at_ms, created_at_ms) \
-                 VALUES(?1, ?2, ?3, ?4, NULL, ?5) \
+                "INSERT INTO sessions(user_id, device_id, refresh_token_hash, refresh_exp_ms, kicked_at_ms, accounts_json, created_at_ms) \
+                 VALUES(?1, ?2, ?3, ?4, NULL, ?5, ?6) \
                  ON CONFLICT(user_id, device_id) DO UPDATE SET \
                    refresh_token_hash=excluded.refresh_token_hash, \
                    refresh_exp_ms=excluded.refresh_exp_ms, \
-                   kicked_at_ms=NULL",
-                rusqlite::params![u, d, h, refresh_exp_ms, created_at_ms],
+                   kicked_at_ms=NULL, \
+                   accounts_json=excluded.accounts_json",
+                rusqlite::params![u, d, h, refresh_exp_ms, aj, created_at_ms],
             )?;
             Ok(())
         })
@@ -814,11 +822,19 @@ impl SessionStore {
             .interact(move |c| -> Result<Option<Session>, rusqlite::Error> {
                 let mut stmt = c.prepare(
                     "SELECT id, user_id, device_id, refresh_token_hash, refresh_exp_ms, \
-                            kicked_at_ms, created_at_ms \
+                            kicked_at_ms, accounts_json, created_at_ms \
                      FROM sessions WHERE refresh_token_hash = ?1",
                 )?;
                 let mut rows = stmt.query(rusqlite::params![h])?;
                 if let Some(r) = rows.next()? {
+                    let aj: String = r.get(6)?;
+                    let accounts: Vec<String> = serde_json::from_str(&aj).map_err(|e| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            6,
+                            rusqlite::types::Type::Text,
+                            Box::new(e),
+                        )
+                    })?;
                     Ok(Some(Session {
                         id: r.get(0)?,
                         user_id: r.get(1)?,
@@ -826,7 +842,8 @@ impl SessionStore {
                         refresh_token_hash: r.get(3)?,
                         refresh_exp_ms: r.get(4)?,
                         kicked_at_ms: r.get(5)?,
-                        created_at_ms: r.get(6)?,
+                        accounts,
+                        created_at_ms: r.get(7)?,
                     }))
                 } else {
                     Ok(None)
@@ -912,18 +929,23 @@ mod tests {
     async fn upsert_then_find_round_trip() {
         let store = make().await;
         let h = hash_refresh_token("p", "rt-1");
-        store.upsert("u1", "dev-1", &h, 1_700_000_000_000, 1_699_000_000_000).await.unwrap();
+        let accounts = vec!["wa-1".to_string(), "wa-2".to_string()];
+        store
+            .upsert("u1", "dev-1", &h, 1_700_000_000_000, &accounts, 1_699_000_000_000)
+            .await
+            .unwrap();
         let s = store.find_by_refresh_hash(&h).await.unwrap().expect("session");
         assert_eq!(s.user_id, "u1");
         assert_eq!(s.device_id, "dev-1");
         assert!(s.kicked_at_ms.is_none());
+        assert_eq!(s.accounts, accounts); // JSON round-trip
     }
 
     #[tokio::test]
     async fn delete_makes_find_return_none() {
         let store = make().await;
         let h = hash_refresh_token("p", "rt-1");
-        store.upsert("u1", "dev-1", &h, 1, 1).await.unwrap();
+        store.upsert("u1", "dev-1", &h, 1, &[], 1).await.unwrap();
         store.delete(&h).await.unwrap();
         assert!(store.find_by_refresh_hash(&h).await.unwrap().is_none());
     }
@@ -932,7 +954,7 @@ mod tests {
     async fn mark_kicked_sets_tombstone() {
         let store = make().await;
         let h = hash_refresh_token("p", "rt-1");
-        store.upsert("u1", "dev-1", &h, 1, 1).await.unwrap();
+        store.upsert("u1", "dev-1", &h, 1, &[], 1).await.unwrap();
         store.mark_kicked("u1", "dev-1", 9_999).await.unwrap();
         let s = store.find_by_refresh_hash(&h).await.unwrap().expect("session");
         assert_eq!(s.kicked_at_ms, Some(9_999));
@@ -943,8 +965,8 @@ mod tests {
         let store = make().await;
         let h1 = hash_refresh_token("p", "rt-1");
         let h2 = hash_refresh_token("p", "rt-2");
-        store.upsert("u1", "dev-1", &h1, 1, 1).await.unwrap();
-        store.upsert("u1", "dev-1", &h2, 2, 2).await.unwrap();
+        store.upsert("u1", "dev-1", &h1, 1, &[], 1).await.unwrap();
+        store.upsert("u1", "dev-1", &h2, 2, &[], 2).await.unwrap();
         assert!(store.find_by_refresh_hash(&h1).await.unwrap().is_none());
         assert!(store.find_by_refresh_hash(&h2).await.unwrap().is_some());
     }
@@ -977,7 +999,8 @@ feat(chathub-relay): SessionStore + HMAC-SHA256 refresh-hash
   高熵 token 无需慢哈希)
 - SessionStore::{upsert, find_by_refresh_hash, delete, mark_kicked}
 - UPSERT by (user_id, device_id):同 device 重登覆盖
-- 5 单测:HMAC 确定性 / round-trip / delete / kicked tombstone / replace
+- Session 持久化 accounts JSON 快照(refresh 时取回,免去重拉下游)
+- 5 单测:HMAC 确定性 / round-trip(含 accounts) / delete / kicked tombstone / replace
 
 Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>
 EOF
@@ -1073,6 +1096,8 @@ impl KvStore {
 //! bootstrap 优先级:env RELAY_JWT_PRIVATE_PEM → kv 表 "jwt_priv_pem" → 生成新对入 kv。
 
 use crate::storage::{kv::KvStore, Storage};
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD as BASE64;
 use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header, Validation};
 use ring::signature::{Ed25519KeyPair, KeyPair};
 use serde::{Deserialize, Serialize};
@@ -1232,49 +1257,9 @@ fn generate_ed25519_pem() -> Result<(String, String), JwtError> {
 
 /// 把 PKCS#8 DER 包成 PEM(BEGIN PRIVATE KEY)。
 fn pkcs8_to_pem(der: &[u8]) -> String {
-    use base64_lite as _;
-    const B64: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    // 简化 base64 不引入外部依赖:用 ring 已传递依赖中的 untrusted? 否,直接手写。
-    let mut s = String::new();
-    let mut buf = [0u8; 4];
-    let mut i = 0;
-    while i + 3 <= der.len() {
-        let v = ((der[i] as u32) << 16) | ((der[i + 1] as u32) << 8) | (der[i + 2] as u32);
-        buf[0] = B64[((v >> 18) & 0x3f) as usize];
-        buf[1] = B64[((v >> 12) & 0x3f) as usize];
-        buf[2] = B64[((v >> 6) & 0x3f) as usize];
-        buf[3] = B64[(v & 0x3f) as usize];
-        s.push_str(std::str::from_utf8(&buf).unwrap());
-        i += 3;
-    }
-    let rem = der.len() - i;
-    if rem == 1 {
-        let v = (der[i] as u32) << 16;
-        buf[0] = B64[((v >> 18) & 0x3f) as usize];
-        buf[1] = B64[((v >> 12) & 0x3f) as usize];
-        s.push_str(std::str::from_utf8(&buf[..2]).unwrap());
-        s.push_str("==");
-    } else if rem == 2 {
-        let v = ((der[i] as u32) << 16) | ((der[i + 1] as u32) << 8);
-        buf[0] = B64[((v >> 18) & 0x3f) as usize];
-        buf[1] = B64[((v >> 12) & 0x3f) as usize];
-        buf[2] = B64[((v >> 6) & 0x3f) as usize];
-        s.push_str(std::str::from_utf8(&buf[..3]).unwrap());
-        s.push('=');
-    }
-    let mut out = String::from("-----BEGIN PRIVATE KEY-----\n");
-    for chunk in s.as_bytes().chunks(64) {
-        out.push_str(std::str::from_utf8(chunk).unwrap());
-        out.push('\n');
-    }
-    out.push_str("-----END PRIVATE KEY-----\n");
-    out
+    der_to_pem(der, "PRIVATE KEY")
 }
 
-/// 注:`base64_lite` 在 dep 列表里不引入 — 上面 pkcs8_to_pem 手写 base64。
-/// 真正实现可换 `base64 = "0.22"`(workspace 已经在 backends/Cargo.toml 用了),
-/// 但 chathub-relay 这里为不再扩 workspace.deps,手写 ~20 行。
-///
 /// 从 PKCS#8 私钥 PEM 推 SubjectPublicKeyInfo 公钥 PEM。
 fn derive_public_pem_from_pkcs8_pem(priv_pem: &str) -> Result<String, JwtError> {
     // ring Ed25519KeyPair::from_pkcs8 接受 DER;先把 PEM 拆 base64
@@ -1287,7 +1272,19 @@ fn derive_public_pem_from_pkcs8_pem(priv_pem: &str) -> Result<String, JwtError> 
         0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00,
     ]);
     spki.extend_from_slice(&pub_bytes);
-    Ok(spki_der_to_pem(&spki))
+    Ok(der_to_pem(&spki, "PUBLIC KEY"))
+}
+
+/// 通用 DER → PEM:base64 编码 + 64-char 行包 + BEGIN/END header。
+fn der_to_pem(der: &[u8], label: &str) -> String {
+    let body = BASE64.encode(der);
+    let mut out = format!("-----BEGIN {label}-----\n");
+    for chunk in body.as_bytes().chunks(64) {
+        out.push_str(std::str::from_utf8(chunk).unwrap());
+        out.push('\n');
+    }
+    out.push_str(&format!("-----END {label}-----\n"));
+    out
 }
 
 fn decode_pem_body(pem: &str) -> Option<Vec<u8>> {
@@ -1298,82 +1295,7 @@ fn decode_pem_body(pem: &str) -> Option<Vec<u8>> {
         }
         body.push_str(line.trim());
     }
-    base64_decode_std(&body)
-}
-
-fn base64_decode_std(s: &str) -> Option<Vec<u8>> {
-    const T: [i8; 128] = build_decode_table();
-    let mut out = Vec::with_capacity(s.len() / 4 * 3);
-    let bytes = s.as_bytes();
-    let mut i = 0;
-    while i + 4 <= bytes.len() {
-        let a = T[bytes[i] as usize];
-        let b = T[bytes[i + 1] as usize];
-        let c = T[bytes[i + 2] as usize];
-        let d = T[bytes[i + 3] as usize];
-        if a < 0 || b < 0 {
-            return None;
-        }
-        out.push(((a as u32) << 2 | (b as u32) >> 4) as u8);
-        if c >= 0 {
-            out.push(((b as u32) << 4 | (c as u32) >> 2) as u8);
-            if d >= 0 {
-                out.push(((c as u32) << 6 | (d as u32)) as u8);
-            }
-        }
-        i += 4;
-    }
-    Some(out)
-}
-
-const fn build_decode_table() -> [i8; 128] {
-    let mut t = [-1i8; 128];
-    let abc = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut i = 0;
-    while i < 64 {
-        t[abc[i] as usize] = i as i8;
-        i += 1;
-    }
-    t
-}
-
-fn spki_der_to_pem(der: &[u8]) -> String {
-    // 复用上面手写 base64 编码
-    let mut s = String::new();
-    const B64: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut buf = [0u8; 4];
-    let mut i = 0;
-    while i + 3 <= der.len() {
-        let v = ((der[i] as u32) << 16) | ((der[i + 1] as u32) << 8) | (der[i + 2] as u32);
-        buf[0] = B64[((v >> 18) & 0x3f) as usize];
-        buf[1] = B64[((v >> 12) & 0x3f) as usize];
-        buf[2] = B64[((v >> 6) & 0x3f) as usize];
-        buf[3] = B64[(v & 0x3f) as usize];
-        s.push_str(std::str::from_utf8(&buf).unwrap());
-        i += 3;
-    }
-    let rem = der.len() - i;
-    if rem == 1 {
-        let v = (der[i] as u32) << 16;
-        buf[0] = B64[((v >> 18) & 0x3f) as usize];
-        buf[1] = B64[((v >> 12) & 0x3f) as usize];
-        s.push_str(std::str::from_utf8(&buf[..2]).unwrap());
-        s.push_str("==");
-    } else if rem == 2 {
-        let v = ((der[i] as u32) << 16) | ((der[i + 1] as u32) << 8);
-        buf[0] = B64[((v >> 18) & 0x3f) as usize];
-        buf[1] = B64[((v >> 12) & 0x3f) as usize];
-        buf[2] = B64[((v >> 6) & 0x3f) as usize];
-        s.push_str(std::str::from_utf8(&buf[..3]).unwrap());
-        s.push('=');
-    }
-    let mut out = String::from("-----BEGIN PUBLIC KEY-----\n");
-    for chunk in s.as_bytes().chunks(64) {
-        out.push_str(std::str::from_utf8(chunk).unwrap());
-        out.push('\n');
-    }
-    out.push_str("-----END PUBLIC KEY-----\n");
-    out
+    BASE64.decode(body.as_bytes()).ok()
 }
 
 #[cfg(test)]
@@ -1453,7 +1375,7 @@ mod tests {
 }
 ```
 
-> **实现决策**:为不再扩 `workspace.dependencies`,手写 ~30 行 base64(只用于 PEM 包装,不在 RPC 热路径)。如果团队偏好用 crate,可改为 `workspace.dependencies` 加 `base64 = "0.22"`。
+> **实现决策**:PEM 编解码走 `base64 = "0.22"`(workspace 已加),`base64::engine::general_purpose::STANDARD` 配 `Engine::encode/decode`。`der_to_pem(der, label)` 统一处理 PKCS#8 私钥与 SPKI 公钥的 PEM 包装(64-char 行包 + BEGIN/END header)。
 
 - [ ] **Step 6.4: 在 `backends/crates/chathub-relay/src/lib.rs` 追加** `pub mod jwt;`
 
@@ -1478,7 +1400,7 @@ feat(chathub-relay): Ed25519 JWT Signer/Verifier + KV-persisted keypair
 - jwt.rs:Claims{iss,sub,exp,iat,accounts,device_id};Signer/Verifier
   走 jsonwebtoken 9 EdDSA;header.kid 注入
 - bootstrap 优先级:env PEM > kv 表 > ring 生成新对入 kv(restart 持久)
-- 手写 PKCS#8/SPKI base64 PEM(避免扩 workspace.deps base64)
+- PKCS#8/SPKI ↔ PEM 走 base64 crate(`Engine::encode/decode` + 64-char 行包)
 - storage/kv.rs:KvStore{get, put}
 - 5 单测:sign/verify round-trip / 篡改 / 过期 / 错 iss / restart 持久
 
@@ -2179,25 +2101,27 @@ impl Auth for AuthSvc {
         let refresh_hash = hash_refresh_token(&self.pepper, &refresh_token);
         let refresh_exp_ms = now_ms + self.refresh_ttl.as_millis() as i64;
 
+        let accounts: Vec<String> = resp
+            .wecom_accounts
+            .iter()
+            .map(|a| a.wecom_account_id.clone())
+            .collect();
+
         self.sessions
             .upsert(
                 &resp.user_id,
                 &r.device_id,
                 &refresh_hash,
                 refresh_exp_ms,
+                &accounts,
                 now_ms,
             )
             .await
             .map_err(|e| Status::from(RelayError::from(e)))?;
 
-        let accounts: Vec<String> = resp
-            .wecom_accounts
-            .iter()
-            .map(|a| a.wecom_account_id.clone())
-            .collect();
         let claims = self
             .signer
-            .make_claims(&resp.user_id, accounts, &r.device_id, self.access_ttl.as_secs() as i64);
+            .make_claims(&resp.user_id, accounts.clone(), &r.device_id, self.access_ttl.as_secs() as i64);
         let access_token = self
             .signer
             .sign(&claims)
@@ -2396,8 +2320,8 @@ feat(chathub-relay): AuthSvc::login (verify_user → HMAC → JWT)
 
 - AuthSvc 装配:DownstreamClient + SessionStore + Signer + pepper + TTL
 - login 流程:downstream.verify_user → mint opaque refresh → HMAC →
-  sessions.upsert(user_id, device_id) → sign Ed25519 JWT(accounts 快照,
-  device_id 注入)→ LoginResponse
+  sessions.upsert(user_id, device_id, accounts JSON 快照) → sign Ed25519 JWT
+  (accounts 快照,device_id 注入)→ LoginResponse
 - refresh_token / logout 暂 unimplemented(T10 补)
 - 2 单测:happy(decode JWT 校 claim)+ 401→Unauthenticated
 
@@ -2412,7 +2336,7 @@ EOF
 
 **Files:** Modify `backends/crates/chathub-relay/src/auth_service.rs`
 
-为什么:闭合 Auth 全套。refresh 校 tombstone + exp,旋转 refresh token,重签 access(accounts 沿用 session 上次快照——Plan 5 不重拉下游,留 Plan 6+ 引 AccountStatus event)。logout best-effort delete。
+为什么:闭合 Auth 全套。refresh 校 tombstone + exp,旋转 refresh token,重签 access(accounts 取自 session 中持久化的 JSON 快照——Plan 5 不重拉下游;Plan 6+ 加 AccountStatus event 后可在 push 时同步更新或 refresh 时重拉)。logout best-effort delete。
 
 - [ ] **Step 10.1: 把 `auth_service.rs` 中 refresh_token / logout 的 `unimplemented!` 替换为**
 
@@ -2438,7 +2362,7 @@ EOF
             return Err(Status::unauthenticated("invalid credentials"));
         }
 
-        // 旋转 refresh
+        // 旋转 refresh — 沿用 session 中持久化的 accounts 快照(login 时写入)
         let new_refresh = mint_opaque();
         let new_hash = hash_refresh_token(&self.pepper, &new_refresh);
         let new_exp = now_ms + self.refresh_ttl.as_millis() as i64;
@@ -2447,15 +2371,22 @@ EOF
             .await
             .map_err(|e| Status::from(RelayError::from(e)))?;
         self.sessions
-            .upsert(&session.user_id, &session.device_id, &new_hash, new_exp, now_ms)
+            .upsert(
+                &session.user_id,
+                &session.device_id,
+                &new_hash,
+                new_exp,
+                &session.accounts,
+                now_ms,
+            )
             .await
             .map_err(|e| Status::from(RelayError::from(e)))?;
 
-        // accounts 沿用上次快照(Plan 5 限制):JWT 旧 access 可能含 accounts,但 session 不存。
-        // 简化做法:此处 accounts 空数组(Plan 6+ 引 AccountStatus event 同步;skeleton 允许)
+        // accounts 取自 session.accounts(login 时存的 JSON 快照),
+        // Plan 6+ 加 AccountStatus event 后可在 push 时同步更新或 refresh 时重拉。
         let claims = self.signer.make_claims(
             &session.user_id,
-            vec![],
+            session.accounts.clone(),
             &session.device_id,
             self.access_ttl.as_secs() as i64,
         );
@@ -2498,7 +2429,7 @@ EOF
                 "wecom_accounts":[{"wecom_account_id":"wa-1","corp_id":"c","agent_id":1,"display_name":"w","enabled":true}]
             })))
             .mount(&mock).await;
-        let (addr, _h, _st, _s) = spawn_auth(&mock.uri(), "pep").await;
+        let (addr, _h, _st, signer) = spawn_auth(&mock.uri(), "pep").await;
         let ep = Endpoint::from_shared(format!("http://{addr}")).unwrap();
         let mut client = AuthClient::connect(ep).await.unwrap();
         let login = client
@@ -2513,6 +2444,10 @@ EOF
             .await.unwrap().into_inner();
         assert_ne!(r.refresh_token, rt1);
         assert!(!r.access_token.is_empty());
+        // 新 access JWT 应含 login 时同样的 accounts(session 快照)
+        let claims = signer.verifier().verify(&r.access_token).unwrap();
+        assert_eq!(claims.accounts, vec!["wa-1".to_string()]);
+        assert_eq!(claims.device_id, "dev");
         // 旧 refresh 应当不再 work
         let st = client
             .refresh_token(RefreshTokenRequest { refresh_token: rt1 })
@@ -2582,8 +2517,8 @@ git add backends/crates/chathub-relay/src/auth_service.rs
 git commit -m "$(cat <<'EOF'
 feat(chathub-relay): AuthSvc::refresh_token + logout(tombstone + 旋转)
 
-- refresh:HMAC 找 session → tombstone/exp 检查 → delete 旧 + upsert 新 +
-  重签 access(accounts 留空,等 Plan 6+ AccountStatus event 同步)
+- refresh:HMAC 找 session → tombstone/exp 检查 → delete 旧 + upsert 新
+  (沿用 session.accounts 快照)+ 重签 access(accounts 取自 session JSON 快照)
 - logout:best-effort delete-by-hash
 - +3 单测:happy 旋转 + 旧 token 失效 / logout→refresh→Unauthenticated /
   kicked tombstone→refresh→Unauthenticated
