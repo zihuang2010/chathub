@@ -11,7 +11,9 @@ use chathub_state::{KeyringTokenStore, SeqStore, SqlitePool};
 use std::sync::Arc;
 use std::time::Duration;
 
-use common::stub_relay::{start_stub_full, SubscribeOutcome};
+use chathub_net::AuthError;
+use chathub_proto::v1::{SendRequest, SendResponse};
+use common::stub_relay::{start_stub_full, SendStubOutcome, SubscribeOutcome};
 use tonic::Status;
 
 fn fast_backoff() -> BackoffConfig {
@@ -403,4 +405,80 @@ async fn subscribe_kicked_emits_event_then_terminates() {
     );
 
     cm.stop().await;
+}
+
+// ============================ e2e #8 + #9: Send unary ============================
+
+fn make_send_req(account: &str, conv: &str, msg_id: &str, text: &str) -> SendRequest {
+    SendRequest {
+        wecom_account_id: account.into(),
+        conversation_id: conv.into(),
+        client_msg_id: msg_id.into(),
+        body: Some(MessageBody {
+            kind: Some(message_body::Kind::Text(TextBody { text: text.into() })),
+            reply_to: None,
+            mentions: vec![],
+        }),
+    }
+}
+
+#[tokio::test]
+async fn send_success_returns_server_msg_id() {
+    let (addr, _auth, hub_state, _h) = start_stub_full().await;
+    {
+        let mut s = hub_state.lock().unwrap();
+        s.send_outcome = SendStubOutcome::Ok(SendResponse {
+            server_msg_id: "sm-xyz".into(),
+            sent_at_ms: 1_700_000_000_000,
+        });
+    }
+
+    // 直接构造 HubClient — Send 不需要 ConnectionManager
+    let url = format!("http://{}", addr);
+    let endpoint = build_endpoint(&url).expect("endpoint");
+    let channel = endpoint.connect_lazy();
+    let keyring = KeyringTokenStore::new(common::unique_keyring_service());
+    let token_store = Arc::new(TokenStore::new(endpoint, keyring).expect("ts"));
+    // 种好 refresh token 后 force_refresh,令 interceptor 拿到真实 access token
+    force_login(&token_store).await;
+    token_store.force_refresh().await.expect("force_refresh");
+    let interceptor = AuthInterceptor::new(token_store.clone());
+    let hub = HubClient::new(channel, interceptor);
+
+    let req = make_send_req("wxa1", "conv-1", "msg-id-uuid-fake", "hello");
+    let resp = hub.send(req).await.expect("send ok");
+
+    assert_eq!(resp.server_msg_id, "sm-xyz");
+    assert_eq!(resp.sent_at_ms, 1_700_000_000_000);
+
+    // 断言 stub 收到的 client_msg_id 是 "msg-id-uuid-fake"(测试本身写死)
+    let sends = hub_state.lock().unwrap().sends.clone();
+    assert_eq!(sends.len(), 1);
+    assert_eq!(sends[0].client_msg_id, "msg-id-uuid-fake");
+    assert_eq!(sends[0].wecom_account_id, "wxa1");
+}
+
+#[tokio::test]
+async fn send_unavailable_returns_network_error() {
+    let (addr, _auth, hub_state, _h) = start_stub_full().await;
+    {
+        let mut s = hub_state.lock().unwrap();
+        s.send_outcome = SendStubOutcome::Status(Status::unavailable("relay down"));
+    }
+
+    let url = format!("http://{}", addr);
+    let endpoint = build_endpoint(&url).expect("endpoint");
+    let channel = endpoint.connect_lazy();
+    let keyring = KeyringTokenStore::new(common::unique_keyring_service());
+    let token_store = Arc::new(TokenStore::new(endpoint, keyring).expect("ts"));
+    // 种好 refresh token 后 force_refresh,令 interceptor 拿到真实 access token
+    force_login(&token_store).await;
+    token_store.force_refresh().await.expect("force_refresh");
+    let interceptor = AuthInterceptor::new(token_store.clone());
+    let hub = HubClient::new(channel, interceptor);
+
+    let req = make_send_req("wxa1", "conv-1", "msg-id", "hello");
+    let err = hub.send(req).await.expect_err("should fail");
+
+    assert!(matches!(err, AuthError::Network { .. }), "got {err:?}");
 }
