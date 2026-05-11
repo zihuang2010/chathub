@@ -50,6 +50,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .type_attribute(".chathub.v1.MessageRecalled",     "#[derive(serde::Serialize, serde::Deserialize)]")
         .type_attribute(".chathub.v1.ReadReceipt",         "#[derive(serde::Serialize, serde::Deserialize)]")
         .type_attribute(".chathub.v1.MessageStatusChange", "#[derive(serde::Serialize, serde::Deserialize)]")
+        // ↓↓↓ Plan 4 新增:Tauri 命令返回类型(send_message 模式)↓↓↓
+        .type_attribute(".chathub.v1.RecallResponse",       "#[derive(serde::Serialize, serde::Deserialize)]")
+        .type_attribute(".chathub.v1.AckReadResponse",      "#[derive(serde::Serialize, serde::Deserialize)]")
+        .type_attribute(".chathub.v1.FetchHistoryResponse", "#[derive(serde::Serialize, serde::Deserialize)]")
+        .type_attribute(".chathub.v1.HistoryMessage",       "#[derive(serde::Serialize, serde::Deserialize)]")
         .compile_protos(&proto_files, &[proto_root])?;
 
     Ok(())
