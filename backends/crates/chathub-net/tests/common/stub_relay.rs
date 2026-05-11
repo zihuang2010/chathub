@@ -178,7 +178,10 @@ fn upgrade_required_status() -> Status {
 // ============================ Plan 3:StubHub ============================
 
 use chathub_proto::v1::hub_server::{Hub, HubServer};
-use chathub_proto::v1::{SendRequest, SendResponse, ServerEvent, SubscribeRequest};
+use chathub_proto::v1::{
+    AckReadRequest, AckReadResponse, FetchHistoryRequest, FetchHistoryResponse, RecallRequest,
+    RecallResponse, SendRequest, SendResponse, ServerEvent, SubscribeRequest,
+};
 use std::collections::HashMap;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
@@ -221,6 +224,14 @@ pub struct StubHubState {
     pub send_outcome: SendStubOutcome,
     /// Send RPC 收到的全部请求(用于断言 client_msg_id 等)
     pub sends: Vec<SendRequest>,
+
+    // Plan 4 新增
+    pub recalls: Vec<RecallRequest>,
+    pub recall_outcome: RecallStubOutcome,
+    pub ack_reads: Vec<AckReadRequest>,
+    pub ack_read_outcome: AckReadStubOutcome,
+    pub fetch_history_reqs: Vec<FetchHistoryRequest>,
+    pub fetch_history_outcome: FetchHistoryStubOutcome,
 }
 
 pub struct StubHub {
@@ -258,6 +269,80 @@ impl Hub for StubHub {
             SendStubOutcome::Ok(r) => Ok(Response::new(r)),
             SendStubOutcome::Status(st) => Err(st),
         }
+    }
+
+    async fn recall(
+        &self,
+        req: Request<RecallRequest>,
+    ) -> Result<Response<RecallResponse>, Status> {
+        let mut s = self.state.lock().unwrap();
+        s.recalls.push(req.into_inner());
+        match s.recall_outcome.clone() {
+            RecallStubOutcome::Ok(r) => Ok(Response::new(r)),
+            RecallStubOutcome::Status(st) => Err(st),
+        }
+    }
+
+    async fn ack_read(
+        &self,
+        req: Request<AckReadRequest>,
+    ) -> Result<Response<AckReadResponse>, Status> {
+        let mut s = self.state.lock().unwrap();
+        s.ack_reads.push(req.into_inner());
+        match s.ack_read_outcome.clone() {
+            AckReadStubOutcome::Ok(r) => Ok(Response::new(r)),
+            AckReadStubOutcome::Status(st) => Err(st),
+        }
+    }
+
+    async fn fetch_history(
+        &self,
+        req: Request<FetchHistoryRequest>,
+    ) -> Result<Response<FetchHistoryResponse>, Status> {
+        let mut s = self.state.lock().unwrap();
+        s.fetch_history_reqs.push(req.into_inner());
+        match s.fetch_history_outcome.clone() {
+            FetchHistoryStubOutcome::Ok(r) => Ok(Response::new(r)),
+            FetchHistoryStubOutcome::Status(st) => Err(st),
+        }
+    }
+}
+
+// ============================ Plan 4:Recall / AckRead / FetchHistory ============================
+
+#[derive(Clone)]
+pub enum RecallStubOutcome {
+    Ok(RecallResponse),
+    Status(Status),
+}
+impl Default for RecallStubOutcome {
+    fn default() -> Self {
+        Self::Ok(RecallResponse { recalled_at_ms: 0 })
+    }
+}
+
+#[derive(Clone)]
+pub enum AckReadStubOutcome {
+    Ok(AckReadResponse),
+    Status(Status),
+}
+impl Default for AckReadStubOutcome {
+    fn default() -> Self {
+        Self::Ok(AckReadResponse { acked_at_ms: 0 })
+    }
+}
+
+#[derive(Clone)]
+pub enum FetchHistoryStubOutcome {
+    Ok(FetchHistoryResponse),
+    Status(Status),
+}
+impl Default for FetchHistoryStubOutcome {
+    fn default() -> Self {
+        Self::Ok(FetchHistoryResponse {
+            messages: vec![],
+            next_cursor: String::new(),
+        })
     }
 }
 

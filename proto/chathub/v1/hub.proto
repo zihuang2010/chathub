@@ -5,27 +5,67 @@ package chathub.v1;
 import "chathub/v1/event.proto";
 import "chathub/v1/message.proto";
 
-// Hub service:Plan 3 填充 Subscribe + Send。
-// Plan 4 起会加 Recall / AckRead / FetchHistory / ListWecomAccounts /
-// EnableAccount / DisableAccount。
+// Hub service:Plan 3 起 Subscribe + Send;Plan 4 起 Recall + AckRead + FetchHistory。
+// 后续 Plan 5 加 ListWecomAccounts / EnableAccount / DisableAccount。
 service Hub {
-  rpc Subscribe(SubscribeRequest) returns (stream ServerEvent);
-  rpc Send     (SendRequest)      returns (SendResponse);
+  rpc Subscribe   (SubscribeRequest)    returns (stream ServerEvent);
+  rpc Send        (SendRequest)         returns (SendResponse);
+  rpc Recall      (RecallRequest)       returns (RecallResponse);
+  rpc AckRead     (AckReadRequest)      returns (AckReadResponse);
+  rpc FetchHistory(FetchHistoryRequest) returns (FetchHistoryResponse);
 }
 
 message SubscribeRequest {
-  // 客户端持久化的 (wecom_account_id, last_seq);Relay 只补发 seq > last_seq 的事件
   map<string, int64> since_seqs = 1;
 }
 
 message SendRequest {
   string wecom_account_id = 1;
   string conversation_id  = 2;
-  string client_msg_id    = 3;   // UUIDv4,客户端生成,服务端用 (account_id, client_msg_id) 幂等去重
+  string client_msg_id    = 3;
   MessageBody body        = 4;
 }
-
 message SendResponse {
   string server_msg_id = 1;
   int64  sent_at_ms    = 2;
+}
+
+// Plan 4 — 撤回:by server_msg_id,无 reason
+message RecallRequest {
+  string wecom_account_id = 1;
+  string conversation_id  = 2;
+  string server_msg_id    = 3;
+}
+message RecallResponse {
+  int64 recalled_at_ms = 1;
+}
+
+// Plan 4 — 读回执:batched 语义("已读到这条及之前的全部")
+message AckReadRequest {
+  string wecom_account_id        = 1;
+  string conversation_id         = 2;
+  string last_read_server_msg_id = 3;
+}
+message AckReadResponse {
+  int64 acked_at_ms = 1;
+}
+
+// Plan 4 — 历史拉取:opaque cursor 分页
+message FetchHistoryRequest {
+  string wecom_account_id = 1;
+  string conversation_id  = 2;
+  uint32 limit            = 3;   // 客户端 ≤ 100;0 视为默认(由服务端决定)
+  string cursor           = 4;   // 空 = 从最新开始;服务端 echo next_cursor
+}
+message FetchHistoryResponse {
+  repeated HistoryMessage messages = 1;   // 升序按 sent_at_ms
+  string next_cursor               = 2;   // 空 = 无更早历史
+}
+message HistoryMessage {
+  string conversation_id = 1;
+  string from_user_id    = 2;
+  MessageBody body       = 3;
+  int64  sent_at_ms      = 4;
+  string server_msg_id   = 5;
+  bool   recalled        = 6;   // 已撤回的也返回,客户端展示占位"消息已撤回"
 }

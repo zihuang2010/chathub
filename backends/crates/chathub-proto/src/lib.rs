@@ -114,4 +114,42 @@ mod tests {
         let back: ServerEvent = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(back, evt);
     }
+
+    #[test]
+    fn server_event_with_recalled_serializes_round_trip() {
+        use super::v1::{server_event, MessageRecalled, ServerEvent};
+
+        let evt = ServerEvent {
+            wecom_account_id: "wxa1".into(),
+            seq: 50,
+            body: Some(server_event::Body::Recalled(MessageRecalled {
+                conversation_id: "conv-1".into(),
+                server_msg_id: "sm-1".into(),
+                recalled_at_ms: 1_700_000_000_000,
+                by_user_id: "peer-1".into(),
+            })),
+        };
+        let json = serde_json::to_string(&evt).expect("serialize");
+        let back: ServerEvent = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back, evt);
+    }
+
+    #[test]
+    fn message_status_change_delivered_serializes_round_trip() {
+        use super::v1::{message_status_change, server_event, MessageStatusChange, ServerEvent};
+
+        let evt = ServerEvent {
+            wecom_account_id: "wxa1".into(),
+            seq: 60,
+            body: Some(server_event::Body::StatusChange(MessageStatusChange {
+                conversation_id: "conv-1".into(),
+                client_msg_id: "client-uuid".into(),
+                server_msg_id: "sm-2".into(),
+                status: message_status_change::Status::Delivered as i32,
+            })),
+        };
+        let json = serde_json::to_string(&evt).expect("serialize");
+        let back: ServerEvent = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back, evt);
+    }
 }

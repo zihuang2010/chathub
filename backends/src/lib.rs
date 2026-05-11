@@ -10,8 +10,9 @@ use chathub_net::{
     HubClient, LoggedOutReason, TokenStore,
 };
 use chathub_proto::v1::{
-    message_body, server_event, system_signal, MessageBody, SendRequest, SendResponse, TextBody,
-    UserProfile,
+    message_body, server_event, system_signal, AckReadRequest, AckReadResponse,
+    FetchHistoryRequest, FetchHistoryResponse, MessageBody, RecallRequest, RecallResponse,
+    SendRequest, SendResponse, TextBody, UserProfile,
 };
 use chathub_state::{KeyringTokenStore, SeqStore, SessionStore, SqlitePool};
 use std::time::{Duration, Instant};
@@ -142,6 +143,53 @@ async fn send_message(
         }),
     };
     hub.send(req).await
+}
+
+#[tauri::command]
+async fn recall_message(
+    hub: State<'_, HubClient>,
+    wecom_account_id: String,
+    conversation_id: String,
+    server_msg_id: String,
+) -> Result<RecallResponse, AuthError> {
+    let req = RecallRequest {
+        wecom_account_id,
+        conversation_id,
+        server_msg_id,
+    };
+    hub.recall(req).await
+}
+
+#[tauri::command]
+async fn ack_read(
+    hub: State<'_, HubClient>,
+    wecom_account_id: String,
+    conversation_id: String,
+    last_read_server_msg_id: String,
+) -> Result<AckReadResponse, AuthError> {
+    let req = AckReadRequest {
+        wecom_account_id,
+        conversation_id,
+        last_read_server_msg_id,
+    };
+    hub.ack_read(req).await
+}
+
+#[tauri::command]
+async fn fetch_history(
+    hub: State<'_, HubClient>,
+    wecom_account_id: String,
+    conversation_id: String,
+    limit: u32,
+    cursor: String,
+) -> Result<FetchHistoryResponse, AuthError> {
+    let req = FetchHistoryRequest {
+        wecom_account_id,
+        conversation_id,
+        limit,
+        cursor,
+    };
+    hub.fetch_history(req).await
 }
 
 #[tauri::command]
@@ -287,6 +335,7 @@ pub fn run() {
             greet, take_screenshot,
             login, logout, current_session,
             send_message, hub_state,
+            recall_message, ack_read, fetch_history,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

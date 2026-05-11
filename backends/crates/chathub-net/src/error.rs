@@ -24,6 +24,9 @@ pub enum AuthError {
 
     #[error("internal: {message}")]
     Internal { message: String },
+
+    #[error("account disabled: {message}")]
+    AccountDisabled { message: String },
 }
 
 impl From<tonic::Status> for AuthError {
@@ -38,6 +41,9 @@ impl From<tonic::Status> for AuthError {
         match s.code() {
             Unauthenticated => AuthError::Unauthenticated,
             Unavailable | DeadlineExceeded => AuthError::Network {
+                message: s.message().to_string(),
+            },
+            PermissionDenied => AuthError::AccountDisabled {
                 message: s.message().to_string(),
             },
             FailedPrecondition => AuthError::Internal {
@@ -92,6 +98,15 @@ mod tests {
     fn unauthenticated_translates() {
         let err: AuthError = Status::unauthenticated("bad creds").into();
         assert!(matches!(err, AuthError::Unauthenticated));
+    }
+
+    #[test]
+    fn permission_denied_translates_to_account_disabled() {
+        let err: AuthError = Status::permission_denied("forbidden").into();
+        match err {
+            AuthError::AccountDisabled { message } => assert_eq!(message, "forbidden"),
+            other => panic!("wrong variant: {other:?}"),
+        }
     }
 
     #[test]

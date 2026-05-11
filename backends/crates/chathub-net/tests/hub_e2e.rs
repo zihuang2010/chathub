@@ -12,8 +12,15 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chathub_net::AuthError;
-use chathub_proto::v1::{SendRequest, SendResponse};
-use common::stub_relay::{start_stub_full, SendStubOutcome, SubscribeOutcome};
+use chathub_proto::v1::{
+    message_status_change, AckReadRequest, AckReadResponse, FetchHistoryRequest,
+    FetchHistoryResponse, HistoryMessage, MessageRecalled, MessageStatusChange, ReadReceipt,
+    RecallRequest, RecallResponse, SendRequest, SendResponse,
+};
+use common::stub_relay::{
+    start_stub_full, AckReadStubOutcome, FetchHistoryStubOutcome, RecallStubOutcome,
+    SendStubOutcome, SubscribeOutcome,
+};
 use tonic::Status;
 
 fn fast_backoff() -> BackoffConfig {
@@ -481,4 +488,293 @@ async fn send_unavailable_returns_network_error() {
     let err = hub.send(req).await.expect_err("should fail");
 
     assert!(matches!(err, AuthError::Network { .. }), "got {err:?}");
+}
+
+// ============================ e2e #10 + #11: Recall unary ============================
+
+/// Plan 4 helper:不经 ConnectionManager,直接造 HubClient(unary RPC 路径)
+async fn make_hub_only(addr: std::net::SocketAddr) -> HubClient {
+    let url = format!("http://{}", addr);
+    let endpoint = build_endpoint(&url).expect("endpoint");
+    let channel = endpoint.connect_lazy();
+    let keyring = KeyringTokenStore::new(common::unique_keyring_service());
+    let token_store = Arc::new(TokenStore::new(endpoint, keyring).expect("ts"));
+    force_login(&token_store).await;
+    token_store.force_refresh().await.expect("force_refresh");
+    let interceptor = AuthInterceptor::new(token_store.clone());
+    HubClient::new(channel, interceptor)
+}
+
+#[tokio::test]
+async fn recall_success_returns_recalled_at_ms() {
+    let (addr, _auth, hub_state, _h) = start_stub_full().await;
+    {
+        let mut s = hub_state.lock().unwrap();
+        s.recall_outcome = RecallStubOutcome::Ok(RecallResponse {
+            recalled_at_ms: 1_700_000_000_000,
+        });
+    }
+    let hub = make_hub_only(addr).await;
+
+    let resp = hub
+        .recall(RecallRequest {
+            wecom_account_id: "wxa1".into(),
+            conversation_id: "conv-1".into(),
+            server_msg_id: "sm-1".into(),
+        })
+        .await
+        .expect("recall ok");
+
+    assert_eq!(resp.recalled_at_ms, 1_700_000_000_000);
+
+    let recalls = hub_state.lock().unwrap().recalls.clone();
+    assert_eq!(recalls.len(), 1);
+    assert_eq!(recalls[0].server_msg_id, "sm-1");
+    assert_eq!(recalls[0].wecom_account_id, "wxa1");
+}
+
+#[tokio::test]
+async fn recall_permission_denied_returns_account_disabled() {
+    let (addr, _auth, hub_state, _h) = start_stub_full().await;
+    {
+        let mut s = hub_state.lock().unwrap();
+        s.recall_outcome =
+            RecallStubOutcome::Status(Status::permission_denied("no recall permission"));
+    }
+    let hub = make_hub_only(addr).await;
+
+    let err = hub
+        .recall(RecallRequest {
+            wecom_account_id: "wxa1".into(),
+            conversation_id: "conv-1".into(),
+            server_msg_id: "sm-1".into(),
+        })
+        .await
+        .expect_err("should fail");
+
+    match err {
+        AuthError::AccountDisabled { message } => {
+            assert!(message.contains("no recall permission"), "got {message}");
+        }
+        other => panic!("wrong variant: {other:?}"),
+    }
+}
+
+// ============================ e2e #12: AckRead ============================
+
+#[tokio::test]
+async fn ack_read_success_records_last_read_msg() {
+    let (addr, _auth, hub_state, _h) = start_stub_full().await;
+    {
+        let mut s = hub_state.lock().unwrap();
+        s.ack_read_outcome = AckReadStubOutcome::Ok(AckReadResponse {
+            acked_at_ms: 1_700_000_000_500,
+        });
+    }
+    let hub = make_hub_only(addr).await;
+
+    let resp = hub
+        .ack_read(AckReadRequest {
+            wecom_account_id: "wxa1".into(),
+            conversation_id: "conv-1".into(),
+            last_read_server_msg_id: "sm-50".into(),
+        })
+        .await
+        .expect("ack_read ok");
+
+    assert_eq!(resp.acked_at_ms, 1_700_000_000_500);
+
+    let acks = hub_state.lock().unwrap().ack_reads.clone();
+    assert_eq!(acks.len(), 1);
+    assert_eq!(acks[0].last_read_server_msg_id, "sm-50");
+    assert_eq!(acks[0].conversation_id, "conv-1");
+}
+
+// ============================ e2e #13: FetchHistory 2-page cursor pagination ============================
+
+fn make_history_msg(
+    server_msg_id: &str,
+    text: &str,
+    sent_at: i64,
+    recalled: bool,
+) -> HistoryMessage {
+    HistoryMessage {
+        conversation_id: "conv-1".into(),
+        from_user_id: "peer-1".into(),
+        body: Some(MessageBody {
+            kind: Some(message_body::Kind::Text(TextBody { text: text.into() })),
+            reply_to: None,
+            mentions: vec![],
+        }),
+        sent_at_ms: sent_at,
+        server_msg_id: server_msg_id.into(),
+        recalled,
+    }
+}
+
+#[tokio::test]
+async fn fetch_history_returns_messages_and_paginates_with_cursor() {
+    let (addr, _auth, hub_state, _h) = start_stub_full().await;
+
+    // 第一次:cursor 空,stub 返回 3 条 + next_cursor="page2"
+    {
+        let mut s = hub_state.lock().unwrap();
+        s.fetch_history_outcome = FetchHistoryStubOutcome::Ok(FetchHistoryResponse {
+            messages: vec![
+                make_history_msg("sm-10", "msg 10", 1_700_000_000_010, false),
+                make_history_msg("sm-11", "msg 11", 1_700_000_000_011, true), // 已撤回
+                make_history_msg("sm-12", "msg 12", 1_700_000_000_012, false),
+            ],
+            next_cursor: "page2".into(),
+        });
+    }
+    let hub = make_hub_only(addr).await;
+
+    let page1 = hub
+        .fetch_history(FetchHistoryRequest {
+            wecom_account_id: "wxa1".into(),
+            conversation_id: "conv-1".into(),
+            limit: 3,
+            cursor: String::new(),
+        })
+        .await
+        .expect("page1");
+    assert_eq!(page1.messages.len(), 3);
+    assert!(page1.messages[1].recalled);
+    assert_eq!(page1.next_cursor, "page2");
+
+    // 第二次:cursor="page2",stub 改 outcome 返回 2 条 + 空 next_cursor
+    {
+        let mut s = hub_state.lock().unwrap();
+        s.fetch_history_outcome = FetchHistoryStubOutcome::Ok(FetchHistoryResponse {
+            messages: vec![
+                make_history_msg("sm-08", "msg 8", 1_700_000_000_008, false),
+                make_history_msg("sm-09", "msg 9", 1_700_000_000_009, false),
+            ],
+            next_cursor: String::new(),
+        });
+    }
+
+    let page2 = hub
+        .fetch_history(FetchHistoryRequest {
+            wecom_account_id: "wxa1".into(),
+            conversation_id: "conv-1".into(),
+            limit: 3,
+            cursor: "page2".into(),
+        })
+        .await
+        .expect("page2");
+    assert_eq!(page2.messages.len(), 2);
+    assert_eq!(page2.next_cursor, "");
+
+    // 断言两次请求的 cursor 字段被正确传给 stub
+    let reqs = hub_state.lock().unwrap().fetch_history_reqs.clone();
+    assert_eq!(reqs.len(), 2);
+    assert_eq!(reqs[0].cursor, "");
+    assert_eq!(reqs[1].cursor, "page2");
+}
+
+// ============================ e2e #15: 业务 ServerEvent kind 透传 ============================
+
+#[tokio::test]
+async fn server_event_business_kinds_are_forwarded() {
+    let (addr, _auth, hub_state, _h) = start_stub_full().await;
+    let (cm, token_store, _ss) = make_cm(addr).await;
+    force_login(&token_store).await;
+
+    cm.start().await;
+
+    let mut state_rx = cm.state_subscribe();
+    wait_for_state(
+        &mut state_rx,
+        |s| matches!(s, ConnectionState::Subscribed),
+        Duration::from_secs(2),
+    )
+    .await;
+
+    let mut event_rx = cm.event_subscribe();
+
+    // 推 MessageRecalled
+    push_event(
+        &hub_state,
+        ServerEvent {
+            wecom_account_id: "wxa1".into(),
+            seq: 200,
+            body: Some(server_event::Body::Recalled(MessageRecalled {
+                conversation_id: "conv-1".into(),
+                server_msg_id: "sm-10".into(),
+                recalled_at_ms: 1_700_000_000_100,
+                by_user_id: "peer-1".into(),
+            })),
+        },
+    )
+    .await;
+
+    // 推 ReadReceipt
+    push_event(
+        &hub_state,
+        ServerEvent {
+            wecom_account_id: "wxa1".into(),
+            seq: 201,
+            body: Some(server_event::Body::ReadReceipt(ReadReceipt {
+                conversation_id: "conv-1".into(),
+                by_user_id: "peer-1".into(),
+                last_read_server_msg_id: "sm-9".into(),
+                read_at_ms: 1_700_000_000_200,
+            })),
+        },
+    )
+    .await;
+
+    // 推 MessageStatusChange
+    push_event(
+        &hub_state,
+        ServerEvent {
+            wecom_account_id: "wxa1".into(),
+            seq: 202,
+            body: Some(server_event::Body::StatusChange(MessageStatusChange {
+                conversation_id: "conv-1".into(),
+                client_msg_id: "client-uuid-fake".into(),
+                server_msg_id: "sm-11".into(),
+                status: message_status_change::Status::Delivered as i32,
+            })),
+        },
+    )
+    .await;
+
+    // 收 3 个 event,断言 kind
+    let e1 = tokio::time::timeout(Duration::from_secs(2), event_rx.recv())
+        .await
+        .expect("recv1 timeout")
+        .expect("recv1");
+    assert!(
+        matches!(&e1.body, Some(server_event::Body::Recalled(_))),
+        "got {:?}",
+        e1.body
+    );
+    assert_eq!(e1.seq, 200);
+
+    let e2 = tokio::time::timeout(Duration::from_secs(2), event_rx.recv())
+        .await
+        .expect("recv2 timeout")
+        .expect("recv2");
+    assert!(
+        matches!(&e2.body, Some(server_event::Body::ReadReceipt(_))),
+        "got {:?}",
+        e2.body
+    );
+    assert_eq!(e2.seq, 201);
+
+    let e3 = tokio::time::timeout(Duration::from_secs(2), event_rx.recv())
+        .await
+        .expect("recv3 timeout")
+        .expect("recv3");
+    assert!(
+        matches!(&e3.body, Some(server_event::Body::StatusChange(_))),
+        "got {:?}",
+        e3.body
+    );
+    assert_eq!(e3.seq, 202);
+
+    cm.stop().await;
 }
