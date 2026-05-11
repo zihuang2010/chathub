@@ -101,18 +101,76 @@ impl Auth for AuthSvc {
 
     async fn refresh_token(
         &self,
-        _req: Request<RefreshTokenRequest>,
+        req: Request<RefreshTokenRequest>,
     ) -> Result<Response<RefreshTokenResponse>, Status> {
-        // T10 实现
-        Err(Status::unimplemented("refresh_token: T10"))
+        let r = req.into_inner();
+        let hash = hash_refresh_token(&self.pepper, &r.refresh_token);
+        let session = self
+            .sessions
+            .find_by_refresh_hash(&hash)
+            .await
+            .map_err(|e| Status::from(RelayError::from(e)))?
+            .ok_or_else(|| Status::unauthenticated("invalid credentials"))?;
+
+        if session.kicked_at_ms.is_some() {
+            return Err(Status::unauthenticated("invalid credentials"));
+        }
+        let now_ms = now_ms();
+        if session.refresh_exp_ms <= now_ms {
+            return Err(Status::unauthenticated("invalid credentials"));
+        }
+
+        // 旋转 refresh — 沿用 session 中持久化的 accounts 快照(login 时写入)
+        let new_refresh = mint_opaque();
+        let new_hash = hash_refresh_token(&self.pepper, &new_refresh);
+        let new_exp = now_ms + self.refresh_ttl.as_millis() as i64;
+        self.sessions
+            .delete(&hash)
+            .await
+            .map_err(|e| Status::from(RelayError::from(e)))?;
+        self.sessions
+            .upsert(
+                &session.user_id,
+                &session.device_id,
+                &new_hash,
+                new_exp,
+                &session.accounts,
+                now_ms,
+            )
+            .await
+            .map_err(|e| Status::from(RelayError::from(e)))?;
+
+        // accounts 取自 session.accounts(login 时存的 JSON 快照),
+        // Plan 6+ 加 AccountStatus event 后可在 push 时同步更新或 refresh 时重拉。
+        let claims = self.signer.make_claims(
+            &session.user_id,
+            session.accounts.clone(),
+            &session.device_id,
+            self.access_ttl.as_secs() as i64,
+        );
+        let access = self
+            .signer
+            .sign(&claims)
+            .map_err(|e| Status::from(RelayError::from(e)))?;
+        let access_exp_ms = now_ms + self.access_ttl.as_millis() as i64;
+
+        Ok(Response::new(RefreshTokenResponse {
+            access_token: access,
+            access_exp_ms,
+            refresh_token: new_refresh,
+            refresh_exp_ms: new_exp,
+        }))
     }
 
     async fn logout(
         &self,
-        _req: Request<LogoutRequest>,
+        req: Request<LogoutRequest>,
     ) -> Result<Response<LogoutResponse>, Status> {
-        // T10 实现
-        Err(Status::unimplemented("logout: T10"))
+        let r = req.into_inner();
+        let hash = hash_refresh_token(&self.pepper, &r.refresh_token);
+        // best-effort:不存在也返 Ok
+        let _ = self.sessions.delete(&hash).await;
+        Ok(Response::new(LogoutResponse {}))
     }
 }
 
@@ -240,6 +298,137 @@ mod tests {
                 device_id: "dev-A".into(),
                 device_name: "Mac".into(),
                 client_ver: "".into(),
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(st.code(), tonic::Code::Unauthenticated);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn refresh_happy_rotates_pair() {
+        let mock = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/verify_user"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "user_id":"u-7","display_name":"A","role":"op","tenant_id":"t",
+                "wecom_accounts":[{"wecom_account_id":"wa-1","corp_id":"c","agent_id":1,"display_name":"w","enabled":true}]
+            })))
+            .mount(&mock).await;
+        let (addr, _h, _st, signer) = spawn_auth(&mock.uri(), "pep").await;
+        let ep = Endpoint::from_shared(format!("http://{addr}")).unwrap();
+        let mut client = AuthClient::connect(ep).await.unwrap();
+        let login = client
+            .login(LoginRequest {
+                username: "u".into(),
+                password: "p".into(),
+                device_id: "dev".into(),
+                device_name: "M".into(),
+                client_ver: "".into(),
+            })
+            .await
+            .unwrap()
+            .into_inner();
+        let rt1 = login.refresh_token.clone();
+        let r = client
+            .refresh_token(RefreshTokenRequest {
+                refresh_token: rt1.clone(),
+                device_id: "dev".into(),
+            })
+            .await
+            .unwrap()
+            .into_inner();
+        assert_ne!(r.refresh_token, rt1);
+        assert!(!r.access_token.is_empty());
+        // 新 access JWT 应含 login 时同样的 accounts(session 快照)
+        let claims = signer.verifier().verify(&r.access_token).unwrap();
+        assert_eq!(claims.accounts, vec!["wa-1".to_string()]);
+        assert_eq!(claims.device_id, "dev");
+        // 旧 refresh 应当不再 work
+        let st = client
+            .refresh_token(RefreshTokenRequest {
+                refresh_token: rt1,
+                device_id: "dev".into(),
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(st.code(), tonic::Code::Unauthenticated);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn logout_then_refresh_unauthenticated() {
+        let mock = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/verify_user"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "user_id":"u-7","display_name":"A","role":"op","tenant_id":"t",
+                "wecom_accounts":[]
+            })))
+            .mount(&mock)
+            .await;
+        let (addr, _h, _st, _s) = spawn_auth(&mock.uri(), "pep").await;
+        let ep = Endpoint::from_shared(format!("http://{addr}")).unwrap();
+        let mut client = AuthClient::connect(ep).await.unwrap();
+        let login = client
+            .login(LoginRequest {
+                username: "u".into(),
+                password: "p".into(),
+                device_id: "d".into(),
+                device_name: "M".into(),
+                client_ver: "".into(),
+            })
+            .await
+            .unwrap()
+            .into_inner();
+        let _ = client
+            .logout(LogoutRequest {
+                refresh_token: login.refresh_token.clone(),
+            })
+            .await
+            .unwrap();
+        let st = client
+            .refresh_token(RefreshTokenRequest {
+                refresh_token: login.refresh_token,
+                device_id: "d".into(),
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(st.code(), tonic::Code::Unauthenticated);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn kicked_then_refresh_unauthenticated() {
+        let mock = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/verify_user"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "user_id":"u-7","display_name":"A","role":"op","tenant_id":"t",
+                "wecom_accounts":[]
+            })))
+            .mount(&mock)
+            .await;
+        let (addr, _h, storage, _s) = spawn_auth(&mock.uri(), "pep").await;
+        let ep = Endpoint::from_shared(format!("http://{addr}")).unwrap();
+        let mut client = AuthClient::connect(ep).await.unwrap();
+        let login = client
+            .login(LoginRequest {
+                username: "u".into(),
+                password: "p".into(),
+                device_id: "d-X".into(),
+                device_name: "M".into(),
+                client_ver: "".into(),
+            })
+            .await
+            .unwrap()
+            .into_inner();
+        // 后台直接 mark_kicked
+        SessionStore::new(storage)
+            .mark_kicked("u-7", "d-X", 99_999)
+            .await
+            .unwrap();
+        let st = client
+            .refresh_token(RefreshTokenRequest {
+                refresh_token: login.refresh_token,
+                device_id: "d-X".into(),
             })
             .await
             .unwrap_err();
