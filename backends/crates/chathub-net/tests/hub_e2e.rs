@@ -13,10 +13,12 @@ use std::time::Duration;
 
 use chathub_net::AuthError;
 use chathub_proto::v1::{
-    AckReadRequest, AckReadResponse, RecallRequest, RecallResponse, SendRequest, SendResponse,
+    AckReadRequest, AckReadResponse, FetchHistoryRequest, FetchHistoryResponse, HistoryMessage,
+    RecallRequest, RecallResponse, SendRequest, SendResponse,
 };
 use common::stub_relay::{
-    start_stub_full, AckReadStubOutcome, RecallStubOutcome, SendStubOutcome, SubscribeOutcome,
+    start_stub_full, AckReadStubOutcome, FetchHistoryStubOutcome, RecallStubOutcome,
+    SendStubOutcome, SubscribeOutcome,
 };
 use tonic::Status;
 
@@ -585,4 +587,88 @@ async fn ack_read_success_records_last_read_msg() {
     assert_eq!(acks.len(), 1);
     assert_eq!(acks[0].last_read_server_msg_id, "sm-50");
     assert_eq!(acks[0].conversation_id, "conv-1");
+}
+
+// ============================ e2e #13: FetchHistory 2-page cursor pagination ============================
+
+fn make_history_msg(
+    server_msg_id: &str,
+    text: &str,
+    sent_at: i64,
+    recalled: bool,
+) -> HistoryMessage {
+    HistoryMessage {
+        conversation_id: "conv-1".into(),
+        from_user_id: "peer-1".into(),
+        body: Some(MessageBody {
+            kind: Some(message_body::Kind::Text(TextBody { text: text.into() })),
+            reply_to: None,
+            mentions: vec![],
+        }),
+        sent_at_ms: sent_at,
+        server_msg_id: server_msg_id.into(),
+        recalled,
+    }
+}
+
+#[tokio::test]
+async fn fetch_history_returns_messages_and_paginates_with_cursor() {
+    let (addr, _auth, hub_state, _h) = start_stub_full().await;
+
+    // 第一次:cursor 空,stub 返回 3 条 + next_cursor="page2"
+    {
+        let mut s = hub_state.lock().unwrap();
+        s.fetch_history_outcome = FetchHistoryStubOutcome::Ok(FetchHistoryResponse {
+            messages: vec![
+                make_history_msg("sm-10", "msg 10", 1_700_000_000_010, false),
+                make_history_msg("sm-11", "msg 11", 1_700_000_000_011, true), // 已撤回
+                make_history_msg("sm-12", "msg 12", 1_700_000_000_012, false),
+            ],
+            next_cursor: "page2".into(),
+        });
+    }
+    let hub = make_hub_only(addr).await;
+
+    let page1 = hub
+        .fetch_history(FetchHistoryRequest {
+            wecom_account_id: "wxa1".into(),
+            conversation_id: "conv-1".into(),
+            limit: 3,
+            cursor: String::new(),
+        })
+        .await
+        .expect("page1");
+    assert_eq!(page1.messages.len(), 3);
+    assert!(page1.messages[1].recalled);
+    assert_eq!(page1.next_cursor, "page2");
+
+    // 第二次:cursor="page2",stub 改 outcome 返回 2 条 + 空 next_cursor
+    {
+        let mut s = hub_state.lock().unwrap();
+        s.fetch_history_outcome = FetchHistoryStubOutcome::Ok(FetchHistoryResponse {
+            messages: vec![
+                make_history_msg("sm-08", "msg 8", 1_700_000_000_008, false),
+                make_history_msg("sm-09", "msg 9", 1_700_000_000_009, false),
+            ],
+            next_cursor: String::new(),
+        });
+    }
+
+    let page2 = hub
+        .fetch_history(FetchHistoryRequest {
+            wecom_account_id: "wxa1".into(),
+            conversation_id: "conv-1".into(),
+            limit: 3,
+            cursor: "page2".into(),
+        })
+        .await
+        .expect("page2");
+    assert_eq!(page2.messages.len(), 2);
+    assert_eq!(page2.next_cursor, "");
+
+    // 断言两次请求的 cursor 字段被正确传给 stub
+    let reqs = hub_state.lock().unwrap().fetch_history_reqs.clone();
+    assert_eq!(reqs.len(), 2);
+    assert_eq!(reqs[0].cursor, "");
+    assert_eq!(reqs[1].cursor, "page2");
 }
