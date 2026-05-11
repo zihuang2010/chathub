@@ -7,6 +7,8 @@
 //!   - `BackoffConfig` + `ExponentialBackoff`:重连退避配置与计算
 //!   - `classify`:tonic Status → Action 路径分流
 
+use crate::error::AuthError;
+use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
 /// 重连退避配置。生产默认 1s/2x/15s full jitter,测试通常用 10ms/2x/150ms 加速。
@@ -25,6 +27,18 @@ impl Default for BackoffConfig {
             cap: Duration::from_secs(15),
         }
     }
+}
+
+/// 对前端暴露的 3 状态机。`hub:connection` 事件 payload 序列化此 enum。
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "kebab-case")]
+pub enum ConnectionState {
+    Connecting,
+    Subscribed,
+    Disconnected {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        last_error: Option<AuthError>,
+    },
 }
 
 /// Full jitter 指数退避。`next()` 返回 `[0, min(cap, base * factor^attempt))` 的随机时长。
@@ -107,5 +121,35 @@ mod tests {
     }
 
     #[test]
-    fn placeholder() {}
+    fn connection_state_connecting_serializes_kebab_case_tag() {
+        let s = ConnectionState::Connecting;
+        let json = serde_json::to_string(&s).expect("serialize");
+        assert_eq!(json, r#"{"state":"connecting"}"#);
+    }
+
+    #[test]
+    fn connection_state_subscribed_serializes() {
+        let s = ConnectionState::Subscribed;
+        let json = serde_json::to_string(&s).expect("serialize");
+        assert_eq!(json, r#"{"state":"subscribed"}"#);
+    }
+
+    #[test]
+    fn connection_state_disconnected_no_error_omits_field() {
+        let s = ConnectionState::Disconnected { last_error: None };
+        let json = serde_json::to_string(&s).expect("serialize");
+        assert_eq!(json, r#"{"state":"disconnected"}"#);
+    }
+
+    #[test]
+    fn connection_state_disconnected_with_error_includes_field() {
+        let s = ConnectionState::Disconnected {
+            last_error: Some(AuthError::Unauthenticated),
+        };
+        let json = serde_json::to_string(&s).expect("serialize");
+        // AuthError 已 serde derive(kind=unauthenticated),嵌套即可
+        assert!(json.contains(r#""state":"disconnected""#), "{json}");
+        assert!(json.contains(r#""last_error""#), "{json}");
+        assert!(json.contains(r#""kind":"unauthenticated""#), "{json}");
+    }
 }
