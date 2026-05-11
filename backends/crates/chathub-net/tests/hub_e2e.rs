@@ -249,3 +249,42 @@ async fn subscribe_upgrade_required_terminates() {
 
     cm.stop().await;
 }
+
+use chathub_net::LoggedOutReason;
+
+#[tokio::test]
+async fn logged_out_during_subscribe_terminates_task() {
+    let (addr, _auth, hub_state, _h) = start_stub_full().await;
+    let (cm, token_store, _ss) = make_cm(addr).await;
+    force_login(&token_store).await;
+
+    cm.start().await;
+
+    // 等到 Subscribed
+    let mut state_rx = cm.state_subscribe();
+    wait_for_state(
+        &mut state_rx,
+        |s| matches!(s, ConnectionState::Subscribed),
+        Duration::from_secs(2),
+    )
+    .await;
+
+    // 主动 emit LoggedOut
+    token_store._emit_logged_out_for_test(LoggedOutReason::RefreshFailed);
+
+    // 等到 Disconnected{None}
+    wait_for_state(
+        &mut state_rx,
+        |s| matches!(s, ConnectionState::Disconnected { last_error: None }),
+        Duration::from_secs(2),
+    )
+    .await;
+
+    // sleep 200ms 验证 task 不再重连
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let sub_count = hub_state.lock().unwrap().subscribes.len();
+    // 仅一次 subscribe(LoggedOut 后 task 退出,不应重连)
+    assert_eq!(sub_count, 1, "task should not reconnect after LoggedOut");
+
+    cm.stop().await;
+}

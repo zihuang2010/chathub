@@ -231,6 +231,14 @@ impl TokenStore {
             .expect("seed_refresh_token_for_test");
     }
 
+    /// **测试 only** —— 主动 emit 一个 LoggedOut 给所有订阅者,模拟 refresher 失败。
+    /// 不清 keyring,不改 state;仅 broadcast。
+    /// `#[doc(hidden)]` 让 rustdoc 不展示;不删除 access state,以便测试可断言"task 退出后"的行为。
+    #[doc(hidden)]
+    pub fn _emit_logged_out_for_test(&self, reason: LoggedOutReason) {
+        let _ = self.logged_out_tx.send(reason);
+    }
+
     /// 仅供 AuthApi::try_resume_session 用:在 force_refresh 之前先种 user_id 到 state。
     /// 在 do_refresh_inner 成功时,user_id 会被保留(详见 do_refresh_inner)。
     pub fn seed_user_id(&self, user_id: &str) {
