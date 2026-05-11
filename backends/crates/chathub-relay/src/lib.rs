@@ -6,3 +6,5 @@
 //!   - auth_service / hub_service / push
 //!
 //! Plan 5 walking skeleton 只跑 in-process,不暴露稳定 public API。
+
+pub mod config;
