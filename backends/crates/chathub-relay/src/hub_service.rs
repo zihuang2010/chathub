@@ -13,6 +13,7 @@ use chathub_proto::v1::{
 };
 use prost::Message;
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::metadata::MetadataValue;
@@ -152,8 +153,62 @@ impl Hub for HubSvc {
         Ok(Response::new(ReceiverStream::new(rx)))
     }
 
-    async fn send(&self, _req: Request<SendRequest>) -> Result<Response<SendResponse>, Status> {
-        Err(Status::unimplemented("send: T18"))
+    async fn send(&self, req: Request<SendRequest>) -> Result<Response<SendResponse>, Status> {
+        let ctx = req
+            .extensions()
+            .get::<UserCtx>()
+            .cloned()
+            .ok_or_else(|| Status::unauthenticated("missing ctx"))?;
+        let r = req.into_inner();
+        let body = r
+            .body
+            .as_ref()
+            .ok_or_else(|| Status::invalid_argument("missing body"))?;
+        let resp = self
+            .downstream
+            .send(crate::downstream::SendReq {
+                user_id: &ctx.user_id,
+                wecom_account_id: &r.wecom_account_id,
+                conversation_id: &r.conversation_id,
+                client_msg_id: &r.client_msg_id,
+                body,
+            })
+            .await
+            .map_err(Status::from)?;
+
+        // 后续 fanout MessageStatusChange{STATUS_SENT}
+        let status_evt = ServerEvent {
+            wecom_account_id: r.wecom_account_id.clone(),
+            seq: 0, // 将由 seqs.next_seq 重写
+            body: Some(chathub_proto::v1::server_event::Body::StatusChange(
+                chathub_proto::v1::MessageStatusChange {
+                    conversation_id: r.conversation_id.clone(),
+                    client_msg_id: r.client_msg_id.clone(),
+                    server_msg_id: resp.server_msg_id.clone(),
+                    status: chathub_proto::v1::message_status_change::Status::Sent as i32,
+                },
+            )),
+        };
+        let assigned = self
+            .seqs
+            .next_seq(&r.wecom_account_id)
+            .await
+            .map_err(|e| Status::from(RelayError::from(e)))?;
+        let mut evt = status_evt;
+        evt.seq = assigned;
+        let mut buf = Vec::new();
+        prost::Message::encode(&evt, &mut buf)
+            .map_err(|e| Status::internal(format!("encode: {e}")))?;
+        let _ = self
+            .events
+            .record(&r.wecom_account_id, assigned, buf, now_ms())
+            .await;
+        let _ = self.router.fanout(&r.wecom_account_id, evt);
+
+        Ok(Response::new(SendResponse {
+            server_msg_id: resp.server_msg_id,
+            sent_at_ms: resp.sent_at_ms,
+        }))
     }
 
     async fn recall(
@@ -176,6 +231,13 @@ impl Hub for HubSvc {
     ) -> Result<Response<FetchHistoryResponse>, Status> {
         Err(Status::unimplemented("fetch_history: T20"))
     }
+}
+
+fn now_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
 }
 
 // ─── Tests ──────────────────────────────────────────────────────────────────
