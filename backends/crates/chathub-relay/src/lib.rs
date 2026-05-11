@@ -13,4 +13,5 @@ pub mod downstream;
 pub mod error;
 pub mod hub_service;
 pub mod jwt;
+pub mod router;
 pub mod storage;
