@@ -44,6 +44,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .type_attribute(".chathub.v1.IncomingMsg",       "#[derive(serde::Serialize, serde::Deserialize)]")
         .type_attribute(".chathub.v1.SystemSignal",      "#[derive(serde::Serialize, serde::Deserialize)]")
         .type_attribute(".chathub.v1.SendResponse",      "#[derive(serde::Serialize, serde::Deserialize)]")
+        // ↓↓↓ Plan 4 新增:ServerEvent.Body 的 3 个 oneof variant 类型需要 serde
+        //      MessageStatusChange.Status 是 nested enum,父 message attribute 已 cascade,
+        //      不单独加(否则 conflicting impl,与 SystemSignal.Kind 同理)↓↓↓
+        .type_attribute(".chathub.v1.MessageRecalled",     "#[derive(serde::Serialize, serde::Deserialize)]")
+        .type_attribute(".chathub.v1.ReadReceipt",         "#[derive(serde::Serialize, serde::Deserialize)]")
+        .type_attribute(".chathub.v1.MessageStatusChange", "#[derive(serde::Serialize, serde::Deserialize)]")
         .compile_protos(&proto_files, &[proto_root])?;
 
     Ok(())

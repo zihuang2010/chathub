@@ -5,19 +5,22 @@ package chathub.v1;
 import "chathub/v1/common.proto";
 import "chathub/v1/message.proto";
 
-// ServerEvent 由 Hub.Subscribe 推送。Plan 3 仅 IncomingMsg + SystemSignal,
-// Plan 4+ 加 MessageRecalled / ReadReceipt / AccountStatus / PresenceChange
-// / MessageStatusChange — 通过新增 oneof variant 是 wire-compat 的。
+// ServerEvent 由 Hub.Subscribe 推送。Plan 3 有 IncomingMsg + SystemSignal;
+// Plan 4 加 MessageRecalled / ReadReceipt / MessageStatusChange;
+// Plan 5 起加 AccountStatus / PresenceChange(tag 14/15)。
 message ServerEvent {
   string wecom_account_id = 1;
   int64  seq              = 2;
   // 3-9 reserved for envelope-level fields
 
   oneof body {
-    IncomingMsg  incoming = 10;
-    SystemSignal system   = 90;
-    // 11-89 reserved for business events (Plan 4+)
-    // 91-99 reserved for system signals (Plan 4+)
+    IncomingMsg          incoming      = 10;
+    MessageRecalled      recalled      = 11;
+    ReadReceipt          read_receipt  = 12;
+    MessageStatusChange  status_change = 13;
+    SystemSignal         system        = 90;
+    // 14-89 reserved for business events (Plan 5+)
+    // 91-99 reserved for system signals (Plan 5+)
   }
 }
 
@@ -30,11 +33,41 @@ message IncomingMsg {
   optional RemoteId remote = 6;
 }
 
+// Plan 4 — 对端 / 自己的撤回通知
+message MessageRecalled {
+  string conversation_id = 1;
+  string server_msg_id   = 2;
+  int64  recalled_at_ms  = 3;
+  string by_user_id      = 4;
+}
+
+// Plan 4 — 对端已读
+message ReadReceipt {
+  string conversation_id         = 1;
+  string by_user_id              = 2;
+  string last_read_server_msg_id = 3;
+  int64  read_at_ms              = 4;
+}
+
+// Plan 4 — 自己发出消息的状态变化
+message MessageStatusChange {
+  enum Status {
+    STATUS_UNSPECIFIED = 0;
+    STATUS_SENT        = 1;
+    STATUS_DELIVERED   = 2;
+    STATUS_FAILED      = 3;
+  }
+  string conversation_id = 1;
+  string client_msg_id   = 2;
+  string server_msg_id   = 3;
+  Status status          = 4;
+}
+
 message SystemSignal {
   enum Kind {
     KIND_UNSPECIFIED  = 0;
-    KIND_KICKED       = 1;   // 服务端撤销凭证(其它设备登录、会话失效)
-    KIND_SERVER_DRAIN = 2;   // 服务端将 GOAWAY,客户端预期重连
+    KIND_KICKED       = 1;
+    KIND_SERVER_DRAIN = 2;
   }
   Kind   kind   = 1;
   string detail = 2;
