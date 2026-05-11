@@ -8,8 +8,13 @@
 //!   - `classify`:tonic Status → Action 路径分流
 
 use crate::error::AuthError;
+use crate::interceptor::AuthInterceptor;
+use chathub_proto::v1::hub_client::HubClient as RawHubClient;
+use chathub_proto::v1::{SendRequest, SendResponse};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
+use tonic::codegen::InterceptedService;
+use tonic::transport::Channel;
 
 /// 重连退避配置。生产默认 1s/2x/15s full jitter,测试通常用 10ms/2x/150ms 加速。
 #[derive(Clone, Debug)]
@@ -61,6 +66,27 @@ pub(crate) fn classify(err: &AuthError) -> Action {
         AuthError::Network { .. } => Action::Backoff,
         AuthError::Storage { .. } => Action::Terminate,
         AuthError::Internal { .. } => Action::Backoff,
+    }
+}
+
+/// HubClient — thin wrapper over tonic-generated HubClient + AuthInterceptor。
+/// 内部 `inner` 是 `Clone`(Channel 内部 Arc),clone() 廉价。
+#[derive(Clone)]
+pub struct HubClient {
+    inner: RawHubClient<InterceptedService<Channel, AuthInterceptor>>,
+}
+
+impl HubClient {
+    pub fn new(channel: Channel, interceptor: AuthInterceptor) -> Self {
+        let inner = RawHubClient::with_interceptor(channel, interceptor);
+        Self { inner }
+    }
+
+    /// Unary Send。失败映射到 AuthError(同 Plan 2 路径)。
+    pub async fn send(&self, req: SendRequest) -> Result<SendResponse, AuthError> {
+        let mut client = self.inner.clone();
+        let resp = client.send(tonic::Request::new(req)).await?;
+        Ok(resp.into_inner())
     }
 }
 
