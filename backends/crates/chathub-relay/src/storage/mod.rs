@@ -1,5 +1,6 @@
 //! Storage — deadpool_sqlite::Pool 包装 + 启动时跑迁移 + PRAGMA WAL。
 
+pub mod kv;
 pub mod migrations;
 pub mod sessions;
 
