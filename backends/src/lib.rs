@@ -10,9 +10,12 @@ use chathub_net::{
     HubClient, LoggedOutReason, TokenStore,
 };
 use chathub_proto::v1::{
-    message_body, MessageBody, SendRequest, SendResponse, TextBody, UserProfile,
+    message_body, server_event, system_signal, MessageBody, SendRequest, SendResponse, TextBody,
+    UserProfile,
 };
 use chathub_state::{KeyringTokenStore, SeqStore, SessionStore, SqlitePool};
+use std::time::{Duration, Instant};
+use tokio::sync::broadcast as tokio_broadcast;
 
 const KEYRING_SERVICE: &str = "com.pis0sion.chathub";
 
@@ -220,6 +223,61 @@ pub fn run() {
                         LoggedOutReason::Kicked        => "kicked",
                     };
                     let _ = app_for_event.emit("auth:logged_out", serde_json::json!({ "reason": kind }));
+                }
+            });
+
+            // ---- Plan 3:hub:event 桥接(broadcast<ServerEvent> → app.emit) ----
+            let cm_for_event = Arc::clone(&conn_manager);
+            let auth_for_kicked = Arc::clone(&auth_api);
+            let app_for_hub_event = app_handle.clone();
+            tauri::async_runtime::spawn(async move {
+                let mut rx = cm_for_event.event_subscribe();
+                let mut last_lag_reconnect: Option<Instant> = None;
+                loop {
+                    match rx.recv().await {
+                        Ok(event) => {
+                            // 检查是否是 KICKED:在 emit 前先抓住 enum 信息
+                            let is_kicked = matches!(
+                                &event.body,
+                                Some(server_event::Body::System(s))
+                                    if s.kind == system_signal::Kind::Kicked as i32
+                            );
+                            let _ = app_for_hub_event.emit("hub:event", &event);
+                            if is_kicked {
+                                tracing::warn!(target: "chathub::hub", "KICKED received, logging out");
+                                let _ = auth_for_kicked.logout().await;
+                                let _ = app_for_hub_event.emit(
+                                    "auth:logged_out",
+                                    serde_json::json!({ "reason": "kicked" }),
+                                );
+                            }
+                        }
+                        Err(tokio_broadcast::error::RecvError::Lagged(n)) => {
+                            let now = Instant::now();
+                            if last_lag_reconnect.map_or(true, |t| now.duration_since(t) > Duration::from_secs(5)) {
+                                tracing::warn!(target: "chathub::hub", skipped = n, "hub event lag, requesting reconnect");
+                                cm_for_event.stop().await;
+                                cm_for_event.start().await;
+                                last_lag_reconnect = Some(now);
+                            } else {
+                                tracing::warn!(target: "chathub::hub", skipped = n, "hub event lag throttled");
+                            }
+                        }
+                        Err(tokio_broadcast::error::RecvError::Closed) => break,
+                    }
+                }
+            });
+
+            // ---- Plan 3:hub:connection 桥接(watch<ConnectionState> → app.emit) ----
+            let cm_for_state = Arc::clone(&conn_manager);
+            let app_for_state = app_handle.clone();
+            tauri::async_runtime::spawn(async move {
+                let mut rx = cm_for_state.state_subscribe();
+                // 主动 emit 一次初始态(watch::Receiver::changed 不会 fire 第一次值)
+                let _ = app_for_state.emit("hub:connection", &*rx.borrow());
+                while rx.changed().await.is_ok() {
+                    let s = rx.borrow().clone();
+                    let _ = app_for_state.emit("hub:connection", &s);
                 }
             });
 
