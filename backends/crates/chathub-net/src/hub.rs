@@ -9,11 +9,16 @@
 
 use crate::error::AuthError;
 use crate::interceptor::AuthInterceptor;
+use crate::token::TokenStore;
 use chathub_proto::v1::hub_client::HubClient as RawHubClient;
 use chathub_proto::v1::{SendRequest, SendResponse, ServerEvent, SubscribeRequest};
+use chathub_state::SeqStore;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::{broadcast, watch};
+use tokio::task::JoinHandle;
 use tonic::codegen::InterceptedService;
 use tonic::transport::Channel;
 
@@ -138,6 +143,92 @@ impl ExponentialBackoff {
 
     pub fn reset(&mut self) {
         self.attempt = 0;
+    }
+}
+
+#[allow(dead_code)]
+struct Inner {
+    hub: HubClient,
+    token_store: Arc<TokenStore>,
+    seq_store: SeqStore,
+    backoff: BackoffConfig,
+    state_tx: watch::Sender<ConnectionState>,
+    event_tx: broadcast::Sender<ServerEvent>,
+    task: tokio::sync::Mutex<Option<JoinHandle<()>>>,
+}
+
+#[derive(Clone)]
+pub struct ConnectionManager {
+    inner: Arc<Inner>,
+}
+
+impl ConnectionManager {
+    /// 构造。`backoff` 测试通常传 fast(10ms/2x/150ms),生产传 `BackoffConfig::default()`。
+    pub fn new(
+        hub: HubClient,
+        token_store: Arc<TokenStore>,
+        seq_store: SeqStore,
+        backoff: BackoffConfig,
+    ) -> Self {
+        let (state_tx, _) = watch::channel(ConnectionState::Disconnected { last_error: None });
+        let (event_tx, _) = broadcast::channel(256);
+        Self {
+            inner: Arc::new(Inner {
+                hub,
+                token_store,
+                seq_store,
+                backoff,
+                state_tx,
+                event_tx,
+                task: tokio::sync::Mutex::new(None),
+            }),
+        }
+    }
+
+    pub fn state_subscribe(&self) -> watch::Receiver<ConnectionState> {
+        self.inner.state_tx.subscribe()
+    }
+
+    pub fn event_subscribe(&self) -> broadcast::Receiver<ServerEvent> {
+        self.inner.event_tx.subscribe()
+    }
+
+    /// idempotent。已活则 no-op。
+    pub async fn start(&self) {
+        let mut guard = self.inner.task.lock().await;
+        if guard.as_ref().is_some_and(|h| !h.is_finished()) {
+            return;
+        }
+        // 必须先 subscribe LoggedOut 再 spawn,broadcast 只看后续事件
+        let logged_out_rx = self.inner.token_store.logged_out_subscribe();
+        let inner = Arc::clone(&self.inner);
+        *guard = Some(tokio::spawn(async move {
+            Inner::run_loop(inner, logged_out_rx).await;
+        }));
+    }
+
+    /// idempotent。abort task,等 abort 真正生效后返回。
+    /// abort 后 `JoinHandle::await` 立即得 `Err(JoinError::Cancelled)`,我们吞掉 —
+    /// 等待是为了保证 stop 完成后 start 能可靠新建(否则 start 会见 `!is_finished()` no-op)。
+    pub async fn stop(&self) {
+        let mut guard = self.inner.task.lock().await;
+        if let Some(h) = guard.take() {
+            h.abort();
+            let _ = h.await;
+        }
+    }
+}
+
+impl Inner {
+    /// Plan 3 渐进式实现 — 当前是占位:进 Connecting 后立即转 Disconnected{None} 退出。
+    /// Task 12 起开始填实 subscribe → Subscribed → select 循环。
+    async fn run_loop(
+        self: Arc<Inner>,
+        mut _logged_out_rx: broadcast::Receiver<crate::token::LoggedOutReason>,
+    ) {
+        self.state_tx.send_replace(ConnectionState::Connecting);
+        self.state_tx
+            .send_replace(ConnectionState::Disconnected { last_error: None });
     }
 }
 

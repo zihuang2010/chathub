@@ -19,6 +19,7 @@ pub mod token;
 pub use auth::{AuthApi, LoggedOutReason};
 pub use channel::build_endpoint;
 pub use error::AuthError;
+pub use hub::*;
 pub use interceptor::AuthInterceptor;
 pub use token::{TokenState, TokenStore};
 
