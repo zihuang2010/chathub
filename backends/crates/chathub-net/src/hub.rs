@@ -41,6 +41,29 @@ pub enum ConnectionState {
     },
 }
 
+/// run_loop 收到错误后的动作分类(spec §6.3)。
+#[allow(dead_code)]
+#[derive(Debug, PartialEq)]
+pub(crate) enum Action {
+    /// Unauthenticated → force_refresh + 立即重连(不退避)
+    ReactiveRefresh,
+    /// Upgrade / Storage → 进入 Disconnected{last_error},task 退出
+    Terminate,
+    /// 其它 transient → 进入 Disconnected{last_error},退避后重连
+    Backoff,
+}
+
+#[allow(dead_code)]
+pub(crate) fn classify(err: &AuthError) -> Action {
+    match err {
+        AuthError::Unauthenticated => Action::ReactiveRefresh,
+        AuthError::UpgradeRequired { .. } => Action::Terminate,
+        AuthError::Network { .. } => Action::Backoff,
+        AuthError::Storage { .. } => Action::Terminate,
+        AuthError::Internal { .. } => Action::Backoff,
+    }
+}
+
 /// Full jitter 指数退避。`next()` 返回 `[0, min(cap, base * factor^attempt))` 的随机时长。
 #[allow(dead_code)]
 pub(crate) struct ExponentialBackoff {
@@ -151,5 +174,44 @@ mod tests {
         assert!(json.contains(r#""state":"disconnected""#), "{json}");
         assert!(json.contains(r#""last_error""#), "{json}");
         assert!(json.contains(r#""kind":"unauthenticated""#), "{json}");
+    }
+
+    #[test]
+    fn classify_unauthenticated_returns_reactive_refresh() {
+        let a = classify(&AuthError::Unauthenticated);
+        assert_eq!(a, Action::ReactiveRefresh);
+    }
+
+    #[test]
+    fn classify_upgrade_required_returns_terminate() {
+        let a = classify(&AuthError::UpgradeRequired {
+            min_version: "9.9.9".into(),
+            download_url: "https://example.com/dl".into(),
+        });
+        assert_eq!(a, Action::Terminate);
+    }
+
+    #[test]
+    fn classify_network_returns_backoff() {
+        let a = classify(&AuthError::Network {
+            message: "down".into(),
+        });
+        assert_eq!(a, Action::Backoff);
+    }
+
+    #[test]
+    fn classify_storage_returns_terminate() {
+        let a = classify(&AuthError::Storage {
+            message: "io".into(),
+        });
+        assert_eq!(a, Action::Terminate);
+    }
+
+    #[test]
+    fn classify_internal_returns_backoff() {
+        let a = classify(&AuthError::Internal {
+            message: "boom".into(),
+        });
+        assert_eq!(a, Action::Backoff);
     }
 }
