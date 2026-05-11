@@ -12,6 +12,42 @@ name = "chathub-relay"
 path = "src/main.rs"
 
 [dependencies]
-anyhow       = { workspace = true }
-tokio        = { workspace = true }
-tracing      = { workspace = true }
+# workspace 复用
+anyhow             = { workspace = true }
+thiserror          = { workspace = true }
+tokio              = { workspace = true }
+tracing            = { workspace = true }
+tracing-subscriber = { workspace = true }
+serde              = { workspace = true }
+serde_json         = { workspace = true }
+bytes              = { workspace = true }
+prost              = { workspace = true }
+tonic              = { workspace = true }
+parking_lot        = { workspace = true }
+rusqlite           = { workspace = true }
+deadpool-sqlite    = { workspace = true }
+rusqlite_migration = { workspace = true }
+uuid               = { workspace = true }
+
+# Plan 5 新引
+axum               = { workspace = true }
+tower              = { workspace = true }
+tower-http         = { workspace = true }
+jsonwebtoken       = { workspace = true }
+ring               = { workspace = true }
+reqwest            = { workspace = true }
+hmac               = { workspace = true }
+sha2               = { workspace = true }
+hex                = { workspace = true }
+base64             = { workspace = true }
+
+# 同 workspace 内 codegen
+chathub-proto      = { path = "../chathub-proto" }
+
+[dev-dependencies]
+wiremock     = { workspace = true }
+tempfile     = { workspace = true }
+tokio-stream = { workspace = true }
+# 反向用 Plan 1-4 的 HubClient 当 e2e 测试 client
+chathub-net  = { path = "../chathub-net" }
+chathub-state = { path = "../chathub-state" }
