@@ -11,7 +11,10 @@ use crate::error::AuthError;
 use crate::interceptor::AuthInterceptor;
 use crate::token::TokenStore;
 use chathub_proto::v1::hub_client::HubClient as RawHubClient;
-use chathub_proto::v1::{SendRequest, SendResponse, ServerEvent, SubscribeRequest};
+use chathub_proto::v1::{
+    AckReadRequest, AckReadResponse, FetchHistoryRequest, FetchHistoryResponse, RecallRequest,
+    RecallResponse, SendRequest, SendResponse, ServerEvent, SubscribeRequest,
+};
 use chathub_state::SeqStore;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -91,6 +94,31 @@ impl HubClient {
     pub async fn send(&self, req: SendRequest) -> Result<SendResponse, AuthError> {
         let mut client = self.inner.clone();
         let resp = client.send(tonic::Request::new(req)).await?;
+        Ok(resp.into_inner())
+    }
+
+    /// Plan 4 — 撤回单条消息(by server_msg_id)。
+    /// 失败:PermissionDenied → AuthError::AccountDisabled;Unavailable → Network 等。
+    pub async fn recall(&self, req: RecallRequest) -> Result<RecallResponse, AuthError> {
+        let mut client = self.inner.clone();
+        let resp = client.recall(tonic::Request::new(req)).await?;
+        Ok(resp.into_inner())
+    }
+
+    /// Plan 4 — 上报已读(batched:last_read_server_msg_id 及之前全部已读)。
+    pub async fn ack_read(&self, req: AckReadRequest) -> Result<AckReadResponse, AuthError> {
+        let mut client = self.inner.clone();
+        let resp = client.ack_read(tonic::Request::new(req)).await?;
+        Ok(resp.into_inner())
+    }
+
+    /// Plan 4 — 拉取历史消息(opaque cursor 分页;空 cursor = 从最新开始)。
+    pub async fn fetch_history(
+        &self,
+        req: FetchHistoryRequest,
+    ) -> Result<FetchHistoryResponse, AuthError> {
+        let mut client = self.inner.clone();
+        let resp = client.fetch_history(tonic::Request::new(req)).await?;
         Ok(resp.into_inner())
     }
 
