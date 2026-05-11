@@ -183,3 +183,69 @@ async fn subscribe_unauthenticated_triggers_force_refresh() {
 
     cm.stop().await;
 }
+
+fn upgrade_required_status() -> Status {
+    use chathub_proto::v1::{error_detail, ErrorDetail, UpgradeRequired};
+    use prost::Message;
+    let detail = ErrorDetail {
+        body: Some(error_detail::Body::Upgrade(UpgradeRequired {
+            min_client_version: "9.9.9".into(),
+            download_url: "https://example.com/dl".into(),
+        })),
+    };
+    Status::with_details(
+        tonic::Code::FailedPrecondition,
+        "upgrade required",
+        detail.encode_to_vec().into(),
+    )
+}
+
+#[tokio::test]
+async fn subscribe_upgrade_required_terminates() {
+    use chathub_net::AuthError;
+
+    let (addr, _auth, hub_state, _h) = start_stub_full().await;
+    {
+        let mut s = hub_state.lock().unwrap();
+        s.subscribe_outcome = SubscribeOutcome::RejectAlways(upgrade_required_status());
+    }
+    let (cm, token_store, _ss) = make_cm(addr).await;
+    force_login(&token_store).await;
+
+    cm.start().await;
+
+    let mut state_rx = cm.state_subscribe();
+    let final_state = wait_for_state(
+        &mut state_rx,
+        |s| {
+            matches!(
+                s,
+                ConnectionState::Disconnected {
+                    last_error: Some(AuthError::UpgradeRequired { .. })
+                }
+            )
+        },
+        Duration::from_secs(3),
+    )
+    .await;
+
+    match final_state {
+        ConnectionState::Disconnected {
+            last_error: Some(AuthError::UpgradeRequired { min_version, .. }),
+        } => {
+            assert_eq!(min_version, "9.9.9");
+        }
+        other => panic!("wrong final state: {other:?}"),
+    }
+
+    // 等 200ms,断言 task 已退出 + state 不再变
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    // subscribe 计数应 ≤ 3(初始 + 可能内部一次重试),而不是无限重连
+    let sub_count = hub_state.lock().unwrap().subscribes.len();
+    assert!(
+        sub_count <= 3,
+        "task should have terminated, got {sub_count} subscribes"
+    );
+
+    cm.stop().await;
+}
