@@ -173,9 +173,9 @@ message IncomingMsg {
 
 message SystemSignal {
   enum Kind {
-    KIND_UNSPECIFIED = 0;
-    KICKED           = 1;   // 服务端撤销凭证(其它设备登录、会话失效等)
-    SERVER_DRAIN     = 2;   // 服务端正在重启 / 即将 GOAWAY,客户端预期重连
+    KIND_UNSPECIFIED  = 0;
+    KIND_KICKED       = 1;   // 服务端撤销凭证(其它设备登录、会话失效等)
+    KIND_SERVER_DRAIN = 2;   // 服务端正在重启 / 即将 GOAWAY,客户端预期重连
   }
   Kind   kind   = 1;
   string detail = 2;

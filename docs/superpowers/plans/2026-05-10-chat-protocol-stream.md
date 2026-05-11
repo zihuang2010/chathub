@@ -103,9 +103,9 @@ message IncomingMsg {
 
 message SystemSignal {
   enum Kind {
-    KIND_UNSPECIFIED = 0;
-    KICKED           = 1;   // 服务端撤销凭证(其它设备登录、会话失效)
-    SERVER_DRAIN     = 2;   // 服务端将 GOAWAY,客户端预期重连
+    KIND_UNSPECIFIED  = 0;
+    KIND_KICKED       = 1;   // 服务端撤销凭证(其它设备登录、会话失效)
+    KIND_SERVER_DRAIN = 2;   // 服务端将 GOAWAY,客户端预期重连
   }
   Kind   kind   = 1;
   string detail = 2;
@@ -168,7 +168,7 @@ feat(proto): Plan 3 — Send RPC + IncomingMsg + SystemSignal
 - hub.proto: 加 Send(SendRequest)→SendResponse,Subscribe 不变
 - event.proto: ServerEvent 加 oneof body { IncomingMsg | SystemSignal }
 - IncomingMsg: conversation_id / from_user_id / body / sent_at_ms / server_msg_id / remote
-- SystemSignal.Kind: KICKED / SERVER_DRAIN(其余 4 种 ServerEvent kind 留 Plan 4+,wire-compat)
+- SystemSignal.Kind: KIND_KICKED / KIND_SERVER_DRAIN(其余 4 种 ServerEvent kind 留 Plan 4+,wire-compat)
 - SendRequest 含 client_msg_id (UUIDv4),为服务端幂等去重铺路
 EOF
 )"
