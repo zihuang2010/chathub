@@ -213,16 +213,52 @@ impl Hub for HubSvc {
 
     async fn recall(
         &self,
-        _req: Request<RecallRequest>,
+        req: Request<RecallRequest>,
     ) -> Result<Response<RecallResponse>, Status> {
-        Err(Status::unimplemented("recall: T19"))
+        let ctx = req
+            .extensions()
+            .get::<UserCtx>()
+            .cloned()
+            .ok_or_else(|| Status::unauthenticated("missing ctx"))?;
+        let r = req.into_inner();
+        let resp = self
+            .downstream
+            .recall(crate::downstream::RecallReq {
+                user_id: &ctx.user_id,
+                wecom_account_id: &r.wecom_account_id,
+                conversation_id: &r.conversation_id,
+                server_msg_id: &r.server_msg_id,
+            })
+            .await
+            .map_err(Status::from)?;
+        Ok(Response::new(RecallResponse {
+            recalled_at_ms: resp.recalled_at_ms,
+        }))
     }
 
     async fn ack_read(
         &self,
-        _req: Request<AckReadRequest>,
+        req: Request<AckReadRequest>,
     ) -> Result<Response<AckReadResponse>, Status> {
-        Err(Status::unimplemented("ack_read: T19"))
+        let ctx = req
+            .extensions()
+            .get::<UserCtx>()
+            .cloned()
+            .ok_or_else(|| Status::unauthenticated("missing ctx"))?;
+        let r = req.into_inner();
+        let resp = self
+            .downstream
+            .ack_read(crate::downstream::AckReadReq {
+                user_id: &ctx.user_id,
+                wecom_account_id: &r.wecom_account_id,
+                conversation_id: &r.conversation_id,
+                last_read_server_msg_id: &r.last_read_server_msg_id,
+            })
+            .await
+            .map_err(Status::from)?;
+        Ok(Response::new(AckReadResponse {
+            acked_at_ms: resp.acked_at_ms,
+        }))
     }
 
     async fn fetch_history(
@@ -565,5 +601,112 @@ mod tests {
             got_seqs.push(e.seq);
         }
         assert_eq!(got_seqs, vec![3, 4, 5]);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn recall_happy() {
+        use wiremock::matchers::{header, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/recall"))
+            .and(header("authorization", "Bearer dn-secret"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "recalled_at_ms": 1234567890i64
+            })))
+            .mount(&mock)
+            .await;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let db = tmp.path().join("t.db");
+        let storage = Storage::open(&db).await.unwrap();
+        std::mem::forget(tmp);
+        let signer = crate::jwt::Signer::bootstrap(&storage, None, None, "chathub-relay")
+            .await
+            .unwrap();
+        let downstream =
+            Arc::new(crate::downstream::DownstreamClient::new(&mock.uri(), "dn-secret").unwrap());
+        let svc = HubSvc {
+            router: Arc::new(Router::new()),
+            seqs: SeqAllocator::new(storage.clone()),
+            events: EventStore::new(storage),
+            downstream,
+        };
+
+        let claims = signer.make_claims("u-1", vec!["wa-1".into()], "dev-A", 1800);
+        let tok = signer.sign(&claims).unwrap();
+
+        let mut req = Request::new(RecallRequest {
+            wecom_account_id: "wa-1".to_string(),
+            conversation_id: "conv-1".to_string(),
+            server_msg_id: "msg-123".to_string(),
+        });
+        req.metadata_mut()
+            .insert("chathub-protocol-version", "1".parse().unwrap());
+        req.metadata_mut()
+            .insert("authorization", format!("Bearer {tok}").parse().unwrap());
+        req.extensions_mut().insert(UserCtx {
+            user_id: "u-1".to_string(),
+            accounts: vec!["wa-1".to_string()],
+            device_id: "dev-A".to_string(),
+        });
+
+        let resp = svc.recall(req).await.unwrap();
+        assert_eq!(resp.into_inner().recalled_at_ms, 1234567890i64);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn ack_read_happy() {
+        use wiremock::matchers::{header, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/ack_read"))
+            .and(header("authorization", "Bearer dn-secret"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "acked_at_ms": 1234567890i64
+            })))
+            .mount(&mock)
+            .await;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let db = tmp.path().join("t.db");
+        let storage = Storage::open(&db).await.unwrap();
+        std::mem::forget(tmp);
+        let signer = crate::jwt::Signer::bootstrap(&storage, None, None, "chathub-relay")
+            .await
+            .unwrap();
+        let downstream =
+            Arc::new(crate::downstream::DownstreamClient::new(&mock.uri(), "dn-secret").unwrap());
+        let svc = HubSvc {
+            router: Arc::new(Router::new()),
+            seqs: SeqAllocator::new(storage.clone()),
+            events: EventStore::new(storage),
+            downstream,
+        };
+
+        let claims = signer.make_claims("u-1", vec!["wa-1".into()], "dev-A", 1800);
+        let tok = signer.sign(&claims).unwrap();
+        let _ep = Endpoint::from_shared("http://127.0.0.1:0").unwrap();
+
+        let mut req = Request::new(AckReadRequest {
+            wecom_account_id: "wa-1".to_string(),
+            conversation_id: "conv-1".to_string(),
+            last_read_server_msg_id: "msg-456".to_string(),
+        });
+        req.metadata_mut()
+            .insert("chathub-protocol-version", "1".parse().unwrap());
+        req.metadata_mut()
+            .insert("authorization", format!("Bearer {tok}").parse().unwrap());
+        req.extensions_mut().insert(UserCtx {
+            user_id: "u-1".to_string(),
+            accounts: vec!["wa-1".to_string()],
+            device_id: "dev-A".to_string(),
+        });
+
+        let resp = svc.ack_read(req).await.unwrap();
+        assert_eq!(resp.into_inner().acked_at_ms, 1234567890i64);
     }
 }

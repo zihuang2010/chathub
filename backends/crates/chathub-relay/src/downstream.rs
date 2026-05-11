@@ -100,6 +100,44 @@ impl DownstreamClient {
             })?;
         translate(resp).await
     }
+
+    pub async fn recall(&self, req: RecallReq<'_>) -> Result<RecallResp, RelayError> {
+        let url = format!("{}/v1/recall", self.base_url);
+        let resp = self
+            .http
+            .post(&url)
+            .bearer_auth(&self.secret)
+            .json(&req)
+            .send()
+            .await
+            .map_err(|e| {
+                if e.is_timeout() || e.is_connect() {
+                    RelayError::Transient
+                } else {
+                    RelayError::Http(e.to_string())
+                }
+            })?;
+        translate(resp).await
+    }
+
+    pub async fn ack_read(&self, req: AckReadReq<'_>) -> Result<AckReadResp, RelayError> {
+        let url = format!("{}/v1/ack_read", self.base_url);
+        let resp = self
+            .http
+            .post(&url)
+            .bearer_auth(&self.secret)
+            .json(&req)
+            .send()
+            .await
+            .map_err(|e| {
+                if e.is_timeout() || e.is_connect() {
+                    RelayError::Transient
+                } else {
+                    RelayError::Http(e.to_string())
+                }
+            })?;
+        translate(resp).await
+    }
 }
 
 #[derive(Serialize)]
@@ -115,6 +153,32 @@ pub struct SendReq<'a> {
 pub struct SendResp {
     pub server_msg_id: String,
     pub sent_at_ms: i64,
+}
+
+#[derive(Serialize)]
+pub struct RecallReq<'a> {
+    pub user_id: &'a str,
+    pub wecom_account_id: &'a str,
+    pub conversation_id: &'a str,
+    pub server_msg_id: &'a str,
+}
+
+#[derive(Deserialize)]
+pub struct RecallResp {
+    pub recalled_at_ms: i64,
+}
+
+#[derive(Serialize)]
+pub struct AckReadReq<'a> {
+    pub user_id: &'a str,
+    pub wecom_account_id: &'a str,
+    pub conversation_id: &'a str,
+    pub last_read_server_msg_id: &'a str,
+}
+
+#[derive(Deserialize)]
+pub struct AckReadResp {
+    pub acked_at_ms: i64,
 }
 
 /// 通用响应翻译:200 → 反序列化 T;4xx/5xx → 映射错误。
