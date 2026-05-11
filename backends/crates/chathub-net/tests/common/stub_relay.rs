@@ -16,31 +16,21 @@ use tokio::task::JoinHandle;
 use tokio_stream::wrappers::TcpListenerStream;
 use tonic::{transport::Server, Request, Response, Status};
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub enum LoginOutcome {
+    #[default]
     Ok,
     Unauthenticated,
     Network,
     UpgradeRequired,
 }
 
-impl Default for LoginOutcome {
-    fn default() -> Self {
-        LoginOutcome::Ok
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub enum RefreshOutcome {
+    #[default]
     Ok,
     Revoked,
     Network,
-}
-
-impl Default for RefreshOutcome {
-    fn default() -> Self {
-        RefreshOutcome::Ok
-    }
 }
 
 #[derive(Default, Clone)]
@@ -131,23 +121,10 @@ impl Auth for StubAuth {
     }
 }
 
+/// Plan 2 兼容版本:返回 (addr, auth_state, handle),丢弃 hub_state。
 pub async fn start_stub() -> (SocketAddr, Arc<Mutex<StubState>>, JoinHandle<()>) {
-    let state = Arc::new(Mutex::new(StubState::new_default_ttls()));
-    let auth = StubAuth {
-        state: state.clone(),
-    };
-    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
-    let addr = listener.local_addr().expect("local_addr");
-    let stream = TcpListenerStream::new(listener);
-    let handle = tokio::spawn(async move {
-        let _ = Server::builder()
-            .add_service(AuthServer::new(auth))
-            .serve_with_incoming(stream)
-            .await;
-    });
-    // 给 server 一点点启动时间(本地通常 < 1ms,加 sleep 保险)
-    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-    (addr, state, handle)
+    let (addr, auth_state, _hub_state, handle) = start_stub_full().await;
+    (addr, auth_state, handle)
 }
 
 fn now_ms() -> i64 {
@@ -196,4 +173,120 @@ fn upgrade_required_status() -> Status {
         "upgrade required",
         detail.encode_to_vec().into(),
     )
+}
+
+// ============================ Plan 3:StubHub ============================
+
+use chathub_proto::v1::hub_server::{Hub, HubServer};
+use chathub_proto::v1::{SendRequest, SendResponse, ServerEvent, SubscribeRequest};
+use std::collections::HashMap;
+use tokio::sync::mpsc;
+use tokio_stream::wrappers::ReceiverStream;
+
+#[derive(Clone, Default)]
+pub enum SubscribeOutcome {
+    /// 默认:接受 Subscribe,创建 mpsc + ReceiverStream,等测试 inject
+    #[default]
+    Stream,
+    /// 拒绝 Subscribe(RejectOnce 一次性,RPC 返回 Status 后会自动 reset 为 Stream)
+    RejectOnce(Status),
+    /// 持续拒绝(每次 Subscribe 都返回此 Status)
+    RejectAlways(Status),
+}
+
+#[derive(Clone)]
+pub enum SendStubOutcome {
+    Ok(SendResponse),
+    Status(Status),
+}
+
+impl Default for SendStubOutcome {
+    fn default() -> Self {
+        SendStubOutcome::Ok(SendResponse {
+            server_msg_id: "sm-default".into(),
+            sent_at_ms: 0,
+        })
+    }
+}
+
+#[derive(Default)]
+pub struct StubHubState {
+    /// Subscribe RPC 被调用时,记录传入的 since_seqs(用于断言客户端续接行为)
+    pub subscribes: Vec<HashMap<String, i64>>,
+    /// 当前活跃 Subscribe stream 的 mpsc::Sender,测试代码用它推 event/status
+    pub event_tx: Option<mpsc::Sender<Result<ServerEvent, Status>>>,
+    /// Subscribe RPC 的初始结果策略
+    pub subscribe_outcome: SubscribeOutcome,
+    /// Send RPC 的固定结果
+    pub send_outcome: SendStubOutcome,
+    /// Send RPC 收到的全部请求(用于断言 client_msg_id 等)
+    pub sends: Vec<SendRequest>,
+}
+
+pub struct StubHub {
+    pub state: Arc<Mutex<StubHubState>>,
+}
+
+#[tonic::async_trait]
+impl Hub for StubHub {
+    type SubscribeStream = ReceiverStream<Result<ServerEvent, Status>>;
+
+    async fn subscribe(
+        &self,
+        req: Request<SubscribeRequest>,
+    ) -> Result<Response<Self::SubscribeStream>, Status> {
+        let (tx, rx) = mpsc::channel(16);
+        let mut s = self.state.lock().unwrap();
+        s.subscribes.push(req.into_inner().since_seqs);
+        match s.subscribe_outcome.clone() {
+            SubscribeOutcome::Stream => {
+                s.event_tx = Some(tx);
+                Ok(Response::new(ReceiverStream::new(rx)))
+            }
+            SubscribeOutcome::RejectOnce(st) => {
+                s.subscribe_outcome = SubscribeOutcome::Stream;
+                Err(st)
+            }
+            SubscribeOutcome::RejectAlways(st) => Err(st),
+        }
+    }
+
+    async fn send(&self, req: Request<SendRequest>) -> Result<Response<SendResponse>, Status> {
+        let mut s = self.state.lock().unwrap();
+        s.sends.push(req.into_inner());
+        match s.send_outcome.clone() {
+            SendStubOutcome::Ok(r) => Ok(Response::new(r)),
+            SendStubOutcome::Status(st) => Err(st),
+        }
+    }
+}
+
+/// Plan 3 新版本:同进程注册 AuthServer + HubServer。
+/// `start_stub` 转调本函数 + 丢弃 hub_state,Plan 2 测试 0 改动。
+pub async fn start_stub_full() -> (
+    SocketAddr,
+    Arc<Mutex<StubState>>,
+    Arc<Mutex<StubHubState>>,
+    JoinHandle<()>,
+) {
+    let auth_state = Arc::new(Mutex::new(StubState::new_default_ttls()));
+    let hub_state = Arc::new(Mutex::new(StubHubState::default()));
+    let auth = StubAuth {
+        state: auth_state.clone(),
+    };
+    let hub = StubHub {
+        state: hub_state.clone(),
+    };
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let addr = listener.local_addr().expect("local_addr");
+    let stream = TcpListenerStream::new(listener);
+    let handle = tokio::spawn(async move {
+        let _ = Server::builder()
+            .add_service(AuthServer::new(auth))
+            .add_service(HubServer::new(hub))
+            .serve_with_incoming(stream)
+            .await;
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    (addr, auth_state, hub_state, handle)
 }
