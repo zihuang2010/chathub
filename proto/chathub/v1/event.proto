@@ -2,13 +2,40 @@
 syntax = "proto3";
 package chathub.v1;
 
-// ServerEvent 与子事件在 Plan 3 中扩充(IncomingMsg/MessageRecalled/ReadReceipt/
-// AccountStatus/PresenceChange/MessageStatusChange/SystemSignal)。
-// 现在只放一个空 envelope 占位。
+import "chathub/v1/common.proto";
+import "chathub/v1/message.proto";
+
+// ServerEvent 由 Hub.Subscribe 推送。Plan 3 仅 IncomingMsg + SystemSignal,
+// Plan 4+ 加 MessageRecalled / ReadReceipt / AccountStatus / PresenceChange
+// / MessageStatusChange — 通过新增 oneof variant 是 wire-compat 的。
 message ServerEvent {
   string wecom_account_id = 1;
   int64  seq              = 2;
   // 3-9 reserved for envelope-level fields
-  // 10-89 reserved for business events (Plan 3)
-  // 90-99 reserved for system signals (Plan 3)
+
+  oneof body {
+    IncomingMsg  incoming = 10;
+    SystemSignal system   = 90;
+    // 11-89 reserved for business events (Plan 4+)
+    // 91-99 reserved for system signals (Plan 4+)
+  }
+}
+
+message IncomingMsg {
+  string conversation_id = 1;
+  string from_user_id    = 2;
+  MessageBody body       = 3;
+  int64  sent_at_ms      = 4;
+  string server_msg_id   = 5;
+  optional RemoteId remote = 6;
+}
+
+message SystemSignal {
+  enum Kind {
+    KIND_UNSPECIFIED = 0;
+    KICKED           = 1;   // 服务端撤销凭证(其它设备登录、会话失效)
+    SERVER_DRAIN     = 2;   // 服务端将 GOAWAY,客户端预期重连
+  }
+  Kind   kind   = 1;
+  string detail = 2;
 }
