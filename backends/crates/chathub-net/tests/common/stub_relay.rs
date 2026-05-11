@@ -259,6 +259,27 @@ impl Hub for StubHub {
             SendStubOutcome::Status(st) => Err(st),
         }
     }
+
+    async fn recall(
+        &self,
+        _: Request<chathub_proto::v1::RecallRequest>,
+    ) -> Result<Response<chathub_proto::v1::RecallResponse>, Status> {
+        todo!("stub not implemented")
+    }
+
+    async fn ack_read(
+        &self,
+        _: Request<chathub_proto::v1::AckReadRequest>,
+    ) -> Result<Response<chathub_proto::v1::AckReadResponse>, Status> {
+        todo!("stub not implemented")
+    }
+
+    async fn fetch_history(
+        &self,
+        _: Request<chathub_proto::v1::FetchHistoryRequest>,
+    ) -> Result<Response<chathub_proto::v1::FetchHistoryResponse>, Status> {
+        todo!("stub not implemented")
+    }
 }
 
 /// Plan 3 新版本:同进程注册 AuthServer + HubServer。

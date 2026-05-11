@@ -70,6 +70,7 @@ pub(crate) fn classify(err: &AuthError) -> Action {
         AuthError::Network { .. } => Action::Backoff,
         AuthError::Storage { .. } => Action::Terminate,
         AuthError::Internal { .. } => Action::Backoff,
+        AuthError::AccountDisabled { .. } => Action::Terminate,
     }
 }
 
@@ -429,5 +430,13 @@ mod tests {
             message: "boom".into(),
         });
         assert_eq!(a, Action::Backoff);
+    }
+
+    #[test]
+    fn classify_account_disabled_returns_terminate() {
+        let a = classify(&AuthError::AccountDisabled {
+            message: "no perms".into(),
+        });
+        assert_eq!(a, Action::Terminate);
     }
 }
