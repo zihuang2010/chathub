@@ -1,0 +1,17 @@
+[package]
+name = "chathub-relay"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "chathub_relay"
+path = "src/lib.rs"
+
+[[bin]]
+name = "chathub-relay"
+path = "src/main.rs"
+
+[dependencies]
+anyhow       = { workspace = true }
+tokio        = { workspace = true }
+tracing      = { workspace = true }
