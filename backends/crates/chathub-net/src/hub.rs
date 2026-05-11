@@ -97,7 +97,6 @@ impl HubClient {
 
     /// Server-streaming Subscribe。`since_seqs` 是 (wecom_account_id → last_seq) map,
     /// 仅供 ConnectionManager 用,不对外公开。
-    #[allow(dead_code)]
     pub(crate) async fn subscribe(
         &self,
         since_seqs: HashMap<String, i64>,
@@ -110,7 +109,6 @@ impl HubClient {
 }
 
 /// Full jitter 指数退避。`next()` 返回 `[0, min(cap, base * factor^attempt))` 的随机时长。
-#[allow(dead_code)]
 pub(crate) struct ExponentialBackoff {
     base: Duration,
     factor: f64,
@@ -118,7 +116,6 @@ pub(crate) struct ExponentialBackoff {
     attempt: u32,
 }
 
-#[allow(dead_code)]
 impl ExponentialBackoff {
     pub fn new(cfg: &BackoffConfig) -> Self {
         Self {
@@ -146,7 +143,6 @@ impl ExponentialBackoff {
     }
 }
 
-#[allow(dead_code)]
 struct Inner {
     hub: HubClient,
     token_store: Arc<TokenStore>,
@@ -220,15 +216,62 @@ impl ConnectionManager {
 }
 
 impl Inner {
-    /// Plan 3 渐进式实现 — 当前是占位:进 Connecting 后立即转 Disconnected{None} 退出。
-    /// Task 12 起开始填实 subscribe → Subscribed → select 循环。
     async fn run_loop(
         self: Arc<Inner>,
-        mut _logged_out_rx: broadcast::Receiver<crate::token::LoggedOutReason>,
+        mut logged_out_rx: broadcast::Receiver<crate::token::LoggedOutReason>,
     ) {
-        self.state_tx.send_replace(ConnectionState::Connecting);
-        self.state_tx
-            .send_replace(ConnectionState::Disconnected { last_error: None });
+        let mut backoff = ExponentialBackoff::new(&self.backoff);
+
+        'reconnect: loop {
+            self.state_tx.send_replace(ConnectionState::Connecting);
+
+            let since_seqs = self.seq_store.read_all().await.unwrap_or_default();
+
+            let mut stream = match self.hub.subscribe(since_seqs).await {
+                Ok(s) => s,
+                Err(err) => {
+                    // 占位:Task 13-15 加 classify 分流;现在简单退避后重连
+                    self.state_tx.send_replace(ConnectionState::Disconnected {
+                        last_error: Some(err),
+                    });
+                    tokio::time::sleep(backoff.next()).await;
+                    continue 'reconnect;
+                }
+            };
+
+            self.state_tx.send_replace(ConnectionState::Subscribed);
+            backoff.reset();
+
+            loop {
+                tokio::select! {
+                    biased;
+                    _ = logged_out_rx.recv() => {
+                        self.state_tx.send_replace(ConnectionState::Disconnected { last_error: None });
+                        return;
+                    }
+                    msg = stream.message() => match msg {
+                        Ok(Some(event)) => {
+                            if let Err(e) = self.seq_store.upsert(&event.wecom_account_id, event.seq).await {
+                                tracing::warn!(?e, "seq_store upsert failed, ignored on hot path");
+                            }
+                            let _ = self.event_tx.send(event);
+                        }
+                        Ok(None) => {
+                            // 占位:Task 13 加 server-close → backoff 重连
+                            self.state_tx.send_replace(ConnectionState::Disconnected { last_error: None });
+                            tokio::time::sleep(backoff.next()).await;
+                            continue 'reconnect;
+                        }
+                        Err(_status) => {
+                            // 占位:Task 13-15 加 classify 分流;现在简单退避
+                            self.state_tx.send_replace(ConnectionState::Disconnected { last_error: None });
+                            tokio::time::sleep(backoff.next()).await;
+                            continue 'reconnect;
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 

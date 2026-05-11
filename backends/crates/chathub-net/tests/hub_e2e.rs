@@ -56,3 +56,67 @@ async fn connection_state_initial_is_disconnected() {
         s
     );
 }
+
+use chathub_proto::v1::message_body;
+use chathub_proto::v1::{server_event, IncomingMsg, MessageBody, ServerEvent, TextBody};
+use common::{push_event, wait_for_state};
+
+fn make_incoming(account: &str, seq: i64, text: &str) -> ServerEvent {
+    ServerEvent {
+        wecom_account_id: account.into(),
+        seq,
+        body: Some(server_event::Body::Incoming(IncomingMsg {
+            conversation_id: "conv-1".into(),
+            from_user_id: "peer-1".into(),
+            body: Some(MessageBody {
+                kind: Some(message_body::Kind::Text(TextBody { text: text.into() })),
+                reply_to: None,
+                mentions: vec![],
+            }),
+            sent_at_ms: 1_700_000_000_000,
+            server_msg_id: format!("sm-{seq}"),
+            remote: None,
+        })),
+    }
+}
+
+/// 让 token_store 内部"看起来已登录" — 直接给一个 fake access token。
+/// Plan 3 e2e 不走 Login RPC(那是 Plan 2 测的),直接造 TokenState 注入。
+async fn force_login(token_store: &Arc<TokenStore>) {
+    token_store.seed_user_id("u-test");
+    // stub Hub 的 Subscribe/Send 不校验 token,所以这个 fn 是 no-op 占位,
+    // 留作未来扩展点(如真要测 interceptor 注入 Bearer)。
+    let _ = token_store;
+}
+
+#[tokio::test]
+async fn subscribe_success_streams_event() {
+    let (addr, _auth, hub_state, _h) = start_stub_full().await;
+    let (cm, token_store, _seq_store) = make_cm(addr).await;
+    force_login(&token_store).await;
+
+    cm.start().await;
+
+    // 等到 Subscribed
+    let mut state_rx = cm.state_subscribe();
+    wait_for_state(
+        &mut state_rx,
+        |s| matches!(s, ConnectionState::Subscribed),
+        Duration::from_secs(2),
+    )
+    .await;
+
+    // 注入一个 IncomingMsg
+    let mut event_rx = cm.event_subscribe();
+    push_event(&hub_state, make_incoming("wxa1", 100, "hi")).await;
+
+    // 验证 broadcast 收到
+    let event = tokio::time::timeout(Duration::from_secs(2), event_rx.recv())
+        .await
+        .expect("recv timeout")
+        .expect("recv ok");
+    assert_eq!(event.wecom_account_id, "wxa1");
+    assert_eq!(event.seq, 100);
+
+    cm.stop().await;
+}
