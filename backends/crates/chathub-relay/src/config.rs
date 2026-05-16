@@ -26,6 +26,8 @@ pub struct Config {
     pub log: LogConfig,
     /// Plan 6:Hub.Forward 的 method → 业务后台 HTTP 路径映射。
     pub routes: DownstreamRoutes,
+    /// CONNECTION_FORCE_CLOSE 收到后等多久才摘除连接。env `RELAY_FORCE_CLOSE_GRACE_MS`,默认 2000。
+    pub force_close_grace_ms: u64,
 }
 
 /// `Hub.Forward(method, body_json)` 时,relay 用这张表把 method 转成业务后台路径。
@@ -117,6 +119,10 @@ impl Config {
                 stdout: parse_stdout_format("RELAY_LOG_STDOUT")?,
             },
             routes: DownstreamRoutes::from_env(),
+            force_close_grace_ms: std::env::var("RELAY_FORCE_CLOSE_GRACE_MS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(2000),
         })
     }
 }
@@ -173,6 +179,7 @@ mod tests {
             "RELAY_PATH_RECALL",
             "RELAY_PATH_ACK_READ",
             "RELAY_PATH_FETCH_HISTORY",
+            "RELAY_FORCE_CLOSE_GRACE_MS",
         ] {
             std::env::remove_var(k);
         }

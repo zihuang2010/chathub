@@ -266,6 +266,16 @@ impl Router {
         }
     }
 
+    /// CONNECTION_FORCE_CLOSE grace 后摘除该 employee 的所有流。
+    /// 返回摘除的 connection_id 列表(给调用方记日志/观测用)。
+    pub fn drop_all_employee_streams(&self, employee_id: i64) -> Vec<String> {
+        let mut employees = self.employees.write();
+        match employees.remove(&employee_id) {
+            None => Vec::new(),
+            Some(streams) => streams.into_iter().map(|s| s.connection_id).collect(),
+        }
+    }
+
     /// 当前该 employee 的在线连接数。
     pub fn employee_connection_count(&self, employee_id: i64) -> usize {
         self.employees

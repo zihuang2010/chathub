@@ -53,6 +53,7 @@ async fn main() -> anyhow::Result<()> {
         events,
         events_log,
         router: router.clone(),
+        force_close_grace_ms: cfg.force_close_grace_ms,
     };
     let push_app = push::app(push_state);
 

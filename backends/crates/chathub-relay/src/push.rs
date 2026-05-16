@@ -38,6 +38,8 @@ pub struct PushState {
     /// 旧 `events` 字段继续给 legacy `/internal/push` 用,新 `events_log` 给 `/internal/push/v2` 用。
     pub events_log: EventLog,
     pub router: Arc<Router>,
+    /// CONNECTION_FORCE_CLOSE 后等多久才摘除连接(让客户端读完帧)。默认 2000ms。
+    pub force_close_grace_ms: u64,
 }
 
 /// 业务后台 → relay 的 clientId 白名单(spec §3:本期固定 "rh_wxchat")。
@@ -320,6 +322,8 @@ async fn handle_push_v2(
     let mut rows: Vec<EventRow> = Vec::with_capacity(body.events.len());
     let mut control_count = 0usize;
     let mut unknown_count = 0usize;
+    // P0-3:CONNECTION_FORCE_CLOSE 单独标记,fanout 完后调度 grace timer
+    let mut has_force_close = false;
 
     for (index, event_value) in body.events.iter().enumerate() {
         let event_type = event_value
@@ -338,7 +342,9 @@ async fn handle_push_v2(
         match event_policy::policy(event_type) {
             EventPolicy::ControlOnly => {
                 control_count += 1;
-                // stage 4 在此触发 force_close 流程;stage 3 仅计数
+                if event_type == "CONNECTION_FORCE_CLOSE" {
+                    has_force_close = true;
+                }
             }
             EventPolicy::Persist => {
                 if !is_known_event_type(event_type) {
@@ -408,6 +414,28 @@ async fn handle_push_v2(
         state.router.drop_employee_stream(body.employee_id, conn_id);
     }
 
+    // P0-3:如果本批含 CONNECTION_FORCE_CLOSE,启动 grace timer
+    //   1. force_close 事件已经包在上面 fanout 的 PushBatchOut.events_json 里送达客户端
+    //   2. 等 FORCE_CLOSE_GRACE_MS,让客户端读完帧并显示提示
+    //   3. 然后摘除该 employee 的所有路由 → gRPC stream 自然关闭
+    //   4. 客户端旧 token 之后再 Subscribe 会被 verify_token 拒(token 已被业务后台失效)
+    if has_force_close {
+        let router = state.router.clone();
+        let emp_id = body.employee_id;
+        let grace = state.force_close_grace_ms;
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(grace)).await;
+            let dropped = router.drop_all_employee_streams(emp_id);
+            tracing::info!(
+                target: "chathub_relay::push",
+                employee_id = emp_id,
+                connections_dropped = dropped.len(),
+                grace_ms = grace,
+                "force_close grace expired; streams evicted"
+            );
+        });
+    }
+
     tracing::info!(
         persisted = inserted,
         control_count,
@@ -415,6 +443,7 @@ async fn handle_push_v2(
         fanout_delivered = fanout.delivered,
         fanout_backpressure = fanout.backpressure.len(),
         fanout_closed = fanout.closed.len(),
+        has_force_close,
         elapsed_ms = started.elapsed().as_millis() as u64,
         status = 200,
         "push v2 ok",
@@ -597,6 +626,7 @@ mod tests {
             events: EventStore::new(storage.clone()),
             events_log: EventLog::new(storage.clone()),
             router: Arc::new(Router::new()),
+            force_close_grace_ms: 50, // 测试用短 grace
         }
     }
 
@@ -1094,6 +1124,54 @@ mod tests {
             }
             other => panic!("expected PushBatch, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn push_v2_force_close_evicts_streams_after_grace() {
+        // 注册 employee → push v2 带 FORCE_CLOSE → 立即收到 PushBatchOut(含 FORCE_CLOSE)
+        // grace 过后该 employee 所有连接被摘除(后续 fanout 0 delivered)
+        let st = make_state().await;
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        st.router.register_employee(42, "dev-A".into(), tx);
+
+        let body = v2_body(
+            500,
+            42,
+            serde_json::json!([
+                {
+                    "eventType": "CONNECTION_FORCE_CLOSE",
+                    "eventReason": "EXCLUSIVE_LOGIN",
+                    "forceClose": { "closeScope": "EMPLOYEE", "reasonCode": "EXCLUSIVE_LOGIN" }
+                }
+            ]),
+        );
+        let (status, ack) = post_v2(app(st.clone()), body, "ps").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(ack["inserted"], 0); // ControlOnly 不入库
+        assert_eq!(ack["controlCount"], 1);
+
+        // 客户端立即收到 PushBatchOut(里面 events_json 含 FORCE_CLOSE)
+        let frame = tokio::time::timeout(std::time::Duration::from_millis(200), rx.recv())
+            .await
+            .expect("force_close frame timeout")
+            .expect("channel closed")
+            .expect("status err");
+        use chathub_proto::v1::server_event::Body;
+        match frame.body {
+            Some(Body::PushBatch(pb)) => {
+                let arr: serde_json::Value = serde_json::from_slice(&pb.events_json).unwrap();
+                assert_eq!(arr[0]["eventType"], "CONNECTION_FORCE_CLOSE");
+            }
+            other => panic!("expected PushBatch with FORCE_CLOSE, got {other:?}"),
+        }
+        // grace 之前还有 1 个连接
+        assert_eq!(st.router.employee_connection_count(42), 1);
+
+        // 等 grace(make_state 用 50ms)+ 缓冲
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+        // grace 后所有连接被摘除
+        assert_eq!(st.router.employee_connection_count(42), 0);
     }
 
     #[tokio::test]
