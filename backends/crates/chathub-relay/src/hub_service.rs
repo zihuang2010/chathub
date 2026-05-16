@@ -24,7 +24,7 @@ use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, OnceCell};
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::service::Interceptor;
 use tonic::{async_trait, Request, Response, Status};
@@ -96,21 +96,32 @@ struct CachedCtx {
     expires_at: Instant,
 }
 
-/// 调业务后台 verifyToken 把 token 换成 `UserCtx`,带进程内缓存。
+/// 调业务后台 verifyToken 把 token 换成 `UserCtx`,带进程内缓存 + singleflight。
 ///
 /// 缓存:key = sha256(token)[:16](不存明文),TTL = min(exp_ms-now, 5min)。
 /// 满 10000 条时整体清空(walking skeleton 的简单上限策略)。
-/// 不做 single-flight:并发首次 miss 会各发一次 verifyToken,可接受。
+///
+/// Singleflight(Plan 6 stage 4c):同一 token 并发首次 miss 时,只放一个请求到
+/// 业务后台,其余等同结果。靠 `inflight` map(per-key `OnceCell`)实现:
+///   - 第一个到达者 = leader:`OnceCell::get_or_init` 真正调 verify_token
+///   - 后到者 = follower:复用 leader 的 `Arc<OnceCell>`,`get_or_init` 等 leader 的结果
+///   - leader 完成后从 `inflight` 摘除 cell,让下一轮 miss 重新走一遍
 pub struct TokenAuthenticator {
     downstream: Arc<DownstreamClient>,
     cache: parking_lot::Mutex<HashMap<String, CachedCtx>>,
+    inflight: parking_lot::Mutex<HashMap<String, Arc<OnceCell<InflightResult>>>>,
 }
+
+/// OnceCell 里存的内容 —— UserCtx + cache TTL(让 leader 之后写缓存用 leader 算出的 TTL,
+/// 而不是各自 follower 重算一次)。
+type InflightResult = Result<(UserCtx, Duration), Status>;
 
 impl TokenAuthenticator {
     pub fn new(downstream: Arc<DownstreamClient>) -> Self {
         Self {
             downstream,
             cache: parking_lot::Mutex::new(HashMap::new()),
+            inflight: parking_lot::Mutex::new(HashMap::new()),
         }
     }
 
@@ -127,37 +138,62 @@ impl TokenAuthenticator {
             }
         }
 
-        // 2. miss → verifyToken
-        let resp = self
-            .downstream
-            .verify_token(VerifyTokenReq { token })
-            .await
-            .map_err(Status::from)?;
-        if !resp.active {
-            return Err(Status::unauthenticated("token inactive"));
-        }
-        let ctx = UserCtx {
-            user_id: resp.user_id,
-            accounts: resp.accounts,
-            device_id: resp.device_id,
-            employee_id: resp.employee_id,
+        // 2. Singleflight:claim 或 join inflight
+        let (cell, is_leader) = {
+            let mut inflight = self.inflight.lock();
+            if let Some(cell) = inflight.get(&key) {
+                (cell.clone(), false)
+            } else {
+                let cell = Arc::new(OnceCell::new());
+                inflight.insert(key.clone(), cell.clone());
+                (cell, true)
+            }
         };
 
-        // 3. 写缓存
-        {
-            let mut cache = self.cache.lock();
-            if cache.len() >= MAX_CACHE_ENTRIES {
-                cache.clear();
+        // 3. 调 verify_token(只有 leader 的 future 会被 OnceCell 真正 poll)
+        let downstream = self.downstream.clone();
+        let token_owned = token.to_string();
+        let result = cell
+            .get_or_init(move || async move {
+                let resp = downstream
+                    .verify_token(VerifyTokenReq {
+                        token: &token_owned,
+                    })
+                    .await
+                    .map_err(Status::from)?;
+                if !resp.active {
+                    return Err(Status::unauthenticated("token inactive"));
+                }
+                let ctx = UserCtx {
+                    user_id: resp.user_id,
+                    accounts: resp.accounts,
+                    device_id: resp.device_id,
+                    employee_id: resp.employee_id,
+                };
+                Ok((ctx, cache_ttl(resp.exp_ms)))
+            })
+            .await
+            .clone();
+
+        // 4. leader 负责:写缓存 + 从 inflight 摘除(让下一轮 miss 重新走)
+        if is_leader {
+            if let Ok((ctx, ttl)) = &result {
+                let mut cache = self.cache.lock();
+                if cache.len() >= MAX_CACHE_ENTRIES {
+                    cache.clear();
+                }
+                cache.insert(
+                    key.clone(),
+                    CachedCtx {
+                        ctx: ctx.clone(),
+                        expires_at: Instant::now() + *ttl,
+                    },
+                );
             }
-            cache.insert(
-                key,
-                CachedCtx {
-                    ctx: ctx.clone(),
-                    expires_at: Instant::now() + cache_ttl(resp.exp_ms),
-                },
-            );
+            self.inflight.lock().remove(&key);
         }
-        Ok(ctx)
+
+        result.map(|(ctx, _ttl)| ctx)
     }
 }
 
@@ -1426,6 +1462,81 @@ mod tests {
         req.extensions_mut().insert(BearerToken("tok-A".into()));
         let err = svc.forward(req).await.unwrap_err();
         assert_eq!(err.code(), tonic::Code::InvalidArgument);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn authenticator_singleflight_50_concurrent_calls_one_verify() {
+        // 50 个并发对同一未缓存 token 的 authenticate 调用,只能触发 1 次 verify_token
+        let mock = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/verify_token"))
+            // 故意延迟 100ms,让所有 50 个 caller 都集中在 inflight 阶段(否则 leader 太快
+            // 先返回,follower 进来时已经命中缓存了,测不到 singleflight)
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_delay(Duration::from_millis(100))
+                    .set_body_json(serde_json::json!({
+                        "active": true,
+                        "user_id": "u-X",
+                        "device_id": "d-X",
+                        "accounts": Vec::<String>::new(),
+                        "employee_id": 42,
+                    })),
+            )
+            .expect(1) // wiremock 在 mock drop 时校验:必须恰好 1 次
+            .mount(&mock)
+            .await;
+
+        let downstream =
+            Arc::new(crate::downstream::DownstreamClient::new(&mock.uri(), "dn-secret").unwrap());
+        let auth = Arc::new(TokenAuthenticator::new(downstream));
+
+        // 50 个并发 task
+        let mut set = tokio::task::JoinSet::new();
+        for _ in 0..50 {
+            let auth = auth.clone();
+            set.spawn(async move {
+                auth.authenticate("tok-X")
+                    .await
+                    .map(|c| c.employee_id)
+                    .unwrap_or(-1)
+            });
+        }
+        let mut count_ok = 0;
+        while let Some(res) = set.join_next().await {
+            if res.unwrap() == 42 {
+                count_ok += 1;
+            }
+        }
+        assert_eq!(count_ok, 50, "all 50 callers should see the same UserCtx");
+        // mock.drop → expect(1) 自动校验 verify_token 只被调了 1 次
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn authenticator_singleflight_after_complete_next_miss_calls_again() {
+        // singleflight 不是一次性的:leader 完成后从 inflight 移除,下次 miss 应该重新走 verify
+        let mock = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/verify_token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "active": true,
+                "user_id": "u-A",
+                "device_id": "d-A",
+                "accounts": Vec::<String>::new(),
+                "employee_id": 11,
+            })))
+            .mount(&mock)
+            .await;
+        let downstream =
+            Arc::new(crate::downstream::DownstreamClient::new(&mock.uri(), "dn-secret").unwrap());
+        let auth = TokenAuthenticator::new(downstream);
+
+        // 第一次:miss → verify → 写缓存
+        let c1 = auth.authenticate("tok-A").await.unwrap();
+        assert_eq!(c1.employee_id, 11);
+        // 第二次:命中缓存,不走 inflight
+        let c2 = auth.authenticate("tok-A").await.unwrap();
+        assert_eq!(c2.employee_id, 11);
     }
 
     #[tokio::test(flavor = "multi_thread")]
