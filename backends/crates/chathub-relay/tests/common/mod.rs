@@ -64,6 +64,7 @@ pub async fn spawn_relay() -> RelayHarness {
         router: router.clone(),
         seqs: seqs.clone(),
         events: events.clone(),
+        events_log: events_log.clone(),
         downstream: dn_client.clone(),
         auth: Arc::new(TokenAuthenticator::new(dn_client.clone())),
         routes: chathub_relay::config::DownstreamRoutes::default_for_test(),

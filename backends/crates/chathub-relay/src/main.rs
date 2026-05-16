@@ -39,6 +39,7 @@ async fn main() -> anyhow::Result<()> {
         router: router.clone(),
         seqs: seqs.clone(),
         events: events.clone(),
+        events_log: events_log.clone(),
         downstream: downstream.clone(),
         auth: Arc::new(TokenAuthenticator::new(downstream.clone())),
         routes: cfg.routes.clone(),
