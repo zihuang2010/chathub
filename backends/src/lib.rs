@@ -14,11 +14,9 @@ use chathub_proto::v1::{
     FetchHistoryRequest, FetchHistoryResponse, MessageBody, RecallRequest, RecallResponse,
     SendRequest, SendResponse, TextBody, UserProfile,
 };
-use chathub_state::{KeyringTokenStore, SeqStore, SessionStore, SqlitePool};
+use chathub_state::{LocalTokenStore, SeqStore, SessionStore, SqlitePool};
 use std::time::{Duration, Instant};
 use tokio::sync::broadcast as tokio_broadcast;
-
-const KEYRING_SERVICE: &str = "com.pis0sion.chathub";
 
 // ============================== 现有命令保留 ==============================
 
@@ -106,8 +104,16 @@ async fn login(
     username: String,
     password: String,
 ) -> Result<UserProfile, AuthError> {
-    let profile = state.login(&username, &password).await?;
+    info!(target: "chathub::cmd", %username, "login command invoked");
+    let profile = match state.login(&username, &password).await {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!(target: "chathub::cmd", %username, error = %e, "login command failed");
+            return Err(e);
+        }
+    };
     cm.start().await;
+    info!(target: "chathub::cmd", user_id = %profile.user_id, "login command ok, ConnectionManager started");
     Ok(profile)
 }
 
@@ -223,13 +229,15 @@ pub fn run() {
                 let pool = SqlitePool::open(app_data.join("state.sqlite"))
                     .await.map_err(|e| e.to_string())?;
                 let session_store = SessionStore::new(pool.clone());
-                let seq_store = SeqStore::new(pool);
-                let keyring = KeyringTokenStore::new(KEYRING_SERVICE);
+                let seq_store = SeqStore::new(pool.clone());
+                let local_store = LocalTokenStore::new(pool);
+                // device_id 从本地 SQLite 取(首次启动生成),不再用 macOS 钥匙串。
+                let device_id = local_store.ensure_device_id()
+                    .await.map_err(|e| format!("device_id: {e}"))?;
                 let endpoint = chathub_net::build_endpoint(chathub_net::RELAY_URL)
                     .map_err(|e| format!("endpoint: {e}"))?;
                 let channel = endpoint.connect_lazy();
-                let token_store = Arc::new(TokenStore::new(endpoint, keyring)
-                    .map_err(|e| format!("token_store: {e}"))?);
+                let token_store = Arc::new(TokenStore::new(endpoint, local_store, device_id));
                 let interceptor = AuthInterceptor::new(token_store.clone());
                 let hub_client = HubClient::new(channel, interceptor);
                 let conn_manager = Arc::new(ConnectionManager::new(
@@ -266,9 +274,9 @@ pub fn run() {
             tauri::async_runtime::spawn(async move {
                 while let Ok(reason) = rx.recv().await {
                     let kind = match reason {
-                        LoggedOutReason::Manual        => "manual",
-                        LoggedOutReason::RefreshFailed => "refresh-failed",
-                        LoggedOutReason::Kicked        => "kicked",
+                        LoggedOutReason::Manual       => "manual",
+                        LoggedOutReason::TokenInvalid => "token-invalid",
+                        LoggedOutReason::Kicked       => "kicked",
                     };
                     let _ = app_for_event.emit("auth:logged_out", serde_json::json!({ "reason": kind }));
                 }

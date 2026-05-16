@@ -66,18 +66,19 @@ const PLATFORM: &str = "unknown";
 mod tests {
     use super::*;
     use crate::token::TokenStore;
-    use chathub_state::KeyringTokenStore;
+    use chathub_state::{LocalTokenStore, SqlitePool};
     use tonic::service::Interceptor;
 
-    fn unique_keyring() -> KeyringTokenStore {
-        KeyringTokenStore::new(format!("chathub-test-{}", uuid::Uuid::new_v4()))
+    async fn fresh_store() -> Arc<TokenStore> {
+        let pool = SqlitePool::in_memory().await.unwrap();
+        let local = LocalTokenStore::new(pool);
+        let ep = tonic::transport::Endpoint::from_static("http://127.0.0.1:1");
+        Arc::new(TokenStore::new(ep, local, "dev-test".into()))
     }
 
     #[tokio::test]
     async fn unauthenticated_when_not_logged_in() {
-        let kr = unique_keyring();
-        let ep = tonic::transport::Endpoint::from_static("http://127.0.0.1:1");
-        let store = Arc::new(TokenStore::new(ep, kr.clone()).expect("store"));
+        let store = fresh_store().await;
         let mut interceptor = AuthInterceptor::new(store);
 
         let req = Request::new(());
@@ -85,10 +86,26 @@ mod tests {
             .call(req)
             .expect_err("should be unauthenticated");
         assert_eq!(err.code(), tonic::Code::Unauthenticated);
-
-        let _ = kr.clear_refresh_token();
-        let _ = kr._clear_device_id_for_test();
     }
 
-    // 集成测试覆盖"已登录情况下注入 Bearer + 头" — 在 Plan 3 真正用 Hub.* 时验证。
+    #[tokio::test]
+    async fn injects_bearer_and_headers_when_logged_in() {
+        let store = fresh_store().await;
+        store.set_session("biz-tok-1".into(), "u-1".into());
+        let mut interceptor = AuthInterceptor::new(store);
+
+        let out = interceptor.call(Request::new(())).expect("should pass");
+        let md = out.metadata();
+        assert_eq!(
+            md.get("authorization").unwrap().to_str().unwrap(),
+            "Bearer biz-tok-1"
+        );
+        assert_eq!(
+            md.get("chathub-protocol-version")
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "1"
+        );
+    }
 }

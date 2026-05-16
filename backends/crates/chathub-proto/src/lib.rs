@@ -5,7 +5,7 @@
 //!   - chathub_proto::v1::auth_client::AuthClient<Channel>
 //!   - chathub_proto::v1::auth_server::{Auth, AuthServer}
 //!   - chathub_proto::v1::hub_client::HubClient<Channel>
-//!   - chathub_proto::v1::{LoginRequest, LoginResponse, RefreshTokenRequest, ...}
+//!   - chathub_proto::v1::{LoginRequest, LoginResponse, LogoutRequest, ...}
 //!   - chathub_proto::v1::{ErrorDetail, RetryInfo, QuotaFailure, ...}
 //!
 //! 后续计划在引用时一律走 `chathub_proto::v1::...` 命名空间。
@@ -20,7 +20,7 @@ pub mod v1 {
 #[cfg(test)]
 mod tests {
     use super::v1::auth_client::AuthClient;
-    use super::v1::{LoginRequest, LoginResponse, RefreshTokenRequest};
+    use super::v1::{LoginRequest, LoginResponse, LogoutRequest};
     use tonic::transport::Channel;
 
     #[test]
@@ -34,21 +34,19 @@ mod tests {
     fn login_response_default_compiles() {
         let resp = LoginResponse::default();
         assert!(resp.access_token.is_empty());
-        assert_eq!(resp.access_exp_ms, 0);
+        assert!(resp.user.is_none());
     }
 
     #[test]
-    fn refresh_request_round_trips_via_prost() {
+    fn logout_request_round_trips_via_prost() {
         // 编解码自检:防止 build.rs 配置漂了
         use prost::Message;
-        let req = RefreshTokenRequest {
-            refresh_token: "abc".into(),
-            device_id: "dev-1".into(),
+        let req = LogoutRequest {
+            token: "abc".into(),
         };
         let bytes = req.encode_to_vec();
-        let decoded = RefreshTokenRequest::decode(bytes.as_slice()).unwrap();
-        assert_eq!(decoded.refresh_token, "abc");
-        assert_eq!(decoded.device_id, "dev-1");
+        let decoded = LogoutRequest::decode(bytes.as_slice()).unwrap();
+        assert_eq!(decoded.token, "abc");
     }
 
     /// 仅作类型存在性 + 函数签名检查,不真的连服务端。

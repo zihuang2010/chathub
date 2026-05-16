@@ -2,7 +2,7 @@
 name        = "chathub-state"
 version     = "0.1.0"
 edition     = "2021"
-description = "Local persistence: SQLite + OS keychain"
+description = "Local persistence: SQLite"
 publish     = false
 
 [dependencies]
@@ -11,7 +11,6 @@ chathub-proto = { path = "../chathub-proto" }
 deadpool-sqlite     = { workspace = true }
 rusqlite            = { workspace = true }
 rusqlite_migration  = { workspace = true }
-keyring             = { workspace = true }
 uuid                = { workspace = true }
 tokio               = { workspace = true }
 thiserror           = { workspace = true }

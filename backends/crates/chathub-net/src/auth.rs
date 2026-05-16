@@ -1,5 +1,5 @@
 //! AuthApi:供 backends 用的高层包装。
-//! 内部 持有 TokenStore + SessionStore,负责 keyring/SQLite/state 协同。
+//! 内部持有 TokenStore + SessionStore,负责本地 SQLite / 内存 state 协同。
 
 use crate::error::AuthError;
 use crate::token::{LoggedOutReason as TokenLoggedOutReason, TokenStore};
@@ -35,9 +35,6 @@ impl AuthApi {
             .upsert_session(&profile, &accounts)
             .await?;
 
-        // 启动后台 refresher
-        self.token_store.spawn_refresher().await;
-
         Ok(profile)
     }
 
@@ -59,33 +56,28 @@ impl AuthApi {
         self.token_store.logged_out_subscribe()
     }
 
-    /// 进程启动时调用:keyring 有 refresh → 触发 force_refresh 复活会话。
-    /// 失败时(包括 Unauthenticated)返回 Ok(None) 而非 Err,因为这是冷启动场景。
+    /// 进程启动时调用:本地 SQLite 有 token + SessionStore 有 profile → 直接复活会话。
+    ///
+    /// 客户端不做续签:不发任何网络请求,只把持久化的 token 装回内存 state。
+    /// 若 token 已失效,首个 Hub RPC 会收到 Unauthenticated,届时再触发登出重登。
     pub async fn try_resume_session(&self) -> Result<Option<UserProfile>, AuthError> {
-        // 1. 检查是否有 refresh
-        let has_refresh = match self.token_store.keyring_has_refresh() {
-            true => true,
-            false => return Ok(None),
+        // 1. 本地有 token?
+        let token = match self.token_store.try_load_token().await {
+            Some(t) => t,
+            None => return Ok(None),
         };
-        let _ = has_refresh;
 
-        // 2. 从 SessionStore 读 user_id 提示给 TokenStore(没有也行)
-        let saved_profile = self.session_store.read_current().await.ok().flatten();
-        if let Some(p) = &saved_profile {
-            self.token_store.seed_user_id(&p.user_id);
-        }
+        // 2. SessionStore 有 profile?没有则状态不一致,清掉本地 token。
+        let profile = match self.session_store.read_current().await? {
+            Some(p) => p,
+            None => {
+                self.token_store.clear_session().await;
+                return Ok(None);
+            }
+        };
 
-        // 3. force_refresh 拉新 access
-        match self.token_store.force_refresh().await {
-            Ok(()) => {
-                self.token_store.spawn_refresher().await;
-                Ok(saved_profile)
-            }
-            Err(AuthError::Unauthenticated) => {
-                let _ = self.session_store.clear().await;
-                Ok(None)
-            }
-            Err(other) => Err(other),
-        }
+        // 3. 装回内存 state,会话复活。
+        self.token_store.set_session(token, profile.user_id.clone());
+        Ok(Some(profile))
     }
 }

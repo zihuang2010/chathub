@@ -4,12 +4,11 @@ package chathub.v1;
 
 import "chathub/v1/common.proto";
 
-// Auth service:三个 method 全部不要求 access_token,但要求 chathub-protocol-version
-// 与 chathub-client-version metadata。
+// Auth service:method 全部不要求 access_token,但要求 chathub-protocol-version
+// 与 chathub-client-version metadata。Relay 仅透传到业务后台,不签发、不存储。
 service Auth {
-  rpc Login        (LoginRequest)        returns (LoginResponse);
-  rpc RefreshToken (RefreshTokenRequest) returns (RefreshTokenResponse);
-  rpc Logout       (LogoutRequest)       returns (LogoutResponse);
+  rpc Login  (LoginRequest)  returns (LoginResponse);
+  rpc Logout (LogoutRequest) returns (LogoutResponse);
 }
 
 message LoginRequest {
@@ -21,25 +20,10 @@ message LoginRequest {
 }
 
 message LoginResponse {
-  string access_token   = 1;   // JWT (RS256), 30min
-  int64  access_exp_ms  = 2;
-  string refresh_token  = 3;   // opaque, 30day, rolling
-  int64  refresh_exp_ms = 4;
-  UserProfile user      = 5;
-  repeated WecomAccount wecom_accounts = 6;
+  string access_token = 1;   // 业务后台签发的 token,Relay 透传不解析
+  UserProfile user    = 2;
+  repeated WecomAccount wecom_accounts = 3;
 }
 
-message RefreshTokenRequest {
-  string refresh_token = 1;
-  string device_id     = 2;
-}
-
-message RefreshTokenResponse {
-  string access_token   = 1;
-  int64  access_exp_ms  = 2;
-  string refresh_token  = 3;
-  int64  refresh_exp_ms = 4;
-}
-
-message LogoutRequest  { string refresh_token = 1; }
+message LogoutRequest  { string token = 1; }
 message LogoutResponse {}

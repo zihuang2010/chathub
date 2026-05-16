@@ -1,71 +1,61 @@
-//! TokenStore:sync RwLock 持有 TokenState,interceptor 友好。
+//! TokenStore:进程内 token 状态 + 业务后台登录/登出(经 Relay gRPC 透传)。
 //!
-//! 本 Task 只含类型 + 同步 getter;login/refresh/refresher 在后续 task 加。
+//! Relay 退化为纯隔道后,客户端不再做 token 续签:
+//!   - login / logout 仍走 Relay 的 AuthSvc gRPC(Relay 透传到业务后台)。
+//!   - token 持久化到本地 SQLite(LocalTokenStore),不再用 macOS 钥匙串。
+//!   - token 失效由业务后台判断;客户端收到 gRPC Unauthenticated 即登出重登,
+//!     不在客户端维护过期时间、不跑后台 refresher。
 
 use crate::error::AuthError;
-use chathub_state::KeyringTokenStore;
+use chathub_state::LocalTokenStore;
 use parking_lot::RwLock;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
-use tokio::sync::{broadcast, Mutex};
+use tokio::sync::broadcast;
 
-/// 进程内的 token 当前值。
+/// 进程内的 token 当前值。过期判断不在客户端,故只存 token + user_id。
 #[derive(Clone, Debug, PartialEq)]
 pub struct TokenState {
     pub access_token: String,
-    pub access_exp_ms: i64,
-    pub refresh_exp_ms: i64,
     pub user_id: String,
 }
 
-impl TokenState {
-    pub fn is_near_expiry(&self, threshold_ms: i64) -> bool {
-        let now = now_unix_ms();
-        (self.access_exp_ms - now) < threshold_ms
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LoggedOutReason {
+    /// 用户主动登出。
     Manual,
-    RefreshFailed,
+    /// token 失效(业务后台判定 / gRPC 返回 Unauthenticated)→ 需重新登录。
+    TokenInvalid,
+    /// 被其它设备踢下线。
     Kicked,
 }
 
-pub(crate) const PROACTIVE_REFRESH_THRESHOLD_MS: i64 = 5 * 60 * 1000;
-
 pub struct TokenStore {
     pub(crate) state: Arc<RwLock<Option<TokenState>>>,
-    pub(crate) refresh_lock: Arc<Mutex<()>>,
-    pub(crate) keyring: Arc<KeyringTokenStore>,
+    pub(crate) local: LocalTokenStore,
     pub(crate) device_id: String,
     pub(crate) logged_out_tx: broadcast::Sender<LoggedOutReason>,
     /// Auth client(不带 interceptor)— Channel 内部 Arc,clone 廉价。
-    /// 每次 RPC 前 .clone() 出 &mut 副本调用,不需要 Mutex。
     pub(crate) auth_client: chathub_proto::v1::auth_client::AuthClient<tonic::transport::Channel>,
-    /// Plan 2 Task 13:后台 refresher task 句柄(Option 是因为可能未启动或被 abort)
-    pub(crate) refresher: tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 impl TokenStore {
-    /// 构造一个空的 TokenStore(未登录)。endpoint 已配置好,后续 login 时连。
+    /// 构造一个空的 TokenStore(未登录)。
+    /// `device_id` 由调用方先从 LocalTokenStore 取出再传入(避免 new 变 async)。
     pub fn new(
         endpoint: tonic::transport::Endpoint,
-        keyring: KeyringTokenStore,
-    ) -> Result<Self, AuthError> {
-        let device_id = keyring.ensure_device_id()?;
+        local: LocalTokenStore,
+        device_id: String,
+    ) -> Self {
         let (tx, _rx) = broadcast::channel(8);
         let channel = endpoint.connect_lazy();
         let auth_client = chathub_proto::v1::auth_client::AuthClient::new(channel);
-        Ok(Self {
+        Self {
             state: Arc::new(RwLock::new(None)),
-            refresh_lock: Arc::new(Mutex::new(())),
-            keyring: Arc::new(keyring),
+            local,
             device_id,
             logged_out_tx: tx,
             auth_client,
-            refresher: tokio::sync::Mutex::new(None),
-        })
+        }
     }
 
     /// 同步读 access token。Interceptor 用此。
@@ -89,8 +79,7 @@ impl TokenStore {
         self.state.read().is_some()
     }
 
-    /// 同步发起一次 Login RPC,成功后写 keyring + 设置 state。
-    /// **不**启动后台 refresher task(留给 AuthApi::login 决定何时启动)。
+    /// 发起一次 Login RPC(经 Relay 透传到业务后台),成功后写本地 SQLite + 设置 state。
     pub async fn login(
         &self,
         username: &str,
@@ -106,197 +95,108 @@ impl TokenStore {
             client_ver: env!("CARGO_PKG_VERSION").to_string(),
         };
 
-        // Channel 内部 Arc,clone 廉价。每次 RPC 用一个本地 &mut 副本。
+        let started = std::time::Instant::now();
+        tracing::info!(
+            target: "chathub::auth",
+            username,
+            device_id = %self.device_id,
+            "Auth.Login start",
+        );
+
         let mut client = self.auth_client.clone();
-        let resp = client.login(req).await?.into_inner();
-
-        // 写 keyring + 内存 state
-        self.keyring.write_refresh_token(&resp.refresh_token)?;
-        let state = TokenState {
-            access_token: resp.access_token.clone(),
-            access_exp_ms: resp.access_exp_ms,
-            refresh_exp_ms: resp.refresh_exp_ms,
-            user_id: resp
-                .user
-                .as_ref()
-                .map(|p| p.user_id.clone())
-                .unwrap_or_default(),
+        let resp = match client.login(req).await {
+            Ok(r) => r.into_inner(),
+            Err(status) => {
+                tracing::warn!(
+                    target: "chathub::auth",
+                    username,
+                    code = ?status.code(),
+                    elapsed_ms = started.elapsed().as_millis() as u64,
+                    message = status.message(),
+                    "Auth.Login failed",
+                );
+                return Err(status.into());
+            }
         };
-        *self.state.write() = Some(state);
 
+        // 持久化 token 到本地 SQLite + 设置内存 state
+        self.local.write_token(&resp.access_token).await?;
+        let user_id = resp
+            .user
+            .as_ref()
+            .map(|p| p.user_id.clone())
+            .unwrap_or_default();
+        *self.state.write() = Some(TokenState {
+            access_token: resp.access_token.clone(),
+            user_id: user_id.clone(),
+        });
+
+        tracing::info!(
+            target: "chathub::auth",
+            username,
+            user_id = %user_id,
+            accounts = resp.wecom_accounts.len(),
+            elapsed_ms = started.elapsed().as_millis() as u64,
+            "Auth.Login ok",
+        );
         Ok(resp)
     }
 
-    /// 强制刷新一次。被动调用(业务拿到 Status::Unauthenticated 时调)。
-    /// 与后台 refresher task 互斥(共享 refresh_lock)。
-    pub async fn force_refresh(&self) -> Result<(), AuthError> {
-        let _g = self.refresh_lock.lock().await;
-        self.do_refresh_inner().await
-    }
-
-    /// 启动后台 refresher task。`login()` 与 `try_resume_session()` 成功后调。
-    /// 如果已有运行中的 task,先 abort 再起新的。
-    pub async fn spawn_refresher(self: &Arc<Self>) {
-        self.abort_refresher().await;
-        let me = Arc::clone(self);
-        let h = tokio::spawn(async move {
-            me.refresher_loop().await;
-        });
-        let mut guard = self.refresher.lock().await;
-        *guard = Some(h);
-    }
-
-    pub async fn abort_refresher(&self) {
-        let mut guard = self.refresher.lock().await;
-        if let Some(h) = guard.take() {
-            h.abort();
-        }
-    }
-
-    async fn refresher_loop(self: Arc<Self>) {
-        loop {
-            // 计算下一次 refresh 时机
-            let sleep_ms: i64 = {
-                let guard = self.state.read();
-                match guard.as_ref() {
-                    None => return, // 已登出
-                    Some(s) => {
-                        let until_threshold =
-                            s.access_exp_ms - now_unix_ms() - PROACTIVE_REFRESH_THRESHOLD_MS;
-                        until_threshold.max(0)
-                    }
-                }
-            };
-            if sleep_ms > 0 {
-                tokio::time::sleep(std::time::Duration::from_millis(sleep_ms as u64)).await;
-            }
-
-            // 已到 5min 阈值 → 取 refresh_lock 序列化(可能 force_refresh 已经在跑)
-            let _g = self.refresh_lock.lock().await;
-            // 双检
-            let still_near = {
-                let guard = self.state.read();
-                match guard.as_ref() {
-                    None => return,
-                    Some(s) => s.is_near_expiry(PROACTIVE_REFRESH_THRESHOLD_MS),
-                }
-            };
-            if !still_near {
-                continue;
-            }
-
-            match self.do_refresh_inner().await {
-                Ok(()) => {}                               // 继续 loop
-                Err(AuthError::Unauthenticated) => return, // 已 broadcast、清状态、退出
-                Err(_other) => {
-                    // 网络类:退避重试。简单实现:sleep 5s 然后继续 loop。
-                    drop(_g);
-                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-                }
-            }
-        }
-    }
-
-    /// 主动登出:abort refresher → 调 Auth.Logout(best-effort)→ 清 keyring + state → broadcast Manual。
+    /// 主动登出:调 Auth.Logout(best-effort)→ 清本地 token + state → broadcast Manual。
     pub async fn logout(&self) -> Result<(), AuthError> {
         use chathub_proto::v1::LogoutRequest;
 
-        self.abort_refresher().await;
-
-        // best-effort RPC
-        if let Ok(Some(refresh)) = self.keyring.read_refresh_token() {
-            let req = LogoutRequest {
-                refresh_token: refresh,
-            };
+        if let Ok(Some(token)) = self.local.read_token().await {
             let mut client = self.auth_client.clone();
-            let _ = client.logout(req).await; // 网络错忽略
+            let _ = client.logout(LogoutRequest { token }).await; // 网络错忽略
         }
 
-        let _ = self.keyring.clear_refresh_token();
+        let _ = self.local.clear_token().await;
         *self.state.write() = None;
         let _ = self.logged_out_tx.send(LoggedOutReason::Manual);
         Ok(())
     }
 
-    /// 仅供 AuthApi::try_resume_session 用:keyring 是否有 refresh_token。
-    pub fn keyring_has_refresh(&self) -> bool {
-        matches!(self.keyring.read_refresh_token(), Ok(Some(_)))
+    /// token 失效:清本地 token + state → broadcast TokenInvalid。
+    /// ConnectionManager 在收到 gRPC Unauthenticated 时调用。
+    pub async fn mark_token_invalid(&self) {
+        let _ = self.local.clear_token().await;
+        *self.state.write() = None;
+        let _ = self.logged_out_tx.send(LoggedOutReason::TokenInvalid);
     }
 
-    /// 仅供集成测试:向 keyring 写入一个 fake refresh_token,使 force_refresh 能走到 Auth RPC。
-    /// 生产代码通过 login() 写 keyring;此方法命名带 `_for_test` 以示测试专用。
-    pub fn seed_refresh_token_for_test(&self, token: &str) {
-        self.keyring
-            .write_refresh_token(token)
-            .expect("seed_refresh_token_for_test");
+    /// 读本地 SQLite 持久化的 token(冷启动 resume 用)。
+    pub async fn try_load_token(&self) -> Option<String> {
+        self.local.read_token().await.ok().flatten()
     }
 
-    /// **测试 only** —— 主动 emit 一个 LoggedOut 给所有订阅者,模拟 refresher 失败。
-    /// 不清 keyring,不改 state;仅 broadcast。
-    /// `#[doc(hidden)]` 让 rustdoc 不展示;不删除 access state,以便测试可断言"task 退出后"的行为。
+    /// 直接设置已登录 state(resume 用:本地有 token + SessionStore 有 profile)。
+    pub fn set_session(&self, access_token: String, user_id: String) {
+        *self.state.write() = Some(TokenState {
+            access_token,
+            user_id,
+        });
+    }
+
+    /// 清本地 token + state,不 broadcast(用于 resume 时发现状态不一致的清理)。
+    pub async fn clear_session(&self) {
+        let _ = self.local.clear_token().await;
+        *self.state.write() = None;
+    }
+
+    /// 仅供集成测试:向本地 SQLite 种一个 token。
+    #[doc(hidden)]
+    pub async fn seed_token_for_test(&self, token: &str) {
+        self.local
+            .write_token(token)
+            .await
+            .expect("seed_token_for_test");
+    }
+
+    /// 仅供测试:主动 emit 一个 LoggedOut 给订阅者。
     #[doc(hidden)]
     pub fn _emit_logged_out_for_test(&self, reason: LoggedOutReason) {
         let _ = self.logged_out_tx.send(reason);
-    }
-
-    /// 仅供 AuthApi::try_resume_session 用:在 force_refresh 之前先种 user_id 到 state。
-    /// 在 do_refresh_inner 成功时,user_id 会被保留(详见 do_refresh_inner)。
-    pub fn seed_user_id(&self, user_id: &str) {
-        let mut s = self.state.write();
-        if s.is_none() {
-            *s = Some(TokenState {
-                access_token: String::new(), // 占位,refresh 后被覆盖
-                access_exp_ms: 0,
-                refresh_exp_ms: 0,
-                user_id: user_id.to_string(),
-            });
-        }
-    }
-
-    pub(crate) async fn do_refresh_inner(&self) -> Result<(), AuthError> {
-        use chathub_proto::v1::RefreshTokenRequest;
-
-        let refresh_token = match self.keyring.read_refresh_token()? {
-            Some(t) => t,
-            None => return Err(AuthError::Unauthenticated),
-        };
-        let req = RefreshTokenRequest {
-            refresh_token,
-            device_id: self.device_id.clone(),
-        };
-
-        let mut client = self.auth_client.clone();
-        let resp = client.refresh_token(req).await;
-
-        let resp = match resp {
-            Ok(r) => r.into_inner(),
-            Err(s) => {
-                let err = AuthError::from(s);
-                if matches!(err, AuthError::Unauthenticated) {
-                    // 失效:清 keyring,清 state,广播
-                    let _ = self.keyring.clear_refresh_token();
-                    *self.state.write() = None;
-                    let _ = self.logged_out_tx.send(LoggedOutReason::RefreshFailed);
-                }
-                return Err(err);
-            }
-        };
-
-        // 成功:轮换 refresh + 更新 access
-        self.keyring.write_refresh_token(&resp.refresh_token)?;
-        let user_id = self
-            .state
-            .read()
-            .as_ref()
-            .map(|s| s.user_id.clone())
-            .unwrap_or_default();
-        *self.state.write() = Some(TokenState {
-            access_token: resp.access_token,
-            access_exp_ms: resp.access_exp_ms,
-            refresh_exp_ms: resp.refresh_exp_ms,
-            user_id,
-        });
-        Ok(())
     }
 }
 
@@ -306,45 +206,64 @@ fn hostname_or_default() -> String {
         .unwrap_or_else(|| "chathub-desktop".into())
 }
 
-pub(crate) fn now_unix_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chathub_state::SqlitePool;
 
-    #[test]
-    fn token_state_is_near_expiry_boundary() {
-        let now = now_unix_ms();
-        let exp_in_4min = now + 4 * 60 * 1000;
-        let s = TokenState {
-            access_token: "a".into(),
-            access_exp_ms: exp_in_4min,
-            refresh_exp_ms: now + 30 * 24 * 60 * 60 * 1000,
-            user_id: "u-1".into(),
-        };
-        assert!(
-            s.is_near_expiry(5 * 60 * 1000),
-            "4min < 5min threshold should be near"
-        );
-        assert!(
-            !s.is_near_expiry(60 * 1000),
-            "4min > 1min threshold should NOT be near"
-        );
+    async fn fresh_local() -> LocalTokenStore {
+        let pool = SqlitePool::in_memory().await.unwrap();
+        LocalTokenStore::new(pool)
     }
 
     #[tokio::test]
     async fn empty_store_returns_none() {
-        let kr = KeyringTokenStore::new(format!("chathub-test-{}", uuid::Uuid::new_v4()));
+        let local = fresh_local().await;
         let ep = tonic::transport::Endpoint::from_static("http://127.0.0.1:1");
-        let store = TokenStore::new(ep, kr.clone()).expect("new");
+        let store = TokenStore::new(ep, local, "dev-test".into());
         assert!(store.current_access_token().is_none());
         assert!(store.current_user_id().is_none());
         assert!(!store.is_logged_in());
-        let _ = kr._clear_device_id_for_test();
+        assert_eq!(store.device_id(), "dev-test");
+    }
+
+    #[tokio::test]
+    async fn set_session_reflects_in_getters() {
+        let local = fresh_local().await;
+        let ep = tonic::transport::Endpoint::from_static("http://127.0.0.1:1");
+        let store = TokenStore::new(ep, local, "dev".into());
+        store.set_session("tok-1".into(), "u-1".into());
+        assert!(store.is_logged_in());
+        assert_eq!(store.current_access_token().as_deref(), Some("tok-1"));
+        assert_eq!(store.current_user_id().as_deref(), Some("u-1"));
+    }
+
+    #[tokio::test]
+    async fn try_load_token_reads_local_persistence() {
+        let pool = SqlitePool::in_memory().await.unwrap();
+        let local = LocalTokenStore::new(pool.clone());
+        local.write_token("persisted-tok").await.unwrap();
+        let ep = tonic::transport::Endpoint::from_static("http://127.0.0.1:1");
+        let store = TokenStore::new(ep, LocalTokenStore::new(pool), "dev".into());
+        assert_eq!(
+            store.try_load_token().await.as_deref(),
+            Some("persisted-tok")
+        );
+    }
+
+    #[tokio::test]
+    async fn mark_token_invalid_clears_and_broadcasts() {
+        let local = fresh_local().await;
+        let ep = tonic::transport::Endpoint::from_static("http://127.0.0.1:1");
+        let store = TokenStore::new(ep, local, "dev".into());
+        store.seed_token_for_test("tok-x").await;
+        store.set_session("tok-x".into(), "u-1".into());
+        let mut rx = store.logged_out_subscribe();
+
+        store.mark_token_invalid().await;
+
+        assert!(!store.is_logged_in());
+        assert!(store.try_load_token().await.is_none());
+        assert_eq!(rx.recv().await.unwrap(), LoggedOutReason::TokenInvalid);
     }
 }

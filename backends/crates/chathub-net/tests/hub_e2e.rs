@@ -7,7 +7,7 @@ use chathub_net::{
     build_endpoint, AuthInterceptor, BackoffConfig, ConnectionManager, ConnectionState, HubClient,
     TokenStore,
 };
-use chathub_state::{KeyringTokenStore, SeqStore, SqlitePool};
+use chathub_state::{LocalTokenStore, SeqStore, SqlitePool};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -40,8 +40,8 @@ async fn make_cm(
 
     let pool = SqlitePool::in_memory().await.expect("pool");
     let seq_store = SeqStore::new(pool.clone());
-    let keyring = KeyringTokenStore::new(common::unique_keyring_service());
-    let token_store = Arc::new(TokenStore::new(endpoint, keyring).expect("token store"));
+    let local = LocalTokenStore::new(pool.clone());
+    let token_store = Arc::new(TokenStore::new(endpoint, local, "dev-test".into()));
 
     let interceptor = AuthInterceptor::new(token_store.clone());
     let hub = HubClient::new(channel, interceptor);
@@ -92,12 +92,10 @@ fn make_incoming(account: &str, seq: i64, text: &str) -> ServerEvent {
     }
 }
 
-/// 让 token_store 内部"看起来已登录" — 直接给一个 fake access token。
-/// Plan 3 e2e 不走 Login RPC(那是 Plan 2 测的),直接造 TokenState 注入。
-/// seed_refresh_token_for_test 保证 force_refresh 能走到 Auth RPC(keyring 非空)。
+/// 让 token_store 内部"看起来已登录" — 直接注入一个 fake access token。
+/// e2e 不走 Login RPC,直接造 TokenState;stub Hub 不校验 token 值。
 async fn force_login(token_store: &Arc<TokenStore>) {
-    token_store.seed_user_id("u-test");
-    token_store.seed_refresh_token_for_test("rt-e2e-fake");
+    token_store.set_session("fake-access-token".into(), "u-test".into());
 }
 
 #[tokio::test]
@@ -161,36 +159,41 @@ async fn subscribe_unavailable_backoffs_and_reconnects() {
 }
 
 #[tokio::test]
-async fn subscribe_unauthenticated_triggers_force_refresh() {
-    let (addr, auth_state, hub_state, _h) = start_stub_full().await;
-    // 让 stub Hub 第一次返回 Unauthenticated,第二次接受
+async fn subscribe_unauthenticated_logs_out() {
+    // Relay 纯隔道后客户端不续签:Subscribe 收到 Unauthenticated →
+    // broadcast TokenInvalid + task 退出,不重连(用户需重新登录)。
+    let (addr, _auth_state, hub_state, _h) = start_stub_full().await;
     {
         let mut s = hub_state.lock().unwrap();
-        s.subscribe_outcome = SubscribeOutcome::RejectOnce(Status::unauthenticated("expired"));
+        s.subscribe_outcome = SubscribeOutcome::RejectAlways(Status::unauthenticated("expired"));
     }
     let (cm, token_store, _ss) = make_cm(addr).await;
     force_login(&token_store).await;
+    let mut logged_out_rx = token_store.logged_out_subscribe();
 
     cm.start().await;
 
+    // 收到 Unauthenticated → broadcast TokenInvalid
+    let reason = tokio::time::timeout(Duration::from_secs(2), logged_out_rx.recv())
+        .await
+        .expect("timeout")
+        .expect("recv");
+    assert!(matches!(reason, LoggedOutReason::TokenInvalid));
+
+    // state → Disconnected{None};token state 已清
     let mut state_rx = cm.state_subscribe();
     wait_for_state(
         &mut state_rx,
-        |s| matches!(s, ConnectionState::Subscribed),
-        Duration::from_secs(3),
+        |s| matches!(s, ConnectionState::Disconnected { last_error: None }),
+        Duration::from_secs(2),
     )
     .await;
+    assert!(!token_store.is_logged_in());
 
-    // 断言 force_refresh 被触发过(stub Auth.refresh_count >= 1)
-    let refresh_count = auth_state.lock().unwrap().refresh_count;
-    assert!(
-        refresh_count >= 1,
-        "expected refresh_count ≥1, got {refresh_count}"
-    );
-
-    // 断言 stub 至少被 subscribe 过 2 次(第一次 Unauthenticated,第二次 Stream)
+    // 200ms 后断言 task 已退出,不再重连
+    tokio::time::sleep(Duration::from_millis(200)).await;
     let sub_count = hub_state.lock().unwrap().subscribes.len();
-    assert!(sub_count >= 2, "expected ≥2 subscribes, got {sub_count}");
+    assert_eq!(sub_count, 1, "task should not reconnect after logout");
 
     cm.stop().await;
 }
@@ -281,7 +284,7 @@ async fn logged_out_during_subscribe_terminates_task() {
     .await;
 
     // 主动 emit LoggedOut
-    token_store._emit_logged_out_for_test(LoggedOutReason::RefreshFailed);
+    token_store._emit_logged_out_for_test(LoggedOutReason::TokenInvalid);
 
     // 等到 Disconnected{None}
     wait_for_state(
@@ -441,16 +444,7 @@ async fn send_success_returns_server_msg_id() {
     }
 
     // 直接构造 HubClient — Send 不需要 ConnectionManager
-    let url = format!("http://{}", addr);
-    let endpoint = build_endpoint(&url).expect("endpoint");
-    let channel = endpoint.connect_lazy();
-    let keyring = KeyringTokenStore::new(common::unique_keyring_service());
-    let token_store = Arc::new(TokenStore::new(endpoint, keyring).expect("ts"));
-    // 种好 refresh token 后 force_refresh,令 interceptor 拿到真实 access token
-    force_login(&token_store).await;
-    token_store.force_refresh().await.expect("force_refresh");
-    let interceptor = AuthInterceptor::new(token_store.clone());
-    let hub = HubClient::new(channel, interceptor);
+    let hub = make_hub_only(addr).await;
 
     let req = make_send_req("wxa1", "conv-1", "msg-id-uuid-fake", "hello");
     let resp = hub.send(req).await.expect("send ok");
@@ -473,16 +467,7 @@ async fn send_unavailable_returns_network_error() {
         s.send_outcome = SendStubOutcome::Status(Status::unavailable("relay down"));
     }
 
-    let url = format!("http://{}", addr);
-    let endpoint = build_endpoint(&url).expect("endpoint");
-    let channel = endpoint.connect_lazy();
-    let keyring = KeyringTokenStore::new(common::unique_keyring_service());
-    let token_store = Arc::new(TokenStore::new(endpoint, keyring).expect("ts"));
-    // 种好 refresh token 后 force_refresh,令 interceptor 拿到真实 access token
-    force_login(&token_store).await;
-    token_store.force_refresh().await.expect("force_refresh");
-    let interceptor = AuthInterceptor::new(token_store.clone());
-    let hub = HubClient::new(channel, interceptor);
+    let hub = make_hub_only(addr).await;
 
     let req = make_send_req("wxa1", "conv-1", "msg-id", "hello");
     let err = hub.send(req).await.expect_err("should fail");
@@ -492,15 +477,15 @@ async fn send_unavailable_returns_network_error() {
 
 // ============================ e2e #10 + #11: Recall unary ============================
 
-/// Plan 4 helper:不经 ConnectionManager,直接造 HubClient(unary RPC 路径)
+/// helper:不经 ConnectionManager,直接造 HubClient(unary RPC 路径)
 async fn make_hub_only(addr: std::net::SocketAddr) -> HubClient {
     let url = format!("http://{}", addr);
     let endpoint = build_endpoint(&url).expect("endpoint");
     let channel = endpoint.connect_lazy();
-    let keyring = KeyringTokenStore::new(common::unique_keyring_service());
-    let token_store = Arc::new(TokenStore::new(endpoint, keyring).expect("ts"));
+    let pool = SqlitePool::in_memory().await.expect("pool");
+    let local = LocalTokenStore::new(pool);
+    let token_store = Arc::new(TokenStore::new(endpoint, local, "dev-test".into()));
     force_login(&token_store).await;
-    token_store.force_refresh().await.expect("force_refresh");
     let interceptor = AuthInterceptor::new(token_store.clone());
     HubClient::new(channel, interceptor)
 }

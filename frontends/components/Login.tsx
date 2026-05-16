@@ -1,5 +1,6 @@
 import { useState, type FormEvent, type ReactNode } from "react";
 import { ArrowRight, Eye, EyeOff, Lock, Smartphone, UserRound } from "lucide-react";
+import { invoke } from "@tauri-apps/api/core";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -102,14 +103,25 @@ export function Login({ onSuccess }: LoginProps) {
   const [password, setPassword] = useState("");
   const [remember, setRemember] = useState(true);
   const [showPassword, setShowPassword] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   const identifier = tab === "account" ? account : phone;
   const canSubmit = identifier.trim().length > 0 && password.trim().length > 0;
 
-  const handleSubmit = (e: FormEvent) => {
+  const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
-    if (!canSubmit) return;
-    onSuccess?.({ tab, identifier });
+    if (!canSubmit || loading) return;
+    setErrorMsg(null);
+    setLoading(true);
+    try {
+      await invoke("login", { username: identifier, password });
+      onSuccess?.({ tab, identifier });
+    } catch (err) {
+      setErrorMsg(formatLoginError(err));
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
@@ -130,6 +142,8 @@ export function Login({ onSuccess }: LoginProps) {
             remember={remember}
             showPassword={showPassword}
             canSubmit={canSubmit}
+            loading={loading}
+            errorMsg={errorMsg}
             onTabChange={setTab}
             onAccountChange={setAccount}
             onPhoneChange={setPhone}
@@ -296,6 +310,31 @@ function IllustrationHalos() {
   );
 }
 
+// AuthError 序列化为 { kind: "kebab-case", ...fields },见 backends/crates/chathub-net/src/error.rs
+function formatLoginError(err: unknown): string {
+  if (typeof err === "string") return err;
+  if (err && typeof err === "object") {
+    const e = err as { kind?: string; message?: string; min_version?: string };
+    switch (e.kind) {
+      case "unauthenticated":
+        return "账号或密码错误";
+      case "account-disabled":
+        return e.message ? `账号已停用：${e.message}` : "账号已停用";
+      case "upgrade-required":
+        return e.min_version ? `客户端需升级至 ${e.min_version}` : "客户端需升级";
+      case "network":
+        return e.message ? `网络错误：${e.message}` : "网络错误,请检查 relay 是否在运行";
+      case "storage":
+        return e.message ? `本地存储错误：${e.message}` : "本地存储错误";
+      case "internal":
+        return e.message ? `服务内部错误：${e.message}` : "服务内部错误";
+      default:
+        return e.message ?? JSON.stringify(err);
+    }
+  }
+  return String(err);
+}
+
 // ─── Form card (right) ──────────────────────────────────────────────────────
 
 interface FormCardProps {
@@ -306,6 +345,8 @@ interface FormCardProps {
   remember: boolean;
   showPassword: boolean;
   canSubmit: boolean;
+  loading: boolean;
+  errorMsg: string | null;
   onTabChange: (t: Tab) => void;
   onAccountChange: (v: string) => void;
   onPhoneChange: (v: string) => void;
@@ -389,7 +430,16 @@ function FormCard(p: FormCardProps) {
           </button>
         </div>
 
-        <SubmitButton disabled={!p.canSubmit} />
+        {p.errorMsg && (
+          <div
+            role="alert"
+            className="rounded-md border border-[#FECACA] bg-[#FEF2F2] px-3 py-2 text-[12.5px] text-[#B91C1C]"
+          >
+            {p.errorMsg}
+          </div>
+        )}
+
+        <SubmitButton disabled={!p.canSubmit || p.loading} loading={p.loading} />
 
         <div className="mt-1 text-center text-[12.5px]" style={{ color: COLOR_SUBTITLE }}>
           还没有账号？
@@ -493,7 +543,7 @@ function Checkbox({
   );
 }
 
-function SubmitButton({ disabled }: { disabled: boolean }) {
+function SubmitButton({ disabled, loading }: { disabled: boolean; loading?: boolean }) {
   const [hover, setHover] = useState(false);
   return (
     <Button
@@ -505,8 +555,14 @@ function SubmitButton({ disabled }: { disabled: boolean }) {
       style={{ background: hover && !disabled ? BLUE_GRADIENT_HOVER : BLUE_GRADIENT }}
     >
       <span className="flex items-center justify-center gap-1.5">
-        登&nbsp;录
-        <ArrowRight size={15} className="transition-transform group-hover:translate-x-0.5" />
+        {loading ? (
+          "登录中…"
+        ) : (
+          <>
+            登&nbsp;录
+            <ArrowRight size={15} className="transition-transform group-hover:translate-x-0.5" />
+          </>
+        )}
       </span>
     </Button>
   );

@@ -1,11 +1,11 @@
-//! Plan 5 e2e:7 个场景。fixture 在 common/mod.rs。
+//! Relay e2e:纯隔道 + 透传网关。fixture 在 common/mod.rs。
 //! 所有测试 #[tokio::test(flavor = "multi_thread")] — 否则 wiremock + tonic
-//! 共享 runtime 会死锁(spec §12.3,风险 R6)。
+//! 共享 runtime 会死锁。
 #![allow(clippy::result_large_err)]
 
 mod common;
 
-use common::{mint_jwt, spawn_relay};
+use common::{mount_verify_token, spawn_relay};
 
 use std::collections::HashMap;
 use tonic::transport::Endpoint;
@@ -20,8 +20,7 @@ async fn raw_channel(addr: std::net::SocketAddr) -> tonic::transport::Channel {
         .unwrap()
 }
 
-/// 用于 Hub.* RPC 的带鉴权 raw client。
-/// `chathub-net::HubClient::subscribe` 是 pub(crate),e2e 直接用 proto 生成客户端。
+/// 用于 Hub.* RPC 的带鉴权 raw client。token 为业务后台签发的不透明串。
 fn hub_client_with_token(
     channel: tonic::transport::Channel,
     token: String,
@@ -76,7 +75,7 @@ fn incoming_push_body(account: &str, server_msg_id: &str, text: &str) -> serde_j
     })
 }
 
-// ─── fixture 自检(T21 遗留) ──────────────────────────────────────────────────
+// ─── fixture 自检 ────────────────────────────────────────────────────────────
 
 #[tokio::test(flavor = "multi_thread")]
 async fn fixture_self_test_healthz_returns_ok() {
@@ -85,23 +84,23 @@ async fn fixture_self_test_healthz_returns_ok() {
         .await
         .unwrap();
     assert_eq!(resp.status(), 200);
-    let _ = mint_jwt(&h.signer, "u-1", vec!["wa-1".into()], "dev-A");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// e2e #1 — login_success_returns_token_and_user
+// e2e #1 — login 透传:relay 把业务后台返回的 token + user 原样回客户端
 // ═══════════════════════════════════════════════════════════════════════════════
 
 #[tokio::test(flavor = "multi_thread")]
-async fn login_success_returns_token_and_user() {
+async fn login_passes_through_business_token_and_user() {
     use chathub_proto::v1::LoginRequest;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, ResponseTemplate};
 
     let h = spawn_relay().await;
     Mock::given(method("POST"))
-        .and(path("/v1/verify_user"))
+        .and(path("/auth/login"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "access_token": "biz-token-xyz",
             "user_id": "u-1",
             "display_name": "A",
             "role": "op",
@@ -127,15 +126,14 @@ async fn login_success_returns_token_and_user() {
         .unwrap()
         .into_inner();
 
-    assert!(!resp.access_token.is_empty());
+    // relay 不签发、不解析:原样透传业务 token
+    assert_eq!(resp.access_token, "biz-token-xyz");
     assert_eq!(resp.user.unwrap().user_id, "u-1");
-    let claims = h.signer.verifier().verify(&resp.access_token).unwrap();
-    assert_eq!(claims.sub, "u-1");
-    assert_eq!(claims.device_id, "dev-A");
+    assert_eq!(resp.wecom_accounts.len(), 1);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// e2e #2 — login_invalid_credentials_maps_to_unauthenticated
+// e2e #2 — login 凭证错误 → Unauthenticated
 // ═══════════════════════════════════════════════════════════════════════════════
 
 #[tokio::test(flavor = "multi_thread")]
@@ -146,7 +144,7 @@ async fn login_invalid_credentials_maps_to_unauthenticated() {
 
     let h = spawn_relay().await;
     Mock::given(method("POST"))
-        .and(path("/v1/verify_user"))
+        .and(path("/auth/login"))
         .respond_with(
             ResponseTemplate::new(401).set_body_json(serde_json::json!({"code":"INVALID_CREDS"})),
         )
@@ -169,18 +167,19 @@ async fn login_invalid_credentials_maps_to_unauthenticated() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// e2e #3 — subscribe_with_valid_jwt_receives_pushed_event
+// e2e #3 — subscribe(verifyToken 通过)收到 push 事件
 // ═══════════════════════════════════════════════════════════════════════════════
 
 #[tokio::test(flavor = "multi_thread")]
-async fn subscribe_with_valid_jwt_receives_pushed_event() {
+async fn subscribe_with_valid_token_receives_pushed_event() {
     use chathub_proto::v1::SubscribeRequest;
     use tokio_stream::StreamExt;
 
     let h = spawn_relay().await;
-    let token = mint_jwt(&h.signer, "u-1", vec!["wa-1".into()], "dev-A");
+    mount_verify_token(&h.downstream, "tok-A", "u-1", "dev-A", &["wa-1"]).await;
+
     let ch = raw_channel(h.grpc_addr).await;
-    let mut hub = hub_client_with_token(ch, token);
+    let mut hub = hub_client_with_token(ch, "tok-A".into());
     let mut stream = hub
         .subscribe(SubscribeRequest {
             since_seqs: Default::default(),
@@ -189,10 +188,8 @@ async fn subscribe_with_valid_jwt_receives_pushed_event() {
         .unwrap()
         .into_inner();
 
-    // 等 server-side register 落地
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
-    // POST /internal/push
     let body = incoming_push_body("wa-1", "sm-1", "hello");
     let status = do_push(&h.push_url, &h.push_secret, &body).await;
     assert_eq!(status, 202);
@@ -207,7 +204,37 @@ async fn subscribe_with_valid_jwt_receives_pushed_event() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// e2e #4 — subscribe_resumes_after_push_using_since_seqs
+// e2e #3b — subscribe:verifyToken 返回 active:false → Unauthenticated
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[tokio::test(flavor = "multi_thread")]
+async fn subscribe_with_inactive_token_is_rejected() {
+    use chathub_proto::v1::SubscribeRequest;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, ResponseTemplate};
+
+    let h = spawn_relay().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/verify_token"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({"active": false})),
+        )
+        .mount(&h.downstream)
+        .await;
+
+    let ch = raw_channel(h.grpc_addr).await;
+    let mut hub = hub_client_with_token(ch, "stale-token".into());
+    let err = hub
+        .subscribe(SubscribeRequest {
+            since_seqs: Default::default(),
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), tonic::Code::Unauthenticated);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// e2e #4 — subscribe 用 since_seqs 续接
 // ═══════════════════════════════════════════════════════════════════════════════
 
 #[tokio::test(flavor = "multi_thread")]
@@ -216,12 +243,12 @@ async fn subscribe_resumes_after_push_using_since_seqs() {
     use tokio_stream::StreamExt;
 
     let h = spawn_relay().await;
-    let token = mint_jwt(&h.signer, "u-1", vec!["wa-1".into()], "dev-A");
+    mount_verify_token(&h.downstream, "tok-A", "u-1", "dev-A", &["wa-1"]).await;
 
     // 第一次:订阅,推 3 条,只消费前 2 条,然后 drop stream
     {
         let ch = raw_channel(h.grpc_addr).await;
-        let mut hub = hub_client_with_token(ch, token.clone());
+        let mut hub = hub_client_with_token(ch, "tok-A".into());
         let mut s1 = hub
             .subscribe(SubscribeRequest {
                 since_seqs: Default::default(),
@@ -237,9 +264,7 @@ async fn subscribe_resumes_after_push_using_since_seqs() {
             let _ = do_push(&h.push_url, &h.push_secret, &body).await;
         }
 
-        // 消费 seq 1
         let _ = tokio::time::timeout(std::time::Duration::from_millis(500), s1.next()).await;
-        // 消费 seq 2
         let _ = tokio::time::timeout(std::time::Duration::from_millis(500), s1.next()).await;
         // drop s1 — seq 3 留在 ring buffer,未消费
     }
@@ -248,7 +273,7 @@ async fn subscribe_resumes_after_push_using_since_seqs() {
 
     // 第二次:since_seqs={"wa-1":2},应只收到 seq 3
     let ch2 = raw_channel(h.grpc_addr).await;
-    let mut hub2 = hub_client_with_token(ch2, token);
+    let mut hub2 = hub_client_with_token(ch2, "tok-A".into());
     let mut since = HashMap::new();
     since.insert("wa-1".to_string(), 2_i64);
     let mut s2 = hub2
@@ -265,7 +290,7 @@ async fn subscribe_resumes_after_push_using_since_seqs() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// e2e #5 — kicked_on_second_subscribe_with_different_device
+// e2e #5 — 不同设备第二次 subscribe 踢掉第一个
 // ═══════════════════════════════════════════════════════════════════════════════
 
 #[tokio::test(flavor = "multi_thread")]
@@ -274,11 +299,11 @@ async fn kicked_on_second_subscribe_with_different_device() {
     use tokio_stream::StreamExt;
 
     let h = spawn_relay().await;
-    let tok1 = mint_jwt(&h.signer, "u-1", vec!["wa-1".into()], "dev-A");
-    let tok2 = mint_jwt(&h.signer, "u-1", vec!["wa-1".into()], "dev-B");
+    mount_verify_token(&h.downstream, "tok-A", "u-1", "dev-A", &["wa-1"]).await;
+    mount_verify_token(&h.downstream, "tok-B", "u-1", "dev-B", &["wa-1"]).await;
 
     let ch1 = raw_channel(h.grpc_addr).await;
-    let mut hub1 = hub_client_with_token(ch1, tok1);
+    let mut hub1 = hub_client_with_token(ch1, "tok-A".into());
     let mut s1 = hub1
         .subscribe(SubscribeRequest {
             since_seqs: Default::default(),
@@ -289,7 +314,7 @@ async fn kicked_on_second_subscribe_with_different_device() {
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
     let ch2 = raw_channel(h.grpc_addr).await;
-    let mut hub2 = hub_client_with_token(ch2, tok2);
+    let mut hub2 = hub_client_with_token(ch2, "tok-B".into());
     let _s2 = hub2
         .subscribe(SubscribeRequest {
             since_seqs: Default::default(),
@@ -315,7 +340,7 @@ async fn kicked_on_second_subscribe_with_different_device() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// e2e #6 — send_translates_to_downstream_and_emits_status_change
+// e2e #6 — send 透传下游 + fanout MessageStatusChange
 // ═══════════════════════════════════════════════════════════════════════════════
 
 #[tokio::test(flavor = "multi_thread")]
@@ -326,6 +351,7 @@ async fn send_translates_to_downstream_and_emits_status_change() {
     use wiremock::{Mock, ResponseTemplate};
 
     let h = spawn_relay().await;
+    mount_verify_token(&h.downstream, "tok-A", "u-1", "dev-A", &["wa-1"]).await;
     Mock::given(method("POST"))
         .and(path("/v1/send"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
@@ -335,11 +361,9 @@ async fn send_translates_to_downstream_and_emits_status_change() {
         .mount(&h.downstream)
         .await;
 
-    let token = mint_jwt(&h.signer, "u-1", vec!["wa-1".into()], "dev-A");
     let ch = raw_channel(h.grpc_addr).await;
-    let mut hub = hub_client_with_token(ch, token);
+    let mut hub = hub_client_with_token(ch, "tok-A".into());
 
-    // Subscribe 先
     let mut stream = hub
         .subscribe(SubscribeRequest {
             since_seqs: Default::default(),
@@ -349,7 +373,6 @@ async fn send_translates_to_downstream_and_emits_status_change() {
         .into_inner();
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
-    // Send
     let resp = hub
         .send(SendRequest {
             wecom_account_id: "wa-1".into(),
@@ -368,7 +391,6 @@ async fn send_translates_to_downstream_and_emits_status_change() {
         .into_inner();
     assert_eq!(resp.server_msg_id, "sm-99");
 
-    // Subscribe stream 应收到 MessageStatusChange{STATUS_SENT}
     let evt = tokio::time::timeout(std::time::Duration::from_secs(2), stream.next())
         .await
         .unwrap()
@@ -388,7 +410,7 @@ async fn send_translates_to_downstream_and_emits_status_change() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// e2e #7 — push_with_invalid_secret_returns_401
+// e2e #7 — push 密钥错误 → 401
 // ═══════════════════════════════════════════════════════════════════════════════
 
 #[tokio::test(flavor = "multi_thread")]

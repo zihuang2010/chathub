@@ -72,7 +72,7 @@ curl -sX POST http://127.0.0.1:50052/internal/push \
       "wecom_account_id":"","seq":0,
       "incoming":{
         "conversation_id":"c-1","from_user_id":"peer-1","sent_at_ms":0,
-        "server_msg_id":"sm-1","body":{"text":{"content":"hello"}}
+        "server_msg_id":"sm-1","body":{"text":{"text":"hello"}}
       }
     }
   }'

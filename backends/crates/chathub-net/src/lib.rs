@@ -3,11 +3,11 @@
 //! 公共 API:
 //!   - `RELAY_URL`:编译期注入,CHATHUB_RELAY_URL env 提供
 //!   - `build_endpoint(url)`:tonic Endpoint 配置(keep-alive、TLS、超时)
-//!   - `TokenStore`:同步 RwLock + 后台 refresher task
+//!   - `TokenStore`:进程内 token 状态 + 本地 SQLite 持久化(无续签、无钥匙串)
 //!   - `AuthInterceptor`:同步 Interceptor,注入 Bearer + 版本头
 //!   - `AuthApi`:login/logout/try_resume_session 业务包装
 //!   - `AuthError`:统一错误类型 + From<Status>
-//!   - `HubClient` / `ConnectionManager` / `ConnectionState` / `BackoffConfig`(Plan 3)
+//!   - `HubClient` / `ConnectionManager` / `ConnectionState` / `BackoffConfig`
 
 pub mod auth;
 pub mod channel;

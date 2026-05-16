@@ -14,9 +14,6 @@ pub enum StateError {
     #[error("migration error: {0}")]
     Migration(String),
 
-    #[error("keyring error: {0}")]
-    Keyring(#[from] keyring::Error),
-
     #[error("missing field: {0}")]
     MissingField(&'static str),
 

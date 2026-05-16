@@ -44,6 +44,7 @@ impl SqlitePool {
             let migrations = Migrations::new(vec![
                 M::up(include_str!("../migrations/V1__init.sql")),
                 M::up(include_str!("../migrations/V2__seqs.sql")),
+                M::up(include_str!("../migrations/V3__kv.sql")),
             ]);
             migrations
                 .to_latest(c)

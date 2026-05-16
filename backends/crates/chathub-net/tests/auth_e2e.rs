@@ -1,23 +1,26 @@
-//! End-to-end tests against in-process stub Relay.
-//! Covers 7 scenarios from spec §7.2.
+//! End-to-end tests against in-process stub Relay。
+//!
+//! Relay 退化为纯隔道后,客户端不做续签:覆盖 login / logout / 冷启动 resume。
 
 mod common;
 
-use chathub_net::TokenStore;
-use chathub_state::KeyringTokenStore;
+use chathub_net::{AuthApi, TokenStore};
+use chathub_state::{LocalTokenStore, SessionStore, SqlitePool};
 use common::stub_relay::{start_stub, LoginOutcome};
+use std::sync::Arc;
 
-fn unique_keyring() -> KeyringTokenStore {
-    KeyringTokenStore::new(format!("chathub-test-{}", uuid::Uuid::new_v4()))
+async fn fresh_local() -> LocalTokenStore {
+    let pool = SqlitePool::in_memory().await.expect("pool");
+    LocalTokenStore::new(pool)
 }
 
 #[tokio::test]
-async fn scenario_1_login_success() {
+async fn scenario_1_login_success_persists_token() {
     let (addr, state, _h) = start_stub().await;
-    let kr = unique_keyring();
+    let local = fresh_local().await;
 
     let ep = chathub_net::build_endpoint(format!("http://{addr}")).expect("ep");
-    let store = TokenStore::new(ep, kr.clone()).expect("store");
+    let store = TokenStore::new(ep, local, "dev-1".into());
 
     let resp = store.login("alice", "pwd").await.expect("login");
     assert_eq!(resp.user.as_ref().unwrap().user_id, "u-stub");
@@ -25,135 +28,38 @@ async fn scenario_1_login_success() {
     assert!(store.is_logged_in());
     assert!(store.current_access_token().is_some());
     assert_eq!(state.lock().unwrap().login_count, 1);
+    // token 持久化到本地 SQLite(冷启动 resume 用)
     assert!(
-        kr.read_refresh_token().unwrap().is_some(),
-        "refresh persisted to keyring"
+        store.try_load_token().await.is_some(),
+        "token persisted to local SQLite"
     );
-
-    // cleanup
-    let _ = kr.clear_refresh_token();
-    let _ = kr._clear_device_id_for_test();
 }
 
 #[tokio::test]
-async fn scenario_2_login_unauthenticated() {
+async fn scenario_2_login_unauthenticated_writes_nothing() {
     let (addr, state, _h) = start_stub().await;
     state.lock().unwrap().login_outcome = LoginOutcome::Unauthenticated;
 
-    let kr = unique_keyring();
+    let local = fresh_local().await;
     let ep = chathub_net::build_endpoint(format!("http://{addr}")).expect("ep");
-    let store = TokenStore::new(ep, kr.clone()).expect("store");
+    let store = TokenStore::new(ep, local, "dev-1".into());
 
     let err = store.login("alice", "pwd").await.expect_err("should fail");
     assert!(matches!(err, chathub_net::AuthError::Unauthenticated));
     assert!(!store.is_logged_in());
     assert!(
-        kr.read_refresh_token().unwrap().is_none(),
+        store.try_load_token().await.is_none(),
         "no token written on failure"
     );
-
-    let _ = kr.clear_refresh_token();
-    let _ = kr._clear_device_id_for_test();
 }
 
 #[tokio::test]
-async fn scenario_4_reactive_refresh_on_unauthenticated() {
+async fn scenario_5_logout_emits_event_and_clears_token() {
     let (addr, state, _h) = start_stub().await;
-    let kr = unique_keyring();
+    let local = fresh_local().await;
 
     let ep = chathub_net::build_endpoint(format!("http://{addr}")).expect("ep");
-    let store = TokenStore::new(ep, kr.clone()).expect("store");
-    store.login("alice", "pwd").await.expect("login");
-
-    // 模拟"业务拿到 Unauthenticated → 调 force_refresh":
-    let access_before = store.current_access_token().unwrap();
-    store.force_refresh().await.expect("refresh ok");
-    let access_after = store.current_access_token().unwrap();
-
-    assert_ne!(
-        access_before, access_after,
-        "access token should be rotated"
-    );
-    assert_eq!(state.lock().unwrap().refresh_count, 1);
-    assert!(store.is_logged_in());
-
-    let _ = kr.clear_refresh_token();
-    let _ = kr._clear_device_id_for_test();
-}
-
-#[tokio::test]
-async fn scenario_6_refresh_revoked_emits_event() {
-    let (addr, state, _h) = start_stub().await;
-    let kr = unique_keyring();
-
-    let ep = chathub_net::build_endpoint(format!("http://{addr}")).expect("ep");
-    let store = TokenStore::new(ep, kr.clone()).expect("store");
-    store.login("alice", "pwd").await.expect("login");
-
-    // 订阅 LoggedOut 事件
-    let mut rx = store.logged_out_subscribe();
-
-    // 让下一次 refresh 返回 Unauthenticated(revoked)
-    state.lock().unwrap().force_revoke_next_refresh = true;
-
-    let err = store.force_refresh().await.expect_err("should fail");
-    assert!(matches!(err, chathub_net::AuthError::Unauthenticated));
-
-    // 事件应当广播
-    let reason = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
-        .await
-        .expect("timeout")
-        .expect("recv");
-    assert!(matches!(
-        reason,
-        chathub_net::token::LoggedOutReason::RefreshFailed
-    ));
-
-    // 状态应清空
-    assert!(!store.is_logged_in());
-    assert!(kr.read_refresh_token().unwrap().is_none());
-
-    let _ = kr.clear_refresh_token();
-    let _ = kr._clear_device_id_for_test();
-}
-
-#[tokio::test]
-async fn scenario_3_proactive_refresh_when_near_expiry() {
-    let (addr, state, _h) = start_stub().await;
-    // 让 stub 返回非常短的 access_ttl,触发立即 proactive refresh
-    state.lock().unwrap().access_ttl_ms = 1_000; // 1s
-
-    let kr = unique_keyring();
-    let ep = chathub_net::build_endpoint(format!("http://{addr}")).expect("ep");
-    let store = std::sync::Arc::new(TokenStore::new(ep, kr.clone()).expect("store"));
-    store.login("alice", "pwd").await.expect("login");
-
-    // 启动后台 refresher
-    store.spawn_refresher().await;
-
-    // 由于 access 1s 后过期且 threshold 是 5min,refresher 应**立即**触发刷新
-    // 给它 2s 跑一轮 + 一次刷新
-    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-
-    let count = state.lock().unwrap().refresh_count;
-    assert!(
-        count >= 1,
-        "refresher should have refreshed at least once, got {count}"
-    );
-
-    store.abort_refresher().await;
-
-    let _ = kr.clear_refresh_token();
-    let _ = kr._clear_device_id_for_test();
-}
-
-#[tokio::test]
-async fn scenario_5_logout_emits_event() {
-    let (addr, state, _h) = start_stub().await;
-    let kr = unique_keyring();
-
-    let ep = chathub_net::build_endpoint(format!("http://{addr}")).expect("ep");
-    let store = TokenStore::new(ep, kr.clone()).expect("store");
+    let store = TokenStore::new(ep, local, "dev-1".into());
     store.login("alice", "pwd").await.expect("login");
 
     let mut rx = store.logged_out_subscribe();
@@ -169,37 +75,56 @@ async fn scenario_5_logout_emits_event() {
     ));
 
     assert!(!store.is_logged_in());
-    assert!(kr.read_refresh_token().unwrap().is_none());
+    assert!(store.try_load_token().await.is_none());
     assert_eq!(state.lock().unwrap().logout_count, 1);
-
-    let _ = kr.clear_refresh_token();
-    let _ = kr._clear_device_id_for_test();
 }
 
 #[tokio::test]
-async fn scenario_7_resume_after_restart() {
-    let (addr, state, _h) = start_stub().await;
-    let kr = unique_keyring();
-
-    let pool1 = chathub_state::SqlitePool::in_memory().await.expect("pool1");
-    let session1 = chathub_state::SessionStore::new(pool1);
+async fn scenario_7_resume_after_restart_loads_local_token() {
+    let (addr, _state, _h) = start_stub().await;
+    // 同一个 pool 模拟磁盘:跨"重启"持久化 token + profile
+    let pool = SqlitePool::in_memory().await.expect("pool");
     let ep = chathub_net::build_endpoint(format!("http://{addr}")).expect("ep");
-    let store1 = std::sync::Arc::new(TokenStore::new(ep.clone(), kr.clone()).expect("store1"));
-    let api1 = chathub_net::AuthApi::new(store1.clone(), session1.clone());
+
+    // ── 第一次运行:登录 ──
+    let store1 = Arc::new(TokenStore::new(
+        ep.clone(),
+        LocalTokenStore::new(pool.clone()),
+        "dev-1".into(),
+    ));
+    let api1 = AuthApi::new(store1.clone(), SessionStore::new(pool.clone()));
     api1.login("alice", "pwd").await.expect("login");
     drop(api1);
     drop(store1);
 
-    // "进程重启":新 store + 新 session + 同一个 keyring
-    // session 表是 in-memory,不能跨实例;此处用同一个 SessionStore 模拟磁盘持久化(实际用例里 SQLite 落盘是持久的)
-    // 关键测试点:从 keyring 读 refresh + force_refresh 拿新 access
-    let store2 = std::sync::Arc::new(TokenStore::new(ep, kr.clone()).expect("store2"));
-    let api2 = chathub_net::AuthApi::new(store2.clone(), session1);
+    // ── "进程重启":新 TokenStore + 新 AuthApi,共用同一 pool ──
+    let store2 = Arc::new(TokenStore::new(
+        ep,
+        LocalTokenStore::new(pool.clone()),
+        "dev-1".into(),
+    ));
+    let api2 = AuthApi::new(store2.clone(), SessionStore::new(pool));
     let resumed = api2.try_resume_session().await.expect("resume");
-    assert!(resumed.is_some(), "should resume session");
-    assert!(store2.is_logged_in());
-    assert!(state.lock().unwrap().refresh_count >= 1);
 
-    let _ = kr.clear_refresh_token();
-    let _ = kr._clear_device_id_for_test();
+    assert!(resumed.is_some(), "should resume session from local SQLite");
+    assert_eq!(resumed.unwrap().user_id, "u-stub");
+    assert!(store2.is_logged_in());
+    // resume 不发任何网络请求(不续签)
+}
+
+#[tokio::test]
+async fn resume_with_no_local_token_returns_none() {
+    let (addr, _state, _h) = start_stub().await;
+    let pool = SqlitePool::in_memory().await.expect("pool");
+    let ep = chathub_net::build_endpoint(format!("http://{addr}")).expect("ep");
+
+    let store = Arc::new(TokenStore::new(
+        ep,
+        LocalTokenStore::new(pool.clone()),
+        "dev-1".into(),
+    ));
+    let api = AuthApi::new(store.clone(), SessionStore::new(pool));
+    let resumed = api.try_resume_session().await.expect("resume");
+    assert!(resumed.is_none(), "no local token → no session");
+    assert!(!store.is_logged_in());
 }

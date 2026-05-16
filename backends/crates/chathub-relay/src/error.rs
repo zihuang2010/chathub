@@ -30,9 +30,6 @@ pub enum RelayError {
     #[error("storage: {0}")]
     Storage(#[from] crate::storage::StorageError),
 
-    #[error("jwt: {0}")]
-    Jwt(#[from] crate::jwt::JwtError),
-
     #[error("http: {0}")]
     Http(String),
 }
@@ -61,10 +58,9 @@ impl From<RelayError> for tonic::Status {
             }
             RelayError::InvalidArg => Status::invalid_argument("invalid argument"),
             RelayError::Transient => Status::unavailable("downstream unavailable"),
-            RelayError::Internal
-            | RelayError::Http(_)
-            | RelayError::Storage(_)
-            | RelayError::Jwt(_) => Status::internal("internal"),
+            RelayError::Internal | RelayError::Http(_) | RelayError::Storage(_) => {
+                Status::internal("internal")
+            }
         }
     }
 }

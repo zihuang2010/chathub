@@ -4,7 +4,6 @@ pub mod events;
 pub mod kv;
 pub mod migrations;
 pub mod seqs;
-pub mod sessions;
 
 use deadpool_sqlite::{Config as PoolCfg, Pool, Runtime};
 use std::path::Path;

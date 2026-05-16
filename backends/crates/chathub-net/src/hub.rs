@@ -55,20 +55,21 @@ pub enum ConnectionState {
     },
 }
 
-/// run_loop 收到错误后的动作分类(spec §6.3)。
+/// run_loop 收到错误后的动作分类。
 #[derive(Debug, PartialEq)]
 pub(crate) enum Action {
-    /// Unauthenticated → force_refresh + 立即重连(不退避)
-    ReactiveRefresh,
-    /// Upgrade / Storage → 进入 Disconnected{last_error},task 退出
+    /// Unauthenticated → token 失效:清 token + broadcast TokenInvalid,task 退出。
+    /// 客户端不做续签,用户需重新登录。
+    Logout,
+    /// Upgrade / Storage / AccountDisabled → 进入 Disconnected{last_error},task 退出
     Terminate,
-    /// 其它 transient → 进入 Disconnected{last_error},退避后重连
+    /// 其它 transient(Network / Internal)→ 进入 Disconnected{last_error},退避后重连
     Backoff,
 }
 
 pub(crate) fn classify(err: &AuthError) -> Action {
     match err {
-        AuthError::Unauthenticated => Action::ReactiveRefresh,
+        AuthError::Unauthenticated => Action::Logout,
         AuthError::UpgradeRequired { .. } => Action::Terminate,
         AuthError::Network { .. } => Action::Backoff,
         AuthError::Storage { .. } => Action::Terminate,
@@ -261,11 +262,12 @@ impl Inner {
             let mut stream = match self.hub.subscribe(since_seqs).await {
                 Ok(s) => s,
                 Err(err) => match classify(&err) {
-                    Action::ReactiveRefresh => {
-                        // Task 14 实装:force_refresh + 立即重连
-                        let _ = self.token_store.force_refresh().await;
-                        backoff.reset();
-                        continue 'reconnect;
+                    Action::Logout => {
+                        // token 失效:清 token + broadcast TokenInvalid,task 退出
+                        self.token_store.mark_token_invalid().await;
+                        self.state_tx
+                            .send_replace(ConnectionState::Disconnected { last_error: None });
+                        return;
                     }
                     Action::Terminate => {
                         self.state_tx.send_replace(ConnectionState::Disconnected {
@@ -319,10 +321,12 @@ impl Inner {
                         Err(status) => {
                             let err: AuthError = status.into();
                             match classify(&err) {
-                                Action::ReactiveRefresh => {
-                                    let _ = self.token_store.force_refresh().await;
-                                    backoff.reset();
-                                    continue 'reconnect;
+                                Action::Logout => {
+                                    self.token_store.mark_token_invalid().await;
+                                    self.state_tx.send_replace(
+                                        ConnectionState::Disconnected { last_error: None },
+                                    );
+                                    return;
                                 }
                                 Action::Terminate => {
                                     self.state_tx.send_replace(ConnectionState::Disconnected {
@@ -422,9 +426,9 @@ mod tests {
     }
 
     #[test]
-    fn classify_unauthenticated_returns_reactive_refresh() {
+    fn classify_unauthenticated_returns_logout() {
         let a = classify(&AuthError::Unauthenticated);
-        assert_eq!(a, Action::ReactiveRefresh);
+        assert_eq!(a, Action::Logout);
     }
 
     #[test]

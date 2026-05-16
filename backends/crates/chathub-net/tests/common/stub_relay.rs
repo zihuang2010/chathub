@@ -5,8 +5,7 @@
 
 use chathub_proto::v1::auth_server::{Auth, AuthServer};
 use chathub_proto::v1::{
-    LoginRequest, LoginResponse, LogoutRequest, LogoutResponse, RefreshTokenRequest,
-    RefreshTokenResponse, UserProfile, WecomAccount,
+    LoginRequest, LoginResponse, LogoutRequest, LogoutResponse, UserProfile, WecomAccount,
 };
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
@@ -25,39 +24,11 @@ pub enum LoginOutcome {
     UpgradeRequired,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub enum RefreshOutcome {
-    #[default]
-    Ok,
-    Revoked,
-    Network,
-}
-
 #[derive(Default, Clone)]
 pub struct StubState {
     pub login_outcome: LoginOutcome,
-    pub refresh_outcome: RefreshOutcome,
-    /// access TTL,默认 30 分钟;测试用小值(如 2_000ms)触发主动刷新
-    pub access_ttl_ms: i64,
-    /// refresh TTL,默认 30 天
-    pub refresh_ttl_ms: i64,
     pub login_count: usize,
-    pub refresh_count: usize,
     pub logout_count: usize,
-    /// 模拟 KICKED 等场景:置 true 后下一次 refresh 强制返回 Unauthenticated
-    pub force_revoke_next_refresh: bool,
-}
-
-impl StubState {
-    pub fn new_default_ttls() -> Self {
-        Self {
-            login_outcome: LoginOutcome::Ok,
-            refresh_outcome: RefreshOutcome::Ok,
-            access_ttl_ms: 30 * 60 * 1000,
-            refresh_ttl_ms: 30 * 24 * 60 * 60 * 1000,
-            ..Default::default()
-        }
-    }
 }
 
 pub struct StubAuth {
@@ -79,35 +50,8 @@ impl Auth for StubAuth {
         let now = now_ms();
         Ok(Response::new(LoginResponse {
             access_token: "a-".to_string() + &uuid_seed(now),
-            access_exp_ms: now + s.access_ttl_ms,
-            refresh_token: "r-".to_string() + &uuid_seed(now),
-            refresh_exp_ms: now + s.refresh_ttl_ms,
             user: Some(default_profile()),
             wecom_accounts: default_accounts(),
-        }))
-    }
-
-    async fn refresh_token(
-        &self,
-        _req: Request<RefreshTokenRequest>,
-    ) -> Result<Response<RefreshTokenResponse>, Status> {
-        let mut s = self.state.lock().unwrap();
-        s.refresh_count += 1;
-        if s.force_revoke_next_refresh {
-            s.force_revoke_next_refresh = false;
-            return Err(Status::unauthenticated("revoked"));
-        }
-        match s.refresh_outcome {
-            RefreshOutcome::Revoked => return Err(Status::unauthenticated("revoked")),
-            RefreshOutcome::Network => return Err(Status::unavailable("relay down")),
-            RefreshOutcome::Ok => {}
-        }
-        let now = now_ms();
-        Ok(Response::new(RefreshTokenResponse {
-            access_token: "a-".to_string() + &uuid_seed(now),
-            access_exp_ms: now + s.access_ttl_ms,
-            refresh_token: "r-".to_string() + &uuid_seed(now),
-            refresh_exp_ms: now + s.refresh_ttl_ms,
         }))
     }
 
@@ -354,7 +298,7 @@ pub async fn start_stub_full() -> (
     Arc<Mutex<StubHubState>>,
     JoinHandle<()>,
 ) {
-    let auth_state = Arc::new(Mutex::new(StubState::new_default_ttls()));
+    let auth_state = Arc::new(Mutex::new(StubState::default()));
     let hub_state = Arc::new(Mutex::new(StubHubState::default()));
     let auth = StubAuth {
         state: auth_state.clone(),

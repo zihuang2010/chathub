@@ -60,8 +60,3 @@ pub async fn push_status(stub: &Arc<Mutex<StubHubState>>, s: Status) {
     };
     tx.send(Err(s)).await.expect("push_status send");
 }
-
-/// 每个测试用唯一 keyring service,避免互相串扰(Plan 2 兼容名)。
-pub fn unique_keyring_service() -> String {
-    format!("chathub.test.{}", uuid::Uuid::new_v4().simple())
-}
