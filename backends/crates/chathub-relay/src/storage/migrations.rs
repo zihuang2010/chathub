@@ -3,7 +3,8 @@
 use rusqlite_migration::{Migrations, M};
 
 const M001: &str = include_str!("../../migrations/001_initial.sql");
+const M002: &str = include_str!("../../migrations/002_events_v2.sql");
 
 pub fn migrations() -> Migrations<'static> {
-    Migrations::new(vec![M::up(M001)])
+    Migrations::new(vec![M::up(M001), M::up(M002)])
 }

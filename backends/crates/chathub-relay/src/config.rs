@@ -1,9 +1,10 @@
-//! Config — relay 启动配置;`from_env()` 读 12 个 env var(spec §11.1)。
-//! 必填(无默认):RELAY_PUSH_SECRET / RELAY_DOWNSTREAM_URL / RELAY_DOWNSTREAM_SECRET / RELAY_REFRESH_HASH_PEPPER
+//! Config — relay 启动配置;`from_env()` 读 env var。
+//! 必填(无默认):RELAY_DOWNSTREAM_URL / RELAY_DOWNSTREAM_SECRET / RELAY_PUSH_SECRET
+//!
+//! Relay 退化为纯隔道后,不再需要 JWT 签发 / refresh 相关配置。
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::time::Duration;
 
 #[derive(thiserror::Error, Debug)]
 pub enum ConfigError {
@@ -21,12 +22,22 @@ pub struct Config {
     pub downstream_url: String,
     pub downstream_secret: String,
     pub push_secret: String,
-    pub jwt_private_pem: Option<String>,
-    pub jwt_kid: Option<String>,
-    pub issuer: String,
-    pub access_ttl: Duration,
-    pub refresh_ttl: Duration,
-    pub refresh_hash_pepper: String,
+    pub log: LogConfig,
+}
+
+#[derive(Clone, Debug)]
+pub struct LogConfig {
+    pub dir: PathBuf,
+    pub file_prefix: String,
+    pub stdout: StdoutFormat,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StdoutFormat {
+    Off,
+    Compact,
+    Pretty,
+    Json,
 }
 
 impl Config {
@@ -40,13 +51,29 @@ impl Config {
             downstream_url: required("RELAY_DOWNSTREAM_URL")?,
             downstream_secret: required("RELAY_DOWNSTREAM_SECRET")?,
             push_secret: required("RELAY_PUSH_SECRET")?,
-            jwt_private_pem: std::env::var("RELAY_JWT_PRIVATE_PEM").ok(),
-            jwt_kid: std::env::var("RELAY_JWT_KID").ok(),
-            issuer: std::env::var("RELAY_ISSUER").unwrap_or_else(|_| "chathub-relay".into()),
-            access_ttl: Duration::from_secs(parse_u64_or("RELAY_ACCESS_TTL_SECS", 1800)?),
-            refresh_ttl: Duration::from_secs(parse_u64_or("RELAY_REFRESH_TTL_SECS", 2_592_000)?),
-            refresh_hash_pepper: required("RELAY_REFRESH_HASH_PEPPER")?,
+            log: LogConfig {
+                dir: std::env::var("RELAY_LOG_DIR")
+                    .unwrap_or_else(|_| "./logs".into())
+                    .into(),
+                file_prefix: std::env::var("RELAY_LOG_FILE_PREFIX")
+                    .unwrap_or_else(|_| "relay".into()),
+                stdout: parse_stdout_format("RELAY_LOG_STDOUT")?,
+            },
         })
+    }
+}
+
+fn parse_stdout_format(var: &'static str) -> Result<StdoutFormat, ConfigError> {
+    let raw = std::env::var(var).unwrap_or_else(|_| "compact".into());
+    match raw.as_str() {
+        "off" => Ok(StdoutFormat::Off),
+        "compact" => Ok(StdoutFormat::Compact),
+        "pretty" => Ok(StdoutFormat::Pretty),
+        "json" => Ok(StdoutFormat::Json),
+        other => Err(ConfigError::Invalid {
+            var,
+            message: format!("expected one of off|compact|pretty|json, got `{other}`"),
+        }),
     }
 }
 
@@ -66,25 +93,11 @@ fn parse_addr_or(var: &'static str, default: &str) -> Result<SocketAddr, ConfigE
         })
 }
 
-fn parse_u64_or(var: &'static str, default: u64) -> Result<u64, ConfigError> {
-    match std::env::var(var) {
-        Ok(s) => s
-            .parse()
-            .map_err(|e: std::num::ParseIntError| ConfigError::Invalid {
-                var,
-                message: e.to_string(),
-            }),
-        Err(_) => Ok(default),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// 把 `from_env` 的全部必填/可选都置成确定值。
-    /// 注意:`std::env::set_var` 在多线程测试下不安全,本模块 #[cfg(test)] 使用
-    /// `serial_test::serial` 等不在 walking skeleton 范围;改用 lock 保证单线程。
+    /// `std::env::set_var` 在多线程测试下不安全,用 lock 保证单线程。
     static ENV_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
 
     fn clear_all() {
@@ -95,12 +108,9 @@ mod tests {
             "RELAY_DOWNSTREAM_URL",
             "RELAY_DOWNSTREAM_SECRET",
             "RELAY_PUSH_SECRET",
-            "RELAY_JWT_PRIVATE_PEM",
-            "RELAY_JWT_KID",
-            "RELAY_ISSUER",
-            "RELAY_ACCESS_TTL_SECS",
-            "RELAY_REFRESH_TTL_SECS",
-            "RELAY_REFRESH_HASH_PEPPER",
+            "RELAY_LOG_DIR",
+            "RELAY_LOG_FILE_PREFIX",
+            "RELAY_LOG_STDOUT",
         ] {
             std::env::remove_var(k);
         }
@@ -113,16 +123,12 @@ mod tests {
         std::env::set_var("RELAY_PUSH_SECRET", "ps");
         std::env::set_var("RELAY_DOWNSTREAM_URL", "http://dn.local");
         std::env::set_var("RELAY_DOWNSTREAM_SECRET", "dn-secret");
-        std::env::set_var("RELAY_REFRESH_HASH_PEPPER", "p".repeat(64));
 
         let cfg = Config::from_env().expect("config");
         assert_eq!(cfg.grpc_addr.to_string(), "127.0.0.1:50051");
         assert_eq!(cfg.push_addr.to_string(), "127.0.0.1:50052");
-        assert_eq!(cfg.issuer, "chathub-relay");
-        assert_eq!(cfg.access_ttl, Duration::from_secs(1800));
-        assert_eq!(cfg.refresh_ttl, Duration::from_secs(2_592_000));
         assert_eq!(cfg.push_secret, "ps");
-        assert!(cfg.jwt_private_pem.is_none());
+        assert_eq!(cfg.downstream_url, "http://dn.local");
         clear_all();
     }
 
@@ -132,7 +138,6 @@ mod tests {
         clear_all();
         std::env::set_var("RELAY_DOWNSTREAM_URL", "http://dn.local");
         std::env::set_var("RELAY_DOWNSTREAM_SECRET", "dn-secret");
-        std::env::set_var("RELAY_REFRESH_HASH_PEPPER", "p".repeat(64));
         // PUSH_SECRET 故意不设
         let err = Config::from_env().unwrap_err();
         match err {
@@ -148,12 +153,71 @@ mod tests {
         clear_all();
         std::env::set_var("RELAY_DOWNSTREAM_URL", "http://dn.local");
         std::env::set_var("RELAY_PUSH_SECRET", "ps");
-        std::env::set_var("RELAY_REFRESH_HASH_PEPPER", "p".repeat(64));
         // DOWNSTREAM_SECRET 故意不设
         let err = Config::from_env().unwrap_err();
         match err {
             ConfigError::Missing(v) => assert_eq!(v, "RELAY_DOWNSTREAM_SECRET"),
             other => panic!("wrong variant: {other:?}"),
+        }
+        clear_all();
+    }
+
+    #[test]
+    fn from_env_log_defaults_apply_when_log_vars_unset() {
+        let _g = ENV_LOCK.lock();
+        clear_all();
+        std::env::set_var("RELAY_PUSH_SECRET", "ps");
+        std::env::set_var("RELAY_DOWNSTREAM_URL", "http://dn.local");
+        std::env::set_var("RELAY_DOWNSTREAM_SECRET", "dn-secret");
+        let cfg = Config::from_env().expect("config");
+        assert_eq!(cfg.log.dir.to_string_lossy(), "./logs");
+        assert_eq!(cfg.log.file_prefix, "relay");
+        assert_eq!(cfg.log.stdout, StdoutFormat::Compact);
+        clear_all();
+    }
+
+    #[test]
+    fn from_env_log_overrides_pick_up_env_vars() {
+        let _g = ENV_LOCK.lock();
+        clear_all();
+        std::env::set_var("RELAY_PUSH_SECRET", "ps");
+        std::env::set_var("RELAY_DOWNSTREAM_URL", "http://dn.local");
+        std::env::set_var("RELAY_DOWNSTREAM_SECRET", "dn-secret");
+        std::env::set_var("RELAY_LOG_DIR", "/var/log/relay");
+        std::env::set_var("RELAY_LOG_FILE_PREFIX", "relay-prod");
+        std::env::set_var("RELAY_LOG_STDOUT", "json");
+        let cfg = Config::from_env().expect("config");
+        assert_eq!(cfg.log.dir.to_string_lossy(), "/var/log/relay");
+        assert_eq!(cfg.log.file_prefix, "relay-prod");
+        assert_eq!(cfg.log.stdout, StdoutFormat::Json);
+        clear_all();
+    }
+
+    #[test]
+    fn from_env_log_stdout_off_parses() {
+        let _g = ENV_LOCK.lock();
+        clear_all();
+        std::env::set_var("RELAY_PUSH_SECRET", "ps");
+        std::env::set_var("RELAY_DOWNSTREAM_URL", "http://dn.local");
+        std::env::set_var("RELAY_DOWNSTREAM_SECRET", "dn-secret");
+        std::env::set_var("RELAY_LOG_STDOUT", "off");
+        let cfg = Config::from_env().expect("config");
+        assert_eq!(cfg.log.stdout, StdoutFormat::Off);
+        clear_all();
+    }
+
+    #[test]
+    fn from_env_log_stdout_invalid_value_errors() {
+        let _g = ENV_LOCK.lock();
+        clear_all();
+        std::env::set_var("RELAY_PUSH_SECRET", "ps");
+        std::env::set_var("RELAY_DOWNSTREAM_URL", "http://dn.local");
+        std::env::set_var("RELAY_DOWNSTREAM_SECRET", "dn-secret");
+        std::env::set_var("RELAY_LOG_STDOUT", "verbose");
+        let err = Config::from_env().unwrap_err();
+        match err {
+            ConfigError::Invalid { var, .. } => assert_eq!(var, "RELAY_LOG_STDOUT"),
+            other => panic!("wrong: {other:?}"),
         }
         clear_all();
     }
@@ -165,7 +229,6 @@ mod tests {
         std::env::set_var("RELAY_PUSH_SECRET", "ps");
         std::env::set_var("RELAY_DOWNSTREAM_URL", "http://dn.local");
         std::env::set_var("RELAY_DOWNSTREAM_SECRET", "dn-secret");
-        std::env::set_var("RELAY_REFRESH_HASH_PEPPER", "p".repeat(64));
         std::env::set_var("RELAY_GRPC_ADDR", "not-an-addr");
         let err = Config::from_env().unwrap_err();
         match err {
