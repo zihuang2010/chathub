@@ -665,13 +665,14 @@ impl Hub for HubSvc {
         tracing::Span::current().record("employee_id", ctx.employee_id);
         tracing::Span::current().record("body_len", r.body_json.len());
 
-        let resp_bytes = self
+        let outcome = self
             .downstream
             .forward(&self.routes, &r.method, ctx.employee_id, &r.body_json)
             .await
             .map_err(Status::from)?;
         Ok(Response::new(ForwardResponse {
-            body_json: resp_bytes,
+            body_json: outcome.body,
+            http_status: outcome.http_status as u32,
         }))
     }
 }
@@ -1452,6 +1453,85 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_slice(&resp.body_json).unwrap();
         assert_eq!(parsed["echo"], "ok");
         assert_eq!(parsed["got"], "payload");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn forward_business_4xx_surfaces_as_ok_with_http_status() {
+        // P0-5:业务后台 403(业务规则拒绝)不应映射成 gRPC PermissionDenied,
+        // 否则客户端 SDK 误以为是鉴权失败 → 清 token 重登 → 死循环。
+        // 改后:返回 ForwardResponse { http_status=403, body } 让客户端自己判断。
+        let mock = MockServer::start().await;
+        mount_verify_token_v2(&mock, "tok-A", 42, "dev-A").await;
+        Mock::given(method("POST"))
+            .and(path("/v1/send"))
+            .respond_with(ResponseTemplate::new(403).set_body_json(
+                serde_json::json!({"errorCode": "RATE_LIMITED", "message": "send too fast"}),
+            ))
+            .mount(&mock)
+            .await;
+        let tmp = tempfile::tempdir().unwrap();
+        let db = tmp.path().join("t.db");
+        let storage = Storage::open(&db).await.unwrap();
+        std::mem::forget(tmp);
+        let downstream =
+            Arc::new(crate::downstream::DownstreamClient::new(&mock.uri(), "dn-secret").unwrap());
+        let svc = HubSvc {
+            router: Arc::new(Router::new()),
+            seqs: SeqAllocator::new(storage.clone()),
+            events: EventStore::new(storage.clone()),
+            events_log: EventLog::new(storage),
+            downstream: downstream.clone(),
+            auth: Arc::new(TokenAuthenticator::new(downstream)),
+            routes: crate::config::DownstreamRoutes::default_for_test(),
+        };
+
+        let mut req = Request::new(ForwardRequest {
+            method: "send".into(),
+            body_json: b"{}".to_vec(),
+        });
+        req.extensions_mut().insert(BearerToken("tok-A".into()));
+        let resp = svc
+            .forward(req)
+            .await
+            .expect("should NOT be gRPC error")
+            .into_inner();
+        assert_eq!(resp.http_status, 403);
+        let body: serde_json::Value = serde_json::from_slice(&resp.body_json).unwrap();
+        assert_eq!(body["errorCode"], "RATE_LIMITED");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn forward_business_5xx_maps_to_internal_grpc_error() {
+        // 5xx 仍然是 transport-level error,映射成 gRPC Internal(让客户端走重试逻辑)
+        let mock = MockServer::start().await;
+        mount_verify_token_v2(&mock, "tok-A", 42, "dev-A").await;
+        Mock::given(method("POST"))
+            .and(path("/v1/send"))
+            .respond_with(ResponseTemplate::new(503))
+            .mount(&mock)
+            .await;
+        let tmp = tempfile::tempdir().unwrap();
+        let db = tmp.path().join("t.db");
+        let storage = Storage::open(&db).await.unwrap();
+        std::mem::forget(tmp);
+        let downstream =
+            Arc::new(crate::downstream::DownstreamClient::new(&mock.uri(), "dn-secret").unwrap());
+        let svc = HubSvc {
+            router: Arc::new(Router::new()),
+            seqs: SeqAllocator::new(storage.clone()),
+            events: EventStore::new(storage.clone()),
+            events_log: EventLog::new(storage),
+            downstream: downstream.clone(),
+            auth: Arc::new(TokenAuthenticator::new(downstream)),
+            routes: crate::config::DownstreamRoutes::default_for_test(),
+        };
+        let mut req = Request::new(ForwardRequest {
+            method: "send".into(),
+            body_json: b"{}".to_vec(),
+        });
+        req.extensions_mut().insert(BearerToken("tok-A".into()));
+        let err = svc.forward(req).await.unwrap_err();
+        assert_eq!(err.code(), tonic::Code::Internal);
     }
 
     #[tokio::test(flavor = "multi_thread")]

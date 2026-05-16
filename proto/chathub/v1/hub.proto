@@ -47,7 +47,14 @@ message ForwardRequest {
   bytes  body_json = 2;   // 业务请求 JSON 原文,relay 透传
 }
 message ForwardResponse {
-  bytes  body_json = 1;   // 业务响应 JSON 原文,客户端 SDK 自己 deserialize
+  bytes  body_json   = 1;   // 业务响应 JSON 原文,客户端 SDK 自己 deserialize
+  // 业务后台返回的 HTTP 状态码(200/4xx 都会返回成功的 ForwardResponse,客户端按此判断):
+  //   200..=299 = 业务成功
+  //   401 = token 业务层级失效(由业务后台决定意义,客户端按业务规则处理,不要无脑重登)
+  //   403 = 业务规则拒绝(发消息频次限制等),不等于鉴权失败
+  //   其他 4xx = 业务参数错误等
+  // 注:5xx / 网络/超时 由 relay 转 gRPC Status::Unavailable/Internal,这里看不到
+  uint32 http_status = 2;
 }
 
 message SendRequest {

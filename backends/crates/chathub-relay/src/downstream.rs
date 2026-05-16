@@ -48,6 +48,14 @@ pub struct VerifyTokenReq<'a> {
     pub token: &'a str,
 }
 
+/// Hub.Forward 的下游响应:relay 把 HTTP 状态码 + body 一起带回客户端。
+/// 客户端按 `http_status` 区分业务成功/失败,不依赖 gRPC error code。
+#[derive(Debug, Clone)]
+pub struct ForwardOutcome {
+    pub http_status: u16,
+    pub body: Vec<u8>,
+}
+
 /// verifyToken 响应:relay 据此拿到连接身份。
 #[derive(Deserialize, Debug, Clone)]
 pub struct VerifyTokenResp {
@@ -163,7 +171,7 @@ impl DownstreamClient {
         method: &str,
         employee_id: i64,
         body_bytes: &[u8],
-    ) -> Result<Vec<u8>, RelayError> {
+    ) -> Result<ForwardOutcome, RelayError> {
         let path = routes.path_for(method).ok_or(RelayError::InvalidArg)?;
         let url = format!("{}{}", self.base_url, path);
         let started = Instant::now();
@@ -216,7 +224,22 @@ impl DownstreamClient {
             RelayError::Http(e.to_string())
         })?;
 
-        if status.is_success() {
+        // P0-5:语义改为 REST 隧道。2xx 和 4xx 都返回 ForwardOutcome,客户端按 http_status
+        // 判断业务结果(401/403 可能是业务规则而非鉴权失败,relay 无法准确区分)。
+        // 只有 5xx 和实际 transport 故障才映射成 gRPC error。
+        if status.is_server_error() {
+            tracing::warn!(
+                target: "chathub_relay::downstream",
+                method,
+                status = status.as_u16(),
+                elapsed_ms,
+                "forward 5xx — mapped to RelayError::Internal",
+            );
+            return Err(RelayError::Internal);
+        }
+
+        let level = if status.is_success() { "info" } else { "warn" };
+        if level == "info" {
             tracing::info!(
                 target: "chathub_relay::downstream",
                 method,
@@ -225,22 +248,20 @@ impl DownstreamClient {
                 elapsed_ms,
                 "forward ok",
             );
-            return Ok(body.to_vec());
+        } else {
+            // 4xx — 业务规则错,不是 relay 鉴权错。客户端读 http_status + body 自决。
+            tracing::warn!(
+                target: "chathub_relay::downstream",
+                method,
+                status = status.as_u16(),
+                body_len = body.len(),
+                elapsed_ms,
+                "forward 4xx — surfaced to client via http_status (not gRPC error)",
+            );
         }
-
-        tracing::warn!(
-            target: "chathub_relay::downstream",
-            method,
-            status = status.as_u16(),
-            elapsed_ms,
-            "forward non-2xx",
-        );
-        Err(match status.as_u16() {
-            401 => RelayError::InvalidCreds,
-            403 => RelayError::AccountDisabled,
-            400..=499 => RelayError::InvalidArg,
-            500..=599 => RelayError::Internal,
-            _ => RelayError::Http(format!("unexpected status {}", status.as_u16())),
+        Ok(ForwardOutcome {
+            http_status: status.as_u16(),
+            body: body.to_vec(),
         })
     }
 
