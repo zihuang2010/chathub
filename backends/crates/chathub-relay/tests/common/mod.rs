@@ -91,6 +91,7 @@ pub async fn spawn_relay() -> RelayHarness {
         events_log,
         router: router.clone(),
         force_close_grace_ms: 50, // 测试用短 grace,避免拖慢测试
+        allowed_client_ids: vec!["rh_wxchat".into()],
     };
     let push_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let push_addr = push_listener.local_addr().unwrap();

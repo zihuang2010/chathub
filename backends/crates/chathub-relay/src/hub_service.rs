@@ -281,9 +281,15 @@ impl HubSvc {
         ctx: UserCtx,
     ) -> Result<Response<<Self as Hub>::SubscribeStream>, Status> {
         if ctx.employee_id == 0 {
-            return Err(Status::failed_precondition(
-                "employee_id missing from verify_token; business backend not yet upgraded",
-            ));
+            // P1-8:错误信息带 user_id,运维能定位是哪个 token 触发的
+            tracing::warn!(
+                user_id = %ctx.user_id,
+                "subscribe_v2 rejected: employee_id missing from verify_token"
+            );
+            return Err(Status::failed_precondition(format!(
+                "employee_id missing for user_id={} (business backend upgrade required)",
+                ctx.user_id
+            )));
         }
 
         let since = _inner.since_notify_seq;
@@ -298,7 +304,7 @@ impl HubSvc {
             .earliest_for(ctx.employee_id)
             .await
             .map_err(|e| Status::from(RelayError::from(e)))?;
-        let (resync_required, resync_reason) = if since > 0 {
+        let (mut resync_required, mut resync_reason) = if since > 0 {
             match earliest {
                 Some((min_seq, _)) if (min_seq as u64) > since + 1 => {
                     (true, "since out of retention window".to_string())
@@ -309,12 +315,29 @@ impl HubSvc {
             (false, String::new())
         };
 
-        // ② 查 > since 的事件
-        let rows = self
+        // ② 查 > since 的事件。limit 多取 1 用于探测"是否还有更多",P1-2。
+        const REPLAY_LIMIT: i64 = 1000;
+        let mut rows = self
             .events_log
-            .query_since(ctx.employee_id, since as i64, 1000)
+            .query_since(ctx.employee_id, since as i64, REPLAY_LIMIT + 1)
             .await
             .map_err(|e| Status::from(RelayError::from(e)))?;
+        let more_available = rows.len() as i64 > REPLAY_LIMIT;
+        if more_available {
+            // P1-2:历史超过单次重放上限 → 强制走兜底,避免静默截断丢消息
+            rows.truncate(REPLAY_LIMIT as usize);
+            resync_required = true;
+            if resync_reason.is_empty() {
+                resync_reason = format!(
+                    "more than {REPLAY_LIMIT} events queued; resync via recentFriends/history"
+                );
+            }
+            tracing::warn!(
+                employee_id = ctx.employee_id,
+                queued = REPLAY_LIMIT + 1,
+                "subscribe_v2 replay truncated; resync_required=true"
+            );
+        }
         let replayed_to_seq = rows.last().map(|r| r.notify_seq as u64).unwrap_or(since);
 
         // ③ 发 SubscribeAck 首帧
@@ -625,9 +648,10 @@ impl Hub for HubSvc {
                 user_id = %ctx.user_id,
                 "Hub.Ack rejected: employee_id missing from verify_token"
             );
-            return Err(Status::failed_precondition(
-                "employee_id missing from verify_token; business backend not yet upgraded",
-            ));
+            return Err(Status::failed_precondition(format!(
+                "employee_id missing for user_id={} (business backend upgrade required)",
+                ctx.user_id
+            )));
         }
         let r = req.into_inner();
         tracing::Span::current().record("notify_seq", r.notify_seq);
@@ -656,9 +680,10 @@ impl Hub for HubSvc {
                 user_id = %ctx.user_id,
                 "Hub.Forward rejected: employee_id missing from verify_token"
             );
-            return Err(Status::failed_precondition(
-                "employee_id missing from verify_token; business backend not yet upgraded",
-            ));
+            return Err(Status::failed_precondition(format!(
+                "employee_id missing for user_id={} (business backend upgrade required)",
+                ctx.user_id
+            )));
         }
         let r = req.into_inner();
         tracing::Span::current().record("method", &r.method);

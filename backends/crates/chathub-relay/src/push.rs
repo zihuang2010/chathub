@@ -40,11 +40,9 @@ pub struct PushState {
     pub router: Arc<Router>,
     /// CONNECTION_FORCE_CLOSE 后等多久才摘除连接(让客户端读完帧)。默认 2000ms。
     pub force_close_grace_ms: u64,
+    /// P1-7:业务后台 → relay 的 clientId 白名单(env RELAY_ALLOWED_CLIENT_IDS,默认 ["rh_wxchat"])
+    pub allowed_client_ids: Vec<String>,
 }
-
-/// 业务后台 → relay 的 clientId 白名单(spec §3:本期固定 "rh_wxchat")。
-/// stage 4+ 可改为 env 配置;当前硬编码已经够。
-const ALLOWED_CLIENT_IDS: &[&str] = &["rh_wxchat"];
 
 // ─── 入站 JSON 协议 ─────────────────────────────────────────────────────────────
 //
@@ -297,9 +295,17 @@ async fn handle_push_v2(
         return (StatusCode::UNAUTHORIZED, "invalid secret").into_response();
     }
 
-    // 2. clientId 白名单
-    if !ALLOWED_CLIENT_IDS.iter().any(|&c| c == body.client_id) {
-        tracing::warn!(status = 403, "push v2 client_id rejected");
+    // 2. clientId 白名单(env 驱动,见 PushState)
+    if !state
+        .allowed_client_ids
+        .iter()
+        .any(|c| c == &body.client_id)
+    {
+        tracing::warn!(
+            status = 403,
+            client_id = %body.client_id,
+            "push v2 client_id rejected (not in RELAY_ALLOWED_CLIENT_IDS)"
+        );
         return (StatusCode::FORBIDDEN, "client_id not allowed").into_response();
     }
 
@@ -355,10 +361,10 @@ async fn handle_push_v2(
                         "push v2 unknown eventType (persisted by default)"
                     );
                 }
-                let payload_json = serde_json::to_string(event_value).unwrap_or_else(|_| {
-                    // serde_json::Value → string 实践上不会失败;落空字符串保险
-                    String::new()
-                });
+                // P1-9:`Value::to_string()` 比 `serde_json::to_string(&Value)` 更直接,
+                // 不可能失败(serde_json::Value 的 Display 永远产出有效 JSON)。
+                // 之前的空字符串兜底会让客户端 JSON.parse 报错且不知所云。
+                let payload_json = event_value.to_string();
                 rows.push(EventRow {
                     employee_id: body.employee_id,
                     notify_seq: body.notify_seq as i64,
@@ -627,6 +633,7 @@ mod tests {
             events_log: EventLog::new(storage.clone()),
             router: Arc::new(Router::new()),
             force_close_grace_ms: 50, // 测试用短 grace
+            allowed_client_ids: vec!["rh_wxchat".into()],
         }
     }
 

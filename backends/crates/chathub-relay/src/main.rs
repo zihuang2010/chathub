@@ -54,6 +54,7 @@ async fn main() -> anyhow::Result<()> {
         events_log,
         router: router.clone(),
         force_close_grace_ms: cfg.force_close_grace_ms,
+        allowed_client_ids: cfg.allowed_client_ids.clone(),
     };
     let push_app = push::app(push_state);
 

@@ -28,6 +28,8 @@ pub struct Config {
     pub routes: DownstreamRoutes,
     /// CONNECTION_FORCE_CLOSE 收到后等多久才摘除连接。env `RELAY_FORCE_CLOSE_GRACE_MS`,默认 2000。
     pub force_close_grace_ms: u64,
+    /// Push v2 接收的 clientId 白名单。env `RELAY_ALLOWED_CLIENT_IDS`(逗号分隔),默认 `rh_wxchat`。
+    pub allowed_client_ids: Vec<String>,
 }
 
 /// `Hub.Forward(method, body_json)` 时,relay 用这张表把 method 转成业务后台路径。
@@ -123,6 +125,11 @@ impl Config {
                 .ok()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(2000),
+            allowed_client_ids: std::env::var("RELAY_ALLOWED_CLIENT_IDS")
+                .ok()
+                .filter(|s| !s.is_empty())
+                .map(|s| s.split(',').map(|x| x.trim().to_string()).collect())
+                .unwrap_or_else(|| vec!["rh_wxchat".to_string()]),
         })
     }
 }
@@ -180,6 +187,7 @@ mod tests {
             "RELAY_PATH_ACK_READ",
             "RELAY_PATH_FETCH_HISTORY",
             "RELAY_FORCE_CLOSE_GRACE_MS",
+            "RELAY_ALLOWED_CLIENT_IDS",
         ] {
             std::env::remove_var(k);
         }
