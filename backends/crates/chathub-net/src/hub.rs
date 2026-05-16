@@ -93,7 +93,7 @@ impl HubClient {
         let resp = client
             .forward(tonic::Request::new(ForwardRequest {
                 method: method.into(),
-                body_json,
+                body_json: body_json.into(), // F6: Vec<u8> → Bytes
             }))
             .await?;
         Ok(resp.into_inner())

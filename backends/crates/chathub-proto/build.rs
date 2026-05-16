@@ -28,6 +28,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .build_client(true)
         .build_server(true) // server 端 Plan 2 stub_relay 测试要用
         .compile_well_known_types(false)
+        // F6 极致性能:events_json 是 fanout 热路径,N 设备 → N 份深 clone。改 bytes::Bytes
+        // 后 clone 变 refcount;ForwardRequest/ForwardResponse 也走 Bytes(避免 Vec<u8> copy)
+        .bytes([
+            ".chathub.v1.PushBatchOut.events_json",
+            ".chathub.v1.ForwardRequest.body_json",
+            ".chathub.v1.ForwardResponse.body_json",
+        ])
         // Plan 7 — legacy types 全删,只剩 v2 三件套 + Auth 用到的 UserProfile/WecomAccount。
         .type_attribute(".chathub.v1.UserProfile",   "#[derive(serde::Serialize, serde::Deserialize)]")
         .type_attribute(".chathub.v1.WecomAccount",  "#[derive(serde::Serialize, serde::Deserialize)]")

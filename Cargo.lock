@@ -679,6 +679,7 @@ dependencies = [
 name = "chathub-net"
 version = "0.1.0"
 dependencies = [
+ "bytes",
  "chathub-proto",
  "chathub-state",
  "parking_lot",

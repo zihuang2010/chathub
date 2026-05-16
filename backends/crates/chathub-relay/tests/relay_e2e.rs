@@ -384,7 +384,7 @@ async fn forward_routes_to_business_backend() {
     let resp = hub
         .forward(ForwardRequest {
             method: "send".into(),
-            body_json: br#"{"conversationId":"c1"}"#.to_vec(),
+            body_json: bytes::Bytes::from_static(br#"{"conversationId":"c1"}"#),
         })
         .await
         .unwrap()
@@ -431,7 +431,7 @@ async fn forward_passes_client_token_not_relay_secret_to_backend() {
     let resp = hub
         .forward(ForwardRequest {
             method: "send".into(),
-            body_json: br#"{"x":1}"#.to_vec(),
+            body_json: bytes::Bytes::from_static(br#"{"x":1}"#),
         })
         .await
         .unwrap()
@@ -464,7 +464,7 @@ async fn forward_list_accounts_dispatches_get() {
     let resp = hub
         .forward(ForwardRequest {
             method: "list_accounts".into(),
-            body_json: vec![],
+            body_json: bytes::Bytes::new(),
         })
         .await
         .unwrap()

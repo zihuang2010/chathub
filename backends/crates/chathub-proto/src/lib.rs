@@ -79,7 +79,7 @@ mod tests {
                 batch_id: "rh_wxchat:99:42".into(),
                 batch_time: "2026-05-14 10:30:00".into(),
                 device_id: "dev-A".into(),
-                events_json: br#"[{"eventType":"MESSAGE_UPSERT"}]"#.to_vec(),
+                events_json: bytes::Bytes::from_static(br#"[{"eventType":"MESSAGE_UPSERT"}]"#),
             })),
         };
         let json = serde_json::to_string(&evt).expect("serialize");

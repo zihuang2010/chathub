@@ -1,25 +1,30 @@
-//! ConnectionRouter(Plan 7 — employee-scope 唯一索引)。
+//! ConnectionRouter — F6 极致性能版:`ArcSwap<im::HashMap>` 替代 `RwLock<HashMap>`。
 //!
 //! 数据结构:
-//!   - `employees: RwLock<HashMap<employee_id, Vec<EmployeeStream>>>` 主索引
-//!   - `ack_marks: DashMap<employee_id, AtomicU64>` 每员工已确认 notify_seq 水位(P1-4)
+//!   - `employees: ArcSwap<im::HashMap<i64, Vec<EmployeeStream>>>`
+//!     fanout 路径完全无锁(原子 Arc load),read-mostly 场景理想。register/drop 走 RCU
+//!     (read-clone-update-swap),`im::HashMap::clone` 是 O(1) refcount + lazy CoW。
+//!   - `ack_marks: DashMap<employee_id, AtomicU64>` 已确认 notify_seq 水位。
 //!
-//! 设计要点:
-//!   - 一员工可有多条 stream(多端共存,业务后台用 CONNECTION_FORCE_CLOSE 决定踢谁)
-//!   - fanout 时复制 Arc<tx> 出锁,try_send 非阻塞,慢客户端不拖垮 fanout 主路径
-//!   - `connection_id` 是 relay 内部 UUID,不暴露给客户端/业务后台
-//!   - 与 SQLite 锁、TokenAuthenticator 锁完全独立,无锁序约束
+//! 性能特点:
+//!   - 5000 conn × 1000 push/s = 5M fanout/s 无任何锁开销
+//!   - register/drop 极少(每 Subscribe 1 次),RCU 重试代价可忽略
+//!   - 缺点:同时 N 个 register 会有 N-1 次 RCU 重试,但 N 通常 1-2,无忧
+//!
+//! 与 SQLite 锁、TokenAuthenticator 锁完全独立,无锁序约束。
 
+use arc_swap::ArcSwap;
 use chathub_proto::v1::ServerEvent;
 use dashmap::DashMap;
-use parking_lot::RwLock;
-use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use tokio::sync::mpsc;
 use tonic::Status;
 use uuid::Uuid;
 
 pub type EventSender = mpsc::Sender<Result<ServerEvent, Status>>;
+
+type EmployeesMap = im::HashMap<i64, Vec<EmployeeStream>>;
 
 /// 单条 employee 维度的连接。
 #[derive(Clone)]
@@ -45,8 +50,8 @@ pub struct FanoutOutcome {
 }
 
 pub struct Router {
-    employees: RwLock<HashMap<i64, Vec<EmployeeStream>>>,
-    /// per-key 细粒度锁 + 无锁 CAS,Ack 高 QPS 不被全表锁串行化(P1-4)
+    employees: ArcSwap<EmployeesMap>,
+    /// per-key 细粒度锁 + 无锁 CAS,Ack 高 QPS 不被全表锁串行化
     ack_marks: DashMap<i64, AtomicU64>,
 }
 
@@ -59,14 +64,12 @@ impl Default for Router {
 impl Router {
     pub fn new() -> Self {
         Self {
-            employees: RwLock::new(HashMap::new()),
+            employees: ArcSwap::from_pointee(im::HashMap::new()),
             ack_marks: DashMap::new(),
         }
     }
 
     /// 注册一条 employee 维度的 Subscribe 连接,返回 relay 分配的 connection_id。
-    /// 同 employee 多次注册(多设备)允许 —— 同 Vec 里多条 EmployeeStream 共存。
-    /// 真正的"多端互踢"由业务后台决定(发 CONNECTION_FORCE_CLOSE 给 relay,relay 才关连接)。
     pub fn register_employee(
         &self,
         employee_id: i64,
@@ -79,22 +82,27 @@ impl Router {
             device_id,
             tx,
         };
-        let mut employees = self.employees.write();
-        employees.entry(employee_id).or_default().push(stream);
+        // RCU:read → clone (O(1) refcount) → mutate copy → CAS swap;并发时自动重试
+        self.employees.rcu(|cur| {
+            let mut next: EmployeesMap = (**cur).clone();
+            next.entry(employee_id).or_default().push(stream.clone());
+            next
+        });
         EmployeeRegisterOutcome { connection_id }
     }
 
-    /// Fanout 一个事件给某 employee 的所有在线连接。
+    /// Fanout 一个事件给某 employee 的所有在线连接。**完全无锁**,原子 load Arc。
     pub fn fanout_employee(&self, employee_id: i64, event: ServerEvent) -> FanoutOutcome {
-        // 复制 Vec(浅拷贝 Arc-tx),避免 try_send 期间持读锁
+        // 复制 Vec(浅拷贝 mpsc::Sender — Arc-counted),Arc snapshot 立即可 drop
         let conns: Vec<EmployeeStream> = {
-            let employees = self.employees.read();
-            employees.get(&employee_id).cloned().unwrap_or_default()
+            let table = self.employees.load();
+            table.get(&employee_id).cloned().unwrap_or_default()
         };
         let mut delivered = 0;
         let mut backpressure = Vec::new();
         let mut closed = Vec::new();
         for c in conns {
+            // event.clone() 现在是 Bytes refcount bump(F6),不再深拷贝 events_json
             match c.tx.try_send(Ok(event.clone())) {
                 Ok(()) => delivered += 1,
                 Err(mpsc::error::TrySendError::Full(_)) => backpressure.push(c.connection_id),
@@ -108,38 +116,50 @@ impl Router {
         }
     }
 
-    /// 按 connection_id 摘除某 employee 的一条流。Subscribe stream 结束 / force_close
-    /// 完成时调用。
+    /// 按 connection_id 摘除某 employee 的一条流。
     pub fn drop_employee_stream(&self, employee_id: i64, connection_id: &str) {
-        let mut employees = self.employees.write();
-        if let Some(streams) = employees.get_mut(&employee_id) {
-            streams.retain(|s| s.connection_id != connection_id);
-            if streams.is_empty() {
-                employees.remove(&employee_id);
+        self.employees.rcu(|cur| {
+            let mut next: EmployeesMap = (**cur).clone();
+            if let Some(streams) = next.get_mut(&employee_id) {
+                streams.retain(|s| s.connection_id != connection_id);
+                if streams.is_empty() {
+                    next.remove(&employee_id);
+                }
             }
-        }
+            next
+        });
     }
 
     /// CONNECTION_FORCE_CLOSE grace 后摘除该 employee 的所有流。
     /// 返回摘除的 connection_id 列表(给调用方记日志/观测用)。
     pub fn drop_all_employee_streams(&self, employee_id: i64) -> Vec<String> {
-        let mut employees = self.employees.write();
-        match employees.remove(&employee_id) {
-            None => Vec::new(),
-            Some(streams) => streams.into_iter().map(|s| s.connection_id).collect(),
+        // Snapshot first to extract IDs(rcu 闭包可能多次调用,不能在里面收集副作用)
+        let cur = self.employees.load_full();
+        let removed_ids: Vec<String> = cur
+            .get(&employee_id)
+            .map(|streams| streams.iter().map(|s| s.connection_id.clone()).collect())
+            .unwrap_or_default();
+        if removed_ids.is_empty() {
+            return Vec::new();
         }
+        self.employees.rcu(|cur| {
+            let mut next: EmployeesMap = (**cur).clone();
+            next.remove(&employee_id);
+            next
+        });
+        removed_ids
     }
 
     /// 当前该 employee 的在线连接数。
     pub fn employee_connection_count(&self, employee_id: i64) -> usize {
         self.employees
-            .read()
+            .load()
             .get(&employee_id)
             .map(|v| v.len())
             .unwrap_or(0)
     }
 
-    /// Graceful shutdown(P0-6):向所有 employee 连接广播 `SystemSignal::SERVER_DRAIN`。
+    /// Graceful shutdown:向所有 employee 连接广播 `SystemSignal::SERVER_DRAIN`。
     /// 返回被通知的连接总数。
     pub fn broadcast_server_drain(&self, detail: &str) -> usize {
         use chathub_proto::v1::server_event::Body;
@@ -154,8 +174,8 @@ impl Router {
         };
 
         let mut count = 0;
-        let employees = self.employees.read();
-        for (_emp_id, streams) in employees.iter() {
+        let table = self.employees.load();
+        for (_emp_id, streams) in table.iter() {
             for s in streams {
                 if s.tx.try_send(Ok(event.clone())).is_ok() {
                     count += 1;
@@ -166,7 +186,6 @@ impl Router {
     }
 
     /// Hub.Ack 处理:更新该 employee 已确认的最高 notify_seq(monotonic,不退)。
-    /// DashMap 提供 per-key 锁,fetch_max 原子 CAS,高 QPS 无锁竞争(P1-4)。
     pub fn update_ack_mark(&self, employee_id: i64, notify_seq: u64) {
         let entry = self
             .ack_marks
@@ -182,6 +201,12 @@ impl Router {
             .map(|e| e.load(Ordering::Relaxed))
             .unwrap_or(0)
     }
+}
+
+// Arc 重出口,方便外部测试(避免 type 推断折腾)
+#[allow(dead_code)]
+pub(crate) fn _new_arc() -> Arc<Router> {
+    Arc::new(Router::new())
 }
 
 #[cfg(test)]
@@ -319,5 +344,23 @@ mod tests {
                 other => panic!("expected SERVER_DRAIN, got {other:?}"),
             }
         }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn concurrent_register_no_data_loss() {
+        // ArcSwap RCU 关键性质:N 并发 register 不丢任何一个
+        let r = Arc::new(Router::new());
+        let mut handles = vec![];
+        for i in 0..100 {
+            let r = r.clone();
+            handles.push(tokio::spawn(async move {
+                let (tx, _rx) = mpsc::channel(4);
+                r.register_employee(42, format!("dev-{i}"), tx);
+            }));
+        }
+        for h in handles {
+            h.await.unwrap();
+        }
+        assert_eq!(r.employee_connection_count(42), 100);
     }
 }

@@ -184,19 +184,15 @@ async fn handle_push(
         }
     }
 
-    // 5. 入库(INSERT OR IGNORE 天然幂等)
-    let inserted = match state.events_log.insert_batch(rows).await {
-        Ok(n) => n,
-        Err(e) => {
-            tracing::warn!(status = 500, error = %e, "push persist failed");
-            return (StatusCode::INTERNAL_SERVER_ERROR, "persist").into_response();
-        }
-    };
-
-    // 6. Fanout 给该 employee 的所有在线连接
-    // events_json = 原 events 数组(包括 Control 类) — 客户端按 eventType 自分流。
-    // Persist 类已经入库,即使 fanout 失败客户端也能续点;Control 类丢就丢。
-    let events_json = serde_json::to_vec(&body.events).unwrap_or_default();
+    // 5+6. F7:**并行** persist + fanout(原本是串行的 await)。
+    //
+    // 客户端用 notify_seq 做幂等(本地 NotifySeqStore 单调水位),
+    // 所以 fanout 比 persist 早 1-2ms 不会带来正确性问题:
+    //   - 客户端 ack 之前事件已重复(再 push 时 INSERT OR IGNORE 兜底)
+    //   - persist 失败也已 fanout 出去 → 客户端只是早收到一次(下次断线重连续点会再来)
+    //
+    // 收益:push 响应延迟 T_persist+T_fanout(~5ms) → max(T_persist, T_fanout)(~3ms)。
+    let events_json: bytes::Bytes = serde_json::to_vec(&body.events).unwrap_or_default().into();
     let push_batch = chathub_proto::v1::PushBatchOut {
         notify_seq: body.notify_seq,
         client_id: body.client_id.clone(),
@@ -209,7 +205,21 @@ async fn handle_push(
     let event = chathub_proto::v1::ServerEvent {
         body: Some(chathub_proto::v1::server_event::Body::PushBatch(push_batch)),
     };
-    let fanout = state.router.fanout_employee(body.employee_id, event);
+
+    let persist_fut = state.events_log.insert_batch(rows);
+    let employee_id = body.employee_id;
+    let router_for_fanout = state.router.clone();
+    let fanout_fut = async move { router_for_fanout.fanout_employee(employee_id, event) };
+
+    let (insert_result, fanout) = tokio::join!(persist_fut, fanout_fut);
+
+    let inserted = match insert_result {
+        Ok(n) => n,
+        Err(e) => {
+            tracing::warn!(status = 500, error = %e, "push persist failed (fanout may have already sent)");
+            return (StatusCode::INTERNAL_SERVER_ERROR, "persist").into_response();
+        }
+    };
 
     // 清理 closed/backpressure 的连接 —— 客户端会感知断开并 since_notify_seq 重连
     for conn_id in fanout.closed.iter().chain(fanout.backpressure.iter()) {

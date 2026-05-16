@@ -146,7 +146,8 @@ async fn hub_forward(
     let resp = hub.forward(&method, body_json.into_bytes()).await?;
     Ok(ForwardResult {
         http_status: resp.http_status,
-        body_json: String::from_utf8(resp.body_json).unwrap_or_default(),
+        // F6: Bytes → String,只在 Tauri command 出口转一次
+        body_json: String::from_utf8(resp.body_json.to_vec()).unwrap_or_default(),
     })
 }
 

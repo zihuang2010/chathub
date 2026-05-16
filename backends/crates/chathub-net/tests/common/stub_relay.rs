@@ -93,7 +93,7 @@ pub enum ForwardStubOutcome {
 impl Default for ForwardStubOutcome {
     fn default() -> Self {
         ForwardStubOutcome::Ok(ForwardResponse {
-            body_json: b"{}".to_vec(),
+            body_json: bytes::Bytes::from_static(b"{}"),
             http_status: 200,
         })
     }
