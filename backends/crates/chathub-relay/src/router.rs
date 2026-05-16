@@ -1,13 +1,25 @@
-//! ConnectionRouter — 单实例 in-process 路由表(spec §7)。
+//! ConnectionRouter — 单实例 in-process 路由表(spec §7 + Plan 6)。
 //!
-//! **锁序固定**:`Router.users.write()` BEFORE `Router.accounts.write()`,严禁反向。
+//! 现状是新旧两套索引并存:
+//!
+//! ## 旧:wecom_account 维度(legacy)
+//! 老 `/internal/push` 用 `accounts: account_id → ChannelEntry`,
+//! Subscribe 通过 `StreamTicket.accounts` 注册多账号反向索引。
+//! **锁序固定**:`users.write()` BEFORE `accounts.write()`,严禁反向。
 //! `fanout` 只取 `accounts.read()`,与 register/drop_stream 互不阻塞。
+//!
+//! ## 新:employee 维度(Plan 6)
+//! 新 `/internal/push/v2` 用 `employees: employee_id → Vec<EmployeeStream>`,
+//! Subscribe 通过 `register_employee()` 把 connection_id 加入该 employee 的 Vec。
+//! `ack_marks: employee_id → last_acked_notify_seq` 由 Hub.Ack 更新,仅观测。
+//! 锁序:`employees` 与 `ack_marks` 互相独立,不与旧锁交叉。
 
 use chathub_proto::v1::ServerEvent;
 use parking_lot::RwLock;
 use std::collections::HashMap;
 use tokio::sync::mpsc;
 use tonic::Status;
+use uuid::Uuid;
 
 pub type EventSender = mpsc::Sender<Result<ServerEvent, Status>>;
 
@@ -47,9 +59,38 @@ pub struct RegisterOutcome {
     pub kicked: bool,
 }
 
+// ─── Plan 6 employee-scope routing ─────────────────────────────────────
+
+/// 单条 employee 维度的连接(stage 3.5 起新 Subscribe 走这里)。
+#[derive(Clone)]
+pub struct EmployeeStream {
+    /// Relay 内部 ID(UUID)。不暴露给客户端、不暴露给业务后台。
+    pub connection_id: String,
+    pub device_id: String,
+    pub tx: EventSender,
+}
+
+/// `register_employee` 返回:本次分配的 connection_id。
+pub struct EmployeeRegisterOutcome {
+    pub connection_id: String,
+}
+
+/// fanout 结果:成功送达的连接数 + 反压/已关闭的连接 ID 列表(供调用方清理)。
+pub struct FanoutOutcome {
+    pub delivered: usize,
+    /// 队列已满 — 这些 connection 应该被发 RESYNC_REQUIRED 信号 + 清理。
+    pub backpressure: Vec<String>,
+    /// 接收端已关 — 这些 connection 应该被清理。
+    pub closed: Vec<String>,
+}
+
 pub struct Router {
+    // 旧:account 索引(兼容期保留)
     users: RwLock<HashMap<String, UserStream>>,
     accounts: RwLock<HashMap<String, ChannelEntry>>,
+    // 新:employee 索引(Plan 6)
+    employees: RwLock<HashMap<i64, Vec<EmployeeStream>>>,
+    ack_marks: RwLock<HashMap<i64, u64>>,
 }
 
 impl Default for Router {
@@ -63,6 +104,8 @@ impl Router {
         Self {
             users: RwLock::new(HashMap::new()),
             accounts: RwLock::new(HashMap::new()),
+            employees: RwLock::new(HashMap::new()),
+            ack_marks: RwLock::new(HashMap::new()),
         }
     }
 
@@ -160,6 +203,95 @@ impl Router {
         let _ = entry.tx.try_send(Ok(drain_event));
         self.drop_stream(&user_id, &device_id);
         Some((user_id, device_id))
+    }
+
+    // ─── Plan 6 employee-scope methods ────────────────────────────────
+
+    /// 注册一条 employee 维度的 Subscribe 连接,返回 relay 分配的 connection_id。
+    /// 同 employee 多次注册(多设备)允许 —— 同 Vec 里多条 EmployeeStream 共存。
+    /// 真正的"多端互踢"由业务后台决定(发 CONNECTION_FORCE_CLOSE 给 relay,relay 才关连接)。
+    pub fn register_employee(
+        &self,
+        employee_id: i64,
+        device_id: String,
+        tx: EventSender,
+    ) -> EmployeeRegisterOutcome {
+        let connection_id = Uuid::new_v4().to_string();
+        let stream = EmployeeStream {
+            connection_id: connection_id.clone(),
+            device_id,
+            tx,
+        };
+        let mut employees = self.employees.write();
+        employees.entry(employee_id).or_default().push(stream);
+        EmployeeRegisterOutcome { connection_id }
+    }
+
+    /// Fanout 一个事件给某 employee 的所有在线连接。
+    /// - delivered:成功 try_send 的连接数
+    /// - backpressure:队列已满的连接 ID(stage 4 会借此发 RESYNC_REQUIRED + 清理)
+    /// - closed:接收端已关闭的连接 ID(需要清理)
+    pub fn fanout_employee(&self, employee_id: i64, event: ServerEvent) -> FanoutOutcome {
+        // 复制 Vec(浅拷贝 Arc-tx),避免在 try_send 期间持有读锁
+        let conns: Vec<EmployeeStream> = {
+            let employees = self.employees.read();
+            employees.get(&employee_id).cloned().unwrap_or_default()
+        };
+        let mut delivered = 0;
+        let mut backpressure = Vec::new();
+        let mut closed = Vec::new();
+        for c in conns {
+            match c.tx.try_send(Ok(event.clone())) {
+                Ok(()) => delivered += 1,
+                Err(mpsc::error::TrySendError::Full(_)) => backpressure.push(c.connection_id),
+                Err(mpsc::error::TrySendError::Closed(_)) => closed.push(c.connection_id),
+            }
+        }
+        FanoutOutcome {
+            delivered,
+            backpressure,
+            closed,
+        }
+    }
+
+    /// 按 connection_id 摘除某 employee 的一条流。Subscribe stream 结束 / force_close
+    /// 完成时调用。
+    pub fn drop_employee_stream(&self, employee_id: i64, connection_id: &str) {
+        let mut employees = self.employees.write();
+        if let Some(streams) = employees.get_mut(&employee_id) {
+            streams.retain(|s| s.connection_id != connection_id);
+            if streams.is_empty() {
+                employees.remove(&employee_id);
+            }
+        }
+    }
+
+    /// 当前该 employee 的在线连接数。
+    pub fn employee_connection_count(&self, employee_id: i64) -> usize {
+        self.employees
+            .read()
+            .get(&employee_id)
+            .map(|v| v.len())
+            .unwrap_or(0)
+    }
+
+    /// Hub.Ack 处理:更新该 employee 已确认的最高 notify_seq(monotonic,不退)。
+    /// 仅供内部观测;事件日志清理走 TTL,不依赖此值。
+    pub fn update_ack_mark(&self, employee_id: i64, notify_seq: u64) {
+        let mut marks = self.ack_marks.write();
+        let entry = marks.entry(employee_id).or_insert(0);
+        if notify_seq > *entry {
+            *entry = notify_seq;
+        }
+    }
+
+    /// 取该 employee 当前已确认水位(无记录返 0)。
+    pub fn get_ack_mark(&self, employee_id: i64) -> u64 {
+        self.ack_marks
+            .read()
+            .get(&employee_id)
+            .copied()
+            .unwrap_or(0)
     }
 }
 
@@ -338,5 +470,152 @@ mod tests {
         let r = Router::new();
         let result = r.evict_account("wa-unknown", evt(1));
         assert!(result.is_none());
+    }
+
+    // ─── Plan 6 employee-scope tests ──────────────────────────────────
+
+    fn empty_evt() -> ServerEvent {
+        ServerEvent {
+            wecom_account_id: String::new(),
+            seq: 0,
+            body: None,
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn register_employee_returns_unique_connection_id() {
+        let r = Router::new();
+        let (tx1, _rx1) = mpsc::channel(4);
+        let (tx2, _rx2) = mpsc::channel(4);
+        let o1 = r.register_employee(42, "dev-A".into(), tx1);
+        let o2 = r.register_employee(42, "dev-B".into(), tx2);
+        assert_ne!(o1.connection_id, o2.connection_id);
+        assert_eq!(r.employee_connection_count(42), 2);
+        assert_eq!(r.employee_connection_count(99), 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn fanout_employee_delivers_to_all_connections() {
+        let r = Router::new();
+        let (tx1, mut rx1) = mpsc::channel(4);
+        let (tx2, mut rx2) = mpsc::channel(4);
+        r.register_employee(42, "dev-A".into(), tx1);
+        r.register_employee(42, "dev-B".into(), tx2);
+
+        let outcome = r.fanout_employee(42, empty_evt());
+        assert_eq!(outcome.delivered, 2);
+        assert!(outcome.backpressure.is_empty());
+        assert!(outcome.closed.is_empty());
+
+        // 两条 channel 都收到了
+        assert!(rx1.recv().await.is_some());
+        assert!(rx2.recv().await.is_some());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn fanout_employee_unknown_employee_zero_delivered() {
+        let r = Router::new();
+        let outcome = r.fanout_employee(999, empty_evt());
+        assert_eq!(outcome.delivered, 0);
+        assert!(outcome.backpressure.is_empty());
+        assert!(outcome.closed.is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn fanout_employee_full_channel_reports_backpressure() {
+        let r = Router::new();
+        // 容量 1,先填一条
+        let (tx, _rx) = mpsc::channel(1);
+        let o = r.register_employee(42, "dev-A".into(), tx);
+        r.fanout_employee(42, empty_evt());
+
+        // 再 fanout 一次:满 → backpressure
+        let outcome = r.fanout_employee(42, empty_evt());
+        assert_eq!(outcome.delivered, 0);
+        assert_eq!(outcome.backpressure, vec![o.connection_id]);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn fanout_employee_closed_channel_reports_closed() {
+        let r = Router::new();
+        let (tx, rx) = mpsc::channel(4);
+        let o = r.register_employee(42, "dev-A".into(), tx);
+        drop(rx); // 接收端关闭 → tx 后续 try_send 报 Closed
+
+        let outcome = r.fanout_employee(42, empty_evt());
+        assert_eq!(outcome.delivered, 0);
+        assert_eq!(outcome.closed, vec![o.connection_id]);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn drop_employee_stream_removes_only_specified_connection() {
+        let r = Router::new();
+        let (tx1, _rx1) = mpsc::channel(4);
+        let (tx2, _rx2) = mpsc::channel(4);
+        let o1 = r.register_employee(42, "dev-A".into(), tx1);
+        let o2 = r.register_employee(42, "dev-B".into(), tx2);
+
+        r.drop_employee_stream(42, &o1.connection_id);
+        assert_eq!(r.employee_connection_count(42), 1);
+
+        // 剩下的应该是 o2
+        let outcome = r.fanout_employee(42, empty_evt());
+        assert_eq!(outcome.delivered, 1);
+        let _ = o2; // 仅保留语义,不需要再断言连接 id
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn drop_employee_stream_cleans_empty_vec_entry() {
+        let r = Router::new();
+        let (tx, _rx) = mpsc::channel(4);
+        let o = r.register_employee(42, "dev-A".into(), tx);
+        r.drop_employee_stream(42, &o.connection_id);
+        // employees map 应该不再包含 42
+        assert_eq!(r.employee_connection_count(42), 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn ack_mark_starts_at_zero_and_is_monotonic() {
+        let r = Router::new();
+        assert_eq!(r.get_ack_mark(42), 0);
+
+        r.update_ack_mark(42, 100);
+        assert_eq!(r.get_ack_mark(42), 100);
+
+        // 单调:更小的不会覆盖
+        r.update_ack_mark(42, 50);
+        assert_eq!(r.get_ack_mark(42), 100);
+
+        // 单调:更大的覆盖
+        r.update_ack_mark(42, 200);
+        assert_eq!(r.get_ack_mark(42), 200);
+
+        // 其他 employee 独立
+        assert_eq!(r.get_ack_mark(99), 0);
+        r.update_ack_mark(99, 5);
+        assert_eq!(r.get_ack_mark(99), 5);
+        assert_eq!(r.get_ack_mark(42), 200);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn fanout_employee_mixed_outcome_per_connection() {
+        let r = Router::new();
+        let (tx_ok, mut rx_ok) = mpsc::channel(4);
+        let (tx_full, _rx_full) = mpsc::channel(1);
+        let (tx_closed, rx_closed) = mpsc::channel(4);
+        let o_ok = r.register_employee(42, "dev-A".into(), tx_ok);
+        let o_full = r.register_employee(42, "dev-B".into(), tx_full);
+        let o_closed = r.register_employee(42, "dev-C".into(), tx_closed);
+        // 先把 full 那条填满
+        r.fanout_employee(42, empty_evt());
+        // 1 条 delivered(ok),1 backpressure(full),1 closed?不,closed 还没 drop rx
+        let _ = rx_ok.recv().await; // drain
+        drop(rx_closed);
+
+        let outcome = r.fanout_employee(42, empty_evt());
+        assert_eq!(outcome.delivered, 1);
+        assert_eq!(outcome.backpressure, vec![o_full.connection_id]);
+        assert_eq!(outcome.closed, vec![o_closed.connection_id]);
+        let _ = o_ok;
     }
 }

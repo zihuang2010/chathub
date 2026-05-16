@@ -371,13 +371,39 @@ async fn handle_push_v2(
         }
     };
 
-    // 6. TODO(stage 3.5):fanout 到 employee 的在线连接
-    // 当前 router 还不知道 employee_id → ConnectionId,events 入库后等客户端 since_notify_seq 续点。
+    // 6. Fanout 给该 employee 的所有在线连接(stage 3.5 接通)
+    //    events_json = 原 events 数组(包括 Control 类) — 客户端按 eventType 自分流。
+    //    Persist 类已经入库,即使 fanout 失败客户端也能续点;Control 类丢就丢。
+    let events_json = serde_json::to_vec(&body.events).unwrap_or_default();
+    let push_batch = chathub_proto::v1::PushBatchOut {
+        notify_seq: body.notify_seq,
+        client_id: body.client_id.clone(),
+        employee_id: body.employee_id,
+        batch_id: body.batch_id.clone().unwrap_or_default(),
+        batch_time: body.batch_time.clone().unwrap_or_default(),
+        device_id: String::new(), // stage 4:按 per-conn device_id 定制
+        events_json,
+    };
+    let event = chathub_proto::v1::ServerEvent {
+        wecom_account_id: String::new(),
+        seq: 0,
+        body: Some(chathub_proto::v1::server_event::Body::PushBatch(push_batch)),
+    };
+    let fanout = state.router.fanout_employee(body.employee_id, event);
+
+    // 清理 closed/backpressure 的连接 —— 客户端会感知断开并 since_notify_seq 重连。
+    // stage 4 在 backpressure 之前可以先发 RESYNC_REQUIRED 信号(本期满了直接 drop)。
+    for conn_id in fanout.closed.iter().chain(fanout.backpressure.iter()) {
+        state.router.drop_employee_stream(body.employee_id, conn_id);
+    }
 
     tracing::info!(
         persisted = inserted,
         control_count,
         unknown_count,
+        fanout_delivered = fanout.delivered,
+        fanout_backpressure = fanout.backpressure.len(),
+        fanout_closed = fanout.closed.len(),
         elapsed_ms = started.elapsed().as_millis() as u64,
         status = 200,
         "push v2 ok",
@@ -1022,6 +1048,68 @@ mod tests {
         assert_eq!(rows[0].event_type, "MESSAGE_UPSERT");
         assert_eq!(rows[1].event_type, "SESSION_SUMMARY_UPSERT");
         assert_eq!(rows[2].event_type, "FRIEND_UPSERT");
+    }
+
+    #[tokio::test]
+    async fn push_v2_fanout_delivers_to_registered_employee_stream() {
+        // 注册 employee → push v2 → 该 stream 应该收到 PushBatchOut
+        let st = make_state().await;
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        let outcome = st.router.register_employee(42, "dev-A".into(), tx);
+        let _conn_id = outcome.connection_id;
+
+        let body = v2_body(
+            300,
+            42,
+            serde_json::json!([
+                { "eventType": "MESSAGE_UPSERT", "conversationId": "c1" }
+            ]),
+        );
+        let (status, ack) = post_v2(app(st.clone()), body, "ps").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(ack["inserted"], 1);
+
+        // 该 employee stream 应该收到 PushBatchOut(events_json 是原数组的 JSON)
+        let frame = tokio::time::timeout(std::time::Duration::from_millis(500), rx.recv())
+            .await
+            .expect("fanout timeout")
+            .expect("channel closed")
+            .expect("status err");
+
+        use chathub_proto::v1::server_event::Body;
+        match frame.body {
+            Some(Body::PushBatch(pb)) => {
+                assert_eq!(pb.notify_seq, 300);
+                assert_eq!(pb.client_id, "rh_wxchat");
+                assert_eq!(pb.employee_id, 42);
+                let parsed: serde_json::Value = serde_json::from_slice(&pb.events_json).unwrap();
+                assert_eq!(parsed.as_array().unwrap().len(), 1);
+                assert_eq!(parsed[0]["eventType"], "MESSAGE_UPSERT");
+            }
+            other => panic!("expected PushBatch, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn push_v2_fanout_to_offline_employee_returns_ok_no_delivery() {
+        // 没注册的 employee — 入库成功,fanout 0 delivered。客户端日后 since_notify_seq 拿。
+        let st = make_state().await;
+        let log = st.events_log.clone();
+        let body = v2_body(
+            400,
+            42,
+            serde_json::json!([
+                { "eventType": "MESSAGE_UPSERT", "conversationId": "c1" }
+            ]),
+        );
+        let (status, ack) = post_v2(app(st), body, "ps").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(ack["inserted"], 1);
+
+        // 事件确实留在 events_v2 等续点
+        let rows = log.query_since(42, 0, 10).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].notify_seq, 400);
     }
 
     #[tokio::test]
