@@ -15,12 +15,7 @@ impl SeqAllocator {
     /// 原子分配 next_seq:不存在则插入 next_seq=2 并返回 1;存在则 +1 返回新值。
     pub async fn next_seq(&self, account_id: &str) -> Result<i64, StorageError> {
         let a = account_id.to_string();
-        let conn = self
-            .storage
-            .pool()
-            .get()
-            .await
-            .map_err(|e| StorageError::Pool(e.to_string()))?;
+        let conn = self.storage.conn().await?;
         let seq = conn
             .interact(move |c| -> Result<i64, rusqlite::Error> {
                 // 单事务原子;UPSERT 用 RETURNING 拿到新值

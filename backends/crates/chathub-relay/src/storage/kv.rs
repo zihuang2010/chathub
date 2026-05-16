@@ -14,12 +14,7 @@ impl KvStore {
 
     pub async fn get(&self, key: &str) -> Result<Option<Vec<u8>>, StorageError> {
         let k = key.to_string();
-        let conn = self
-            .storage
-            .pool()
-            .get()
-            .await
-            .map_err(|e| StorageError::Pool(e.to_string()))?;
+        let conn = self.storage.conn().await?;
         let v = conn
             .interact(move |c| -> Result<Option<Vec<u8>>, rusqlite::Error> {
                 let mut stmt = c.prepare("SELECT value FROM kv WHERE key=?1")?;
@@ -37,12 +32,7 @@ impl KvStore {
 
     pub async fn put(&self, key: &str, value: Vec<u8>) -> Result<(), StorageError> {
         let k = key.to_string();
-        let conn = self
-            .storage
-            .pool()
-            .get()
-            .await
-            .map_err(|e| StorageError::Pool(e.to_string()))?;
+        let conn = self.storage.conn().await?;
         conn.interact(move |c| -> Result<(), rusqlite::Error> {
             c.execute(
                 "INSERT INTO kv(key, value) VALUES(?1, ?2) \

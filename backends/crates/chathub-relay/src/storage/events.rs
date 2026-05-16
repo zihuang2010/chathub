@@ -25,12 +25,7 @@ impl EventStore {
         created_at_ms: i64,
     ) -> Result<(), StorageError> {
         let a = account_id.to_string();
-        let conn = self
-            .storage
-            .pool()
-            .get()
-            .await
-            .map_err(|e| StorageError::Pool(e.to_string()))?;
+        let conn = self.storage.conn().await?;
         conn.interact(move |c| -> Result<(), rusqlite::Error> {
             let tx = c.transaction()?;
             tx.execute(
@@ -59,12 +54,7 @@ impl EventStore {
         limit: i64,
     ) -> Result<Vec<(i64, Vec<u8>)>, StorageError> {
         let a = account_id.to_string();
-        let conn = self
-            .storage
-            .pool()
-            .get()
-            .await
-            .map_err(|e| StorageError::Pool(e.to_string()))?;
+        let conn = self.storage.conn().await?;
         let rows = conn
             .interact(move |c| -> Result<Vec<(i64, Vec<u8>)>, rusqlite::Error> {
                 let mut stmt = c.prepare(
@@ -126,12 +116,7 @@ impl EventLog {
         if rows.is_empty() {
             return Ok(0);
         }
-        let conn = self
-            .storage
-            .pool()
-            .get()
-            .await
-            .map_err(|e| StorageError::Pool(e.to_string()))?;
+        let conn = self.storage.conn().await?;
         let inserted = conn
             .interact(move |c| -> Result<usize, rusqlite::Error> {
                 let tx = c.transaction()?;
@@ -180,12 +165,7 @@ impl EventLog {
         since_notify_seq: i64,
         limit: i64,
     ) -> Result<Vec<EventRow>, StorageError> {
-        let conn = self
-            .storage
-            .pool()
-            .get()
-            .await
-            .map_err(|e| StorageError::Pool(e.to_string()))?;
+        let conn = self.storage.conn().await?;
         let rows = conn
             .interact(move |c| -> Result<Vec<EventRow>, rusqlite::Error> {
                 let mut stmt = c.prepare(
@@ -232,12 +212,7 @@ impl EventLog {
     /// 用于判断客户端 since_notify_seq 是否已经超出 relay 保留窗口
     /// (since < earliest.notify_seq - 1 → 需要 resync_required)。
     pub async fn earliest_for(&self, employee_id: i64) -> Result<Option<(i64, i64)>, StorageError> {
-        let conn = self
-            .storage
-            .pool()
-            .get()
-            .await
-            .map_err(|e| StorageError::Pool(e.to_string()))?;
+        let conn = self.storage.conn().await?;
         let row = conn
             .interact(move |c| -> Result<Option<(i64, i64)>, rusqlite::Error> {
                 let mut stmt = c.prepare(
@@ -265,12 +240,7 @@ impl EventLog {
         cutoff_ms: i64,
         batch_limit: i64,
     ) -> Result<usize, StorageError> {
-        let conn = self
-            .storage
-            .pool()
-            .get()
-            .await
-            .map_err(|e| StorageError::Pool(e.to_string()))?;
+        let conn = self.storage.conn().await?;
         let deleted = conn
             .interact(move |c| -> Result<usize, rusqlite::Error> {
                 c.execute(
