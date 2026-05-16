@@ -12,6 +12,22 @@ use axum::{Json, Router as AxumRouter};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Instant;
+use subtle::ConstantTimeEq;
+
+/// 常数时间比较 Authorization header 与 `Bearer <secret>`,防止时序攻击。
+/// 长度不等也走常数时间(否则攻击者能通过响应时长推 secret 长度)。
+fn bearer_matches(header_val: Option<&str>, expected_secret: &str) -> bool {
+    let want = format!("Bearer {}", expected_secret);
+    match header_val {
+        Some(s) if s.len() == want.len() => s.as_bytes().ct_eq(want.as_bytes()).into(),
+        _ => {
+            // 长度不等仍走一次 ct_eq 凑齐时间,降低长度泄漏
+            let dummy = vec![0u8; want.len()];
+            let _ = dummy.ct_eq(want.as_bytes());
+            false
+        }
+    }
+}
 
 #[derive(Clone)]
 pub struct PushState {
@@ -272,14 +288,9 @@ async fn handle_push_v2(
 ) -> axum::response::Response {
     let started = Instant::now();
 
-    // 1. Bearer secret 校验
-    let want = format!("Bearer {}", state.secret);
-    let ok = headers
-        .get("authorization")
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s == want)
-        .unwrap_or(false);
-    if !ok {
+    // 1. Bearer secret 校验(常数时间比较,防时序攻击)
+    let header_val = headers.get("authorization").and_then(|v| v.to_str().ok());
+    if !bearer_matches(header_val, &state.secret) {
         tracing::warn!(status = 401, "push v2 auth failed");
         return (StatusCode::UNAUTHORIZED, "invalid secret").into_response();
     }
@@ -444,14 +455,9 @@ async fn handle_push(
     let started = Instant::now();
     let account = body.wecom_account_id.as_str();
 
-    // Bearer 校验
-    let want = format!("Bearer {}", state.secret);
-    let ok = headers
-        .get("authorization")
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s == want)
-        .unwrap_or(false);
-    if !ok {
+    // Bearer 校验(常数时间比较,防时序攻击)
+    let header_val = headers.get("authorization").and_then(|v| v.to_str().ok());
+    if !bearer_matches(header_val, &state.secret) {
         tracing::warn!(
             target: "chathub_relay::push",
             account,

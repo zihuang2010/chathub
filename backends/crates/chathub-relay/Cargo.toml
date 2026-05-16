@@ -46,6 +46,7 @@ tower-http         = { workspace = true }
 reqwest            = { workspace = true }
 sha2               = { workspace = true }
 hex                = { workspace = true }
+subtle             = { workspace = true }
 tokio-stream       = { workspace = true }
 
 # 同 workspace 内 codegen

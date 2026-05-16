@@ -41,6 +41,7 @@ hex                = "0.4"
 base64             = "0.22"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
 tracing-appender   = "0.2"
+subtle             = "2"
 # Plan 5 dev-only ----
 wiremock           = "0.6"
 tokio-stream       = "0.1"
