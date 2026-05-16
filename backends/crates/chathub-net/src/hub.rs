@@ -99,6 +99,16 @@ impl HubClient {
         Ok(resp.into_inner())
     }
 
+    /// 拉取当前员工可管理的企微账号列表(走 forward 通道,后端 GET listMine)。
+    /// 返回业务后台原始 JSON bytes — 字段结构由业务后台定义,调用方自行 parse。
+    ///
+    /// 用法:登录成功后立刻调一次填充账号选择 UI;失败时返回 ForwardResponse 的
+    /// http_status > 200 或 AuthError(网络层错误),UI 提示"加载账号失败,点击重试"
+    /// 即可,不影响 token 有效性。
+    pub async fn list_accounts(&self) -> Result<ForwardResponse, AuthError> {
+        self.forward("list_accounts", Vec::new()).await
+    }
+
     /// 上报 notify_seq 水位(per-employee)。
     pub async fn ack(&self, notify_seq: u64) -> Result<(), AuthError> {
         let mut client = self.inner.clone();

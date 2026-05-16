@@ -1,7 +1,10 @@
 //! AuthSvc — 纯透传:把客户端 login / logout 转发到业务后台 HTTP,不签发、不存储。
 //! AuthSvc 不挂认证拦截器(login 时客户端还没 token)。
+//!
+//! 2026-05-16 OAuth2 重构:login 走 OAuth2 password grant + Basic client auth,
+//! logout 走 Bearer 客户端原 token。
 
-use crate::downstream::{DownstreamClient, LoginReq, LogoutReq};
+use crate::downstream::{DownstreamClient, LoginReq};
 use chathub_proto::v1::auth_server::Auth;
 use chathub_proto::v1::{
     LoginRequest, LoginResponse, LogoutRequest, LogoutResponse, UserProfile, WecomAccount,
@@ -28,7 +31,6 @@ impl Auth for AuthSvc {
                 username: &r.username,
                 password: &r.password,
                 device_id: &r.device_id,
-                device_name: &r.device_name,
             })
             .await
             .map_err(|e| {
@@ -71,8 +73,8 @@ impl Auth for AuthSvc {
         req: Request<LogoutRequest>,
     ) -> Result<Response<LogoutResponse>, Status> {
         let r = req.into_inner();
-        // best-effort:下游网络/状态错误不阻断客户端登出。
-        if let Err(e) = self.downstream.logout(LogoutReq { token: &r.token }).await {
+        // best-effort:下游网络/状态错误不阻断客户端登出。Bearer 用客户端原 token。
+        if let Err(e) = self.downstream.logout(&r.token).await {
             tracing::debug!(error = %e, "logout downstream failed (ignored, best-effort)");
         }
         tracing::info!("logout ok");
@@ -94,7 +96,7 @@ mod tests {
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     async fn spawn_auth(downstream_uri: &str) -> (SocketAddr, tokio::task::JoinHandle<()>) {
-        let downstream = Arc::new(DownstreamClient::new(downstream_uri, "dn-secret").unwrap());
+        let downstream = Arc::new(DownstreamClient::new_with_defaults(downstream_uri).unwrap());
         let svc = AuthSvc { downstream };
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -110,18 +112,26 @@ mod tests {
         (addr, handle)
     }
 
+    fn jdd_response() -> serde_json::Value {
+        serde_json::json!({
+            "accessToken": {
+                "tokenValue": "biz-tok-7",
+                "tokenType": { "value": "Bearer" },
+                "issuedAt": "2026-05-16 10:00:00",
+                "expiresAt": "2026-05-16 22:00:00"
+            },
+            "userId": 7,
+            "nickName": "Alice",
+            "channel": 3
+        })
+    }
+
     #[tokio::test(flavor = "multi_thread")]
-    async fn login_passes_through_token_and_user() {
+    async fn login_oauth2_passes_through_token_and_user() {
         let mock = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path("/auth/login"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "access_token":"biz-tok-7",
-                "user_id":"u-7","display_name":"Alice","role":"op","tenant_id":"t-1",
-                "wecom_accounts":[
-                    {"wecom_account_id":"wa-1","corp_id":"c","agent_id":1,"display_name":"w","enabled":true}
-                ]
-            })))
+            .and(path("/account-app/oauth2/token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(jdd_response()))
             .mount(&mock)
             .await;
         let (addr, _h) = spawn_auth(&mock.uri()).await;
@@ -139,22 +149,20 @@ mod tests {
             .unwrap()
             .into_inner();
 
-        // relay 原样透传业务 token,不做任何签发/解析
+        // relay 原样透传业务 token,不签发不解析
         assert_eq!(resp.access_token, "biz-tok-7");
-        assert_eq!(resp.user.as_ref().unwrap().user_id, "u-7");
-        assert_eq!(resp.wecom_accounts.len(), 1);
-        assert_eq!(resp.wecom_accounts[0].wecom_account_id, "wa-1");
+        assert_eq!(resp.user.as_ref().unwrap().user_id, "7");
+        assert_eq!(resp.user.as_ref().unwrap().display_name, "Alice");
+        // wecom_accounts 永远空,前端走 list_accounts
+        assert!(resp.wecom_accounts.is_empty());
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn login_bad_creds_maps_unauthenticated() {
+    async fn login_oauth2_bad_creds_maps_unauthenticated() {
         let mock = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path("/auth/login"))
-            .respond_with(
-                ResponseTemplate::new(401)
-                    .set_body_json(serde_json::json!({"code":"INVALID_CREDS"})),
-            )
+            .and(path("/account-app/oauth2/token"))
+            .respond_with(ResponseTemplate::new(401))
             .mount(&mock)
             .await;
         let (addr, _h) = spawn_auth(&mock.uri()).await;

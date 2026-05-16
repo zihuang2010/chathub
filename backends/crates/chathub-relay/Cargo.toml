@@ -50,6 +50,13 @@ subtle             = { workspace = true }
 dashmap            = { workspace = true }
 tokio-stream       = { workspace = true }
 
+# 极致性能
+mimalloc           = { workspace = true }
+arc-swap           = { workspace = true }
+im                 = { workspace = true }
+moka               = { workspace = true }
+num_cpus           = { workspace = true }
+
 # 同 workspace 内 codegen
 chathub-proto      = { path = "../chathub-proto" }
 

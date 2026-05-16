@@ -28,7 +28,7 @@ use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
 use tokio_stream::wrappers::TcpListenerStream;
 use tonic::transport::Server;
-use wiremock::matchers::{body_partial_json, method, path};
+use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 pub struct RelayHarness {
@@ -51,7 +51,7 @@ pub async fn spawn_relay() -> RelayHarness {
     let storage = Storage::open(&db).await.unwrap();
     let events_log = EventLog::new(storage.clone());
     let router = Arc::new(Router::new());
-    let dn_client = Arc::new(DownstreamClient::new(&downstream.uri(), "dn-secret").unwrap());
+    let dn_client = Arc::new(DownstreamClient::new_with_defaults(&downstream.uri()).unwrap());
 
     let auth_svc = AuthSvc {
         downstream: dn_client.clone(),
@@ -84,6 +84,7 @@ pub async fn spawn_relay() -> RelayHarness {
         router: router.clone(),
         force_close_grace_ms: 50,
         allowed_client_ids: vec!["rh_wxchat".into()],
+        max_body_bytes: 1024 * 1024,
     };
     let push_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let push_addr = push_listener.local_addr().unwrap();
@@ -109,10 +110,11 @@ pub async fn spawn_relay() -> RelayHarness {
 }
 
 /// 在业务后台 mock 上挂一条 verifyToken,返回带 employee_id 的连接身份。
+/// 新合约(OAuth2 重构后):relay 用 `Authorization: Bearer <token>` 发空 body。
 pub async fn mount_verify_token(mock: &MockServer, token: &str, employee_id: i64, device_id: &str) {
     Mock::given(method("POST"))
         .and(path("/v1/verify_token"))
-        .and(body_partial_json(serde_json::json!({ "token": token })))
+        .and(header("authorization", &*format!("Bearer {token}")))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "active": true,
             "user_id": format!("u-{employee_id}"),

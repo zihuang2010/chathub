@@ -3,7 +3,7 @@
 use crate::event_policy::{self, EventPolicy};
 use crate::router::Router;
 use crate::storage::events::{EventLog, EventRow};
-use axum::extract::State;
+use axum::extract::{DefaultBodyLimit, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
@@ -35,12 +35,17 @@ pub struct PushState {
     pub force_close_grace_ms: u64,
     /// 业务后台 → relay 的 clientId 白名单(env `RELAY_ALLOWED_CLIENT_IDS`)。
     pub allowed_client_ids: Vec<String>,
+    /// F2 安全:push body 最大字节数,防 body-bomb DoS。默认 1MB。
+    pub max_body_bytes: usize,
 }
 
 pub fn app(state: PushState) -> AxumRouter {
+    let max_body = state.max_body_bytes;
     AxumRouter::new()
         .route("/healthz", get(|| async { (StatusCode::OK, "ok") }))
         .route("/internal/push", post(handle_push))
+        // F2 安全:axum 默认 body limit 2MB,我们收紧到 RELAY_PUSH_MAX_BODY_BYTES(默认 1MB)
+        .layer(DefaultBodyLimit::max(max_body))
         .with_state(state)
 }
 
@@ -292,6 +297,7 @@ mod tests {
             router: Arc::new(Router::new()),
             force_close_grace_ms: 50,
             allowed_client_ids: vec!["rh_wxchat".into()],
+            max_body_bytes: 1024 * 1024,
         }
     }
 

@@ -33,7 +33,7 @@ tower              = "0.4"
 tower-http         = { version = "0.5", features = ["trace"] }
 jsonwebtoken       = "9"
 ring               = "0.17"
-reqwest            = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+reqwest            = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "http2"] }
 serde_json         = "1"
 hmac               = "0.12"
 sha2               = "0.10"
@@ -43,12 +43,18 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"]
 tracing-appender   = "0.2"
 subtle             = "2"
 dashmap            = "6"
+# 极致性能(F1+F6+F8 引入)----
+mimalloc           = { version = "0.1", default-features = false }
+arc-swap           = "1.7"
+im                 = "15"
+moka               = { version = "0.12", features = ["future"] }
+num_cpus           = "1.16"
 # Plan 5 dev-only ----
 wiremock           = "0.6"
 tokio-stream       = "0.1"
 tempfile           = "3"
 
-# Profile 调优(可选,但建议显式声明)
+# Profile 调优
 [profile.dev]
 opt-level = 0
 debug = true
@@ -56,5 +62,7 @@ debug = true
 [profile.release]
 opt-level = 3
 debug = false
-lto = "thin"
-strip = true
+lto = "fat"             # 全程序优化,~5-10% 吞吐
+codegen-units = 1       # 单 codegen 单元,允许跨函数内联
+strip = "symbols"       # 二进制减小 ~30%
+panic = "abort"         # 移除展开代码,代码尺寸 -20% + L1 cache 命中略升

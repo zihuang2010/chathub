@@ -1,51 +1,76 @@
-//! DownstreamClient — reqwest 封装下游 HTTP 合约(spec §9.2)。
-//! 共用错误转化:HTTP code → RelayError。
+//! DownstreamClient — reqwest 封装下游 HTTP 合约。
+//!
+//! 鉴权模型(2026-05-16 OAuth2 重构):
+//!   - login:OAuth2 password grant + Basic client auth(唯一例外,客户端此时无 token)
+//!   - verify_token / logout / forward(业务 RPC):一律用客户端原 Bearer token 透传
+//!   - relay 不再持有出站 shared secret(`RELAY_DOWNSTREAM_SECRET` 已下线)
+//!
+//! 安全约束:`client_token` 仅作 `&str` 在函数参数 / `bearer_auth()` 之间流转,
+//!   不进任何 struct / cache / 日志字段(日志只允许出现 token 前 8 char + ***)。
 
-use crate::config::DownstreamRoutes;
+use crate::config::{DownstreamRoutes, HttpMethod};
 use crate::error::RelayError;
 use reqwest::Client;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::time::{Duration, Instant};
 
 #[derive(Clone)]
 pub struct DownstreamClient {
     base_url: String,
-    secret: String,
     http: Client,
+    paths: AuthPaths,
+    oauth: OAuthCreds,
 }
 
-/// 客户端登录 —— relay 透传到业务后台 `/auth/login`。
-#[derive(Serialize)]
+#[derive(Clone, Debug)]
+pub struct AuthPaths {
+    pub login: String,
+    pub verify_token: String,
+    pub logout: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct OAuthCreds {
+    pub client_id: String,
+    pub client_secret: String,
+}
+
+/// OAuth2 password grant 入参(relay → 业务后台)。
+#[derive(Debug)]
 pub struct LoginReq<'a> {
     pub username: &'a str,
     pub password: &'a str,
     pub device_id: &'a str,
-    pub device_name: &'a str,
 }
 
-/// 业务后台登录响应:token 透传给客户端,relay 不解析。
-#[derive(Deserialize, Debug, Clone)]
+/// 业务后台登录响应(JddTokenVO → 摘取 relay 关心字段)。
+/// `wecom_accounts` 永远为空 —— 由前端发起独立 `Hub.Forward("list_accounts", …)` 拉取。
+#[derive(Debug, Clone)]
 pub struct LoginResp {
     pub access_token: String,
     pub user_id: String,
     pub display_name: String,
-    #[serde(default)]
     pub avatar_url: String,
     pub role: String,
     pub tenant_id: String,
     pub wecom_accounts: Vec<WecomAccount>,
 }
 
-/// 客户端登出 —— relay 透传到业务后台 `/auth/logout`(best-effort)。
-#[derive(Serialize)]
-pub struct LogoutReq<'a> {
-    pub token: &'a str,
+/// JddTokenVO 反序列化结构(仅摘 relay 需要的字段;
+/// channel/username/mobile/tokenType/issuedAt/expiresAt 被 serde 忽略)。
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct JddTokenVO {
+    access_token: JddAccessToken,
+    user_id: i64,
+    #[serde(default)]
+    nick_name: Option<String>,
 }
 
-/// token 校验 —— relay 在 HubSvc 建连入口调业务后台 verifyToken。
-#[derive(Serialize)]
-pub struct VerifyTokenReq<'a> {
-    pub token: &'a str,
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct JddAccessToken {
+    token_value: String,
 }
 
 /// Hub.Forward 的下游响应:relay 把 HTTP 状态码 + body 一起带回客户端。
@@ -67,13 +92,10 @@ pub struct VerifyTokenResp {
     pub device_id: String,
     #[serde(default)]
     pub accounts: Vec<String>,
-    /// token 过期时间(ms);用于 relay 侧缓存 TTL。缺省时缓存用固定上限。
+    /// token 过期时间(epoch ms);用于 relay 侧缓存 TTL。缺省时缓存用固定上限(5 min)。
     #[serde(default)]
     pub exp_ms: Option<i64>,
-    /// Plan 6:员工数值 ID(spec §3 employeeId)。relay 用这个做 router 索引、
-    /// Hub.Ack 水位、Hub.Forward 的 X-Relay-Employee-Id header。
-    /// 老 mock / 业务后台未返回时默认 0,Plan 6 的 Subscribe v2 / Ack / Forward 会
-    /// 拒绝 employee_id=0 的调用(legacy 路径不受影响)。
+    /// 员工数值 ID。老 mock / 业务后台未升级时为 0,Subscribe/Ack/Forward 拒。
     #[serde(default)]
     pub employee_id: i64,
 }
@@ -87,78 +109,222 @@ pub struct WecomAccount {
     pub enabled: bool,
 }
 
-#[derive(Deserialize, Debug)]
-struct ErrPayload {
-    code: String,
-    #[serde(default)]
-    min_version: String,
-    #[serde(default)]
-    download_url: String,
-}
-
 /// 关键路径(verify_token)的超时,要短 — 它在 Subscribe 建连前,慢一秒用户感知一秒。
 const VERIFY_TOKEN_TIMEOUT: Duration = Duration::from_secs(3);
-/// 业务路径(forward/send/recall/fetch_history)默认超时。比 verify 长,业务可能慢点。
+/// 业务路径(forward)默认超时。比 verify 长,业务可能慢点。
 const BUSINESS_REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 
 impl DownstreamClient {
-    pub fn new(base_url: &str, secret: &str) -> Result<Self, RelayError> {
-        // P1-5:reqwest 连接池上限 + TCP keepalive,防 burst 时 socket 泄漏
-        // P1-6:默认 timeout 给业务路径(15s),verify_token 在调用点用 .timeout(3s) 覆盖
-        let http = Client::builder()
+    pub fn new(base_url: &str, paths: AuthPaths, oauth: OAuthCreds) -> Result<Self, RelayError> {
+        // F4:reqwest 全面 h2 调优 — 关键是 HTTP/2 多路复用,把 5000 conn × N forward
+        // 收敛到 1-2 个 TCP carries 数千 streams。pool size 在 h2 下基本无意义,
+        // 但 h1.1 fallback 时仍需要充足空间。
+        let h2_prior = std::env::var("RELAY_HTTP2_PRIOR_KNOWLEDGE")
+            .map(|v| v == "true" || v == "1")
+            .unwrap_or(false);
+        let mut builder = Client::builder()
             .timeout(BUSINESS_REQUEST_TIMEOUT)
-            .pool_max_idle_per_host(32)
+            .connect_timeout(Duration::from_secs(1))      // F4:TCP 握手 hang 不吃 verify 3s 预算
+            .pool_max_idle_per_host(256)                  // F4:h1.1 fallback 容量
+            .pool_idle_timeout(Duration::from_secs(90))   // F4:与 h2 keepalive 配套
             .tcp_keepalive(Duration::from_secs(60))
+            .tcp_nodelay(true)                            // F4:禁 Nagle,小请求(verify 空 body)不攒 40ms
+            .http2_keep_alive_interval(Duration::from_secs(30))
+            .http2_keep_alive_timeout(Duration::from_secs(10))
+            .http2_keep_alive_while_idle(true);
+        if h2_prior {
+            // h2c(h2 without TLS):部署确认后台支持 h2 cleartext 时 opt-in。
+            // https 场景靠 ALPN 自动协商,不需要 prior_knowledge。
+            builder = builder.http2_prior_knowledge();
+        }
+        let http = builder
             .build()
             .map_err(|e| RelayError::Http(e.to_string()))?;
         Ok(Self {
             base_url: base_url.trim_end_matches('/').to_string(),
-            secret: secret.to_string(),
             http,
+            paths,
+            oauth,
         })
     }
 
-    /// 透传客户端登录到业务后台。
-    pub async fn login(&self, req: LoginReq<'_>) -> Result<LoginResp, RelayError> {
-        self.post_json("/auth/login", &req).await
+    /// 测试便捷构造:默认 AuthPaths + 默认 OAuth(rh_wxchat / rh_wxchat)。
+    pub fn new_with_defaults(base_url: &str) -> Result<Self, RelayError> {
+        Self::new(
+            base_url,
+            AuthPaths {
+                login: "/account-app/oauth2/token".into(),
+                verify_token: "/v1/verify_token".into(),
+                logout: "/auth/logout".into(),
+            },
+            OAuthCreds {
+                client_id: "rh_wxchat".into(),
+                client_secret: "rh_wxchat".into(),
+            },
+        )
     }
 
-    /// 透传客户端登出到业务后台。best-effort:网络错也不阻断,HTTP 非 2xx 忽略。
-    pub async fn logout(&self, req: LogoutReq<'_>) -> Result<(), RelayError> {
-        let url = format!("{}/auth/logout", self.base_url);
-        match self
+    /// OAuth2 password grant + Basic client auth → 业务后台。
+    /// 形态:`POST {login_path}?scope=server&terminalId=<dev>&grant_type=password`
+    ///       `Authorization: Basic Base64("<client_id>:<client_secret>")`
+    ///       `Content-Type: application/x-www-form-urlencoded`
+    ///       body: `username=…&password=…`
+    pub async fn login(&self, req: LoginReq<'_>) -> Result<LoginResp, RelayError> {
+        let url = format!("{}{}", self.base_url, self.paths.login);
+        let started = Instant::now();
+
+        tracing::debug!(
+            target: "chathub_relay::downstream",
+            url = %url,
+            "oauth2 login request",
+        );
+
+        let resp = self
             .http
             .post(&url)
-            .bearer_auth(&self.secret)
-            .json(&req)
+            .query(&[
+                ("scope", "server"),
+                ("terminalId", req.device_id),
+                ("grant_type", "password"),
+            ])
+            .basic_auth(&self.oauth.client_id, Some(&self.oauth.client_secret))
+            .form(&[("username", req.username), ("password", req.password)])
             .send()
             .await
-        {
-            Ok(_) => Ok(()),
-            Err(e) if e.is_timeout() || e.is_connect() => Err(RelayError::Transient),
-            Err(e) => Err(RelayError::Http(e.to_string())),
+            .map_err(|e| {
+                let elapsed_ms = started.elapsed().as_millis() as u64;
+                tracing::warn!(
+                    target: "chathub_relay::downstream",
+                    error = %e,
+                    elapsed_ms,
+                    "oauth2 login send failed",
+                );
+                if e.is_timeout() || e.is_connect() {
+                    RelayError::Transient
+                } else {
+                    RelayError::Http(e.to_string())
+                }
+            })?;
+
+        let status = resp.status();
+        let elapsed_ms = started.elapsed().as_millis() as u64;
+        if !status.is_success() {
+            let code = status.as_u16();
+            tracing::warn!(
+                target: "chathub_relay::downstream",
+                status = code,
+                elapsed_ms,
+                "oauth2 login non-2xx",
+            );
+            return Err(match code {
+                401 | 403 => RelayError::InvalidCreds,
+                400 => RelayError::InvalidArg,
+                c if c >= 500 => RelayError::Transient,
+                _ => RelayError::Internal,
+            });
         }
+
+        let jdd: JddTokenVO = resp.json().await.map_err(|e| {
+            tracing::warn!(
+                target: "chathub_relay::downstream",
+                error = %e,
+                elapsed_ms,
+                "oauth2 login JSON parse failed (upstream protocol violation)",
+            );
+            RelayError::Internal
+        })?;
+
+        tracing::info!(
+            target: "chathub_relay::downstream",
+            user_id = jdd.user_id,
+            elapsed_ms,
+            "oauth2 login ok",
+        );
+
+        Ok(LoginResp {
+            access_token: jdd.access_token.token_value,
+            user_id: jdd.user_id.to_string(),
+            display_name: jdd.nick_name.unwrap_or_default(),
+            avatar_url: String::new(),
+            role: String::new(),
+            tenant_id: String::new(),
+            wecom_accounts: Vec::new(),
+        })
     }
 
-    /// 在 HubSvc 建连入口调:校验客户端 token,拿连接身份。
-    pub async fn verify_token(
-        &self,
-        req: VerifyTokenReq<'_>,
-    ) -> Result<VerifyTokenResp, RelayError> {
-        // P1-6:verify_token 在 Subscribe 关键路径上,用更短超时,慢响应不拖垮缓存 miss 风暴
-        self.post_json_with_timeout("/v1/verify_token", &req, VERIFY_TOKEN_TIMEOUT)
+    /// 透传客户端登出到业务后台。best-effort:网络错也不阻断。
+    pub async fn logout(&self, client_token: &str) -> Result<(), RelayError> {
+        let url = format!("{}{}", self.base_url, self.paths.logout);
+        let _ = self.http.post(&url).bearer_auth(client_token).send().await;
+        Ok(())
+    }
+
+    /// OAuth2 introspection 风格 verify:Bearer = 要校验的 token,空 body。
+    pub async fn verify_token(&self, client_token: &str) -> Result<VerifyTokenResp, RelayError> {
+        let url = format!("{}{}", self.base_url, self.paths.verify_token);
+        let started = Instant::now();
+
+        let resp = self
+            .http
+            .post(&url)
+            .bearer_auth(client_token)
+            .timeout(VERIFY_TOKEN_TIMEOUT)
+            .send()
             .await
-    }
+            .map_err(|e| {
+                let elapsed_ms = started.elapsed().as_millis() as u64;
+                tracing::warn!(
+                    target: "chathub_relay::downstream",
+                    url = %url,
+                    error = %e,
+                    elapsed_ms,
+                    "verify_token send failed",
+                );
+                if e.is_timeout() || e.is_connect() {
+                    RelayError::Transient
+                } else {
+                    RelayError::Http(e.to_string())
+                }
+            })?;
 
-    // Plan 7 — send/recall/ack_read/fetch_history 的 typed wrappers 已删,
-    // 所有业务 RPC 统一走 `forward(routes, method, employee_id, body_bytes)`。
+        let status = resp.status();
+        let elapsed_ms = started.elapsed().as_millis() as u64;
+        if !status.is_success() {
+            let code = status.as_u16();
+            tracing::warn!(
+                target: "chathub_relay::downstream",
+                status = code,
+                elapsed_ms,
+                "verify_token non-2xx",
+            );
+            return Err(match code {
+                401 | 403 => RelayError::InvalidCreds,
+                c if c >= 500 => RelayError::Transient,
+                _ => RelayError::Internal,
+            });
+        }
+
+        let body: VerifyTokenResp = resp
+            .json()
+            .await
+            .map_err(|e| RelayError::Http(e.to_string()))?;
+
+        tracing::info!(
+            target: "chathub_relay::downstream",
+            elapsed_ms,
+            user_id = %body.user_id,
+            employee_id = body.employee_id,
+            "verify_token ok",
+        );
+
+        Ok(body)
+    }
 
     // ─── Hub.Forward 透传 ────────────────────────────────────────────
     //
-    // Relay 不解析 body_json,按 routes 查到 method 对应的 HTTP 路径后整段透传到
-    // 业务后台。relay 自己的 Bearer secret + 经 relay 认证的 employee_id(放在
-    // `X-Relay-Employee-Id` header)告诉业务后台:这次请求是某 employee 发起的、
-    // 已经通过 relay 的 verify_token 鉴权。
+    // relay 不解析 body_json,按 routes 查到 method 对应的 (HTTP verb, 路径) 后整段透传。
+    // Authorization 用客户端原 Bearer token(关键:让业务后台解析真实身份)。
+    // `X-Relay-Employee-Id` 头是 relay 已验证过的 employee 标识,审计 / 兜底用。
 
     pub async fn forward(
         &self,
@@ -166,28 +332,44 @@ impl DownstreamClient {
         method: &str,
         employee_id: i64,
         body_bytes: &[u8],
+        client_token: &str,
     ) -> Result<ForwardOutcome, RelayError> {
-        let path = routes.path_for(method).ok_or(RelayError::InvalidArg)?;
-        let url = format!("{}{}", self.base_url, path);
+        let spec = routes.get(method).ok_or(RelayError::InvalidArg)?;
+        let url = format!("{}{}", self.base_url, spec.path);
         let started = Instant::now();
 
         tracing::debug!(
             target: "chathub_relay::downstream",
             method,
+            verb = ?spec.method,
             url = %url,
             employee_id,
             body_len = body_bytes.len(),
             "forward request",
         );
 
-        let body_owned = body_bytes.to_vec();
-        let resp = self
-            .http
-            .post(&url)
-            .bearer_auth(&self.secret)
+        let builder = match spec.method {
+            HttpMethod::Get => {
+                if !body_bytes.is_empty() {
+                    tracing::debug!(
+                        target: "chathub_relay::downstream",
+                        method,
+                        body_len = body_bytes.len(),
+                        "GET method given non-empty body — ignored",
+                    );
+                }
+                self.http.get(&url)
+            }
+            HttpMethod::Post => self
+                .http
+                .post(&url)
+                .header("Content-Type", "application/json")
+                .body(body_bytes.to_vec()),
+        };
+
+        let resp = builder
+            .bearer_auth(client_token)
             .header("X-Relay-Employee-Id", employee_id.to_string())
-            .header("Content-Type", "application/json")
-            .body(body_owned)
             .send()
             .await
             .map_err(|e| {
@@ -219,8 +401,7 @@ impl DownstreamClient {
             RelayError::Http(e.to_string())
         })?;
 
-        // P0-5:语义改为 REST 隧道。2xx 和 4xx 都返回 ForwardOutcome,客户端按 http_status
-        // 判断业务结果(401/403 可能是业务规则而非鉴权失败,relay 无法准确区分)。
+        // REST 隧道语义:2xx 和 4xx 都返回 ForwardOutcome,客户端按 http_status 自决。
         // 只有 5xx 和实际 transport 故障才映射成 gRPC error。
         if status.is_server_error() {
             tracing::warn!(
@@ -233,8 +414,7 @@ impl DownstreamClient {
             return Err(RelayError::Internal);
         }
 
-        let level = if status.is_success() { "info" } else { "warn" };
-        if level == "info" {
+        if status.is_success() {
             tracing::info!(
                 target: "chathub_relay::downstream",
                 method,
@@ -244,7 +424,6 @@ impl DownstreamClient {
                 "forward ok",
             );
         } else {
-            // 4xx — 业务规则错,不是 relay 鉴权错。客户端读 http_status + body 自决。
             tracing::warn!(
                 target: "chathub_relay::downstream",
                 method,
@@ -259,185 +438,82 @@ impl DownstreamClient {
             body: body.to_vec(),
         })
     }
-
-    /// 统一的 POST + JSON helper:负责发请求、记日志、翻译响应。
-    async fn post_json<Req, Resp>(
-        &self,
-        endpoint: &'static str,
-        req: &Req,
-    ) -> Result<Resp, RelayError>
-    where
-        Req: Serialize + ?Sized,
-        Resp: for<'de> Deserialize<'de>,
-    {
-        // 走 Client 默认超时(BUSINESS_REQUEST_TIMEOUT=15s)
-        self.post_json_inner(endpoint, req, None).await
-    }
-
-    /// 带显式超时的版本(P1-6:verify_token 用更短超时)
-    async fn post_json_with_timeout<Req, Resp>(
-        &self,
-        endpoint: &'static str,
-        req: &Req,
-        timeout: Duration,
-    ) -> Result<Resp, RelayError>
-    where
-        Req: Serialize + ?Sized,
-        Resp: for<'de> Deserialize<'de>,
-    {
-        self.post_json_inner(endpoint, req, Some(timeout)).await
-    }
-
-    async fn post_json_inner<Req, Resp>(
-        &self,
-        endpoint: &'static str,
-        req: &Req,
-        timeout: Option<Duration>,
-    ) -> Result<Resp, RelayError>
-    where
-        Req: Serialize + ?Sized,
-        Resp: for<'de> Deserialize<'de>,
-    {
-        let url = format!("{}{}", self.base_url, endpoint);
-        let started = Instant::now();
-        tracing::debug!(target: "chathub_relay::downstream", endpoint, url = %url, "downstream request");
-
-        let mut builder = self.http.post(&url).bearer_auth(&self.secret).json(req);
-        if let Some(t) = timeout {
-            builder = builder.timeout(t);
-        }
-
-        let resp = builder.send().await.map_err(|e| {
-            let elapsed_ms = started.elapsed().as_millis() as u64;
-            let kind = if e.is_timeout() {
-                "timeout"
-            } else if e.is_connect() {
-                "connect"
-            } else {
-                "other"
-            };
-            tracing::warn!(
-                target: "chathub_relay::downstream",
-                endpoint, url = %url, kind, elapsed_ms,
-                error = %e,
-                "downstream send failed",
-            );
-            if e.is_timeout() || e.is_connect() {
-                RelayError::Transient
-            } else {
-                RelayError::Http(e.to_string())
-            }
-        })?;
-
-        let status = resp.status();
-        let elapsed_ms = started.elapsed().as_millis() as u64;
-        if status.is_success() {
-            tracing::info!(
-                target: "chathub_relay::downstream",
-                endpoint, url = %url, status = status.as_u16(), elapsed_ms,
-                "downstream ok",
-            );
-        } else {
-            tracing::warn!(
-                target: "chathub_relay::downstream",
-                endpoint, url = %url, status = status.as_u16(), elapsed_ms,
-                "downstream non-2xx",
-            );
-        }
-        translate(resp).await
-    }
-}
-
-// Plan 7 — 老的 SendReq/Resp / RecallReq/Resp / AckReadReq/Resp / FetchHistoryReq/Resp
-// typed structs 全删,业务 RPC 走 Hub.Forward 的 opaque body_json。
-
-/// 通用响应翻译:200 → 反序列化 T;4xx/5xx → 映射错误。
-pub(crate) async fn translate<T: for<'de> Deserialize<'de>>(
-    resp: reqwest::Response,
-) -> Result<T, RelayError> {
-    let status = resp.status();
-    if status.is_success() {
-        let body = resp
-            .json::<T>()
-            .await
-            .map_err(|e| RelayError::Http(e.to_string()))?;
-        return Ok(body);
-    }
-    // 试着解析 {code, ...}
-    let code = status.as_u16();
-    let err: Option<ErrPayload> = resp.json().await.ok();
-    match (code, err.as_ref().map(|e| e.code.as_str())) {
-        (401, _) => Err(RelayError::InvalidCreds),
-        (403, _) => Err(RelayError::AccountDisabled),
-        (412, _) => {
-            let (m, d) = err
-                .map(|e| (e.min_version, e.download_url))
-                .unwrap_or_default();
-            Err(RelayError::UpgradeRequired {
-                min_version: m,
-                download_url: d,
-            })
-        }
-        (400, _) => Err(RelayError::InvalidArg),
-        (c, _) if c >= 500 => Err(RelayError::Transient),
-        _ => Err(RelayError::Internal),
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wiremock::matchers::{header, method, path};
+    use wiremock::matchers::{body_string_contains, header, method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
+    fn jdd_response() -> serde_json::Value {
+        serde_json::json!({
+            "accessToken": {
+                "tokenValue": "biz-tok-abc",
+                "tokenType": { "value": "Bearer" },
+                "issuedAt": "2026-05-16 10:00:00",
+                "expiresAt": "2026-05-16 22:00:00"
+            },
+            "userId": 1234,
+            "username": "alice",
+            "nickName": "Alice",
+            "mobile": "1380000000",
+            "channel": 3
+        })
+    }
+
     #[tokio::test(flavor = "multi_thread")]
-    async fn login_happy_passes_through_token_and_user() {
+    async fn login_oauth2_form_basic_query() {
         let mock = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path("/auth/login"))
-            .and(header("authorization", "Bearer dn-secret"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "access_token":"biz-tok-abc",
-                "user_id":"u-1","display_name":"D","role":"op","tenant_id":"t",
-                "wecom_accounts":[{"wecom_account_id":"wa-1","corp_id":"c","agent_id":1,"display_name":"w","enabled":true}]
-            })))
+            .and(path("/account-app/oauth2/token"))
+            .and(query_param("scope", "server"))
+            .and(query_param("terminalId", "dev-A"))
+            .and(query_param("grant_type", "password"))
+            // basic_auth("rh_wxchat", Some("rh_wxchat")) → Base64("rh_wxchat:rh_wxchat")
+            .and(header(
+                "authorization",
+                "Basic cmhfd3hjaGF0OnJoX3d4Y2hhdA==",
+            ))
+            .and(header(
+                "content-type",
+                "application/x-www-form-urlencoded",
+            ))
+            .and(body_string_contains("username=alice"))
+            .and(body_string_contains("password=secret"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(jdd_response()))
             .mount(&mock)
             .await;
 
-        let client = DownstreamClient::new(&mock.uri(), "dn-secret").unwrap();
+        let client = DownstreamClient::new_with_defaults(&mock.uri()).unwrap();
         let resp = client
             .login(LoginReq {
-                username: "u",
-                password: "p",
-                device_id: "d1",
-                device_name: "Mac",
+                username: "alice",
+                password: "secret",
+                device_id: "dev-A",
             })
             .await
             .unwrap();
         assert_eq!(resp.access_token, "biz-tok-abc");
-        assert_eq!(resp.user_id, "u-1");
-        assert_eq!(resp.wecom_accounts.len(), 1);
+        assert_eq!(resp.user_id, "1234");
+        assert_eq!(resp.display_name, "Alice");
+        assert!(resp.wecom_accounts.is_empty()); // 永远空
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn login_401_maps_invalid_creds() {
+    async fn login_oauth2_401_maps_invalid_creds() {
         let mock = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path("/auth/login"))
-            .respond_with(
-                ResponseTemplate::new(401)
-                    .set_body_json(serde_json::json!({"code":"INVALID_CREDS"})),
-            )
+            .and(path("/account-app/oauth2/token"))
+            .respond_with(ResponseTemplate::new(401))
             .mount(&mock)
             .await;
-
-        let client = DownstreamClient::new(&mock.uri(), "dn-secret").unwrap();
+        let client = DownstreamClient::new_with_defaults(&mock.uri()).unwrap();
         let err = client
             .login(LoginReq {
                 username: "u",
                 password: "bad",
-                device_id: "d1",
-                device_name: "Mac",
+                device_id: "d",
             })
             .await
             .unwrap_err();
@@ -445,20 +521,19 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn login_503_maps_transient() {
+    async fn login_oauth2_503_maps_transient() {
         let mock = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path("/auth/login"))
+            .and(path("/account-app/oauth2/token"))
             .respond_with(ResponseTemplate::new(503))
             .mount(&mock)
             .await;
-        let client = DownstreamClient::new(&mock.uri(), "dn-secret").unwrap();
+        let client = DownstreamClient::new_with_defaults(&mock.uri()).unwrap();
         let err = client
             .login(LoginReq {
                 username: "u",
                 password: "p",
                 device_id: "d",
-                device_name: "M",
             })
             .await
             .unwrap_err();
@@ -466,74 +541,47 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn login_412_maps_upgrade_required() {
+    async fn login_oauth2_malformed_jdd_maps_internal() {
         let mock = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path("/auth/login"))
-            .respond_with(ResponseTemplate::new(412).set_body_json(serde_json::json!({
-                "code":"UPGRADE_REQUIRED","min_version":"1.5.0","download_url":"https://x/y"
-            })))
+            .and(path("/account-app/oauth2/token"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"garbage": true})),
+            )
             .mount(&mock)
             .await;
-        let client = DownstreamClient::new(&mock.uri(), "dn-secret").unwrap();
+        let client = DownstreamClient::new_with_defaults(&mock.uri()).unwrap();
         let err = client
             .login(LoginReq {
                 username: "u",
                 password: "p",
                 device_id: "d",
-                device_name: "M",
             })
             .await
             .unwrap_err();
-        match err {
-            RelayError::UpgradeRequired { min_version, .. } => assert_eq!(min_version, "1.5.0"),
-            other => panic!("wrong: {other:?}"),
-        }
+        assert!(matches!(err, RelayError::Internal));
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn verify_token_happy_returns_identity() {
+    async fn verify_token_uses_client_token_as_bearer_and_empty_body() {
         let mock = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/v1/verify_token"))
-            .and(header("authorization", "Bearer dn-secret"))
+            .and(header("authorization", "Bearer client-xyz"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "active": true,
                 "user_id": "u-9",
                 "device_id": "dev-X",
-                "accounts": ["wa-1", "wa-2"],
-                "exp_ms": 1_900_000_000_000i64
+                "accounts": ["wa-1"],
+                "exp_ms": 1_900_000_000_000i64,
+                "employee_id": 42
             })))
             .mount(&mock)
             .await;
-        let client = DownstreamClient::new(&mock.uri(), "dn-secret").unwrap();
-        let resp = client
-            .verify_token(VerifyTokenReq { token: "biz-tok" })
-            .await
-            .unwrap();
+        let client = DownstreamClient::new_with_defaults(&mock.uri()).unwrap();
+        let resp = client.verify_token("client-xyz").await.unwrap();
         assert!(resp.active);
-        assert_eq!(resp.user_id, "u-9");
-        assert_eq!(resp.device_id, "dev-X");
-        assert_eq!(resp.accounts, vec!["wa-1", "wa-2"]);
-        assert_eq!(resp.exp_ms, Some(1_900_000_000_000));
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn verify_token_inactive_body_is_ok_with_active_false() {
-        let mock = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/v1/verify_token"))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_json(serde_json::json!({"active": false})),
-            )
-            .mount(&mock)
-            .await;
-        let client = DownstreamClient::new(&mock.uri(), "dn-secret").unwrap();
-        let resp = client
-            .verify_token(VerifyTokenReq { token: "stale" })
-            .await
-            .unwrap();
-        assert!(!resp.active);
+        assert_eq!(resp.employee_id, 42);
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -544,23 +592,109 @@ mod tests {
             .respond_with(ResponseTemplate::new(401))
             .mount(&mock)
             .await;
-        let client = DownstreamClient::new(&mock.uri(), "dn-secret").unwrap();
-        let err = client
-            .verify_token(VerifyTokenReq { token: "bad" })
-            .await
-            .unwrap_err();
+        let client = DownstreamClient::new_with_defaults(&mock.uri()).unwrap();
+        let err = client.verify_token("bad").await.unwrap_err();
         assert!(matches!(err, RelayError::InvalidCreds));
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn logout_is_best_effort_ok() {
+    async fn logout_is_best_effort_ok_even_on_404() {
+        let mock = MockServer::start().await;
+        // 不挂任何路由 → 默认 404
+        let client = DownstreamClient::new_with_defaults(&mock.uri()).unwrap();
+        assert!(client.logout("t").await.is_ok());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn forward_post_uses_client_token_not_relay_secret() {
         let mock = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path("/auth/logout"))
-            .respond_with(ResponseTemplate::new(204))
+            .and(path("/v1/send"))
+            .and(header("authorization", "Bearer client-xyz"))
+            .and(header("x-relay-employee-id", "42"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"ok": true})))
             .mount(&mock)
             .await;
-        let client = DownstreamClient::new(&mock.uri(), "dn-secret").unwrap();
-        assert!(client.logout(LogoutReq { token: "t" }).await.is_ok());
+        let client = DownstreamClient::new_with_defaults(&mock.uri()).unwrap();
+        let routes = DownstreamRoutes::default_for_test();
+        let outcome = client
+            .forward(&routes, "send", 42, br#"{"x":1}"#, "client-xyz")
+            .await
+            .unwrap();
+        assert_eq!(outcome.http_status, 200);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn forward_get_omits_body_and_dispatches_get() {
+        let mock = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(
+                "/wechat-business-app/wecom-cs/v1/wecomAggregate/account/listMine",
+            ))
+            .and(header("authorization", "Bearer client-xyz"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!([{"id": "wa-1"}])),
+            )
+            .mount(&mock)
+            .await;
+        let client = DownstreamClient::new_with_defaults(&mock.uri()).unwrap();
+        let routes = DownstreamRoutes::default_for_test();
+        // 即使传非空 body,GET 也忽略
+        let outcome = client
+            .forward(&routes, "list_accounts", 42, b"ignored-body", "client-xyz")
+            .await
+            .unwrap();
+        assert_eq!(outcome.http_status, 200);
+        let arr: serde_json::Value = serde_json::from_slice(&outcome.body).unwrap();
+        assert_eq!(arr[0]["id"], "wa-1");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn forward_unknown_method_returns_invalid_arg() {
+        let mock = MockServer::start().await;
+        let client = DownstreamClient::new_with_defaults(&mock.uri()).unwrap();
+        let routes = DownstreamRoutes::default_for_test();
+        let err = client
+            .forward(&routes, "unknown_method", 1, b"", "tok")
+            .await
+            .unwrap_err();
+        assert!(matches!(err, RelayError::InvalidArg));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn forward_business_4xx_returns_outcome_not_error() {
+        let mock = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/send"))
+            .respond_with(
+                ResponseTemplate::new(403)
+                    .set_body_json(serde_json::json!({"code": "NO_PERMISSION"})),
+            )
+            .mount(&mock)
+            .await;
+        let client = DownstreamClient::new_with_defaults(&mock.uri()).unwrap();
+        let routes = DownstreamRoutes::default_for_test();
+        let outcome = client
+            .forward(&routes, "send", 1, b"{}", "tok")
+            .await
+            .unwrap();
+        assert_eq!(outcome.http_status, 403);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn forward_business_5xx_maps_internal() {
+        let mock = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/send"))
+            .respond_with(ResponseTemplate::new(502))
+            .mount(&mock)
+            .await;
+        let client = DownstreamClient::new_with_defaults(&mock.uri()).unwrap();
+        let routes = DownstreamRoutes::default_for_test();
+        let err = client
+            .forward(&routes, "send", 1, b"{}", "tok")
+            .await
+            .unwrap_err();
+        assert!(matches!(err, RelayError::Internal));
     }
 }

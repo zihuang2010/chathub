@@ -70,25 +70,40 @@ async fn fixture_self_test_healthz_returns_ok() {
     assert_eq!(resp.status(), 200);
 }
 
-// ─── Auth 透传 ───────────────────────────────────────────────────────────
+// ─── Auth 透传(OAuth2)─────────────────────────────────────────────────
+
+fn jdd_response() -> serde_json::Value {
+    serde_json::json!({
+        "accessToken": {
+            "tokenValue": "biz-tok-7",
+            "tokenType": { "value": "Bearer" },
+            "issuedAt": "2026-05-16 10:00:00",
+            "expiresAt": "2026-05-16 22:00:00"
+        },
+        "userId": 7,
+        "nickName": "Alice",
+        "channel": 3
+    })
+}
 
 #[tokio::test(flavor = "multi_thread")]
-async fn login_passes_through_business_token_and_user() {
+async fn login_oauth2_passes_through_business_token_and_user() {
     use chathub_proto::v1::LoginRequest;
-    use wiremock::matchers::{method, path};
+    use wiremock::matchers::{header, method, path, query_param};
     use wiremock::{Mock, ResponseTemplate};
 
     let h = spawn_relay().await;
     Mock::given(method("POST"))
-        .and(path("/auth/login"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "access_token":"biz-tok-7",
-            "user_id":"u-7","display_name":"Alice","role":"op","tenant_id":"t-1",
-            "wecom_accounts": [{
-                "wecom_account_id":"wa-1","corp_id":"c","agent_id":1,
-                "display_name":"w","enabled":true
-            }]
-        })))
+        .and(path("/account-app/oauth2/token"))
+        .and(query_param("scope", "server"))
+        .and(query_param("terminalId", "dev-A"))
+        .and(query_param("grant_type", "password"))
+        .and(header(
+            "authorization",
+            "Basic cmhfd3hjaGF0OnJoX3d4Y2hhdA==",
+        ))
+        .and(header("content-type", "application/x-www-form-urlencoded"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(jdd_response()))
         .mount(&h.downstream)
         .await;
     let mut client =
@@ -107,21 +122,22 @@ async fn login_passes_through_business_token_and_user() {
         .unwrap()
         .into_inner();
     assert_eq!(resp.access_token, "biz-tok-7");
-    assert_eq!(resp.user.as_ref().unwrap().user_id, "u-7");
+    assert_eq!(resp.user.as_ref().unwrap().user_id, "7");
+    assert_eq!(resp.user.as_ref().unwrap().display_name, "Alice");
+    // wecom_accounts 永远空 —— 前端走 list_accounts via Forward
+    assert!(resp.wecom_accounts.is_empty());
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn login_invalid_credentials_maps_to_unauthenticated() {
+async fn login_oauth2_invalid_credentials_maps_to_unauthenticated() {
     use chathub_proto::v1::LoginRequest;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, ResponseTemplate};
 
     let h = spawn_relay().await;
     Mock::given(method("POST"))
-        .and(path("/auth/login"))
-        .respond_with(
-            ResponseTemplate::new(401).set_body_json(serde_json::json!({"code":"INVALID_CREDS"})),
-        )
+        .and(path("/account-app/oauth2/token"))
+        .respond_with(ResponseTemplate::new(401))
         .mount(&h.downstream)
         .await;
     let mut client =
@@ -139,6 +155,37 @@ async fn login_invalid_credentials_maps_to_unauthenticated() {
         .await
         .unwrap_err();
     assert_eq!(err.code(), tonic::Code::Unauthenticated);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn login_oauth2_malformed_response_maps_internal() {
+    use chathub_proto::v1::LoginRequest;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, ResponseTemplate};
+
+    let h = spawn_relay().await;
+    Mock::given(method("POST"))
+        .and(path("/account-app/oauth2/token"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({"garbage": true})),
+        )
+        .mount(&h.downstream)
+        .await;
+    let mut client =
+        chathub_proto::v1::auth_client::AuthClient::connect(format!("http://{}", h.grpc_addr))
+            .await
+            .unwrap();
+    let err = client
+        .login(LoginRequest {
+            username: "u".into(),
+            password: "p".into(),
+            device_id: "dev-A".into(),
+            device_name: "Mac".into(),
+            client_ver: "".into(),
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), tonic::Code::Internal);
 }
 
 // ─── /internal/push ──────────────────────────────────────────────────────
@@ -359,4 +406,70 @@ async fn hub_ack_round_trip() {
         .ack(AckRequest { notify_seq: 1024 })
         .await
         .expect("ack ok");
+}
+
+// ─── Forward 客户端 token 透传 + GET dispatch ───────────────────────────
+
+#[tokio::test(flavor = "multi_thread")]
+async fn forward_passes_client_token_not_relay_secret_to_backend() {
+    use wiremock::matchers::{header, method, path};
+    use wiremock::{Mock, ResponseTemplate};
+
+    let h = spawn_relay().await;
+    mount_verify_token(&h.downstream, "client-tok-A", 88, "dev-A").await;
+    // 关键断言:业务后台收到的 Authorization 必须是客户端 token,而不是 relay 任何 shared secret
+    Mock::given(method("POST"))
+        .and(path("/v1/send"))
+        .and(header("authorization", "Bearer client-tok-A"))
+        .and(header("x-relay-employee-id", "88"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"ok": true})))
+        .mount(&h.downstream)
+        .await;
+
+    let ch = raw_channel(h.grpc_addr).await;
+    let mut hub = hub_client(ch, "client-tok-A".into());
+    let resp = hub
+        .forward(ForwardRequest {
+            method: "send".into(),
+            body_json: br#"{"x":1}"#.to_vec(),
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(resp.http_status, 200);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn forward_list_accounts_dispatches_get() {
+    use wiremock::matchers::{header, method, path};
+    use wiremock::{Mock, ResponseTemplate};
+
+    let h = spawn_relay().await;
+    mount_verify_token(&h.downstream, "tok-list", 12, "dev-A").await;
+    // list_accounts 在默认 routes 表里是 GET
+    Mock::given(method("GET"))
+        .and(path(
+            "/wechat-business-app/wecom-cs/v1/wecomAggregate/account/listMine",
+        ))
+        .and(header("authorization", "Bearer tok-list"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!([{"wxCsAccountId": "wa-1", "name": "abc"}])),
+        )
+        .mount(&h.downstream)
+        .await;
+
+    let ch = raw_channel(h.grpc_addr).await;
+    let mut hub = hub_client(ch, "tok-list".into());
+    let resp = hub
+        .forward(ForwardRequest {
+            method: "list_accounts".into(),
+            body_json: vec![],
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(resp.http_status, 200);
+    let arr: serde_json::Value = serde_json::from_slice(&resp.body_json).unwrap();
+    assert_eq!(arr[0]["wxCsAccountId"], "wa-1");
 }

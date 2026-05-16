@@ -13,7 +13,7 @@
 //!   - Forward:业务 RPC 单一透传(REST 隧道语义,4xx 通过 http_status 返回,不映射 gRPC error)
 
 use crate::config::DownstreamRoutes;
-use crate::downstream::{DownstreamClient, VerifyTokenReq};
+use crate::downstream::DownstreamClient;
 use crate::error::RelayError;
 use crate::router::Router;
 use crate::storage::events::{EventLog, EventRow};
@@ -161,9 +161,7 @@ impl TokenAuthenticator {
         let result = cell
             .get_or_init(move || async move {
                 let resp = downstream
-                    .verify_token(VerifyTokenReq {
-                        token: &token_owned,
-                    })
+                    .verify_token(&token_owned)
                     .await
                     .map_err(Status::from)?;
                 if !resp.active {
@@ -238,13 +236,19 @@ pub struct HubSvc {
 impl HubSvc {
     /// 从 extensions 取拦截器放入的 Bearer token,调 verifyToken 拿连接身份。
     async fn authenticate<T>(&self, req: &Request<T>) -> Result<UserCtx, Status> {
-        let token = req
+        let token = self.bearer(req)?;
+        self.auth.authenticate(&token).await
+    }
+
+    /// 提取拦截器放入的原 Bearer token 字符串(用于 Hub.Forward 透传给业务后台)。
+    #[allow(clippy::result_large_err)] // Status 主导;项目整体未 Box Status,跟现有风格一致
+    fn bearer<T>(&self, req: &Request<T>) -> Result<String, Status> {
+        Ok(req
             .extensions()
             .get::<BearerToken>()
             .ok_or_else(|| Status::unauthenticated("missing bearer"))?
             .0
-            .clone();
-        self.auth.authenticate(&token).await
+            .clone())
     }
 }
 
@@ -456,6 +460,7 @@ impl Hub for HubSvc {
         req: Request<ForwardRequest>,
     ) -> Result<Response<ForwardResponse>, Status> {
         let ctx = self.authenticate(&req).await?;
+        let client_token = self.bearer(&req)?;
         if ctx.employee_id == 0 {
             tracing::warn!(
                 user_id = %ctx.user_id,
@@ -473,9 +478,17 @@ impl Hub for HubSvc {
 
         let outcome = self
             .downstream
-            .forward(&self.routes, &r.method, ctx.employee_id, &r.body_json)
+            .forward(
+                &self.routes,
+                &r.method,
+                ctx.employee_id,
+                &r.body_json,
+                &client_token,
+            )
             .await
             .map_err(Status::from)?;
+        // client_token 出函数后立刻 drop,不进缓存不进 struct(安全约束)
+        drop(client_token);
         Ok(Response::new(ForwardResponse {
             body_json: outcome.body,
             http_status: outcome.http_status as u32,
@@ -494,7 +507,7 @@ mod tests {
     use tokio_stream::wrappers::TcpListenerStream;
     use tokio_stream::StreamExt;
     use tonic::transport::{Endpoint, Server};
-    use wiremock::matchers::{body_partial_json, method, path};
+    use wiremock::matchers::{header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     fn req_with(meta: &[(&'static str, &str)]) -> Request<()> {
@@ -509,7 +522,7 @@ mod tests {
     async fn mount_verify_token(mock: &MockServer, token: &str, employee_id: i64, device_id: &str) {
         Mock::given(method("POST"))
             .and(path("/v1/verify_token"))
-            .and(body_partial_json(serde_json::json!({ "token": token })))
+            .and(header("authorization", &*format!("Bearer {token}")))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "active": true,
                 "user_id": format!("u-{employee_id}"),
@@ -525,7 +538,7 @@ mod tests {
     async fn mount_verify_token_no_employee(mock: &MockServer, token: &str) {
         Mock::given(method("POST"))
             .and(path("/v1/verify_token"))
-            .and(body_partial_json(serde_json::json!({ "token": token })))
+            .and(header("authorization", &*format!("Bearer {token}")))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "active": true,
                 "user_id": "u-X",
@@ -542,7 +555,7 @@ mod tests {
         let storage = Storage::open(&db).await.unwrap();
         std::mem::forget(tmp);
         let downstream =
-            Arc::new(crate::downstream::DownstreamClient::new(&mock.uri(), "dn-secret").unwrap());
+            Arc::new(crate::downstream::DownstreamClient::new_with_defaults(&mock.uri()).unwrap());
         HubSvc {
             router: Arc::new(Router::new()),
             events_log: EventLog::new(storage),
@@ -620,7 +633,7 @@ mod tests {
         let mock = MockServer::start().await;
         mount_verify_token(&mock, "tok-1", 7, "dev-A").await;
         let downstream =
-            Arc::new(crate::downstream::DownstreamClient::new(&mock.uri(), "dn-secret").unwrap());
+            Arc::new(crate::downstream::DownstreamClient::new_with_defaults(&mock.uri()).unwrap());
         let auth = TokenAuthenticator::new(downstream);
         let ctx = auth.authenticate("tok-1").await.unwrap();
         assert_eq!(ctx.employee_id, 7);
@@ -638,7 +651,7 @@ mod tests {
             .mount(&mock)
             .await;
         let downstream =
-            Arc::new(crate::downstream::DownstreamClient::new(&mock.uri(), "dn-secret").unwrap());
+            Arc::new(crate::downstream::DownstreamClient::new_with_defaults(&mock.uri()).unwrap());
         let auth = TokenAuthenticator::new(downstream);
         let err = auth.authenticate("bad").await.unwrap_err();
         assert_eq!(err.code(), tonic::Code::Unauthenticated);
@@ -657,7 +670,7 @@ mod tests {
             .mount(&mock)
             .await;
         let downstream =
-            Arc::new(crate::downstream::DownstreamClient::new(&mock.uri(), "dn-secret").unwrap());
+            Arc::new(crate::downstream::DownstreamClient::new_with_defaults(&mock.uri()).unwrap());
         let auth = TokenAuthenticator::new(downstream);
         let _ = auth.authenticate("tok-X").await.unwrap();
         let _ = auth.authenticate("tok-X").await.unwrap();
@@ -680,7 +693,7 @@ mod tests {
             .mount(&mock)
             .await;
         let downstream =
-            Arc::new(crate::downstream::DownstreamClient::new(&mock.uri(), "dn-secret").unwrap());
+            Arc::new(crate::downstream::DownstreamClient::new_with_defaults(&mock.uri()).unwrap());
         let auth = Arc::new(TokenAuthenticator::new(downstream));
         let mut set = tokio::task::JoinSet::new();
         for _ in 0..50 {

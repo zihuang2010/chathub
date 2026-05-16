@@ -1,16 +1,13 @@
-//! Storage — deadpool_sqlite::Pool 包装 + 启动时跑迁移 + 每次取 conn 时确保 PRAGMA 已应用。
+//! Storage — deadpool_sqlite::Pool 包装 + 启动时跑迁移 + PRAGMA 走 post_create hook。
 //!
-//! 设计:deadpool 按需扩展 pool,新 connection 的 PRAGMA 默认不会带过来。
-//! 这里通过 `Storage::conn()` 包装一层,每次从 pool 拿 conn 时跑一次 `apply_connection_pragmas`
-//! (PRAGMA 写是幂等的,SQLite 内部对相同值是 noop,只是一次系统调用)。
-//!
-//! 这比 deadpool 的 `post_create` hook 简单得多(deadpool-sqlite 内部用 SyncWrapper,
-//! 在 Hook 闭包里类型推断很难写)。微观成本可忽略(每次 interact 多一次 µs 级 PRAGMA)。
+//! F3 性能修复(2026-05-16):PRAGMA 改成 `Hook::async_fn` 在 post_create 跑**一次/conn**,
+//! 而不是每次 `Storage::conn()` 再 interact 一次。后者在 1000 push/s 场景双重 thread-pool
+//! 跳转直接砍 DB 吞吐一半。
 
 pub mod events;
 pub mod migrations;
 
-use deadpool_sqlite::{Config as PoolCfg, Object, Pool, Runtime};
+use deadpool_sqlite::{Config as PoolCfg, Hook, HookError, Object, Pool, Runtime};
 use std::path::Path;
 use std::time::Duration;
 
@@ -46,15 +43,30 @@ impl Storage {
     pub async fn open(db_path: impl AsRef<Path>) -> Result<Self, StorageError> {
         let cfg = PoolCfg::new(db_path.as_ref().to_path_buf());
 
+        // F3:max_size 显式 = num_cpus * 4(deadpool 默认值的明确版),便于 sizing
+        let max_size = num_cpus::get() * 4;
+
         let pool = cfg
             .builder(Runtime::Tokio1)
             .map_err(|e| StorageError::Pool(e.to_string()))?
+            .max_size(max_size)
             .wait_timeout(Some(Duration::from_secs(5)))
+            // F3:PRAGMA 一次跑完;新连接出生时 hook 把 WAL/sync/foreign_keys/busy_timeout 设上去
+            .post_create(Hook::async_fn(|conn, _| {
+                Box::pin(async move {
+                    conn.interact(apply_connection_pragmas)
+                        .await
+                        .map_err(|e| HookError::Message(e.to_string().into()))?
+                        .map_err(|e| HookError::Message(e.to_string().into()))?;
+                    Ok(())
+                })
+            }))
             .build()
             .map_err(|e| StorageError::Pool(e.to_string()))?;
 
         let storage = Self { pool };
-        // 跑 migrations(走 storage.conn() 确保 PRAGMA 已应用)
+
+        // 跑 migrations
         let conn = storage.conn().await?;
         conn.interact(|c| -> Result<(), StorageError> {
             migrations::migrations().to_latest(c)?;
@@ -66,19 +78,12 @@ impl Storage {
         Ok(storage)
     }
 
-    /// 取一个应用了 PRAGMA(WAL + busy_timeout + 等)的 connection。
-    /// PRAGMA 写是幂等的 — 第二次以后 SQLite 内部 noop。
-    /// **所有 storage 层的 interact 都应通过这个函数取 conn,而不是直接调 `pool.get()`**。
+    /// 取一个 connection(PRAGMA 已在 post_create hook 里跑过,这里只是 pool.get())。
     pub async fn conn(&self) -> Result<Object, StorageError> {
-        let conn = self
-            .pool
+        self.pool
             .get()
             .await
-            .map_err(|e| StorageError::Pool(e.to_string()))?;
-        conn.interact(|c| apply_connection_pragmas(c))
-            .await
-            .map_err(|e| StorageError::Interact(e.to_string()))??;
-        Ok(conn)
+            .map_err(|e| StorageError::Pool(e.to_string()))
     }
 
     pub fn pool(&self) -> &Pool {

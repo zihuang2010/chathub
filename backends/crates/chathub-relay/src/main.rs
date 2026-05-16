@@ -1,5 +1,9 @@
 //! chathub-relay binary entrypoint。
 
+// 极致性能(F1):mimalloc 比 macOS/glibc 默认 allocator 在 alloc-heavy 场景快 5-15%
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 use chathub_proto::v1::auth_server::AuthServer;
 use chathub_proto::v1::hub_server::HubServer;
 use chathub_relay::auth_service::AuthSvc;
@@ -13,7 +17,7 @@ use chathub_relay::storage::Storage;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpListener;
-use tonic::transport::Server;
+use tonic::transport::{Identity, Server, ServerTlsConfig};
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
@@ -26,7 +30,15 @@ async fn main() -> anyhow::Result<()> {
     let events_log = EventLog::new(storage.clone());
     let downstream = Arc::new(DownstreamClient::new(
         &cfg.downstream_url,
-        &cfg.downstream_secret,
+        chathub_relay::downstream::AuthPaths {
+            login: cfg.path_login.clone(),
+            verify_token: cfg.path_verify_token.clone(),
+            logout: cfg.path_logout.clone(),
+        },
+        chathub_relay::downstream::OAuthCreds {
+            client_id: cfg.oauth_client_id.clone(),
+            client_secret: cfg.oauth_client_secret.clone(),
+        },
     )?);
 
     let auth_svc = AuthSvc {
@@ -44,14 +56,48 @@ async fn main() -> anyhow::Result<()> {
     let push_listener = TcpListener::bind(cfg.push_addr).await?;
     let push_state = PushState {
         secret: cfg.push_secret.clone(),
-        events_log,
+        events_log: events_log.clone(),
         router: router.clone(),
         force_close_grace_ms: cfg.force_close_grace_ms,
         allowed_client_ids: cfg.allowed_client_ids.clone(),
+        max_body_bytes: cfg.push_max_body_bytes,
     };
     let push_app = push::app(push_state);
 
     tracing::info!(grpc=%cfg.grpc_addr, push=%cfg.push_addr, "relay listening");
+
+    // F5:events_v2 GC task —— 后台跑,每 60s 排干超 retention 的批次(LIMIT 5000)。
+    let gc_log = events_log.clone();
+    let retention_days = cfg.event_retention_days;
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(Duration::from_secs(60));
+        tick.tick().await; // 第一 tick 立即返回,跳过
+        let retention_ms = (retention_days * 24 * 3600 * 1000) as i64;
+        loop {
+            tick.tick().await;
+            let cutoff = now_ms() - retention_ms;
+            // 排干策略:循环 cleanup 直到一次回 0 (不要让 LIMIT 把 backlog 切成长尾)
+            let mut total = 0u64;
+            loop {
+                match gc_log.cleanup_older_than(cutoff, 5000).await {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        total += n as u64;
+                        if n < 5000 {
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "events_v2 cleanup failed");
+                        break;
+                    }
+                }
+            }
+            if total > 0 {
+                tracing::info!(deleted = total, retention_days, "events_v2 gc ran");
+            }
+        }
+    });
 
     // P0-6 Graceful shutdown:
     //   1. 收到 Ctrl-C / SIGTERM 后,先广播 SERVER_DRAIN 给所有连接
@@ -73,10 +119,40 @@ async fn main() -> anyhow::Result<()> {
         let _ = shutdown_tx.send(true);
     });
 
+    // F5:TLS env-driven。两个 cert/key 路径都设了才启 TLS,否则 plaintext(开发用)。
+    let tls_config = match (&cfg.tls_cert_path, &cfg.tls_key_path) {
+        (Some(cert), Some(key)) => {
+            let cert_pem = std::fs::read(cert)?;
+            let key_pem = std::fs::read(key)?;
+            tracing::info!(cert=%cert.display(), "tonic Server TLS enabled");
+            Some(ServerTlsConfig::new().identity(Identity::from_pem(&cert_pem, &key_pem)))
+        }
+        (None, None) => {
+            tracing::warn!("tonic Server TLS not configured (plaintext gRPC) — set RELAY_TLS_CERT_PATH + RELAY_TLS_KEY_PATH for production");
+            None
+        }
+        _ => anyhow::bail!(
+            "RELAY_TLS_CERT_PATH and RELAY_TLS_KEY_PATH must be both set or both unset"
+        ),
+    };
+
     let grpc_stream = tokio_stream::wrappers::TcpListenerStream::new(grpc_listener);
     let grpc_shutdown_rx = shutdown_rx.clone();
-    let grpc_fut = Server::builder()
+    // F4/F5:tonic Server 完整 h2 + TCP 调优
+    let mut server_builder = Server::builder()
+        .tcp_nodelay(true)                                              // F4 T1
+        .tcp_keepalive(Some(Duration::from_secs(120)))                  // F4 T2
         .http2_keepalive_interval(Some(Duration::from_secs(30)))
+        .http2_keepalive_timeout(Some(Duration::from_secs(10)))         // F4 T5
+        .http2_adaptive_window(Some(true))
+        .initial_connection_window_size(1024 * 1024)                    // F4 T3 → 1MB
+        .initial_stream_window_size(256 * 1024)                         // F4 T4 → 256KB
+        .max_concurrent_streams(Some(256))                              // F4 T6 防 stream-flood
+        .concurrency_limit_per_connection(256); // F4 T7
+    if let Some(tls) = tls_config {
+        server_builder = server_builder.tls_config(tls)?;
+    }
+    let grpc_fut = server_builder
         .add_service(AuthServer::new(auth_svc))
         .add_service(HubServer::with_interceptor(
             hub_svc,
@@ -113,6 +189,14 @@ async fn main() -> anyhow::Result<()> {
 
     tracing::info!("relay graceful shutdown complete");
     Ok(())
+}
+
+fn now_ms() -> i64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
 }
 
 /// 同时监听 Ctrl-C 与 SIGTERM(Unix);Windows 下退化为只听 Ctrl-C。
