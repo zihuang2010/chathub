@@ -276,6 +276,50 @@ impl Router {
         }
     }
 
+    /// Graceful shutdown(P0-6):向所有连接(legacy account + employee 两套)
+    /// 广播 `SystemSignal::SERVER_DRAIN`,客户端收到后会主动断开 + 重连别的实例。
+    /// 返回 `(legacy_count, employee_count)` 给调用方记日志。
+    pub fn broadcast_server_drain(&self, detail: &str) -> (usize, usize) {
+        use chathub_proto::v1::server_event::Body;
+        use chathub_proto::v1::system_signal::Kind;
+        use chathub_proto::v1::{ServerEvent, SystemSignal};
+
+        let make_event = |account: String| ServerEvent {
+            wecom_account_id: account,
+            seq: 0,
+            body: Some(Body::System(SystemSignal {
+                kind: Kind::ServerDrain as i32,
+                detail: detail.to_string(),
+            })),
+        };
+
+        // Legacy account 维度
+        let mut legacy_count = 0;
+        {
+            let accounts = self.accounts.read();
+            for (acc, entry) in accounts.iter() {
+                if entry.tx.try_send(Ok(make_event(acc.clone()))).is_ok() {
+                    legacy_count += 1;
+                }
+            }
+        }
+
+        // Employee 维度
+        let mut employee_count = 0;
+        {
+            let employees = self.employees.read();
+            for (_emp_id, streams) in employees.iter() {
+                for s in streams {
+                    if s.tx.try_send(Ok(make_event(String::new()))).is_ok() {
+                        employee_count += 1;
+                    }
+                }
+            }
+        }
+
+        (legacy_count, employee_count)
+    }
+
     /// 当前该 employee 的在线连接数。
     pub fn employee_connection_count(&self, employee_id: i64) -> usize {
         self.employees
@@ -605,6 +649,44 @@ mod tests {
         r.update_ack_mark(99, 5);
         assert_eq!(r.get_ack_mark(99), 5);
         assert_eq!(r.get_ack_mark(42), 200);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn broadcast_server_drain_hits_both_legacy_and_employee_streams() {
+        let r = Router::new();
+        // legacy account
+        let (tx_l, mut rx_l) = mpsc::channel(4);
+        r.register(
+            StreamTicket {
+                user_id: "u-1".into(),
+                device_id: "d-1".into(),
+                accounts: vec!["wa-1".into()],
+            },
+            tx_l,
+        );
+        // employee
+        let (tx_e1, mut rx_e1) = mpsc::channel(4);
+        let (tx_e2, mut rx_e2) = mpsc::channel(4);
+        r.register_employee(42, "dev-A".into(), tx_e1);
+        r.register_employee(42, "dev-B".into(), tx_e2);
+
+        let (legacy, employee) = r.broadcast_server_drain("test-drain");
+        assert_eq!(legacy, 1);
+        assert_eq!(employee, 2);
+
+        use chathub_proto::v1::server_event::Body;
+        use chathub_proto::v1::system_signal::Kind;
+
+        for rx in [&mut rx_l, &mut rx_e1, &mut rx_e2] {
+            let frame = rx.recv().await.unwrap().unwrap();
+            match frame.body {
+                Some(Body::System(sig)) => {
+                    assert_eq!(sig.kind, Kind::ServerDrain as i32);
+                    assert_eq!(sig.detail, "test-drain");
+                }
+                other => panic!("expected SERVER_DRAIN, got {other:?}"),
+            }
+        }
     }
 
     #[tokio::test(flavor = "multi_thread")]

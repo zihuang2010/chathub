@@ -59,17 +59,85 @@ async fn main() -> anyhow::Result<()> {
 
     tracing::info!(grpc=%cfg.grpc_addr, push=%cfg.push_addr, "relay listening");
 
+    // P0-6 Graceful shutdown:
+    //   1. 收到 Ctrl-C / SIGTERM 后,先广播 SERVER_DRAIN 给所有连接
+    //   2. 等 grace 让客户端读完帧并主动断
+    //   3. 用 graceful_shutdown 让 tonic + axum 排空在途请求后退出
+    let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
+
+    // 监听信号的 task
+    let router_for_signal = router.clone();
+    tokio::spawn(async move {
+        wait_for_shutdown_signal().await;
+        let (legacy, employee) = router_for_signal.broadcast_server_drain("relay shutting down");
+        tracing::info!(
+            legacy_drained = legacy,
+            employee_drained = employee,
+            "SERVER_DRAIN broadcast complete; sleeping grace then shutting down"
+        );
+        // grace 让客户端读到 DRAIN 帧并主动断
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        let _ = shutdown_tx.send(true);
+    });
+
     let grpc_stream = tokio_stream::wrappers::TcpListenerStream::new(grpc_listener);
+    let grpc_shutdown_rx = shutdown_rx.clone();
+    let grpc_fut = Server::builder()
+        .http2_keepalive_interval(Some(Duration::from_secs(30)))
+        .add_service(AuthServer::new(auth_svc))
+        .add_service(HubServer::with_interceptor(
+            hub_svc,
+            ProtocolInterceptor::new(),
+        ))
+        .serve_with_incoming_shutdown(grpc_stream, async move {
+            let mut rx = grpc_shutdown_rx;
+            // 等到 watch 信号变 true
+            while rx.changed().await.is_ok() {
+                if *rx.borrow() {
+                    break;
+                }
+            }
+        });
+
+    let mut push_shutdown_rx = shutdown_rx.clone();
+    let axum_fut = axum::serve(push_listener, push_app).with_graceful_shutdown(async move {
+        while push_shutdown_rx.changed().await.is_ok() {
+            if *push_shutdown_rx.borrow() {
+                break;
+            }
+        }
+    });
+
     tokio::select! {
-        r = Server::builder()
-            .http2_keepalive_interval(Some(Duration::from_secs(30)))
-            .add_service(AuthServer::new(auth_svc))
-            .add_service(HubServer::with_interceptor(hub_svc, ProtocolInterceptor::new()))
-            .serve_with_incoming(grpc_stream) => { r?; }
-        r = axum::serve(push_listener, push_app) => { r?; }
-        _ = tokio::signal::ctrl_c() => { tracing::info!("ctrl_c received, shutting down"); }
+        r = grpc_fut => { r?; tracing::info!("gRPC server exited"); }
+        r = axum_fut => { r?; tracing::info!("axum server exited"); }
+        _ = shutdown_rx.changed() => {
+            if *shutdown_rx.borrow() {
+                tracing::info!("shutdown signal observed; waiting for server tasks");
+            }
+        }
     }
+
+    tracing::info!("relay graceful shutdown complete");
     Ok(())
+}
+
+/// 同时监听 Ctrl-C 与 SIGTERM(Unix);Windows 下退化为只听 Ctrl-C。
+async fn wait_for_shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        let mut sigterm = signal(SignalKind::terminate()).expect("install SIGTERM handler");
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => tracing::info!("Ctrl-C received"),
+            _ = sigterm.recv() => tracing::info!("SIGTERM received"),
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+        tracing::info!("Ctrl-C received");
+    }
 }
 
 /// 初始化 tracing:文件 JSON(按日轮转,非阻塞) + 可选 stdout。
