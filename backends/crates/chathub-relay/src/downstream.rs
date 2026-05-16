@@ -96,10 +96,19 @@ struct ErrPayload {
     download_url: String,
 }
 
+/// 关键路径(verify_token)的超时,要短 — 它在 Subscribe 建连前,慢一秒用户感知一秒。
+const VERIFY_TOKEN_TIMEOUT: Duration = Duration::from_secs(3);
+/// 业务路径(forward/send/recall/fetch_history)默认超时。比 verify 长,业务可能慢点。
+const BUSINESS_REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
+
 impl DownstreamClient {
     pub fn new(base_url: &str, secret: &str) -> Result<Self, RelayError> {
+        // P1-5:reqwest 连接池上限 + TCP keepalive,防 burst 时 socket 泄漏
+        // P1-6:默认 timeout 给业务路径(15s),verify_token 在调用点用 .timeout(3s) 覆盖
         let http = Client::builder()
-            .timeout(Duration::from_secs(10))
+            .timeout(BUSINESS_REQUEST_TIMEOUT)
+            .pool_max_idle_per_host(32)
+            .tcp_keepalive(Duration::from_secs(60))
             .build()
             .map_err(|e| RelayError::Http(e.to_string()))?;
         Ok(Self {
@@ -136,7 +145,9 @@ impl DownstreamClient {
         &self,
         req: VerifyTokenReq<'_>,
     ) -> Result<VerifyTokenResp, RelayError> {
-        self.post_json("/v1/verify_token", &req).await
+        // P1-6:verify_token 在 Subscribe 关键路径上,用更短超时,慢响应不拖垮缓存 miss 风暴
+        self.post_json_with_timeout("/v1/verify_token", &req, VERIFY_TOKEN_TIMEOUT)
+            .await
     }
 
     pub async fn send(&self, req: SendReq<'_>) -> Result<SendResp, RelayError> {
@@ -275,38 +286,64 @@ impl DownstreamClient {
         Req: Serialize + ?Sized,
         Resp: for<'de> Deserialize<'de>,
     {
+        // 走 Client 默认超时(BUSINESS_REQUEST_TIMEOUT=15s)
+        self.post_json_inner(endpoint, req, None).await
+    }
+
+    /// 带显式超时的版本(P1-6:verify_token 用更短超时)
+    async fn post_json_with_timeout<Req, Resp>(
+        &self,
+        endpoint: &'static str,
+        req: &Req,
+        timeout: Duration,
+    ) -> Result<Resp, RelayError>
+    where
+        Req: Serialize + ?Sized,
+        Resp: for<'de> Deserialize<'de>,
+    {
+        self.post_json_inner(endpoint, req, Some(timeout)).await
+    }
+
+    async fn post_json_inner<Req, Resp>(
+        &self,
+        endpoint: &'static str,
+        req: &Req,
+        timeout: Option<Duration>,
+    ) -> Result<Resp, RelayError>
+    where
+        Req: Serialize + ?Sized,
+        Resp: for<'de> Deserialize<'de>,
+    {
         let url = format!("{}{}", self.base_url, endpoint);
         let started = Instant::now();
         tracing::debug!(target: "chathub_relay::downstream", endpoint, url = %url, "downstream request");
 
-        let resp = self
-            .http
-            .post(&url)
-            .bearer_auth(&self.secret)
-            .json(req)
-            .send()
-            .await
-            .map_err(|e| {
-                let elapsed_ms = started.elapsed().as_millis() as u64;
-                let kind = if e.is_timeout() {
-                    "timeout"
-                } else if e.is_connect() {
-                    "connect"
-                } else {
-                    "other"
-                };
-                tracing::warn!(
-                    target: "chathub_relay::downstream",
-                    endpoint, url = %url, kind, elapsed_ms,
-                    error = %e,
-                    "downstream send failed",
-                );
-                if e.is_timeout() || e.is_connect() {
-                    RelayError::Transient
-                } else {
-                    RelayError::Http(e.to_string())
-                }
-            })?;
+        let mut builder = self.http.post(&url).bearer_auth(&self.secret).json(req);
+        if let Some(t) = timeout {
+            builder = builder.timeout(t);
+        }
+
+        let resp = builder.send().await.map_err(|e| {
+            let elapsed_ms = started.elapsed().as_millis() as u64;
+            let kind = if e.is_timeout() {
+                "timeout"
+            } else if e.is_connect() {
+                "connect"
+            } else {
+                "other"
+            };
+            tracing::warn!(
+                target: "chathub_relay::downstream",
+                endpoint, url = %url, kind, elapsed_ms,
+                error = %e,
+                "downstream send failed",
+            );
+            if e.is_timeout() || e.is_connect() {
+                RelayError::Transient
+            } else {
+                RelayError::Http(e.to_string())
+            }
+        })?;
 
         let status = resp.status();
         let elapsed_ms = started.elapsed().as_millis() as u64;
