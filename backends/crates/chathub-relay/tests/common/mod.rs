@@ -134,3 +134,25 @@ pub async fn mount_verify_token(
         .mount(mock)
         .await;
 }
+
+/// Plan 6 — 同 `mount_verify_token` 但额外返 `employee_id`,业务后台升级后的契约。
+/// 用于覆盖 Subscribe v2 / Ack / Forward 测试。
+pub async fn mount_verify_token_v2(
+    mock: &MockServer,
+    token: &str,
+    employee_id: i64,
+    device_id: &str,
+) {
+    Mock::given(method("POST"))
+        .and(path("/v1/verify_token"))
+        .and(body_partial_json(serde_json::json!({ "token": token })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "active": true,
+            "user_id": format!("u-{employee_id}"),
+            "device_id": device_id,
+            "accounts": Vec::<String>::new(),
+            "employee_id": employee_id,
+        })))
+        .mount(mock)
+        .await;
+}

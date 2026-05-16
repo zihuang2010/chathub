@@ -436,3 +436,256 @@ async fn push_with_invalid_secret_returns_401() {
     let status = do_push(&h.push_url, "WRONG", &body).await;
     assert_eq!(status, 401);
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Plan 6 stage 5 — e2e for /internal/push/v2 + Subscribe v2 + Hub.Ack + Hub.Forward
+// ═══════════════════════════════════════════════════════════════════════════════
+
+use common::mount_verify_token_v2;
+
+/// 业务后台 push v2 batch helper:走 spec §3 字段。
+async fn do_push_v2(push_url: &str, secret: &str, body: &serde_json::Value) -> reqwest::Response {
+    reqwest::Client::new()
+        .post(format!("{push_url}/internal/push/v2"))
+        .bearer_auth(secret)
+        .json(body)
+        .send()
+        .await
+        .unwrap()
+}
+
+fn push_v2_body(notify_seq: u64, employee_id: i64, events: serde_json::Value) -> serde_json::Value {
+    serde_json::json!({
+        "notifySeq": notify_seq,
+        "clientId": "rh_wxchat",
+        "employeeId": employee_id,
+        "batchId": format!("rh_wxchat:{employee_id}:{notify_seq}"),
+        "batchTime": "2026-05-14 10:30:00",
+        "events": events,
+    })
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn push_v2_persists_event_and_returns_ack_with_count() {
+    let h = spawn_relay().await;
+    let body = push_v2_body(
+        1,
+        42,
+        serde_json::json!([
+            { "eventType": "MESSAGE_UPSERT", "conversationId": "c1", "customerUserId": "u1" }
+        ]),
+    );
+    let resp = do_push_v2(&h.push_url, &h.push_secret, &body).await;
+    assert_eq!(resp.status(), 200);
+    let ack: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(ack["inserted"], 1);
+    assert_eq!(ack["controlCount"], 0);
+    assert_eq!(ack["notifySeq"], 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn push_v2_idempotent_on_retry_returns_zero_inserted() {
+    let h = spawn_relay().await;
+    let body = push_v2_body(
+        100,
+        42,
+        serde_json::json!([
+            { "eventType": "MESSAGE_UPSERT", "conversationId": "c1" }
+        ]),
+    );
+    // 首次:1 行入库
+    let r1: serde_json::Value = do_push_v2(&h.push_url, &h.push_secret, &body)
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(r1["inserted"], 1);
+    // 重投:0 行入库,200 OK(幂等)
+    let r2: serde_json::Value = do_push_v2(&h.push_url, &h.push_secret, &body)
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(r2["inserted"], 0);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn push_v2_unknown_client_id_returns_403() {
+    let h = spawn_relay().await;
+    let body = serde_json::json!({
+        "notifySeq": 1,
+        "clientId": "rogue_client",
+        "employeeId": 42,
+        "batchTime": "2026-05-14 10:30:00",
+        "events": [{ "eventType": "MESSAGE_UPSERT" }]
+    });
+    let resp = do_push_v2(&h.push_url, &h.push_secret, &body).await;
+    assert_eq!(resp.status(), 403);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn subscribe_v2_with_no_since_returns_ack_then_realtime_push() {
+    use chathub_proto::v1::server_event::Body;
+    use chathub_proto::v1::SubscribeRequest;
+    use tokio_stream::StreamExt;
+
+    let h = spawn_relay().await;
+    mount_verify_token_v2(&h.downstream, "tok-v2", 99, "dev-A").await;
+
+    let ch = raw_channel(h.grpc_addr).await;
+    let mut hub = hub_client_with_token(ch, "tok-v2".into());
+    let mut stream = hub
+        .subscribe(SubscribeRequest {
+            since_seqs: Default::default(),
+            since_notify_seq: 0,
+            device_id: "dev-A".into(),
+            client_version: "1.0.0".into(),
+        })
+        .await
+        .unwrap()
+        .into_inner();
+
+    // 第一帧:SubscribeAck
+    let f1 = stream.next().await.unwrap().unwrap();
+    match f1.body {
+        Some(Body::SubscribeAck(ack)) => {
+            assert_eq!(ack.resumed_from_seq, 0);
+            assert_eq!(ack.replayed_to_seq, 0);
+            assert!(!ack.resync_required);
+        }
+        other => panic!("expected SubscribeAck, got {other:?}"),
+    }
+
+    // 业务后台 push v2 → 该 employee 应当实时收到
+    let body = push_v2_body(
+        77,
+        99,
+        serde_json::json!([
+            { "eventType": "MESSAGE_UPSERT", "conversationId": "c-a", "message": { "localMessageId": "LM-7" } }
+        ]),
+    );
+    let resp = do_push_v2(&h.push_url, &h.push_secret, &body).await;
+    assert_eq!(resp.status(), 200);
+
+    let f2 = tokio::time::timeout(std::time::Duration::from_secs(1), stream.next())
+        .await
+        .expect("realtime push timeout")
+        .unwrap()
+        .unwrap();
+    match f2.body {
+        Some(Body::PushBatch(pb)) => {
+            assert_eq!(pb.notify_seq, 77);
+            assert_eq!(pb.employee_id, 99);
+            let arr: serde_json::Value = serde_json::from_slice(&pb.events_json).unwrap();
+            assert_eq!(arr[0]["eventType"], "MESSAGE_UPSERT");
+            assert_eq!(arr[0]["message"]["localMessageId"], "LM-7");
+        }
+        other => panic!("expected PushBatch, got {other:?}"),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn subscribe_v2_with_since_replays_persisted_events() {
+    use chathub_proto::v1::server_event::Body;
+    use chathub_proto::v1::SubscribeRequest;
+    use tokio_stream::StreamExt;
+
+    let h = spawn_relay().await;
+    mount_verify_token_v2(&h.downstream, "tok-v2", 55, "dev-A").await;
+
+    // 业务后台先 push 3 个 batch(此时该 employee 没在线)
+    for seq in [10u64, 11, 12] {
+        let body = push_v2_body(
+            seq,
+            55,
+            serde_json::json!([
+                { "eventType": "MESSAGE_UPSERT", "conversationId": format!("c-{seq}") }
+            ]),
+        );
+        let resp = do_push_v2(&h.push_url, &h.push_secret, &body).await;
+        assert_eq!(resp.status(), 200);
+    }
+
+    // 客户端上线,since=10 → 应该重放 11, 12
+    let ch = raw_channel(h.grpc_addr).await;
+    let mut hub = hub_client_with_token(ch, "tok-v2".into());
+    let mut stream = hub
+        .subscribe(SubscribeRequest {
+            since_seqs: Default::default(),
+            since_notify_seq: 10,
+            device_id: "dev-A".into(),
+            client_version: "1.0.0".into(),
+        })
+        .await
+        .unwrap()
+        .into_inner();
+
+    let f1 = stream.next().await.unwrap().unwrap();
+    match f1.body {
+        Some(Body::SubscribeAck(ack)) => {
+            assert_eq!(ack.resumed_from_seq, 10);
+            assert_eq!(ack.replayed_to_seq, 12);
+            assert!(!ack.resync_required); // since=10 == earliest_min - 1 + 1 = OK
+        }
+        other => panic!("expected SubscribeAck, got {other:?}"),
+    }
+    // 两条 PushBatchOut 重放(seq 11、12)
+    let f2 = stream.next().await.unwrap().unwrap();
+    match f2.body {
+        Some(Body::PushBatch(pb)) => assert_eq!(pb.notify_seq, 11),
+        other => panic!("expected PushBatch 11, got {other:?}"),
+    }
+    let f3 = stream.next().await.unwrap().unwrap();
+    match f3.body {
+        Some(Body::PushBatch(pb)) => assert_eq!(pb.notify_seq, 12),
+        other => panic!("expected PushBatch 12, got {other:?}"),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn forward_e2e_routes_method_to_business_backend() {
+    use chathub_proto::v1::ForwardRequest;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, ResponseTemplate};
+
+    let h = spawn_relay().await;
+    mount_verify_token_v2(&h.downstream, "tok-v2", 33, "dev-A").await;
+    // 业务后台 /v1/send 回 echo
+    Mock::given(method("POST"))
+        .and(path("/v1/send"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({"server_msg_id": "S-9", "sent_at_ms": 42})),
+        )
+        .mount(&h.downstream)
+        .await;
+
+    let ch = raw_channel(h.grpc_addr).await;
+    let mut hub = hub_client_with_token(ch, "tok-v2".into());
+    let resp = hub
+        .forward(ForwardRequest {
+            method: "send".into(),
+            body_json: br#"{"conversationId":"c1","contentText":"hi"}"#.to_vec(),
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    let parsed: serde_json::Value = serde_json::from_slice(&resp.body_json).unwrap();
+    assert_eq!(parsed["server_msg_id"], "S-9");
+    assert_eq!(parsed["sent_at_ms"], 42);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn hub_ack_e2e_round_trip() {
+    use chathub_proto::v1::AckRequest;
+
+    let h = spawn_relay().await;
+    mount_verify_token_v2(&h.downstream, "tok-v2", 7, "dev-A").await;
+    let ch = raw_channel(h.grpc_addr).await;
+    let mut hub = hub_client_with_token(ch, "tok-v2".into());
+    // Ack 不需要 stream;直接调
+    let _ = hub
+        .ack(AckRequest { notify_seq: 1024 })
+        .await
+        .expect("ack ok");
+}
