@@ -116,6 +116,19 @@ pub struct TokenAuthenticator {
 /// 而不是各自 follower 重算一次)。
 type InflightResult = Result<(UserCtx, Duration), Status>;
 
+/// RAII guard:leader 必持有此 guard。任何方式离开 authenticate 作用域
+/// (正常返回 / `?` 早返 / panic 展开) 都会触发 Drop 摘除 inflight 条目,
+/// 防止 leader future panic 后 inflight 永久卡死同 token 的后续请求(P0-4)。
+struct InflightGuard<'a> {
+    inflight: &'a parking_lot::Mutex<HashMap<String, Arc<OnceCell<InflightResult>>>>,
+    key: String,
+}
+impl Drop for InflightGuard<'_> {
+    fn drop(&mut self) {
+        self.inflight.lock().remove(&self.key);
+    }
+}
+
 impl TokenAuthenticator {
     pub fn new(downstream: Arc<DownstreamClient>) -> Self {
         Self {
@@ -139,14 +152,19 @@ impl TokenAuthenticator {
         }
 
         // 2. Singleflight:claim 或 join inflight
-        let (cell, is_leader) = {
+        //    leader 拿到 RAII guard,任何方式离开作用域都会摘除 inflight
+        let (cell, leader_guard) = {
             let mut inflight = self.inflight.lock();
             if let Some(cell) = inflight.get(&key) {
-                (cell.clone(), false)
+                (cell.clone(), None)
             } else {
                 let cell = Arc::new(OnceCell::new());
                 inflight.insert(key.clone(), cell.clone());
-                (cell, true)
+                let guard = InflightGuard {
+                    inflight: &self.inflight,
+                    key: key.clone(),
+                };
+                (cell, Some(guard))
             }
         };
 
@@ -175,8 +193,8 @@ impl TokenAuthenticator {
             .await
             .clone();
 
-        // 4. leader 负责:写缓存 + 从 inflight 摘除(让下一轮 miss 重新走)
-        if is_leader {
+        // 4. leader 负责写缓存(inflight 摘除靠 leader_guard 在函数返回时自动 Drop)
+        if leader_guard.is_some() {
             if let Ok((ctx, ttl)) = &result {
                 let mut cache = self.cache.lock();
                 if cache.len() >= MAX_CACHE_ENTRIES {
@@ -190,8 +208,9 @@ impl TokenAuthenticator {
                     },
                 );
             }
-            self.inflight.lock().remove(&key);
         }
+        // leader_guard 在这里 Drop → InflightGuard::drop 清理 inflight
+        // panic 路径也会触发 Drop(unwinding 时栈展开会调 destructors),保证不死锁
 
         result.map(|(ctx, _ttl)| ctx)
     }
