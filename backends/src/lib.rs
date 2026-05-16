@@ -9,12 +9,8 @@ use chathub_net::{
     AuthApi, AuthError, AuthInterceptor, BackoffConfig, ConnectionManager, ConnectionState,
     HubClient, LoggedOutReason, TokenStore,
 };
-use chathub_proto::v1::{
-    message_body, server_event, system_signal, AckReadRequest, AckReadResponse,
-    FetchHistoryRequest, FetchHistoryResponse, MessageBody, RecallRequest, RecallResponse,
-    SendRequest, SendResponse, TextBody, UserProfile,
-};
-use chathub_state::{LocalTokenStore, SeqStore, SessionStore, SqlitePool};
+use chathub_proto::v1::UserProfile;
+use chathub_state::{LocalTokenStore, NotifySeqStore, SessionStore, SqlitePool};
 use std::time::{Duration, Instant};
 use tokio::sync::broadcast as tokio_broadcast;
 
@@ -131,71 +127,32 @@ async fn current_session(state: State<'_, Arc<AuthApi>>) -> Result<Option<UserPr
     state.current_session().await
 }
 
-#[tauri::command]
-async fn send_message(
-    hub: State<'_, HubClient>,
-    wecom_account_id: String,
-    conversation_id: String,
-    text: String,
-) -> Result<SendResponse, AuthError> {
-    let req = SendRequest {
-        wecom_account_id,
-        conversation_id,
-        client_msg_id: uuid::Uuid::new_v4().to_string(),
-        body: Some(MessageBody {
-            kind: Some(message_body::Kind::Text(TextBody { text })),
-            reply_to: None,
-            mentions: vec![],
-        }),
-    };
-    hub.send(req).await
+/// Plan 7 — 业务 RPC 统一走 Hub.Forward。
+/// 前端传 method + body_json,relay 转 POST 到业务后台,返回 (http_status, body_json)。
+/// 前端按 http_status 判断业务结果(2xx 成功 / 4xx 业务错 / relay 不替它解读)。
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ForwardResult {
+    http_status: u32,
+    body_json: String,
 }
 
 #[tauri::command]
-async fn recall_message(
+async fn hub_forward(
     hub: State<'_, HubClient>,
-    wecom_account_id: String,
-    conversation_id: String,
-    server_msg_id: String,
-) -> Result<RecallResponse, AuthError> {
-    let req = RecallRequest {
-        wecom_account_id,
-        conversation_id,
-        server_msg_id,
-    };
-    hub.recall(req).await
+    method: String,
+    body_json: String,
+) -> Result<ForwardResult, AuthError> {
+    let resp = hub.forward(&method, body_json.into_bytes()).await?;
+    Ok(ForwardResult {
+        http_status: resp.http_status,
+        body_json: String::from_utf8(resp.body_json).unwrap_or_default(),
+    })
 }
 
 #[tauri::command]
-async fn ack_read(
-    hub: State<'_, HubClient>,
-    wecom_account_id: String,
-    conversation_id: String,
-    last_read_server_msg_id: String,
-) -> Result<AckReadResponse, AuthError> {
-    let req = AckReadRequest {
-        wecom_account_id,
-        conversation_id,
-        last_read_server_msg_id,
-    };
-    hub.ack_read(req).await
-}
-
-#[tauri::command]
-async fn fetch_history(
-    hub: State<'_, HubClient>,
-    wecom_account_id: String,
-    conversation_id: String,
-    limit: u32,
-    cursor: String,
-) -> Result<FetchHistoryResponse, AuthError> {
-    let req = FetchHistoryRequest {
-        wecom_account_id,
-        conversation_id,
-        limit,
-        cursor,
-    };
-    hub.fetch_history(req).await
+async fn hub_ack(hub: State<'_, HubClient>, notify_seq: u64) -> Result<(), AuthError> {
+    hub.ack(notify_seq).await
 }
 
 #[tauri::command]
@@ -229,7 +186,7 @@ pub fn run() {
                 let pool = SqlitePool::open(app_data.join("state.sqlite"))
                     .await.map_err(|e| e.to_string())?;
                 let session_store = SessionStore::new(pool.clone());
-                let seq_store = SeqStore::new(pool.clone());
+                let notify_seq_store = NotifySeqStore::new(pool.clone());
                 let local_store = LocalTokenStore::new(pool);
                 // device_id 从本地 SQLite 取(首次启动生成),不再用 macOS 钥匙串。
                 let device_id = local_store.ensure_device_id()
@@ -237,13 +194,15 @@ pub fn run() {
                 let endpoint = chathub_net::build_endpoint(chathub_net::RELAY_URL)
                     .map_err(|e| format!("endpoint: {e}"))?;
                 let channel = endpoint.connect_lazy();
-                let token_store = Arc::new(TokenStore::new(endpoint, local_store, device_id));
+                let token_store = Arc::new(TokenStore::new(endpoint, local_store, device_id.clone()));
                 let interceptor = AuthInterceptor::new(token_store.clone());
                 let hub_client = HubClient::new(channel, interceptor);
                 let conn_manager = Arc::new(ConnectionManager::new(
                     hub_client.clone(),
                     token_store.clone(),
-                    seq_store,
+                    notify_seq_store,
+                    device_id,
+                    env!("CARGO_PKG_VERSION").to_string(),
                     BackoffConfig::default(),
                 ));
                 let auth_api = AuthApi::new(token_store, session_store);
@@ -292,21 +251,12 @@ pub fn run() {
                 loop {
                     match rx.recv().await {
                         Ok(event) => {
-                            // 检查是否是 KICKED:在 emit 前先抓住 enum 信息
-                            let is_kicked = matches!(
-                                &event.body,
-                                Some(server_event::Body::System(s))
-                                    if s.kind == system_signal::Kind::Kicked as i32
-                            );
+                            // Plan 7 — KICKED 已删,业务后台用 CONNECTION_FORCE_CLOSE event 通知。
+                            // SubscribeAck / PushBatchOut / SystemSignal 都直接 emit 给前端,
+                            // 前端按 body 解构(force_close 事件在 PushBatchOut.events_json 里)。
                             let _ = app_for_hub_event.emit("hub:event", &event);
-                            if is_kicked {
-                                tracing::warn!(target: "chathub::hub", "KICKED received, logging out");
-                                let _ = auth_for_kicked.logout().await;
-                                let _ = app_for_hub_event.emit(
-                                    "auth:logged_out",
-                                    serde_json::json!({ "reason": "kicked" }),
-                                );
-                            }
+                            // 也保留对 logout 的钩子(LoggedOutReason via TokenStore broadcast)
+                            let _ = &auth_for_kicked; // silence unused
                         }
                         Err(tokio_broadcast::error::RecvError::Lagged(n)) => {
                             let now = Instant::now();
@@ -342,8 +292,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             greet, take_screenshot,
             login, logout, current_session,
-            send_message, hub_state,
-            recall_message, ack_read, fetch_history,
+            hub_forward, hub_ack, hub_state,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -1,19 +1,25 @@
-//! Stub Relay:进程内 tonic Server 实现 chathub.v1.Auth 三个 method。
+//! Stub Relay(Plan 7 — 只剩 Auth.Login/Logout + Hub v2 三件套)。
+//!
 //! 测试通过共享的 Arc<Mutex<StubState>> 控制返回值。
 
 #![allow(dead_code)]
 
 use chathub_proto::v1::auth_server::{Auth, AuthServer};
+use chathub_proto::v1::hub_server::{Hub, HubServer};
 use chathub_proto::v1::{
-    LoginRequest, LoginResponse, LogoutRequest, LogoutResponse, UserProfile, WecomAccount,
+    AckRequest, AckResponse, ForwardRequest, ForwardResponse, LoginRequest, LoginResponse,
+    LogoutRequest, LogoutResponse, ServerEvent, SubscribeRequest, UserProfile, WecomAccount,
 };
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::net::TcpListener;
+use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
-use tokio_stream::wrappers::TcpListenerStream;
+use tokio_stream::wrappers::{ReceiverStream, TcpListenerStream};
 use tonic::{transport::Server, Request, Response, Status};
+
+// ─── Auth ────────────────────────────────────────────────────────────────
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub enum LoginOutcome {
@@ -65,11 +71,132 @@ impl Auth for StubAuth {
     }
 }
 
-/// Plan 2 兼容版本:返回 (addr, auth_state, handle),丢弃 hub_state。
+// ─── Hub(v2 三件套)────────────────────────────────────────────────────
+
+#[derive(Clone, Default)]
+pub enum SubscribeOutcome {
+    /// 接受 Subscribe,创建 mpsc + ReceiverStream,等测试 inject
+    #[default]
+    Stream,
+    /// 一次性拒绝(Status 返回后会自动 reset 为 Stream)
+    RejectOnce(Status),
+    /// 持续拒绝
+    RejectAlways(Status),
+}
+
+#[derive(Clone)]
+pub enum ForwardStubOutcome {
+    Ok(ForwardResponse),
+    Status(Status),
+}
+
+impl Default for ForwardStubOutcome {
+    fn default() -> Self {
+        ForwardStubOutcome::Ok(ForwardResponse {
+            body_json: b"{}".to_vec(),
+            http_status: 200,
+        })
+    }
+}
+
+#[derive(Default)]
+pub struct StubHubState {
+    /// Subscribe RPC 被调用时,记录传入的 since_notify_seq + device_id
+    pub subscribes: Vec<(u64, String)>,
+    /// 当前活跃 Subscribe stream 的 tx,测试代码用它推 event
+    pub event_tx: Option<mpsc::Sender<Result<ServerEvent, Status>>>,
+    pub subscribe_outcome: SubscribeOutcome,
+    pub forwards: Vec<ForwardRequest>,
+    pub forward_outcome: ForwardStubOutcome,
+    pub acks: Vec<AckRequest>,
+}
+
+pub struct StubHub {
+    pub state: Arc<Mutex<StubHubState>>,
+}
+
+#[tonic::async_trait]
+impl Hub for StubHub {
+    type SubscribeStream = ReceiverStream<Result<ServerEvent, Status>>;
+
+    async fn subscribe(
+        &self,
+        req: Request<SubscribeRequest>,
+    ) -> Result<Response<Self::SubscribeStream>, Status> {
+        let (tx, rx) = mpsc::channel(16);
+        let mut s = self.state.lock().unwrap();
+        let inner = req.into_inner();
+        s.subscribes
+            .push((inner.since_notify_seq, inner.device_id.clone()));
+        match s.subscribe_outcome.clone() {
+            SubscribeOutcome::Stream => {
+                s.event_tx = Some(tx);
+                Ok(Response::new(ReceiverStream::new(rx)))
+            }
+            SubscribeOutcome::RejectOnce(st) => {
+                s.subscribe_outcome = SubscribeOutcome::Stream;
+                Err(st)
+            }
+            SubscribeOutcome::RejectAlways(st) => Err(st),
+        }
+    }
+
+    async fn ack(&self, req: Request<AckRequest>) -> Result<Response<AckResponse>, Status> {
+        let mut s = self.state.lock().unwrap();
+        s.acks.push(req.into_inner());
+        Ok(Response::new(AckResponse {}))
+    }
+
+    async fn forward(
+        &self,
+        req: Request<ForwardRequest>,
+    ) -> Result<Response<ForwardResponse>, Status> {
+        let mut s = self.state.lock().unwrap();
+        s.forwards.push(req.into_inner());
+        match s.forward_outcome.clone() {
+            ForwardStubOutcome::Ok(r) => Ok(Response::new(r)),
+            ForwardStubOutcome::Status(st) => Err(st),
+        }
+    }
+}
+
+// ─── 启动整套 stub ───────────────────────────────────────────────────────
+
 pub async fn start_stub() -> (SocketAddr, Arc<Mutex<StubState>>, JoinHandle<()>) {
     let (addr, auth_state, _hub_state, handle) = start_stub_full().await;
     (addr, auth_state, handle)
 }
+
+pub async fn start_stub_full() -> (
+    SocketAddr,
+    Arc<Mutex<StubState>>,
+    Arc<Mutex<StubHubState>>,
+    JoinHandle<()>,
+) {
+    let auth_state = Arc::new(Mutex::new(StubState::default()));
+    let hub_state = Arc::new(Mutex::new(StubHubState::default()));
+    let auth = StubAuth {
+        state: auth_state.clone(),
+    };
+    let hub = StubHub {
+        state: hub_state.clone(),
+    };
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let stream = TcpListenerStream::new(listener);
+    let h = tokio::spawn(async move {
+        let _ = Server::builder()
+            .add_service(AuthServer::new(auth))
+            .add_service(HubServer::new(hub))
+            .serve_with_incoming(stream)
+            .await;
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    (addr, auth_state, hub_state, h)
+}
+
+// ─── helpers ────────────────────────────────────────────────────────────
 
 fn now_ms() -> i64 {
     SystemTime::now()
@@ -79,7 +206,6 @@ fn now_ms() -> i64 {
 }
 
 fn uuid_seed(seed: i64) -> String {
-    // 让每次返回的 token 字面值不同(便于断言"换新")
     format!("{seed:x}-{}", uuid::Uuid::new_v4().simple())
 }
 
@@ -117,218 +243,4 @@ fn upgrade_required_status() -> Status {
         "upgrade required",
         detail.encode_to_vec().into(),
     )
-}
-
-// ============================ Plan 3:StubHub ============================
-
-use chathub_proto::v1::hub_server::{Hub, HubServer};
-use chathub_proto::v1::{
-    AckReadRequest, AckReadResponse, AckRequest, AckResponse, FetchHistoryRequest,
-    FetchHistoryResponse, ForwardRequest, ForwardResponse, RecallRequest, RecallResponse,
-    SendRequest, SendResponse, ServerEvent, SubscribeRequest,
-};
-use std::collections::HashMap;
-use tokio::sync::mpsc;
-use tokio_stream::wrappers::ReceiverStream;
-
-#[derive(Clone, Default)]
-pub enum SubscribeOutcome {
-    /// 默认:接受 Subscribe,创建 mpsc + ReceiverStream,等测试 inject
-    #[default]
-    Stream,
-    /// 拒绝 Subscribe(RejectOnce 一次性,RPC 返回 Status 后会自动 reset 为 Stream)
-    RejectOnce(Status),
-    /// 持续拒绝(每次 Subscribe 都返回此 Status)
-    RejectAlways(Status),
-}
-
-#[derive(Clone)]
-pub enum SendStubOutcome {
-    Ok(SendResponse),
-    Status(Status),
-}
-
-impl Default for SendStubOutcome {
-    fn default() -> Self {
-        SendStubOutcome::Ok(SendResponse {
-            server_msg_id: "sm-default".into(),
-            sent_at_ms: 0,
-        })
-    }
-}
-
-#[derive(Default)]
-pub struct StubHubState {
-    /// Subscribe RPC 被调用时,记录传入的 since_seqs(用于断言客户端续接行为)
-    pub subscribes: Vec<HashMap<String, i64>>,
-    /// 当前活跃 Subscribe stream 的 mpsc::Sender,测试代码用它推 event/status
-    pub event_tx: Option<mpsc::Sender<Result<ServerEvent, Status>>>,
-    /// Subscribe RPC 的初始结果策略
-    pub subscribe_outcome: SubscribeOutcome,
-    /// Send RPC 的固定结果
-    pub send_outcome: SendStubOutcome,
-    /// Send RPC 收到的全部请求(用于断言 client_msg_id 等)
-    pub sends: Vec<SendRequest>,
-
-    // Plan 4 新增
-    pub recalls: Vec<RecallRequest>,
-    pub recall_outcome: RecallStubOutcome,
-    pub ack_reads: Vec<AckReadRequest>,
-    pub ack_read_outcome: AckReadStubOutcome,
-    pub fetch_history_reqs: Vec<FetchHistoryRequest>,
-    pub fetch_history_outcome: FetchHistoryStubOutcome,
-}
-
-pub struct StubHub {
-    pub state: Arc<Mutex<StubHubState>>,
-}
-
-#[tonic::async_trait]
-impl Hub for StubHub {
-    type SubscribeStream = ReceiverStream<Result<ServerEvent, Status>>;
-
-    async fn subscribe(
-        &self,
-        req: Request<SubscribeRequest>,
-    ) -> Result<Response<Self::SubscribeStream>, Status> {
-        let (tx, rx) = mpsc::channel(16);
-        let mut s = self.state.lock().unwrap();
-        s.subscribes.push(req.into_inner().since_seqs);
-        match s.subscribe_outcome.clone() {
-            SubscribeOutcome::Stream => {
-                s.event_tx = Some(tx);
-                Ok(Response::new(ReceiverStream::new(rx)))
-            }
-            SubscribeOutcome::RejectOnce(st) => {
-                s.subscribe_outcome = SubscribeOutcome::Stream;
-                Err(st)
-            }
-            SubscribeOutcome::RejectAlways(st) => Err(st),
-        }
-    }
-
-    async fn send(&self, req: Request<SendRequest>) -> Result<Response<SendResponse>, Status> {
-        let mut s = self.state.lock().unwrap();
-        s.sends.push(req.into_inner());
-        match s.send_outcome.clone() {
-            SendStubOutcome::Ok(r) => Ok(Response::new(r)),
-            SendStubOutcome::Status(st) => Err(st),
-        }
-    }
-
-    async fn recall(
-        &self,
-        req: Request<RecallRequest>,
-    ) -> Result<Response<RecallResponse>, Status> {
-        let mut s = self.state.lock().unwrap();
-        s.recalls.push(req.into_inner());
-        match s.recall_outcome.clone() {
-            RecallStubOutcome::Ok(r) => Ok(Response::new(r)),
-            RecallStubOutcome::Status(st) => Err(st),
-        }
-    }
-
-    async fn ack_read(
-        &self,
-        req: Request<AckReadRequest>,
-    ) -> Result<Response<AckReadResponse>, Status> {
-        let mut s = self.state.lock().unwrap();
-        s.ack_reads.push(req.into_inner());
-        match s.ack_read_outcome.clone() {
-            AckReadStubOutcome::Ok(r) => Ok(Response::new(r)),
-            AckReadStubOutcome::Status(st) => Err(st),
-        }
-    }
-
-    async fn fetch_history(
-        &self,
-        req: Request<FetchHistoryRequest>,
-    ) -> Result<Response<FetchHistoryResponse>, Status> {
-        let mut s = self.state.lock().unwrap();
-        s.fetch_history_reqs.push(req.into_inner());
-        match s.fetch_history_outcome.clone() {
-            FetchHistoryStubOutcome::Ok(r) => Ok(Response::new(r)),
-            FetchHistoryStubOutcome::Status(st) => Err(st),
-        }
-    }
-
-    // Plan 6 占位:client 测试不使用 Ack/Forward,返回 Unimplemented 即可。
-    async fn ack(&self, _req: Request<AckRequest>) -> Result<Response<AckResponse>, Status> {
-        Err(Status::unimplemented("Ack not stubbed"))
-    }
-
-    async fn forward(
-        &self,
-        _req: Request<ForwardRequest>,
-    ) -> Result<Response<ForwardResponse>, Status> {
-        Err(Status::unimplemented("Forward not stubbed"))
-    }
-}
-
-// ============================ Plan 4:Recall / AckRead / FetchHistory ============================
-
-#[derive(Clone)]
-pub enum RecallStubOutcome {
-    Ok(RecallResponse),
-    Status(Status),
-}
-impl Default for RecallStubOutcome {
-    fn default() -> Self {
-        Self::Ok(RecallResponse { recalled_at_ms: 0 })
-    }
-}
-
-#[derive(Clone)]
-pub enum AckReadStubOutcome {
-    Ok(AckReadResponse),
-    Status(Status),
-}
-impl Default for AckReadStubOutcome {
-    fn default() -> Self {
-        Self::Ok(AckReadResponse { acked_at_ms: 0 })
-    }
-}
-
-#[derive(Clone)]
-pub enum FetchHistoryStubOutcome {
-    Ok(FetchHistoryResponse),
-    Status(Status),
-}
-impl Default for FetchHistoryStubOutcome {
-    fn default() -> Self {
-        Self::Ok(FetchHistoryResponse {
-            messages: vec![],
-            next_cursor: String::new(),
-        })
-    }
-}
-
-/// Plan 3 新版本:同进程注册 AuthServer + HubServer。
-/// `start_stub` 转调本函数 + 丢弃 hub_state,Plan 2 测试 0 改动。
-pub async fn start_stub_full() -> (
-    SocketAddr,
-    Arc<Mutex<StubState>>,
-    Arc<Mutex<StubHubState>>,
-    JoinHandle<()>,
-) {
-    let auth_state = Arc::new(Mutex::new(StubState::default()));
-    let hub_state = Arc::new(Mutex::new(StubHubState::default()));
-    let auth = StubAuth {
-        state: auth_state.clone(),
-    };
-    let hub = StubHub {
-        state: hub_state.clone(),
-    };
-    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
-    let addr = listener.local_addr().expect("local_addr");
-    let stream = TcpListenerStream::new(listener);
-    let handle = tokio::spawn(async move {
-        let _ = Server::builder()
-            .add_service(AuthServer::new(auth))
-            .add_service(HubServer::new(hub))
-            .serve_with_incoming(stream)
-            .await;
-    });
-    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-    (addr, auth_state, hub_state, handle)
 }

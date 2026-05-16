@@ -1,11 +1,11 @@
-//! RelayHarness — in-process relay fixture(tonic + axum + wiremock + tempdir)。
+//! RelayHarness — in-process relay fixture(tonic + axum + wiremock + tempdir,Plan 7 简化版)。
 //!
-//! Relay 退化为纯隔道后,认证委托业务后台 verifyToken。测试用法:
+//! Relay 是纯隔道;认证委托业务后台 verifyToken。测试用法:
 //! ```ignore
 //! #[tokio::test(flavor = "multi_thread")]
 //! async fn my_test() {
 //!     let h = spawn_relay().await;
-//!     mount_verify_token(&h.downstream, "tok-A", "u-1", "dev-A", &["wa-1"]).await;
+//!     mount_verify_token(&h.downstream, "tok-A", 42, "dev-A").await;
 //!     // ... 用 token "tok-A" 直连 h.grpc_addr 的 HubSvc
 //! }
 //! ```
@@ -19,8 +19,7 @@ use chathub_relay::downstream::DownstreamClient;
 use chathub_relay::hub_service::{HubSvc, ProtocolInterceptor, TokenAuthenticator};
 use chathub_relay::push::{self, PushState};
 use chathub_relay::router::Router;
-use chathub_relay::storage::events::{EventLog, EventStore};
-use chathub_relay::storage::seqs::SeqAllocator;
+use chathub_relay::storage::events::EventLog;
 use chathub_relay::storage::Storage;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -37,9 +36,8 @@ pub struct RelayHarness {
     pub push_addr: SocketAddr,
     pub push_url: String,
     pub push_secret: String,
-    /// 业务后台 mock。测试在其上 mount /auth/login、/v1/verify_token、/v1/send 等。
     pub downstream: MockServer,
-    pub events: EventStore,
+    pub events_log: EventLog,
     pub router: Arc<Router>,
     _db: tempfile::TempDir,
     _tonic: JoinHandle<()>,
@@ -51,8 +49,6 @@ pub async fn spawn_relay() -> RelayHarness {
     let tmp = tempfile::tempdir().unwrap();
     let db = tmp.path().join("relay.db");
     let storage = Storage::open(&db).await.unwrap();
-    let seqs = SeqAllocator::new(storage.clone());
-    let events = EventStore::new(storage.clone());
     let events_log = EventLog::new(storage.clone());
     let router = Arc::new(Router::new());
     let dn_client = Arc::new(DownstreamClient::new(&downstream.uri(), "dn-secret").unwrap());
@@ -62,8 +58,6 @@ pub async fn spawn_relay() -> RelayHarness {
     };
     let hub_svc = HubSvc {
         router: router.clone(),
-        seqs: seqs.clone(),
-        events: events.clone(),
         events_log: events_log.clone(),
         downstream: dn_client.clone(),
         auth: Arc::new(TokenAuthenticator::new(dn_client.clone())),
@@ -86,11 +80,9 @@ pub async fn spawn_relay() -> RelayHarness {
 
     let push_state = PushState {
         secret: "push-secret".into(),
-        seqs,
-        events: events.clone(),
-        events_log,
+        events_log: events_log.clone(),
         router: router.clone(),
-        force_close_grace_ms: 50, // 测试用短 grace,避免拖慢测试
+        force_close_grace_ms: 50,
         allowed_client_ids: vec!["rh_wxchat".into()],
     };
     let push_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -108,7 +100,7 @@ pub async fn spawn_relay() -> RelayHarness {
         push_url: format!("http://{push_addr}"),
         push_secret: "push-secret".into(),
         downstream,
-        events,
+        events_log,
         router,
         _db: tmp,
         _tonic: tonic_h,
@@ -116,35 +108,8 @@ pub async fn spawn_relay() -> RelayHarness {
     }
 }
 
-/// 在业务后台 mock 上挂一条 verifyToken:token=`token` → 返回给定连接身份。
-pub async fn mount_verify_token(
-    mock: &MockServer,
-    token: &str,
-    user_id: &str,
-    device_id: &str,
-    accounts: &[&str],
-) {
-    Mock::given(method("POST"))
-        .and(path("/v1/verify_token"))
-        .and(body_partial_json(serde_json::json!({ "token": token })))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "active": true,
-            "user_id": user_id,
-            "device_id": device_id,
-            "accounts": accounts,
-        })))
-        .mount(mock)
-        .await;
-}
-
-/// Plan 6 — 同 `mount_verify_token` 但额外返 `employee_id`,业务后台升级后的契约。
-/// 用于覆盖 Subscribe v2 / Ack / Forward 测试。
-pub async fn mount_verify_token_v2(
-    mock: &MockServer,
-    token: &str,
-    employee_id: i64,
-    device_id: &str,
-) {
+/// 在业务后台 mock 上挂一条 verifyToken,返回带 employee_id 的连接身份。
+pub async fn mount_verify_token(mock: &MockServer, token: &str, employee_id: i64, device_id: &str) {
     Mock::given(method("POST"))
         .and(path("/v1/verify_token"))
         .and(body_partial_json(serde_json::json!({ "token": token })))

@@ -8,8 +8,7 @@ use chathub_relay::downstream::DownstreamClient;
 use chathub_relay::hub_service::{HubSvc, ProtocolInterceptor, TokenAuthenticator};
 use chathub_relay::push::{self, PushState};
 use chathub_relay::router::Router;
-use chathub_relay::storage::events::{EventLog, EventStore};
-use chathub_relay::storage::seqs::SeqAllocator;
+use chathub_relay::storage::events::EventLog;
 use chathub_relay::storage::Storage;
 use std::sync::Arc;
 use std::time::Duration;
@@ -24,8 +23,6 @@ async fn main() -> anyhow::Result<()> {
     let _log_guard = init_tracing(&cfg)?;
     let storage = Storage::open(&cfg.db_path).await?;
     let router = Arc::new(Router::new());
-    let seqs = SeqAllocator::new(storage.clone());
-    let events = EventStore::new(storage.clone());
     let events_log = EventLog::new(storage.clone());
     let downstream = Arc::new(DownstreamClient::new(
         &cfg.downstream_url,
@@ -37,8 +34,6 @@ async fn main() -> anyhow::Result<()> {
     };
     let hub_svc = HubSvc {
         router: router.clone(),
-        seqs: seqs.clone(),
-        events: events.clone(),
         events_log: events_log.clone(),
         downstream: downstream.clone(),
         auth: Arc::new(TokenAuthenticator::new(downstream.clone())),
@@ -49,8 +44,6 @@ async fn main() -> anyhow::Result<()> {
     let push_listener = TcpListener::bind(cfg.push_addr).await?;
     let push_state = PushState {
         secret: cfg.push_secret.clone(),
-        seqs,
-        events,
         events_log,
         router: router.clone(),
         force_close_grace_ms: cfg.force_close_grace_ms,
@@ -70,10 +63,9 @@ async fn main() -> anyhow::Result<()> {
     let router_for_signal = router.clone();
     tokio::spawn(async move {
         wait_for_shutdown_signal().await;
-        let (legacy, employee) = router_for_signal.broadcast_server_drain("relay shutting down");
+        let drained = router_for_signal.broadcast_server_drain("relay shutting down");
         tracing::info!(
-            legacy_drained = legacy,
-            employee_drained = employee,
+            connections_drained = drained,
             "SERVER_DRAIN broadcast complete; sleeping grace then shutting down"
         );
         // grace 让客户端读到 DRAIN 帧并主动断

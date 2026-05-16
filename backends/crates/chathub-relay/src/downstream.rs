@@ -150,26 +150,10 @@ impl DownstreamClient {
             .await
     }
 
-    pub async fn send(&self, req: SendReq<'_>) -> Result<SendResp, RelayError> {
-        self.post_json("/v1/send", &req).await
-    }
+    // Plan 7 — send/recall/ack_read/fetch_history 的 typed wrappers 已删,
+    // 所有业务 RPC 统一走 `forward(routes, method, employee_id, body_bytes)`。
 
-    pub async fn recall(&self, req: RecallReq<'_>) -> Result<RecallResp, RelayError> {
-        self.post_json("/v1/recall", &req).await
-    }
-
-    pub async fn ack_read(&self, req: AckReadReq<'_>) -> Result<AckReadResp, RelayError> {
-        self.post_json("/v1/ack_read", &req).await
-    }
-
-    pub async fn fetch_history(
-        &self,
-        req: FetchHistoryReq<'_>,
-    ) -> Result<FetchHistoryResp, RelayError> {
-        self.post_json("/v1/fetch_history", &req).await
-    }
-
-    // ─── Plan 6 — Hub.Forward 透传 ────────────────────────────────────
+    // ─── Hub.Forward 透传 ────────────────────────────────────────────
     //
     // Relay 不解析 body_json,按 routes 查到 method 对应的 HTTP 路径后整段透传到
     // 业务后台。relay 自己的 Bearer secret + 经 relay 认证的 employee_id(放在
@@ -364,62 +348,8 @@ impl DownstreamClient {
     }
 }
 
-#[derive(Serialize)]
-pub struct SendReq<'a> {
-    pub user_id: &'a str,
-    pub wecom_account_id: &'a str,
-    pub conversation_id: &'a str,
-    pub client_msg_id: &'a str,
-    pub body: &'a chathub_proto::v1::MessageBody,
-}
-
-#[derive(Deserialize)]
-pub struct SendResp {
-    pub server_msg_id: String,
-    pub sent_at_ms: i64,
-}
-
-#[derive(Serialize)]
-pub struct RecallReq<'a> {
-    pub user_id: &'a str,
-    pub wecom_account_id: &'a str,
-    pub conversation_id: &'a str,
-    pub server_msg_id: &'a str,
-}
-
-#[derive(Deserialize)]
-pub struct RecallResp {
-    pub recalled_at_ms: i64,
-}
-
-#[derive(Serialize)]
-pub struct AckReadReq<'a> {
-    pub user_id: &'a str,
-    pub wecom_account_id: &'a str,
-    pub conversation_id: &'a str,
-    pub last_read_server_msg_id: &'a str,
-}
-
-#[derive(Deserialize)]
-pub struct AckReadResp {
-    pub acked_at_ms: i64,
-}
-
-#[derive(Serialize)]
-pub struct FetchHistoryReq<'a> {
-    pub user_id: &'a str,
-    pub wecom_account_id: &'a str,
-    pub conversation_id: &'a str,
-    pub limit: u32,
-    pub cursor: &'a str,
-}
-
-#[derive(Deserialize)]
-pub struct FetchHistoryResp {
-    pub messages: Vec<chathub_proto::v1::HistoryMessage>,
-    #[serde(default)]
-    pub next_cursor: String,
-}
+// Plan 7 — 老的 SendReq/Resp / RecallReq/Resp / AckReadReq/Resp / FetchHistoryReq/Resp
+// typed structs 全删,业务 RPC 走 Hub.Forward 的 opaque body_json。
 
 /// 通用响应翻译:200 → 反序列化 T;4xx/5xx → 映射错误。
 pub(crate) async fn translate<T: for<'de> Deserialize<'de>>(

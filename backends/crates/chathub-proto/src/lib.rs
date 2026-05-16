@@ -1,14 +1,13 @@
 // crates/chathub-proto/src/lib.rs
 //! ChatHub gRPC contracts(由 tonic-build 在 build.rs 中从 proto/chathub/v1/*.proto 生成)。
 //!
-//! 主要导出:
-//!   - chathub_proto::v1::auth_client::AuthClient<Channel>
-//!   - chathub_proto::v1::auth_server::{Auth, AuthServer}
-//!   - chathub_proto::v1::hub_client::HubClient<Channel>
-//!   - chathub_proto::v1::{LoginRequest, LoginResponse, LogoutRequest, ...}
-//!   - chathub_proto::v1::{ErrorDetail, RetryInfo, QuotaFailure, ...}
+//! Plan 7 — 只剩 v2 三件套:
+//!   - `auth_client::AuthClient` + `LoginRequest/Response` + `LogoutRequest/Response`
+//!   - `hub_client::HubClient` + `SubscribeRequest` + `AckRequest/Response` + `ForwardRequest/Response`
+//!   - `ServerEvent` 含 `PushBatchOut`/`SubscribeAck`/`SystemSignal` 三种 body
 //!
-//! 后续计划在引用时一律走 `chathub_proto::v1::...` 命名空间。
+//! 老的 Send/Recall/AckRead/FetchHistory / IncomingMsg / MessageRecalled / ReadReceipt /
+//! MessageStatusChange / MessageBody / HistoryMessage / Mention / ReplyToRef / RemoteId 全已删除。
 
 #![allow(clippy::all)]
 #![allow(non_snake_case, missing_docs)]
@@ -39,7 +38,6 @@ mod tests {
 
     #[test]
     fn logout_request_round_trips_via_prost() {
-        // 编解码自检:防止 build.rs 配置漂了
         use prost::Message;
         let req = LogoutRequest {
             token: "abc".into(),
@@ -49,7 +47,6 @@ mod tests {
         assert_eq!(decoded.token, "abc");
     }
 
-    /// 仅作类型存在性 + 函数签名检查,不真的连服务端。
     #[allow(dead_code, unused_must_use)]
     fn _auth_client_new_signature_exists() {
         let _: fn(Channel) -> AuthClient<Channel> = AuthClient::<Channel>::new;
@@ -72,24 +69,17 @@ mod tests {
     }
 
     #[test]
-    fn server_event_with_incoming_serializes_round_trip() {
-        use super::v1::message_body;
-        use super::v1::{server_event, IncomingMsg, MessageBody, ServerEvent, TextBody};
-
+    fn server_event_with_push_batch_serializes_round_trip() {
+        use super::v1::{server_event, PushBatchOut, ServerEvent};
         let evt = ServerEvent {
-            wecom_account_id: "wxa1".into(),
-            seq: 42,
-            body: Some(server_event::Body::Incoming(IncomingMsg {
-                conversation_id: "conv-1".into(),
-                from_user_id: "peer-1".into(),
-                body: Some(MessageBody {
-                    kind: Some(message_body::Kind::Text(TextBody { text: "hi".into() })),
-                    reply_to: None,
-                    mentions: vec![],
-                }),
-                sent_at_ms: 1_700_000_000_000,
-                server_msg_id: "sm-1".into(),
-                remote: None,
+            body: Some(server_event::Body::PushBatch(PushBatchOut {
+                notify_seq: 42,
+                client_id: "rh_wxchat".into(),
+                employee_id: 99,
+                batch_id: "rh_wxchat:99:42".into(),
+                batch_time: "2026-05-14 10:30:00".into(),
+                device_id: "dev-A".into(),
+                events_json: br#"[{"eventType":"MESSAGE_UPSERT"}]"#.to_vec(),
             })),
         };
         let json = serde_json::to_string(&evt).expect("serialize");
@@ -98,52 +88,12 @@ mod tests {
     }
 
     #[test]
-    fn server_event_with_system_kicked_serializes_round_trip() {
+    fn server_event_with_system_drain_serializes_round_trip() {
         use super::v1::{server_event, system_signal, ServerEvent, SystemSignal};
         let evt = ServerEvent {
-            wecom_account_id: "wxa1".into(),
-            seq: 100,
             body: Some(server_event::Body::System(SystemSignal {
-                kind: system_signal::Kind::Kicked as i32,
-                detail: "another device".into(),
-            })),
-        };
-        let json = serde_json::to_string(&evt).expect("serialize");
-        let back: ServerEvent = serde_json::from_str(&json).expect("deserialize");
-        assert_eq!(back, evt);
-    }
-
-    #[test]
-    fn server_event_with_recalled_serializes_round_trip() {
-        use super::v1::{server_event, MessageRecalled, ServerEvent};
-
-        let evt = ServerEvent {
-            wecom_account_id: "wxa1".into(),
-            seq: 50,
-            body: Some(server_event::Body::Recalled(MessageRecalled {
-                conversation_id: "conv-1".into(),
-                server_msg_id: "sm-1".into(),
-                recalled_at_ms: 1_700_000_000_000,
-                by_user_id: "peer-1".into(),
-            })),
-        };
-        let json = serde_json::to_string(&evt).expect("serialize");
-        let back: ServerEvent = serde_json::from_str(&json).expect("deserialize");
-        assert_eq!(back, evt);
-    }
-
-    #[test]
-    fn message_status_change_delivered_serializes_round_trip() {
-        use super::v1::{message_status_change, server_event, MessageStatusChange, ServerEvent};
-
-        let evt = ServerEvent {
-            wecom_account_id: "wxa1".into(),
-            seq: 60,
-            body: Some(server_event::Body::StatusChange(MessageStatusChange {
-                conversation_id: "conv-1".into(),
-                client_msg_id: "client-uuid".into(),
-                server_msg_id: "sm-2".into(),
-                status: message_status_change::Status::Delivered as i32,
+                kind: system_signal::Kind::ServerDrain as i32,
+                detail: "shutting down".into(),
             })),
         };
         let json = serde_json::to_string(&evt).expect("serialize");

@@ -3,107 +3,46 @@ syntax = "proto3";
 package chathub.v1;
 
 import "chathub/v1/event.proto";
-import "chathub/v1/message.proto";
 
-// Hub service:Plan 3 起 Subscribe + Send;Plan 4 起 Recall + AckRead + FetchHistory。
-// Plan 6 起 Ack(notify_seq 水位)+ Forward(业务 RPC 单一透传,Z 架构)。
-// 旧的 Send/Recall/AckRead/FetchHistory 保留为兼容,callers 切到 Forward 后 cleanup。
+// Hub service(Plan 7 — legacy 全删,只剩 v2 三件套)。
+//
+// - Subscribe:一员工一长连接,SubscribeAck 首帧 + PushBatchOut 实时帧 + SystemSignal 控制帧
+// - Ack:客户端处理完一批后上报 notify_seq 水位(per-employee,身份从 token 取)
+// - Forward:所有业务 RPC(send / recall / ack_read / fetch_history / 未来新增)的单一透传入口
+//
+// 加新业务 RPC 不需要改 proto;改 `RELAY_PATH_<METHOD>` env 即可。
 service Hub {
-  rpc Subscribe   (SubscribeRequest)    returns (stream ServerEvent);
-  // Plan 6 新增 ─────────────────────────────────────────
-  rpc Ack         (AckRequest)          returns (AckResponse);
-  rpc Forward     (ForwardRequest)      returns (ForwardResponse);
-  // 兼容期保留(阶段 5 删除):
-  rpc Send        (SendRequest)         returns (SendResponse);
-  rpc Recall      (RecallRequest)       returns (RecallResponse);
-  rpc AckRead     (AckReadRequest)      returns (AckReadResponse);
-  rpc FetchHistory(FetchHistoryRequest) returns (FetchHistoryResponse);
+  rpc Subscribe(SubscribeRequest) returns (stream ServerEvent);
+  rpc Ack      (AckRequest)       returns (AckResponse);
+  rpc Forward  (ForwardRequest)   returns (ForwardResponse);
 }
 
 message SubscribeRequest {
-  // 旧:per-wecom-account seq map(兼容期保留,Plan 6 起客户端走 since_notify_seq)。
-  map<string, int64> since_seqs = 1;
-  // Plan 6 新增:employee 维度的续点游标(0=首连只接实时;>0=重放 > 该 seq 的事件)。
-  uint64 since_notify_seq       = 2;
+  // employee 维度的续点游标(0=首连只接实时;>0=重放 > 该 seq 的事件)。
+  uint64 since_notify_seq = 1;
   // 客户端生成 + 持久化的设备标识(供业务后台 force_close 定向)。
-  string device_id              = 3;
-  // 客户端业务版本(协议版本仍由 metadata chathub-client-version 传)。
-  string client_version         = 4;
+  string device_id        = 2;
+  // 客户端业务版本(协议版本仍由 metadata `chathub-client-version` 传)。
+  string client_version   = 3;
 }
 
-// Plan 6 — 客户端处理完一批事件后上报已处理水位(per-employee 维度,身份从 token 取)。
-// 仅用于 relay 内部观测;不参与事件日志清理(清理走 TTL)。
+// 客户端处理完一批事件后上报已处理水位。仅 relay 内部观测;事件日志清理走 TTL,不依赖此值。
 message AckRequest {
   uint64 notify_seq = 1;
 }
 message AckResponse {}
 
-// Plan 6 — 业务 RPC 透传统一入口。Relay 不解析 body_json,按 method 查 DownstreamRoutes
-// 拼路径 POST 到业务后台。HTTP 错误 → gRPC Status 映射:
-//   401 Unauthenticated / 403 PermissionDenied / 4xx InvalidArgument / 5xx Internal /
-//   网络/超时 Unavailable。
+// 业务 RPC 透传统一入口。Relay 不解析 body_json,按 method 查 DownstreamRoutes
+// 拼路径 POST 到业务后台。REST 隧道语义(P0-5):
+//   - 2xx → ForwardResponse{body, http_status}
+//   - 4xx → 同样 Ok(REST 风格透传),客户端按 http_status 自行判断业务错
+//   - 5xx → Status::Internal
+//   - 网络/超时 → Status::Unavailable
 message ForwardRequest {
   string method    = 1;   // "send" / "recall" / "ack_read" / "fetch_history" / 未来新增
   bytes  body_json = 2;   // 业务请求 JSON 原文,relay 透传
 }
 message ForwardResponse {
   bytes  body_json   = 1;   // 业务响应 JSON 原文,客户端 SDK 自己 deserialize
-  // 业务后台返回的 HTTP 状态码(200/4xx 都会返回成功的 ForwardResponse,客户端按此判断):
-  //   200..=299 = 业务成功
-  //   401 = token 业务层级失效(由业务后台决定意义,客户端按业务规则处理,不要无脑重登)
-  //   403 = 业务规则拒绝(发消息频次限制等),不等于鉴权失败
-  //   其他 4xx = 业务参数错误等
-  // 注:5xx / 网络/超时 由 relay 转 gRPC Status::Unavailable/Internal,这里看不到
-  uint32 http_status = 2;
-}
-
-message SendRequest {
-  string wecom_account_id = 1;
-  string conversation_id  = 2;
-  string client_msg_id    = 3;
-  MessageBody body        = 4;
-}
-message SendResponse {
-  string server_msg_id = 1;
-  int64  sent_at_ms    = 2;
-}
-
-// Plan 4 — 撤回:by server_msg_id,无 reason
-message RecallRequest {
-  string wecom_account_id = 1;
-  string conversation_id  = 2;
-  string server_msg_id    = 3;
-}
-message RecallResponse {
-  int64 recalled_at_ms = 1;
-}
-
-// Plan 4 — 读回执:batched 语义("已读到这条及之前的全部")
-message AckReadRequest {
-  string wecom_account_id        = 1;
-  string conversation_id         = 2;
-  string last_read_server_msg_id = 3;
-}
-message AckReadResponse {
-  int64 acked_at_ms = 1;
-}
-
-// Plan 4 — 历史拉取:opaque cursor 分页
-message FetchHistoryRequest {
-  string wecom_account_id = 1;
-  string conversation_id  = 2;
-  uint32 limit            = 3;   // 客户端 ≤ 100;0 视为默认(由服务端决定)
-  string cursor           = 4;   // 空 = 从最新开始;服务端 echo next_cursor
-}
-message FetchHistoryResponse {
-  repeated HistoryMessage messages = 1;   // 升序按 sent_at_ms
-  string next_cursor               = 2;   // 空 = 无更早历史
-}
-message HistoryMessage {
-  string conversation_id = 1;
-  string from_user_id    = 2;
-  MessageBody body       = 3;
-  int64  sent_at_ms      = 4;
-  string server_msg_id   = 5;
-  bool   recalled        = 6;   // 已撤回的也返回,客户端展示占位"消息已撤回"
+  uint32 http_status = 2;   // 业务后台返回的 HTTP 状态码(见上 REST 隧道说明)
 }

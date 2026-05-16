@@ -2,36 +2,22 @@
 syntax = "proto3";
 package chathub.v1;
 
-import "chathub/v1/common.proto";
-import "chathub/v1/message.proto";
-
-// ServerEvent 由 Hub.Subscribe 推送。Plan 3 有 IncomingMsg + SystemSignal;
-// Plan 4 加 MessageRecalled / ReadReceipt / MessageStatusChange;
-// Plan 5 起加 AccountStatus / PresenceChange(tag 14/15)。
-// Plan 6 新增 PushBatchOut(tag 14)+ SubscribeAck(tag 91) — Z 架构事件平面。
-//   - 旧 oneof 变体(incoming/recalled/read_receipt/status_change)兼容期保留
-//   - SystemSignal 新增 KIND_RESYNC_REQUIRED(见下方)
+// Plan 7 — legacy oneof 变体全删,只剩 v2 三件套:
+//   - PushBatchOut(数据帧)
+//   - SubscribeAck(首帧)
+//   - SystemSignal(控制帧:SERVER_DRAIN / RESYNC_REQUIRED)
+//
+// 旧的 IncomingMsg / MessageRecalled / ReadReceipt / MessageStatusChange / KIND_KICKED 已删除。
 message ServerEvent {
-  string wecom_account_id = 1;   // 旧:per-account 路由;新架构里 PushBatchOut/SubscribeAck 可留空
-  int64  seq              = 2;   // 旧:per-account seq;新架构里 PushBatchOut.notify_seq 是权威
-  // 3-9 reserved for envelope-level fields
-
   oneof body {
-    IncomingMsg          incoming      = 10;
-    MessageRecalled      recalled      = 11;
-    ReadReceipt          read_receipt  = 12;
-    MessageStatusChange  status_change = 13;
-    // Plan 6 新增 ───────────────────────────────
-    PushBatchOut         push_batch    = 14;   // 业务事件批次(events_json 原文透传)
-    SystemSignal         system        = 90;
-    SubscribeAck         subscribe_ack = 91;   // Subscribe 首帧:重放范围 + resync_required
-    // 15-89 reserved for business events
-    // 92-99 reserved for system signals
+    PushBatchOut push_batch    = 1;   // 业务事件批次(events_json 原文透传)
+    SubscribeAck subscribe_ack = 2;   // Subscribe 首帧:重放范围 + resync_required
+    SystemSignal system        = 3;   // 控制信号
   }
 }
 
-// Plan 6 — 业务事件批次(对应 docs/工具网关通知事件与字段规范.md 的外层通知包)。
-// 由 relay 接 POST /internal/push 后 fanout 给 employee 的 Subscribe 流。
+// 业务事件批次(对应 docs/工具网关通知事件与字段规范.md 的外层通知包)。
+// 由 relay 接 POST /internal/push/v2 后 fanout 给 employee 的 Subscribe 流。
 message PushBatchOut {
   uint64 notify_seq   = 1;   // 业务后台分配,客户端续点游标
   string client_id    = 2;   // 固定 "rh_wxchat"(本期)
@@ -42,61 +28,19 @@ message PushBatchOut {
   bytes  events_json  = 7;   // events[] 数组的 JSON 原文;客户端 JSON.parse 后按 eventType 分支
 }
 
-// Plan 6 — Subscribe 首帧:告诉客户端 relay 这次能重放的范围,
-// 以及是否超出保留窗口(resync_required=true 时客户端走 recentFriends / message/history 兜底)。
+// Subscribe 首帧。
 message SubscribeAck {
   uint64 resumed_from_seq = 1;   // == request.since_notify_seq
   uint64 replayed_to_seq  = 2;   // 重放到的最高 notify_seq(进入实时模式前)
-  bool   resync_required  = 3;
-  string resync_reason    = 4;   // "since out of retention window" / "events table missing" / ...
-}
-
-message IncomingMsg {
-  string conversation_id = 1;
-  string from_user_id    = 2;
-  MessageBody body       = 3;
-  int64  sent_at_ms      = 4;
-  string server_msg_id   = 5;
-  optional RemoteId remote = 6;
-}
-
-// Plan 4 — 对端 / 自己的撤回通知
-message MessageRecalled {
-  string conversation_id = 1;
-  string server_msg_id   = 2;
-  int64  recalled_at_ms  = 3;
-  string by_user_id      = 4;
-}
-
-// Plan 4 — 对端已读
-message ReadReceipt {
-  string conversation_id         = 1;
-  string by_user_id              = 2;
-  string last_read_server_msg_id = 3;
-  int64  read_at_ms              = 4;
-}
-
-// Plan 4 — 自己发出消息的状态变化
-message MessageStatusChange {
-  enum Status {
-    STATUS_UNSPECIFIED = 0;
-    STATUS_SENT        = 1;
-    STATUS_DELIVERED   = 2;
-    STATUS_FAILED      = 3;
-  }
-  string conversation_id = 1;
-  string client_msg_id   = 2;
-  string server_msg_id   = 3;
-  Status status          = 4;
+  bool   resync_required  = 3;   // true 时客户端走 recentFriends/message/history 兜底
+  string resync_reason    = 4;
 }
 
 message SystemSignal {
   enum Kind {
     KIND_UNSPECIFIED      = 0;
-    KIND_KICKED           = 1;
-    KIND_SERVER_DRAIN     = 2;
-    // Plan 6 新增:per-conn channel 满或事件日志不可用时,通知客户端走兜底 API
-    KIND_RESYNC_REQUIRED  = 3;
+    KIND_SERVER_DRAIN     = 1;   // graceful shutdown 时广播,客户端主动断 + 重连
+    KIND_RESYNC_REQUIRED  = 2;   // 事件日志窗口或反压问题,客户端走兜底 API
   }
   Kind   kind   = 1;
   string detail = 2;

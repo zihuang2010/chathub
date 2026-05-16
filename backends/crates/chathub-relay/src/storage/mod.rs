@@ -9,7 +9,6 @@
 
 pub mod events;
 pub mod migrations;
-pub mod seqs;
 
 use deadpool_sqlite::{Config as PoolCfg, Object, Pool, Runtime};
 use std::path::Path;
@@ -92,11 +91,12 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn open_creates_four_tables() {
+    async fn open_leaves_only_events_v2_after_migrations() {
+        // Plan 7:legacy 表(events/seq_counters/sessions/kv)都被 003_drop_legacy 删了,
+        // 只剩 events_v2 业务表 + rusqlite_migration 的元数据表。
         let tmp = tempfile::tempdir().unwrap();
         let db = tmp.path().join("t.db");
         let storage = Storage::open(&db).await.expect("open");
-
         let conn = storage.pool().get().await.unwrap();
         let names = conn
             .interact(|c| -> Result<Vec<String>, rusqlite::Error> {
@@ -114,11 +114,11 @@ mod tests {
             .unwrap()
             .unwrap();
 
-        // 4 业务表 + rusqlite_migration 的 1 张元数据表
-        assert!(names.contains(&"sessions".to_string()));
-        assert!(names.contains(&"seq_counters".to_string()));
-        assert!(names.contains(&"events".to_string()));
-        assert!(names.contains(&"kv".to_string()));
+        assert!(names.contains(&"events_v2".to_string()));
+        assert!(!names.contains(&"events".to_string()));
+        assert!(!names.contains(&"seq_counters".to_string()));
+        assert!(!names.contains(&"sessions".to_string()));
+        assert!(!names.contains(&"kv".to_string()));
     }
 
     #[tokio::test]

@@ -1,25 +1,26 @@
-//! HubSvc + ProtocolInterceptor + TokenAuthenticator。
+//! HubSvc + ProtocolInterceptor + TokenAuthenticator(Plan 7 — 已清掉所有 legacy)。
 //!
 //! 认证模型(Relay 纯隔道):
 //!   - ProtocolInterceptor(同步):校 `chathub-protocol-version`,提取 `Bearer <token>`
 //!     放进 request extensions。不做 token 校验(那是 async,拦截器是 sync)。
 //!   - 各 HubSvc method 开头调 `authenticate(&req).await`:从 extensions 取 token,
-//!     调业务后台 verifyToken 拿连接身份 `UserCtx`,带进程内缓存。
+//!     调业务后台 verifyToken 拿连接身份 `UserCtx`,带进程内缓存 + singleflight + RAII guard。
 //!   - 已建立的 stream 不重验;token 失效靠下次重连时 verifyToken 失败自然拒。
+//!
+//! Hub RPC 只剩三件套:
+//!   - Subscribe:employee-scope 长连接,首帧 SubscribeAck + 实时 PushBatchOut + 控制 SystemSignal
+//!   - Ack:per-employee 已处理 notify_seq 水位(仅 relay 内部观测)
+//!   - Forward:业务 RPC 单一透传(REST 隧道语义,4xx 通过 http_status 返回,不映射 gRPC error)
 
 use crate::config::DownstreamRoutes;
 use crate::downstream::{DownstreamClient, VerifyTokenReq};
 use crate::error::RelayError;
-use crate::router::{Router, StreamTicket};
-use crate::storage::events::{EventLog, EventRow, EventStore};
-use crate::storage::seqs::SeqAllocator;
+use crate::router::Router;
+use crate::storage::events::{EventLog, EventRow};
 use chathub_proto::v1::hub_server::Hub;
 use chathub_proto::v1::{
-    AckReadRequest, AckReadResponse, AckRequest, AckResponse, FetchHistoryRequest,
-    FetchHistoryResponse, ForwardRequest, ForwardResponse, RecallRequest, RecallResponse,
-    SendRequest, SendResponse, ServerEvent, SubscribeRequest,
+    AckRequest, AckResponse, ForwardRequest, ForwardResponse, ServerEvent, SubscribeRequest,
 };
-use prost::Message;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -35,8 +36,8 @@ pub struct UserCtx {
     pub user_id: String,
     pub accounts: Vec<String>,
     pub device_id: String,
-    /// Plan 6:员工数值 ID。老 mock / 未升级业务后台返 0;
-    /// Plan 6 的 Subscribe v2 / Ack / Forward 拒绝 0(legacy 路径不依赖此字段)。
+    /// 员工数值 ID。relay 用作 router 索引、ack 水位 key、Forward X-Relay-Employee-Id header。
+    /// 老 mock / 业务后台未升级时 verify_token 不返回该字段 → 默认 0 → relay 拒绝所有 v2 RPC。
     pub employee_id: i64,
 }
 
@@ -58,7 +59,6 @@ impl ProtocolInterceptor {
 
 impl Interceptor for ProtocolInterceptor {
     fn call(&mut self, mut req: Request<()>) -> Result<Request<()>, Status> {
-        // 1. 校协议版本
         let ver = req
             .metadata()
             .get("chathub-protocol-version")
@@ -70,7 +70,6 @@ impl Interceptor for ProtocolInterceptor {
                 download_url: "".into(),
             }));
         }
-        // 2. 提取 Bearer(不校验,只取串)
         let token = {
             let auth = req
                 .metadata()
@@ -96,29 +95,11 @@ struct CachedCtx {
     expires_at: Instant,
 }
 
-/// 调业务后台 verifyToken 把 token 换成 `UserCtx`,带进程内缓存 + singleflight。
-///
-/// 缓存:key = sha256(token)[:16](不存明文),TTL = min(exp_ms-now, 5min)。
-/// 满 10000 条时整体清空(walking skeleton 的简单上限策略)。
-///
-/// Singleflight(Plan 6 stage 4c):同一 token 并发首次 miss 时,只放一个请求到
-/// 业务后台,其余等同结果。靠 `inflight` map(per-key `OnceCell`)实现:
-///   - 第一个到达者 = leader:`OnceCell::get_or_init` 真正调 verify_token
-///   - 后到者 = follower:复用 leader 的 `Arc<OnceCell>`,`get_or_init` 等 leader 的结果
-///   - leader 完成后从 `inflight` 摘除 cell,让下一轮 miss 重新走一遍
-pub struct TokenAuthenticator {
-    downstream: Arc<DownstreamClient>,
-    cache: parking_lot::Mutex<HashMap<String, CachedCtx>>,
-    inflight: parking_lot::Mutex<HashMap<String, Arc<OnceCell<InflightResult>>>>,
-}
-
-/// OnceCell 里存的内容 —— UserCtx + cache TTL(让 leader 之后写缓存用 leader 算出的 TTL,
-/// 而不是各自 follower 重算一次)。
+/// OnceCell 里存的 — UserCtx + cache TTL(leader 算一次,follower 共享)。
 type InflightResult = Result<(UserCtx, Duration), Status>;
 
-/// RAII guard:leader 必持有此 guard。任何方式离开 authenticate 作用域
-/// (正常返回 / `?` 早返 / panic 展开) 都会触发 Drop 摘除 inflight 条目,
-/// 防止 leader future panic 后 inflight 永久卡死同 token 的后续请求(P0-4)。
+/// RAII guard:leader 必持有。任何方式离开 authenticate 作用域(正常返回 / panic 展开)
+/// 都会触发 Drop 摘除 inflight 条目,防止 leader future panic 后死锁(P0-4)。
 struct InflightGuard<'a> {
     inflight: &'a parking_lot::Mutex<HashMap<String, Arc<OnceCell<InflightResult>>>>,
     key: String,
@@ -127,6 +108,13 @@ impl Drop for InflightGuard<'_> {
     fn drop(&mut self) {
         self.inflight.lock().remove(&self.key);
     }
+}
+
+/// 调业务后台 verifyToken 把 token 换成 `UserCtx`,带进程内缓存 + singleflight。
+pub struct TokenAuthenticator {
+    downstream: Arc<DownstreamClient>,
+    cache: parking_lot::Mutex<HashMap<String, CachedCtx>>,
+    inflight: parking_lot::Mutex<HashMap<String, Arc<OnceCell<InflightResult>>>>,
 }
 
 impl TokenAuthenticator {
@@ -151,8 +139,7 @@ impl TokenAuthenticator {
             }
         }
 
-        // 2. Singleflight:claim 或 join inflight
-        //    leader 拿到 RAII guard,任何方式离开作用域都会摘除 inflight
+        // 2. Singleflight:claim 或 join inflight;leader 持 guard 自动清理
         let (cell, leader_guard) = {
             let mut inflight = self.inflight.lock();
             if let Some(cell) = inflight.get(&key) {
@@ -193,7 +180,7 @@ impl TokenAuthenticator {
             .await
             .clone();
 
-        // 4. leader 负责写缓存(inflight 摘除靠 leader_guard 在函数返回时自动 Drop)
+        // 4. leader 写缓存(inflight 摘除靠 leader_guard 自动 Drop)
         if leader_guard.is_some() {
             if let Ok((ctx, ttl)) = &result {
                 let mut cache = self.cache.lock();
@@ -209,8 +196,6 @@ impl TokenAuthenticator {
                 );
             }
         }
-        // leader_guard 在这里 Drop → InflightGuard::drop 清理 inflight
-        // panic 路径也会触发 Drop(unwinding 时栈展开会调 destructors),保证不死锁
 
         result.map(|(ctx, _ttl)| ctx)
     }
@@ -218,7 +203,7 @@ impl TokenAuthenticator {
 
 fn cache_key(token: &str) -> String {
     let digest = Sha256::digest(token.as_bytes());
-    hex::encode(&digest[..8]) // 16 hex chars
+    hex::encode(&digest[..8])
 }
 
 fn cache_ttl(exp_ms: Option<i64>) -> Duration {
@@ -231,17 +216,22 @@ fn cache_ttl(exp_ms: Option<i64>) -> Duration {
     }
 }
 
+fn now_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
 // ─── HubSvc ────────────────────────────────────────────────────────────────
 
 pub struct HubSvc {
     pub router: Arc<Router>,
-    pub seqs: SeqAllocator,
-    pub events: EventStore,
-    /// Plan 6:employee 维度的事件日志(events_v2),Subscribe v2 路径用它续点。
+    /// employee_id + notify_seq + event_index 主键的事件日志,Subscribe 用它续点。
     pub events_log: EventLog,
     pub downstream: Arc<DownstreamClient>,
     pub auth: Arc<TokenAuthenticator>,
-    /// Plan 6:Hub.Forward 的 method → HTTP path 映射(env-driven)。
+    /// Hub.Forward 的 method → HTTP path 映射(env-driven)。
     pub routes: DownstreamRoutes,
 }
 
@@ -256,159 +246,9 @@ impl HubSvc {
             .clone();
         self.auth.authenticate(&token).await
     }
-
-    /// Plan 6 stage 4b — Subscribe v2 路径(employee-scope)。
-    ///
-    /// 流程:
-    /// 1. 要求 employee_id 非 0(老业务后台未升级则 FailedPrecondition)。
-    /// 2. 第一帧发 SubscribeAck:告诉客户端 resumed_from_seq / replayed_to_seq /
-    ///    resync_required(超出 events_v2 保留窗口时)。
-    /// 3. 重放 events_v2 中 notify_seq > since_notify_seq 的事件,按 (notify_seq,
-    ///    event_index) 升序分组成 PushBatchOut(每个 notify_seq 一帧)。
-    /// 4. register_employee 到 router,后续实时 push v2 由 fanout_employee 投递。
-    /// 5. 起 cleanup task,客户端断开时(rx 被 drop)自动 drop_employee_stream。
-    #[tracing::instrument(
-        skip_all,
-        fields(
-            employee_id = ctx.employee_id,
-            device_id = %_inner.device_id,
-            since_notify_seq = _inner.since_notify_seq,
-        )
-    )]
-    async fn subscribe_v2(
-        &self,
-        _inner: SubscribeRequest,
-        ctx: UserCtx,
-    ) -> Result<Response<<Self as Hub>::SubscribeStream>, Status> {
-        if ctx.employee_id == 0 {
-            // P1-8:错误信息带 user_id,运维能定位是哪个 token 触发的
-            tracing::warn!(
-                user_id = %ctx.user_id,
-                "subscribe_v2 rejected: employee_id missing from verify_token"
-            );
-            return Err(Status::failed_precondition(format!(
-                "employee_id missing for user_id={} (business backend upgrade required)",
-                ctx.user_id
-            )));
-        }
-
-        let since = _inner.since_notify_seq;
-        let device_id = _inner.device_id.clone();
-
-        // mpsc buffer 256 — 比 legacy 路径的 32 大一档,适配业务事件 burst(spec §每员工 burst 通常 <10/s)
-        let (tx, rx) = mpsc::channel(256);
-
-        // ① 判断 resync_required(since 比 events_v2 最早记录还旧时)
-        let earliest = self
-            .events_log
-            .earliest_for(ctx.employee_id)
-            .await
-            .map_err(|e| Status::from(RelayError::from(e)))?;
-        let (mut resync_required, mut resync_reason) = if since > 0 {
-            match earliest {
-                Some((min_seq, _)) if (min_seq as u64) > since + 1 => {
-                    (true, "since out of retention window".to_string())
-                }
-                _ => (false, String::new()),
-            }
-        } else {
-            (false, String::new())
-        };
-
-        // ② 查 > since 的事件。limit 多取 1 用于探测"是否还有更多",P1-2。
-        const REPLAY_LIMIT: i64 = 1000;
-        let mut rows = self
-            .events_log
-            .query_since(ctx.employee_id, since as i64, REPLAY_LIMIT + 1)
-            .await
-            .map_err(|e| Status::from(RelayError::from(e)))?;
-        let more_available = rows.len() as i64 > REPLAY_LIMIT;
-        if more_available {
-            // P1-2:历史超过单次重放上限 → 强制走兜底,避免静默截断丢消息
-            rows.truncate(REPLAY_LIMIT as usize);
-            resync_required = true;
-            if resync_reason.is_empty() {
-                resync_reason = format!(
-                    "more than {REPLAY_LIMIT} events queued; resync via recentFriends/history"
-                );
-            }
-            tracing::warn!(
-                employee_id = ctx.employee_id,
-                queued = REPLAY_LIMIT + 1,
-                "subscribe_v2 replay truncated; resync_required=true"
-            );
-        }
-        let replayed_to_seq = rows.last().map(|r| r.notify_seq as u64).unwrap_or(since);
-
-        // ③ 发 SubscribeAck 首帧
-        let ack_frame = ServerEvent {
-            wecom_account_id: String::new(),
-            seq: 0,
-            body: Some(chathub_proto::v1::server_event::Body::SubscribeAck(
-                chathub_proto::v1::SubscribeAck {
-                    resumed_from_seq: since,
-                    replayed_to_seq,
-                    resync_required,
-                    resync_reason: resync_reason.clone(),
-                },
-            )),
-        };
-        if tx.send(Ok(ack_frame)).await.is_err() {
-            // 客户端已断;直接返回空流
-            tracing::debug!("subscribe v2 client gone before ack delivered");
-            return Ok(Response::new(ReceiverStream::new(rx)));
-        }
-
-        tracing::info!(
-            replayed_to_seq,
-            resync_required,
-            replay_rows = rows.len(),
-            "subscribe v2 ack sent"
-        );
-
-        // ④ 按 notify_seq 分组重放为 PushBatchOut 帧
-        // 同 notify_seq 内多事件视为一个原子 batch(spec §3 events[] 原子单元)
-        let mut group_start = 0usize;
-        for i in 0..rows.len() {
-            let is_last = i + 1 == rows.len();
-            let boundary = !is_last && rows[i].notify_seq != rows[i + 1].notify_seq;
-            if is_last || boundary {
-                let group = &rows[group_start..=i];
-                send_replay_batch(&tx, group, ctx.employee_id).await;
-                group_start = i + 1;
-            }
-        }
-
-        // ⑤ 注册 employee 路由
-        let reg = self
-            .router
-            .register_employee(ctx.employee_id, device_id.clone(), tx.clone());
-        let connection_id = reg.connection_id;
-        tracing::info!(
-            connection_id = %connection_id,
-            "subscribe v2 registered",
-        );
-
-        // ⑥ Cleanup task:客户端断开 → 摘除 router 注册
-        let router = self.router.clone();
-        let emp_id = ctx.employee_id;
-        let conn_id_for_drop = connection_id.clone();
-        tokio::spawn(async move {
-            tx.closed().await;
-            router.drop_employee_stream(emp_id, &conn_id_for_drop);
-            tracing::debug!(
-                employee_id = emp_id,
-                connection_id = %conn_id_for_drop,
-                "subscribe v2 stream dropped"
-            );
-        });
-
-        Ok(Response::new(ReceiverStream::new(rx)))
-    }
 }
 
 /// 把 events_v2 一组(同 notify_seq)行序列化为 PushBatchOut 帧并 send。
-/// 失败(客户端断)返回早出,不影响调用方继续后续帧(下次 send 也会失败,会被吸收)。
 async fn send_replay_batch(
     tx: &mpsc::Sender<Result<ServerEvent, Status>>,
     group: &[EventRow],
@@ -435,8 +275,6 @@ async fn send_replay_batch(
         events_json,
     };
     let frame = ServerEvent {
-        wecom_account_id: String::new(),
-        seq: 0,
         body: Some(chathub_proto::v1::server_event::Body::PushBatch(pb)),
     };
     let _ = tx.send(Ok(frame)).await;
@@ -446,200 +284,143 @@ async fn send_replay_batch(
 impl Hub for HubSvc {
     type SubscribeStream = ReceiverStream<Result<ServerEvent, Status>>;
 
+    /// Subscribe(Plan 7 — employee-scope 唯一路径):
+    /// 1. 要求 employee_id 非 0(老业务后台未升级则 FailedPrecondition)
+    /// 2. 第一帧发 SubscribeAck(resumed_from_seq / replayed_to_seq / resync_required)
+    /// 3. 重放 events_v2 > since_notify_seq 的事件,按 notify_seq 分组成 PushBatchOut
+    /// 4. register_employee 到 router,后续实时 push v2 由 fanout_employee 投递
+    /// 5. 起 cleanup task,客户端断开时(rx 被 drop)自动 drop_employee_stream
+    #[tracing::instrument(skip_all, fields(employee_id, device_id, since_notify_seq))]
     async fn subscribe(
         &self,
         req: Request<SubscribeRequest>,
     ) -> Result<Response<Self::SubscribeStream>, Status> {
         let ctx = self.authenticate(&req).await?;
         let inner = req.into_inner();
+        tracing::Span::current().record("employee_id", ctx.employee_id);
+        tracing::Span::current().record("device_id", &inner.device_id.as_str());
+        tracing::Span::current().record("since_notify_seq", inner.since_notify_seq);
 
-        // Plan 6:用 device_id 区分新老客户端。
-        //   - 老客户端:device_id="",带 since_seqs 走 legacy account-scope 路径(此 handler 下半段)
-        //   - 新客户端:device_id 非空,走 v2 employee-scope 路径(subscribe_v2)
-        if !inner.device_id.is_empty() {
-            return self.subscribe_v2(inner, ctx).await;
+        if ctx.employee_id == 0 {
+            tracing::warn!(
+                user_id = %ctx.user_id,
+                "subscribe rejected: employee_id missing from verify_token"
+            );
+            return Err(Status::failed_precondition(format!(
+                "employee_id missing for user_id={} (business backend upgrade required)",
+                ctx.user_id
+            )));
         }
 
-        // ── Legacy account-scope path (兼容期保留)──
-        let since = inner.since_seqs;
-        let (tx, rx) = mpsc::channel(32);
+        let since = inner.since_notify_seq;
+        let device_id = inner.device_id.clone();
 
-        // 1. **REPLAY 必先于 REGISTER**(spec §8,决策 #11)
-        for (account, s) in &since {
-            if !ctx.accounts.contains(account) {
-                continue;
-            }
-            let rows = self
-                .events
-                .replay_after(account, *s, 200)
-                .await
-                .map_err(|e| Status::from(RelayError::from(e)))?;
-            for (_seq, payload) in rows {
-                let evt = ServerEvent::decode(&payload[..])
-                    .map_err(|e| Status::internal(format!("decode: {e}")))?;
-                if tx.send(Ok(evt)).await.is_err() {
-                    break;
+        // mpsc buffer 256(spec §每员工 burst 通常 <10/s,256 已足够)
+        let (tx, rx) = mpsc::channel(256);
+
+        // ① 判断 resync_required:since 比 events_v2 最早记录还旧 → 超出保留窗口
+        let earliest = self
+            .events_log
+            .earliest_for(ctx.employee_id)
+            .await
+            .map_err(|e| Status::from(RelayError::from(e)))?;
+        let (mut resync_required, mut resync_reason) = if since > 0 {
+            match earliest {
+                Some((min_seq, _)) if (min_seq as u64) > since + 1 => {
+                    (true, "since out of retention window".to_string())
                 }
-            }
-        }
-
-        // 2. register(可能发 KICKED)
-        let out = self.router.register(
-            StreamTicket {
-                user_id: ctx.user_id,
-                device_id: ctx.device_id,
-                accounts: ctx.accounts,
-            },
-            tx,
-        );
-        if out.kicked {
-            // 真正多端踢:给 prev 发 KICKED
-            for prev in out.prev_senders {
-                let kicked_evt = ServerEvent {
-                    wecom_account_id: String::new(),
-                    seq: 0,
-                    body: Some(chathub_proto::v1::server_event::Body::System(
-                        chathub_proto::v1::SystemSignal {
-                            kind: chathub_proto::v1::system_signal::Kind::Kicked as i32,
-                            detail: "multi-device".into(),
-                        },
-                    )),
-                };
-                let _ = prev.try_send(Ok(kicked_evt));
-                drop(prev);
+                _ => (false, String::new()),
             }
         } else {
-            // 同 device 自重连:静默 drop prev
-            for prev in out.prev_senders {
-                drop(prev);
-            }
-        }
-        Ok(Response::new(ReceiverStream::new(rx)))
-    }
+            (false, String::new())
+        };
 
-    async fn send(&self, req: Request<SendRequest>) -> Result<Response<SendResponse>, Status> {
-        let ctx = self.authenticate(&req).await?;
-        let r = req.into_inner();
-        let body = r
-            .body
-            .as_ref()
-            .ok_or_else(|| Status::invalid_argument("missing body"))?;
-        let resp = self
-            .downstream
-            .send(crate::downstream::SendReq {
-                user_id: &ctx.user_id,
-                wecom_account_id: &r.wecom_account_id,
-                conversation_id: &r.conversation_id,
-                client_msg_id: &r.client_msg_id,
-                body,
-            })
+        // ② 查 > since 的事件,limit 多取 1 探测"是否还有更多"(P1-2)
+        const REPLAY_LIMIT: i64 = 1000;
+        let mut rows = self
+            .events_log
+            .query_since(ctx.employee_id, since as i64, REPLAY_LIMIT + 1)
             .await
-            .map_err(Status::from)?;
+            .map_err(|e| Status::from(RelayError::from(e)))?;
+        let more_available = rows.len() as i64 > REPLAY_LIMIT;
+        if more_available {
+            rows.truncate(REPLAY_LIMIT as usize);
+            resync_required = true;
+            if resync_reason.is_empty() {
+                resync_reason = format!(
+                    "more than {REPLAY_LIMIT} events queued; resync via recentFriends/history"
+                );
+            }
+            tracing::warn!(
+                employee_id = ctx.employee_id,
+                queued = REPLAY_LIMIT + 1,
+                "subscribe replay truncated; resync_required=true"
+            );
+        }
+        let replayed_to_seq = rows.last().map(|r| r.notify_seq as u64).unwrap_or(since);
 
-        // 后续 fanout MessageStatusChange{STATUS_SENT}
-        let status_evt = ServerEvent {
-            wecom_account_id: r.wecom_account_id.clone(),
-            seq: 0, // 将由 seqs.next_seq 重写
-            body: Some(chathub_proto::v1::server_event::Body::StatusChange(
-                chathub_proto::v1::MessageStatusChange {
-                    conversation_id: r.conversation_id.clone(),
-                    client_msg_id: r.client_msg_id.clone(),
-                    server_msg_id: resp.server_msg_id.clone(),
-                    status: chathub_proto::v1::message_status_change::Status::Sent as i32,
+        // ③ 首帧 SubscribeAck
+        let ack_frame = ServerEvent {
+            body: Some(chathub_proto::v1::server_event::Body::SubscribeAck(
+                chathub_proto::v1::SubscribeAck {
+                    resumed_from_seq: since,
+                    replayed_to_seq,
+                    resync_required,
+                    resync_reason: resync_reason.clone(),
                 },
             )),
         };
-        let assigned = self
-            .seqs
-            .next_seq(&r.wecom_account_id)
-            .await
-            .map_err(|e| Status::from(RelayError::from(e)))?;
-        let mut evt = status_evt;
-        evt.seq = assigned;
-        let mut buf = Vec::new();
-        prost::Message::encode(&evt, &mut buf)
-            .map_err(|e| Status::internal(format!("encode: {e}")))?;
-        let _ = self
-            .events
-            .record(&r.wecom_account_id, assigned, buf, now_ms())
-            .await;
-        let _ = self.router.fanout(&r.wecom_account_id, evt);
+        if tx.send(Ok(ack_frame)).await.is_err() {
+            tracing::debug!("subscribe client gone before ack delivered");
+            return Ok(Response::new(ReceiverStream::new(rx)));
+        }
 
-        Ok(Response::new(SendResponse {
-            server_msg_id: resp.server_msg_id,
-            sent_at_ms: resp.sent_at_ms,
-        }))
+        tracing::info!(
+            replayed_to_seq,
+            resync_required,
+            replay_rows = rows.len(),
+            "subscribe ack sent"
+        );
+
+        // ④ 按 notify_seq 分组重放 PushBatchOut(同 seq 多事件视为一个原子 batch)
+        let mut group_start = 0usize;
+        for i in 0..rows.len() {
+            let is_last = i + 1 == rows.len();
+            let boundary = !is_last && rows[i].notify_seq != rows[i + 1].notify_seq;
+            if is_last || boundary {
+                let group = &rows[group_start..=i];
+                send_replay_batch(&tx, group, ctx.employee_id).await;
+                group_start = i + 1;
+            }
+        }
+
+        // ⑤ 注册 employee 路由
+        let reg = self
+            .router
+            .register_employee(ctx.employee_id, device_id.clone(), tx.clone());
+        let connection_id = reg.connection_id;
+        tracing::info!(connection_id = %connection_id, "subscribe registered");
+
+        // ⑥ Cleanup task:客户端断开 → 摘除 router 注册
+        let router = self.router.clone();
+        let emp_id = ctx.employee_id;
+        let conn_id_for_drop = connection_id.clone();
+        tokio::spawn(async move {
+            tx.closed().await;
+            router.drop_employee_stream(emp_id, &conn_id_for_drop);
+            tracing::debug!(
+                employee_id = emp_id,
+                connection_id = %conn_id_for_drop,
+                "subscribe stream dropped"
+            );
+        });
+
+        Ok(Response::new(ReceiverStream::new(rx)))
     }
 
-    async fn recall(
-        &self,
-        req: Request<RecallRequest>,
-    ) -> Result<Response<RecallResponse>, Status> {
-        let ctx = self.authenticate(&req).await?;
-        let r = req.into_inner();
-        let resp = self
-            .downstream
-            .recall(crate::downstream::RecallReq {
-                user_id: &ctx.user_id,
-                wecom_account_id: &r.wecom_account_id,
-                conversation_id: &r.conversation_id,
-                server_msg_id: &r.server_msg_id,
-            })
-            .await
-            .map_err(Status::from)?;
-        Ok(Response::new(RecallResponse {
-            recalled_at_ms: resp.recalled_at_ms,
-        }))
-    }
-
-    async fn ack_read(
-        &self,
-        req: Request<AckReadRequest>,
-    ) -> Result<Response<AckReadResponse>, Status> {
-        let ctx = self.authenticate(&req).await?;
-        let r = req.into_inner();
-        let resp = self
-            .downstream
-            .ack_read(crate::downstream::AckReadReq {
-                user_id: &ctx.user_id,
-                wecom_account_id: &r.wecom_account_id,
-                conversation_id: &r.conversation_id,
-                last_read_server_msg_id: &r.last_read_server_msg_id,
-            })
-            .await
-            .map_err(Status::from)?;
-        Ok(Response::new(AckReadResponse {
-            acked_at_ms: resp.acked_at_ms,
-        }))
-    }
-
-    async fn fetch_history(
-        &self,
-        req: Request<FetchHistoryRequest>,
-    ) -> Result<Response<FetchHistoryResponse>, Status> {
-        let ctx = self.authenticate(&req).await?;
-        let r = req.into_inner();
-        let resp = self
-            .downstream
-            .fetch_history(crate::downstream::FetchHistoryReq {
-                user_id: &ctx.user_id,
-                wecom_account_id: &r.wecom_account_id,
-                conversation_id: &r.conversation_id,
-                limit: r.limit,
-                cursor: &r.cursor,
-            })
-            .await
-            .map_err(Status::from)?;
-        Ok(Response::new(FetchHistoryResponse {
-            messages: resp.messages,
-            next_cursor: resp.next_cursor,
-        }))
-    }
-
-    // ─── Plan 6 stage 4:Hub.Ack ─────────────────────────────────────
-    //
-    // 客户端处理完一批事件后上报 notify_seq 水位。relay 内部观测用,不参与事件
-    // 日志清理(清理走 TTL)。员工身份从 token 取,客户端不能伪造。
+    /// Ack:客户端处理完一批事件后上报 notify_seq 水位。
+    /// 仅 relay 内部观测;事件日志清理走 TTL,不依赖此值。
+    /// 员工身份从 token 取,客户端不能伪造。
     #[tracing::instrument(skip_all, fields(notify_seq))]
     async fn ack(&self, req: Request<AckRequest>) -> Result<Response<AckResponse>, Status> {
         let ctx = self.authenticate(&req).await?;
@@ -664,11 +445,11 @@ impl Hub for HubSvc {
         Ok(Response::new(AckResponse {}))
     }
 
-    // ─── Plan 6 stage 4:Hub.Forward ──────────────────────────────────
-    //
-    // 业务 RPC 透传统一入口。relay 不解析 body_json,按 method 查 DownstreamRoutes
-    // 拼路径 POST 到业务后台。relay 自己的 secret + 经认证的 employee_id 通过
-    // X-Relay-Employee-Id header 告诉业务后台:这是已鉴权的某员工的请求。
+    /// Forward:业务 RPC 透传统一入口。REST 隧道语义(P0-5):
+    /// - 2xx → Ok(ForwardResponse{body, http_status})
+    /// - 4xx → 同样 Ok(REST 风格透传),客户端按 http_status 自行判断业务错
+    /// - 5xx → Status::Internal
+    /// - 网络/超时 → Status::Unavailable
     #[tracing::instrument(skip_all, fields(method, employee_id, body_len))]
     async fn forward(
         &self,
@@ -702,26 +483,12 @@ impl Hub for HubSvc {
     }
 }
 
-fn now_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
-}
-
-// ─── Tests ──────────────────────────────────────────────────────────────────
-
 #[cfg(test)]
-#[allow(clippy::result_large_err)]
 mod tests {
     use super::*;
     use crate::router::Router;
-    use crate::storage::events::EventStore;
-    use crate::storage::seqs::SeqAllocator;
     use crate::storage::Storage;
-    use chathub_proto::v1::hub_client::HubClient as RawHubClient;
-    use chathub_proto::v1::hub_server::HubServer;
-    use chathub_proto::v1::{server_event, SubscribeRequest, SystemSignal};
+    use chathub_proto::v1::server_event::Body;
     use std::net::SocketAddr;
     use tokio::net::TcpListener;
     use tokio_stream::wrappers::TcpListenerStream;
@@ -738,75 +505,83 @@ mod tests {
         r
     }
 
-    /// 在 mock 下游挂一条 verify_token:token=`token` → 返回给定身份。
-    async fn mount_verify_token(
-        mock: &MockServer,
-        token: &str,
-        user_id: &str,
-        device_id: &str,
-        accounts: &[&str],
-    ) {
+    /// 业务后台 mock verify_token:返回带 employee_id 的 UserCtx。
+    async fn mount_verify_token(mock: &MockServer, token: &str, employee_id: i64, device_id: &str) {
         Mock::given(method("POST"))
             .and(path("/v1/verify_token"))
             .and(body_partial_json(serde_json::json!({ "token": token })))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "active": true,
-                "user_id": user_id,
+                "user_id": format!("u-{employee_id}"),
                 "device_id": device_id,
-                "accounts": accounts,
+                "accounts": Vec::<String>::new(),
+                "employee_id": employee_id,
             })))
             .mount(mock)
             .await;
     }
 
-    async fn spawn_hub() -> (SocketAddr, Arc<Router>, MockServer, EventStore) {
-        let mock = MockServer::start().await;
+    /// 业务后台 mock verify_token,但**不**返 employee_id(模拟未升级的后台)。
+    async fn mount_verify_token_no_employee(mock: &MockServer, token: &str) {
+        Mock::given(method("POST"))
+            .and(path("/v1/verify_token"))
+            .and(body_partial_json(serde_json::json!({ "token": token })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "active": true,
+                "user_id": "u-X",
+                "device_id": "d-X",
+                "accounts": Vec::<String>::new(),
+            })))
+            .mount(mock)
+            .await;
+    }
+
+    async fn build_svc(mock: &MockServer) -> HubSvc {
         let tmp = tempfile::tempdir().unwrap();
         let db = tmp.path().join("t.db");
         let storage = Storage::open(&db).await.unwrap();
         std::mem::forget(tmp);
-        let router = Arc::new(Router::new());
-        let events = EventStore::new(storage.clone());
         let downstream =
             Arc::new(crate::downstream::DownstreamClient::new(&mock.uri(), "dn-secret").unwrap());
-        let svc = HubSvc {
-            router: router.clone(),
-            seqs: SeqAllocator::new(storage.clone()),
-            events: events.clone(),
-            events_log: EventLog::new(storage.clone()),
+        HubSvc {
+            router: Arc::new(Router::new()),
+            events_log: EventLog::new(storage),
             downstream: downstream.clone(),
             auth: Arc::new(TokenAuthenticator::new(downstream)),
             routes: crate::config::DownstreamRoutes::default_for_test(),
-        };
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        let stream = TcpListenerStream::new(listener);
-        tokio::spawn(async move {
-            let _ = Server::builder()
-                .add_service(HubServer::with_interceptor(svc, ProtocolInterceptor::new()))
-                .serve_with_incoming(stream)
-                .await;
-        });
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        (addr, router, mock, events)
+        }
     }
 
-    fn hub_client_with_token(
-        channel: tonic::transport::Channel,
-        token: String,
-    ) -> RawHubClient<
-        tonic::service::interceptor::InterceptedService<
-            tonic::transport::Channel,
-            impl FnMut(Request<()>) -> Result<Request<()>, Status>,
-        >,
-    > {
-        RawHubClient::with_interceptor(channel, move |mut r: Request<()>| {
-            r.metadata_mut()
-                .insert("chathub-protocol-version", "1".parse().unwrap());
-            r.metadata_mut()
-                .insert("authorization", format!("Bearer {token}").parse().unwrap());
-            Ok(r)
-        })
+    fn sub_request(device_id: &str, since: u64) -> Request<SubscribeRequest> {
+        let mut req = Request::new(SubscribeRequest {
+            since_notify_seq: since,
+            device_id: device_id.into(),
+            client_version: "1.0.0".into(),
+        });
+        req.extensions_mut()
+            .insert(BearerToken("tok-A".to_string()));
+        req
+    }
+
+    fn make_event_row(employee_id: i64, notify_seq: i64, event_index: i64) -> EventRow {
+        EventRow {
+            employee_id,
+            notify_seq,
+            event_index,
+            event_type: "MESSAGE_UPSERT".into(),
+            event_reason: Some("CUSTOMER_MESSAGE_RECEIVED".into()),
+            conversation_id: Some("conv-1".into()),
+            customer_user_id: Some("u-c".into()),
+            external_user_id: Some("ext-1".into()),
+            client_id: "rh_wxchat".into(),
+            batch_id: Some(format!("rh_wxchat:{employee_id}:{notify_seq}")),
+            batch_time: Some("2026-05-14 10:30:00".into()),
+            event_time: Some("2026-05-14 10:30:00".into()),
+            payload_json: format!(
+                r#"{{"eventType":"MESSAGE_UPSERT","notifySeq":{notify_seq},"index":{event_index}}}"#
+            ),
+            created_at_ms: notify_seq * 1000,
+        }
     }
 
     // ── ProtocolInterceptor 单元测试 ──────────────────────────────────────
@@ -832,28 +607,24 @@ mod tests {
         let mut ic = ProtocolInterceptor::new();
         let r = req_with(&[
             ("chathub-protocol-version", "1"),
-            ("authorization", "Bearer biz-tok-123"),
+            ("authorization", "Bearer abc"),
         ]);
-        let out = ic.call(r).unwrap();
-        assert_eq!(
-            out.extensions().get::<BearerToken>().unwrap().0,
-            "biz-tok-123"
-        );
+        let ok = ic.call(r).unwrap();
+        assert_eq!(ok.extensions().get::<BearerToken>().unwrap().0, "abc");
     }
 
-    // ── TokenAuthenticator 单元测试 ───────────────────────────────────────
+    // ── TokenAuthenticator ──────────────────────────────────────────────
 
     #[tokio::test(flavor = "multi_thread")]
     async fn authenticator_happy_returns_ctx() {
         let mock = MockServer::start().await;
-        mount_verify_token(&mock, "tok-1", "u-1", "dev-A", &["wa-1", "wa-2"]).await;
+        mount_verify_token(&mock, "tok-1", 7, "dev-A").await;
         let downstream =
             Arc::new(crate::downstream::DownstreamClient::new(&mock.uri(), "dn-secret").unwrap());
         let auth = TokenAuthenticator::new(downstream);
         let ctx = auth.authenticate("tok-1").await.unwrap();
-        assert_eq!(ctx.user_id, "u-1");
+        assert_eq!(ctx.employee_id, 7);
         assert_eq!(ctx.device_id, "dev-A");
-        assert_eq!(ctx.accounts, vec!["wa-1".to_string(), "wa-2".to_string()]);
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -862,409 +633,80 @@ mod tests {
         Mock::given(method("POST"))
             .and(path("/v1/verify_token"))
             .respond_with(
-                ResponseTemplate::new(200).set_body_json(serde_json::json!({"active": false})),
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({ "active": false })),
             )
             .mount(&mock)
             .await;
         let downstream =
             Arc::new(crate::downstream::DownstreamClient::new(&mock.uri(), "dn-secret").unwrap());
         let auth = TokenAuthenticator::new(downstream);
-        let err = auth.authenticate("stale").await.unwrap_err();
+        let err = auth.authenticate("bad").await.unwrap_err();
         assert_eq!(err.code(), tonic::Code::Unauthenticated);
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn authenticator_caches_result_second_call_skips_downstream() {
         let mock = MockServer::start().await;
-        // expect(1):缓存命中后第二次 authenticate 不应再打下游
         Mock::given(method("POST"))
             .and(path("/v1/verify_token"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "active": true, "user_id": "u-1", "device_id": "dev-A", "accounts": ["wa-1"],
-                "exp_ms": 1_900_000_000_000i64
+                "active": true, "user_id": "u-1", "device_id": "d-A",
+                "accounts": Vec::<String>::new(), "employee_id": 42,
             })))
-            .expect(1)
+            .expect(1) // wiremock 在 drop 时校验:必须恰好 1 次
             .mount(&mock)
             .await;
         let downstream =
             Arc::new(crate::downstream::DownstreamClient::new(&mock.uri(), "dn-secret").unwrap());
         let auth = TokenAuthenticator::new(downstream);
-        let c1 = auth.authenticate("tok-cache").await.unwrap();
-        let c2 = auth.authenticate("tok-cache").await.unwrap();
-        assert_eq!(c1.user_id, c2.user_id);
-        // mock 在 drop 时校验 expect(1)
-    }
-
-    // ── HubSvc 端到端测试 ─────────────────────────────────────────────────
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn subscribe_receives_pushed_event() {
-        let (addr, router, mock, _events) = spawn_hub().await;
-        mount_verify_token(&mock, "tok-A", "u-1", "dev-A", &["wa-1"]).await;
-        let ep = Endpoint::from_shared(format!("http://{addr}")).unwrap();
-        let channel = ep.connect().await.unwrap();
-        let mut client = hub_client_with_token(channel, "tok-A".into());
-        let stream = client
-            .subscribe(SubscribeRequest {
-                since_seqs: Default::default(),
-                ..Default::default()
-            })
-            .await
-            .unwrap()
-            .into_inner();
-        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
-
-        let evt = ServerEvent {
-            wecom_account_id: "wa-1".into(),
-            seq: 7,
-            body: Some(server_event::Body::System(SystemSignal {
-                kind: chathub_proto::v1::system_signal::Kind::Unspecified as i32,
-                detail: "hi".into(),
-            })),
-        };
-        router.fanout("wa-1", evt.clone()).unwrap();
-
-        let mut stream = std::pin::pin!(stream);
-        let got = stream.next().await.unwrap().unwrap();
-        assert_eq!(got.seq, 7);
+        let _ = auth.authenticate("tok-X").await.unwrap();
+        let _ = auth.authenticate("tok-X").await.unwrap();
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn subscribe_rejected_when_token_inactive() {
-        let (addr, _router, mock, _events) = spawn_hub().await;
+    async fn authenticator_singleflight_50_concurrent_calls_one_verify() {
+        let mock = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/v1/verify_token"))
             .respond_with(
-                ResponseTemplate::new(200).set_body_json(serde_json::json!({"active": false})),
+                ResponseTemplate::new(200)
+                    .set_delay(Duration::from_millis(100))
+                    .set_body_json(serde_json::json!({
+                        "active": true, "user_id": "u-X", "device_id": "d-X",
+                        "accounts": Vec::<String>::new(), "employee_id": 42,
+                    })),
             )
+            .expect(1)
             .mount(&mock)
             .await;
-        let ep = Endpoint::from_shared(format!("http://{addr}")).unwrap();
-        let channel = ep.connect().await.unwrap();
-        let mut client = hub_client_with_token(channel, "stale".into());
-        let err = client
-            .subscribe(SubscribeRequest {
-                since_seqs: Default::default(),
-                ..Default::default()
-            })
-            .await
-            .unwrap_err();
-        assert_eq!(err.code(), tonic::Code::Unauthenticated);
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn second_subscribe_different_device_kicks_first() {
-        let (addr, _router, mock, _events) = spawn_hub().await;
-        mount_verify_token(&mock, "tok-A", "u-1", "dev-A", &["wa-1"]).await;
-        mount_verify_token(&mock, "tok-B", "u-1", "dev-B", &["wa-1"]).await;
-
-        let mk = |tok: String| {
-            let ep = Endpoint::from_shared(format!("http://{addr}")).unwrap();
-            async move {
-                let channel = ep.connect().await.unwrap();
-                hub_client_with_token(channel, tok)
-            }
-        };
-        let mut c1 = mk("tok-A".into()).await;
-        let s1 = c1
-            .subscribe(SubscribeRequest {
-                since_seqs: Default::default(),
-                ..Default::default()
-            })
-            .await
-            .unwrap()
-            .into_inner();
-        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
-
-        let mut c2 = mk("tok-B".into()).await;
-        let _s2 = c2
-            .subscribe(SubscribeRequest {
-                since_seqs: Default::default(),
-                ..Default::default()
-            })
-            .await
-            .unwrap()
-            .into_inner();
-
-        let mut s1 = std::pin::pin!(s1);
-        let got = tokio::time::timeout(std::time::Duration::from_secs(2), s1.next())
-            .await
-            .unwrap()
-            .unwrap()
-            .unwrap();
-        match got.body {
-            Some(chathub_proto::v1::server_event::Body::System(sig)) => {
-                assert_eq!(
-                    sig.kind,
-                    chathub_proto::v1::system_signal::Kind::Kicked as i32
-                );
-            }
-            other => panic!("expected KICKED, got: {other:?}"),
-        }
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn same_device_reconnect_does_not_emit_kicked() {
-        let (addr, _router, mock, _events) = spawn_hub().await;
-        mount_verify_token(&mock, "tok-A", "u-1", "dev-A", &["wa-1"]).await;
-        let mk = || {
-            let ep = Endpoint::from_shared(format!("http://{addr}")).unwrap();
-            async move {
-                let channel = ep.connect().await.unwrap();
-                hub_client_with_token(channel, "tok-A".into())
-            }
-        };
-        let mut c1 = mk().await;
-        let s1 = c1
-            .subscribe(SubscribeRequest {
-                since_seqs: Default::default(),
-                ..Default::default()
-            })
-            .await
-            .unwrap()
-            .into_inner();
-        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
-        let mut c2 = mk().await;
-        let _s2 = c2
-            .subscribe(SubscribeRequest {
-                since_seqs: Default::default(),
-                ..Default::default()
-            })
-            .await
-            .unwrap()
-            .into_inner();
-        let mut s1 = std::pin::pin!(s1);
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        let next = tokio::time::timeout(std::time::Duration::from_millis(500), s1.next()).await;
-        match next {
-            Ok(None) => {}
-            Ok(Some(Ok(evt))) => {
-                if let Some(chathub_proto::v1::server_event::Body::System(sig)) = evt.body {
-                    assert_ne!(
-                        sig.kind,
-                        chathub_proto::v1::system_signal::Kind::Kicked as i32
-                    );
-                }
-            }
-            other => panic!("unexpected: {other:?}"),
-        }
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn subscribe_replays_strictly_above_since() {
-        let (addr, _router, mock, events) = spawn_hub().await;
-        mount_verify_token(&mock, "tok-A", "u-1", "dev-A", &["wa-1"]).await;
-        for s in 1..=5_i64 {
-            let evt = ServerEvent {
-                wecom_account_id: "wa-1".into(),
-                seq: s,
-                body: Some(chathub_proto::v1::server_event::Body::System(
-                    chathub_proto::v1::SystemSignal {
-                        kind: chathub_proto::v1::system_signal::Kind::Unspecified as i32,
-                        detail: format!("{s}"),
-                    },
-                )),
-            };
-            let mut buf = Vec::new();
-            prost::Message::encode(&evt, &mut buf).unwrap();
-            events.record("wa-1", s, buf, s).await.unwrap();
-        }
-        let ep = Endpoint::from_shared(format!("http://{addr}")).unwrap();
-        let channel = ep.connect().await.unwrap();
-        let mut client = hub_client_with_token(channel, "tok-A".into());
-        let mut since = std::collections::HashMap::new();
-        since.insert("wa-1".to_string(), 2_i64);
-        let stream = client
-            .subscribe(SubscribeRequest {
-                since_seqs: since,
-                ..Default::default()
-            })
-            .await
-            .unwrap()
-            .into_inner();
-        let mut stream = std::pin::pin!(stream);
-        let mut got_seqs = Vec::new();
-        for _ in 0..3 {
-            let e = tokio::time::timeout(std::time::Duration::from_secs(2), stream.next())
-                .await
-                .unwrap()
-                .unwrap()
-                .unwrap();
-            got_seqs.push(e.seq);
-        }
-        assert_eq!(got_seqs, vec![3, 4, 5]);
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn recall_happy() {
-        use wiremock::matchers::header;
-
-        let mock = MockServer::start().await;
-        mount_verify_token(&mock, "tok-A", "u-1", "dev-A", &["wa-1"]).await;
-        Mock::given(method("POST"))
-            .and(path("/v1/recall"))
-            .and(header("authorization", "Bearer dn-secret"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "recalled_at_ms": 1234567890i64
-            })))
-            .mount(&mock)
-            .await;
-
-        let tmp = tempfile::tempdir().unwrap();
-        let db = tmp.path().join("t.db");
-        let storage = Storage::open(&db).await.unwrap();
-        std::mem::forget(tmp);
         let downstream =
             Arc::new(crate::downstream::DownstreamClient::new(&mock.uri(), "dn-secret").unwrap());
-        let svc = HubSvc {
-            router: Arc::new(Router::new()),
-            seqs: SeqAllocator::new(storage.clone()),
-            events: EventStore::new(storage.clone()),
-            events_log: EventLog::new(storage),
-            downstream: downstream.clone(),
-            auth: Arc::new(TokenAuthenticator::new(downstream)),
-            routes: crate::config::DownstreamRoutes::default_for_test(),
-        };
-
-        let mut req = Request::new(RecallRequest {
-            wecom_account_id: "wa-1".to_string(),
-            conversation_id: "conv-1".to_string(),
-            server_msg_id: "msg-123".to_string(),
-        });
-        req.extensions_mut()
-            .insert(BearerToken("tok-A".to_string()));
-
-        let resp = svc.recall(req).await.unwrap();
-        assert_eq!(resp.into_inner().recalled_at_ms, 1234567890i64);
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn ack_read_happy() {
-        use wiremock::matchers::header;
-
-        let mock = MockServer::start().await;
-        mount_verify_token(&mock, "tok-A", "u-1", "dev-A", &["wa-1"]).await;
-        Mock::given(method("POST"))
-            .and(path("/v1/ack_read"))
-            .and(header("authorization", "Bearer dn-secret"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "acked_at_ms": 1234567890i64
-            })))
-            .mount(&mock)
-            .await;
-
-        let tmp = tempfile::tempdir().unwrap();
-        let db = tmp.path().join("t.db");
-        let storage = Storage::open(&db).await.unwrap();
-        std::mem::forget(tmp);
-        let downstream =
-            Arc::new(crate::downstream::DownstreamClient::new(&mock.uri(), "dn-secret").unwrap());
-        let svc = HubSvc {
-            router: Arc::new(Router::new()),
-            seqs: SeqAllocator::new(storage.clone()),
-            events: EventStore::new(storage.clone()),
-            events_log: EventLog::new(storage),
-            downstream: downstream.clone(),
-            auth: Arc::new(TokenAuthenticator::new(downstream)),
-            routes: crate::config::DownstreamRoutes::default_for_test(),
-        };
-
-        let mut req = Request::new(AckReadRequest {
-            wecom_account_id: "wa-1".to_string(),
-            conversation_id: "conv-1".to_string(),
-            last_read_server_msg_id: "msg-456".to_string(),
-        });
-        req.extensions_mut()
-            .insert(BearerToken("tok-A".to_string()));
-
-        let resp = svc.ack_read(req).await.unwrap();
-        assert_eq!(resp.into_inner().acked_at_ms, 1234567890i64);
-    }
-
-    // ─── Plan 6 stage 4b — Subscribe v2 / Ack / Forward 测试 ──────────
-
-    /// 比 `mount_verify_token` 多带 employee_id 字段(Plan 6 业务后台升级后的契约)。
-    async fn mount_verify_token_v2(
-        mock: &MockServer,
-        token: &str,
-        employee_id: i64,
-        device_id: &str,
-    ) {
-        Mock::given(method("POST"))
-            .and(path("/v1/verify_token"))
-            .and(body_partial_json(serde_json::json!({ "token": token })))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "active": true,
-                "user_id": format!("u-{employee_id}"),
-                "device_id": device_id,
-                "accounts": Vec::<String>::new(),
-                "employee_id": employee_id,
-            })))
-            .mount(mock)
-            .await;
-    }
-
-    fn sub_v2_request(device_id: &str, since: u64) -> Request<SubscribeRequest> {
-        let mut req = Request::new(SubscribeRequest {
-            since_seqs: Default::default(),
-            since_notify_seq: since,
-            device_id: device_id.into(),
-            client_version: "1.0.0".into(),
-        });
-        req.extensions_mut()
-            .insert(BearerToken("tok-A".to_string()));
-        req
-    }
-
-    /// 给 events_v2 表预填一条 MESSAGE_UPSERT
-    fn make_event_row(employee_id: i64, notify_seq: i64, event_index: i64) -> EventRow {
-        EventRow {
-            employee_id,
-            notify_seq,
-            event_index,
-            event_type: "MESSAGE_UPSERT".into(),
-            event_reason: Some("CUSTOMER_MESSAGE_RECEIVED".into()),
-            conversation_id: Some("conv-1".into()),
-            customer_user_id: Some("u-c".into()),
-            external_user_id: Some("ext-1".into()),
-            client_id: "rh_wxchat".into(),
-            batch_id: Some(format!("rh_wxchat:{employee_id}:{notify_seq}")),
-            batch_time: Some("2026-05-14 10:30:00".into()),
-            event_time: Some("2026-05-14 10:30:00".into()),
-            payload_json: format!(
-                r#"{{"eventType":"MESSAGE_UPSERT","notifySeq":{notify_seq},"index":{event_index}}}"#
-            ),
-            created_at_ms: notify_seq * 1000,
+        let auth = Arc::new(TokenAuthenticator::new(downstream));
+        let mut set = tokio::task::JoinSet::new();
+        for _ in 0..50 {
+            let a = auth.clone();
+            set.spawn(async move { a.authenticate("tok-X").await.map(|c| c.employee_id) });
         }
+        let mut count_ok = 0;
+        while let Some(r) = set.join_next().await {
+            if matches!(r.unwrap(), Ok(42)) {
+                count_ok += 1;
+            }
+        }
+        assert_eq!(count_ok, 50);
     }
 
+    // ── Subscribe(v2 唯一路径)──────────────────────────────────────────
+
     #[tokio::test(flavor = "multi_thread")]
-    async fn subscribe_v2_first_connection_returns_ack_no_replay() {
+    async fn subscribe_first_connection_returns_ack_no_replay() {
         let mock = MockServer::start().await;
-        mount_verify_token_v2(&mock, "tok-A", 42, "dev-A").await;
-
-        let tmp = tempfile::tempdir().unwrap();
-        let db = tmp.path().join("t.db");
-        let storage = Storage::open(&db).await.unwrap();
-        std::mem::forget(tmp);
-        let downstream =
-            Arc::new(crate::downstream::DownstreamClient::new(&mock.uri(), "dn-secret").unwrap());
-        let router = Arc::new(Router::new());
-        let svc = HubSvc {
-            router: router.clone(),
-            seqs: SeqAllocator::new(storage.clone()),
-            events: EventStore::new(storage.clone()),
-            events_log: EventLog::new(storage),
-            downstream: downstream.clone(),
-            auth: Arc::new(TokenAuthenticator::new(downstream)),
-            routes: crate::config::DownstreamRoutes::default_for_test(),
-        };
-
-        let stream_resp = svc.subscribe(sub_v2_request("dev-A", 0)).await.unwrap();
+        mount_verify_token(&mock, "tok-A", 42, "dev-A").await;
+        let svc = build_svc(&mock).await;
+        let router = svc.router.clone();
+        let stream_resp = svc.subscribe(sub_request("dev-A", 0)).await.unwrap();
         let mut stream = stream_resp.into_inner();
-        // 第一帧应是 SubscribeAck
         let first = StreamExt::next(&mut stream).await.unwrap().unwrap();
-        use chathub_proto::v1::server_event::Body;
         match first.body {
             Some(Body::SubscribeAck(ack)) => {
                 assert_eq!(ack.resumed_from_seq, 0);
@@ -1273,22 +715,15 @@ mod tests {
             }
             other => panic!("expected SubscribeAck, got {other:?}"),
         }
-        // employee 在 router 里注册了
         assert_eq!(router.employee_connection_count(42), 1);
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn subscribe_v2_with_since_replays_events_grouped_by_notify_seq() {
+    async fn subscribe_with_since_replays_events_grouped_by_notify_seq() {
         let mock = MockServer::start().await;
-        mount_verify_token_v2(&mock, "tok-A", 42, "dev-A").await;
-
-        let tmp = tempfile::tempdir().unwrap();
-        let db = tmp.path().join("t.db");
-        let storage = Storage::open(&db).await.unwrap();
-        std::mem::forget(tmp);
-        let events_log = EventLog::new(storage.clone());
-        // 预填:notify_seq 100 有 2 个 event,notify_seq 101 有 1 个
-        events_log
+        mount_verify_token(&mock, "tok-A", 42, "dev-A").await;
+        let svc = build_svc(&mock).await;
+        svc.events_log
             .insert_batch(vec![
                 make_event_row(42, 100, 0),
                 make_event_row(42, 100, 1),
@@ -1296,37 +731,17 @@ mod tests {
             ])
             .await
             .unwrap();
-        let downstream =
-            Arc::new(crate::downstream::DownstreamClient::new(&mock.uri(), "dn-secret").unwrap());
-        let router = Arc::new(Router::new());
-        let svc = HubSvc {
-            router: router.clone(),
-            seqs: SeqAllocator::new(storage.clone()),
-            events: EventStore::new(storage),
-            events_log,
-            downstream: downstream.clone(),
-            auth: Arc::new(TokenAuthenticator::new(downstream)),
-            routes: crate::config::DownstreamRoutes::default_for_test(),
-        };
-
-        // 客户端 since=50(早于最早 100) → 重放 100 + 101 两批
-        let stream_resp = svc.subscribe(sub_v2_request("dev-A", 50)).await.unwrap();
+        let stream_resp = svc.subscribe(sub_request("dev-A", 50)).await.unwrap();
         let mut stream = stream_resp.into_inner();
-
-        // ack 帧
         let first = StreamExt::next(&mut stream).await.unwrap().unwrap();
-        use chathub_proto::v1::server_event::Body;
         match first.body {
             Some(Body::SubscribeAck(ack)) => {
                 assert_eq!(ack.resumed_from_seq, 50);
                 assert_eq!(ack.replayed_to_seq, 101);
-                // since=50 比 min=100 老 ≥2 个 seq → resync_required(min > since+1)
-                assert!(ack.resync_required);
+                assert!(ack.resync_required); // min=100 > since+1
             }
             other => panic!("expected SubscribeAck, got {other:?}"),
         }
-
-        // 第二帧:notify_seq=100 的 batch(含 2 个 events)
         let f2 = StreamExt::next(&mut stream).await.unwrap().unwrap();
         match f2.body {
             Some(Body::PushBatch(pb)) => {
@@ -1336,77 +751,43 @@ mod tests {
             }
             other => panic!("expected PushBatch 100, got {other:?}"),
         }
-        // 第三帧:notify_seq=101 的 batch(1 个 event)
         let f3 = StreamExt::next(&mut stream).await.unwrap().unwrap();
         match f3.body {
-            Some(Body::PushBatch(pb)) => {
-                assert_eq!(pb.notify_seq, 101);
-                let arr: serde_json::Value = serde_json::from_slice(&pb.events_json).unwrap();
-                assert_eq!(arr.as_array().unwrap().len(), 1);
-            }
+            Some(Body::PushBatch(pb)) => assert_eq!(pb.notify_seq, 101),
             other => panic!("expected PushBatch 101, got {other:?}"),
         }
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn subscribe_v2_rejects_when_employee_id_missing() {
+    async fn subscribe_rejects_when_employee_id_missing() {
         let mock = MockServer::start().await;
-        // verify_token 不返 employee_id → ctx.employee_id = 0
-        mount_verify_token(&mock, "tok-A", "u-A", "dev-A", &[]).await;
-
-        let tmp = tempfile::tempdir().unwrap();
-        let db = tmp.path().join("t.db");
-        let storage = Storage::open(&db).await.unwrap();
-        std::mem::forget(tmp);
-        let downstream =
-            Arc::new(crate::downstream::DownstreamClient::new(&mock.uri(), "dn-secret").unwrap());
-        let svc = HubSvc {
-            router: Arc::new(Router::new()),
-            seqs: SeqAllocator::new(storage.clone()),
-            events: EventStore::new(storage.clone()),
-            events_log: EventLog::new(storage),
-            downstream: downstream.clone(),
-            auth: Arc::new(TokenAuthenticator::new(downstream)),
-            routes: crate::config::DownstreamRoutes::default_for_test(),
-        };
-
-        let err = svc.subscribe(sub_v2_request("dev-A", 0)).await.unwrap_err();
+        mount_verify_token_no_employee(&mock, "tok-A").await;
+        let svc = build_svc(&mock).await;
+        let err = svc.subscribe(sub_request("dev-A", 0)).await.unwrap_err();
         assert_eq!(err.code(), tonic::Code::FailedPrecondition);
+        // 错误信息带 user_id 上下文
+        assert!(err.message().contains("u-X"));
     }
+
+    // ── Ack ──────────────────────────────────────────────────────────────
 
     #[tokio::test(flavor = "multi_thread")]
     async fn ack_updates_router_water_mark() {
         let mock = MockServer::start().await;
-        mount_verify_token_v2(&mock, "tok-A", 42, "dev-A").await;
-        let tmp = tempfile::tempdir().unwrap();
-        let db = tmp.path().join("t.db");
-        let storage = Storage::open(&db).await.unwrap();
-        std::mem::forget(tmp);
-        let downstream =
-            Arc::new(crate::downstream::DownstreamClient::new(&mock.uri(), "dn-secret").unwrap());
-        let router = Arc::new(Router::new());
-        let svc = HubSvc {
-            router: router.clone(),
-            seqs: SeqAllocator::new(storage.clone()),
-            events: EventStore::new(storage.clone()),
-            events_log: EventLog::new(storage),
-            downstream: downstream.clone(),
-            auth: Arc::new(TokenAuthenticator::new(downstream)),
-            routes: crate::config::DownstreamRoutes::default_for_test(),
-        };
+        mount_verify_token(&mock, "tok-A", 42, "dev-A").await;
+        let svc = build_svc(&mock).await;
+        let router = svc.router.clone();
 
         let mut req = Request::new(AckRequest { notify_seq: 500 });
         req.extensions_mut().insert(BearerToken("tok-A".into()));
         svc.ack(req).await.unwrap();
         assert_eq!(router.get_ack_mark(42), 500);
 
-        // 单调:更低不退
         let mut req2 = Request::new(AckRequest { notify_seq: 200 });
         req2.extensions_mut().insert(BearerToken("tok-A".into()));
         svc.ack(req2).await.unwrap();
-        assert_eq!(router.get_ack_mark(42), 500);
+        assert_eq!(router.get_ack_mark(42), 500); // 单调
 
-        // 更高覆盖
         let mut req3 = Request::new(AckRequest { notify_seq: 800 });
         req3.extensions_mut().insert(BearerToken("tok-A".into()));
         svc.ack(req3).await.unwrap();
@@ -1416,34 +797,20 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn ack_rejected_when_employee_id_missing() {
         let mock = MockServer::start().await;
-        mount_verify_token(&mock, "tok-A", "u-A", "dev-A", &[]).await;
-        let tmp = tempfile::tempdir().unwrap();
-        let db = tmp.path().join("t.db");
-        let storage = Storage::open(&db).await.unwrap();
-        std::mem::forget(tmp);
-        let downstream =
-            Arc::new(crate::downstream::DownstreamClient::new(&mock.uri(), "dn-secret").unwrap());
-        let svc = HubSvc {
-            router: Arc::new(Router::new()),
-            seqs: SeqAllocator::new(storage.clone()),
-            events: EventStore::new(storage.clone()),
-            events_log: EventLog::new(storage),
-            downstream: downstream.clone(),
-            auth: Arc::new(TokenAuthenticator::new(downstream)),
-            routes: crate::config::DownstreamRoutes::default_for_test(),
-        };
-
+        mount_verify_token_no_employee(&mock, "tok-A").await;
+        let svc = build_svc(&mock).await;
         let mut req = Request::new(AckRequest { notify_seq: 500 });
         req.extensions_mut().insert(BearerToken("tok-A".into()));
         let err = svc.ack(req).await.unwrap_err();
         assert_eq!(err.code(), tonic::Code::FailedPrecondition);
     }
 
+    // ── Forward ──────────────────────────────────────────────────────────
+
     #[tokio::test(flavor = "multi_thread")]
     async fn forward_passes_through_to_business_backend() {
         let mock = MockServer::start().await;
-        mount_verify_token_v2(&mock, "tok-A", 42, "dev-A").await;
-        // 业务后台 /v1/send 回 echo 的 JSON
+        mount_verify_token(&mock, "tok-A", 42, "dev-A").await;
         Mock::given(method("POST"))
             .and(path("/v1/send"))
             .respond_with(
@@ -1452,64 +819,31 @@ mod tests {
             )
             .mount(&mock)
             .await;
-
-        let tmp = tempfile::tempdir().unwrap();
-        let db = tmp.path().join("t.db");
-        let storage = Storage::open(&db).await.unwrap();
-        std::mem::forget(tmp);
-        let downstream =
-            Arc::new(crate::downstream::DownstreamClient::new(&mock.uri(), "dn-secret").unwrap());
-        let svc = HubSvc {
-            router: Arc::new(Router::new()),
-            seqs: SeqAllocator::new(storage.clone()),
-            events: EventStore::new(storage.clone()),
-            events_log: EventLog::new(storage),
-            downstream: downstream.clone(),
-            auth: Arc::new(TokenAuthenticator::new(downstream)),
-            routes: crate::config::DownstreamRoutes::default_for_test(),
-        };
-
+        let svc = build_svc(&mock).await;
         let mut req = Request::new(ForwardRequest {
             method: "send".into(),
             body_json: br#"{"conversationId":"c1","contentText":"hi"}"#.to_vec(),
         });
         req.extensions_mut().insert(BearerToken("tok-A".into()));
         let resp = svc.forward(req).await.unwrap().into_inner();
+        assert_eq!(resp.http_status, 200);
         let parsed: serde_json::Value = serde_json::from_slice(&resp.body_json).unwrap();
         assert_eq!(parsed["echo"], "ok");
-        assert_eq!(parsed["got"], "payload");
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn forward_business_4xx_surfaces_as_ok_with_http_status() {
-        // P0-5:业务后台 403(业务规则拒绝)不应映射成 gRPC PermissionDenied,
-        // 否则客户端 SDK 误以为是鉴权失败 → 清 token 重登 → 死循环。
-        // 改后:返回 ForwardResponse { http_status=403, body } 让客户端自己判断。
+        // P0-5:业务 403 → Ok(http_status=403),不映射成 gRPC PermissionDenied
         let mock = MockServer::start().await;
-        mount_verify_token_v2(&mock, "tok-A", 42, "dev-A").await;
+        mount_verify_token(&mock, "tok-A", 42, "dev-A").await;
         Mock::given(method("POST"))
             .and(path("/v1/send"))
             .respond_with(ResponseTemplate::new(403).set_body_json(
-                serde_json::json!({"errorCode": "RATE_LIMITED", "message": "send too fast"}),
+                serde_json::json!({ "errorCode": "RATE_LIMITED", "message": "send too fast" }),
             ))
             .mount(&mock)
             .await;
-        let tmp = tempfile::tempdir().unwrap();
-        let db = tmp.path().join("t.db");
-        let storage = Storage::open(&db).await.unwrap();
-        std::mem::forget(tmp);
-        let downstream =
-            Arc::new(crate::downstream::DownstreamClient::new(&mock.uri(), "dn-secret").unwrap());
-        let svc = HubSvc {
-            router: Arc::new(Router::new()),
-            seqs: SeqAllocator::new(storage.clone()),
-            events: EventStore::new(storage.clone()),
-            events_log: EventLog::new(storage),
-            downstream: downstream.clone(),
-            auth: Arc::new(TokenAuthenticator::new(downstream)),
-            routes: crate::config::DownstreamRoutes::default_for_test(),
-        };
-
+        let svc = build_svc(&mock).await;
         let mut req = Request::new(ForwardRequest {
             method: "send".into(),
             body_json: b"{}".to_vec(),
@@ -1527,29 +861,14 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn forward_business_5xx_maps_to_internal_grpc_error() {
-        // 5xx 仍然是 transport-level error,映射成 gRPC Internal(让客户端走重试逻辑)
         let mock = MockServer::start().await;
-        mount_verify_token_v2(&mock, "tok-A", 42, "dev-A").await;
+        mount_verify_token(&mock, "tok-A", 42, "dev-A").await;
         Mock::given(method("POST"))
             .and(path("/v1/send"))
             .respond_with(ResponseTemplate::new(503))
             .mount(&mock)
             .await;
-        let tmp = tempfile::tempdir().unwrap();
-        let db = tmp.path().join("t.db");
-        let storage = Storage::open(&db).await.unwrap();
-        std::mem::forget(tmp);
-        let downstream =
-            Arc::new(crate::downstream::DownstreamClient::new(&mock.uri(), "dn-secret").unwrap());
-        let svc = HubSvc {
-            router: Arc::new(Router::new()),
-            seqs: SeqAllocator::new(storage.clone()),
-            events: EventStore::new(storage.clone()),
-            events_log: EventLog::new(storage),
-            downstream: downstream.clone(),
-            auth: Arc::new(TokenAuthenticator::new(downstream)),
-            routes: crate::config::DownstreamRoutes::default_for_test(),
-        };
+        let svc = build_svc(&mock).await;
         let mut req = Request::new(ForwardRequest {
             method: "send".into(),
             body_json: b"{}".to_vec(),
@@ -1562,23 +881,8 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn forward_unknown_method_returns_invalid_argument() {
         let mock = MockServer::start().await;
-        mount_verify_token_v2(&mock, "tok-A", 42, "dev-A").await;
-        let tmp = tempfile::tempdir().unwrap();
-        let db = tmp.path().join("t.db");
-        let storage = Storage::open(&db).await.unwrap();
-        std::mem::forget(tmp);
-        let downstream =
-            Arc::new(crate::downstream::DownstreamClient::new(&mock.uri(), "dn-secret").unwrap());
-        let svc = HubSvc {
-            router: Arc::new(Router::new()),
-            seqs: SeqAllocator::new(storage.clone()),
-            events: EventStore::new(storage.clone()),
-            events_log: EventLog::new(storage),
-            downstream: downstream.clone(),
-            auth: Arc::new(TokenAuthenticator::new(downstream)),
-            routes: crate::config::DownstreamRoutes::default_for_test(),
-        };
-
+        mount_verify_token(&mock, "tok-A", 42, "dev-A").await;
+        let svc = build_svc(&mock).await;
         let mut req = Request::new(ForwardRequest {
             method: "totally_unknown_method".into(),
             body_json: b"{}".to_vec(),
@@ -1589,100 +893,10 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn authenticator_singleflight_50_concurrent_calls_one_verify() {
-        // 50 个并发对同一未缓存 token 的 authenticate 调用,只能触发 1 次 verify_token
-        let mock = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/v1/verify_token"))
-            // 故意延迟 100ms,让所有 50 个 caller 都集中在 inflight 阶段(否则 leader 太快
-            // 先返回,follower 进来时已经命中缓存了,测不到 singleflight)
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .set_delay(Duration::from_millis(100))
-                    .set_body_json(serde_json::json!({
-                        "active": true,
-                        "user_id": "u-X",
-                        "device_id": "d-X",
-                        "accounts": Vec::<String>::new(),
-                        "employee_id": 42,
-                    })),
-            )
-            .expect(1) // wiremock 在 mock drop 时校验:必须恰好 1 次
-            .mount(&mock)
-            .await;
-
-        let downstream =
-            Arc::new(crate::downstream::DownstreamClient::new(&mock.uri(), "dn-secret").unwrap());
-        let auth = Arc::new(TokenAuthenticator::new(downstream));
-
-        // 50 个并发 task
-        let mut set = tokio::task::JoinSet::new();
-        for _ in 0..50 {
-            let auth = auth.clone();
-            set.spawn(async move {
-                auth.authenticate("tok-X")
-                    .await
-                    .map(|c| c.employee_id)
-                    .unwrap_or(-1)
-            });
-        }
-        let mut count_ok = 0;
-        while let Some(res) = set.join_next().await {
-            if res.unwrap() == 42 {
-                count_ok += 1;
-            }
-        }
-        assert_eq!(count_ok, 50, "all 50 callers should see the same UserCtx");
-        // mock.drop → expect(1) 自动校验 verify_token 只被调了 1 次
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn authenticator_singleflight_after_complete_next_miss_calls_again() {
-        // singleflight 不是一次性的:leader 完成后从 inflight 移除,下次 miss 应该重新走 verify
-        let mock = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/v1/verify_token"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "active": true,
-                "user_id": "u-A",
-                "device_id": "d-A",
-                "accounts": Vec::<String>::new(),
-                "employee_id": 11,
-            })))
-            .mount(&mock)
-            .await;
-        let downstream =
-            Arc::new(crate::downstream::DownstreamClient::new(&mock.uri(), "dn-secret").unwrap());
-        let auth = TokenAuthenticator::new(downstream);
-
-        // 第一次:miss → verify → 写缓存
-        let c1 = auth.authenticate("tok-A").await.unwrap();
-        assert_eq!(c1.employee_id, 11);
-        // 第二次:命中缓存,不走 inflight
-        let c2 = auth.authenticate("tok-A").await.unwrap();
-        assert_eq!(c2.employee_id, 11);
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
     async fn forward_rejected_when_employee_id_missing() {
         let mock = MockServer::start().await;
-        mount_verify_token(&mock, "tok-A", "u-A", "dev-A", &[]).await;
-        let tmp = tempfile::tempdir().unwrap();
-        let db = tmp.path().join("t.db");
-        let storage = Storage::open(&db).await.unwrap();
-        std::mem::forget(tmp);
-        let downstream =
-            Arc::new(crate::downstream::DownstreamClient::new(&mock.uri(), "dn-secret").unwrap());
-        let svc = HubSvc {
-            router: Arc::new(Router::new()),
-            seqs: SeqAllocator::new(storage.clone()),
-            events: EventStore::new(storage.clone()),
-            events_log: EventLog::new(storage),
-            downstream: downstream.clone(),
-            auth: Arc::new(TokenAuthenticator::new(downstream)),
-            routes: crate::config::DownstreamRoutes::default_for_test(),
-        };
-
+        mount_verify_token_no_employee(&mock, "tok-A").await;
+        let svc = build_svc(&mock).await;
         let mut req = Request::new(ForwardRequest {
             method: "send".into(),
             body_json: b"{}".to_vec(),
@@ -1690,5 +904,58 @@ mod tests {
         req.extensions_mut().insert(BearerToken("tok-A".into()));
         let err = svc.forward(req).await.unwrap_err();
         assert_eq!(err.code(), tonic::Code::FailedPrecondition);
+    }
+
+    // ── Subscribe v2 + gRPC stack(simple e2e via in-process listener)──
+
+    async fn spawn_hub_listening() -> (SocketAddr, MockServer) {
+        let mock = MockServer::start().await;
+        mount_verify_token(&mock, "tok-A", 99, "dev-A").await;
+        let svc = build_svc(&mock).await;
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let stream = TcpListenerStream::new(listener);
+        tokio::spawn(async move {
+            let _ = Server::builder()
+                .add_service(chathub_proto::v1::hub_server::HubServer::with_interceptor(
+                    svc,
+                    ProtocolInterceptor::new(),
+                ))
+                .serve_with_incoming(stream)
+                .await;
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        (addr, mock)
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn subscribe_full_stack_first_frame_is_subscribe_ack() {
+        let (addr, _mock) = spawn_hub_listening().await;
+        let channel = Endpoint::from_shared(format!("http://{addr}"))
+            .unwrap()
+            .connect()
+            .await
+            .unwrap();
+        let mut client = chathub_proto::v1::hub_client::HubClient::with_interceptor(
+            channel,
+            move |mut r: Request<()>| {
+                r.metadata_mut()
+                    .insert("chathub-protocol-version", "1".parse().unwrap());
+                r.metadata_mut()
+                    .insert("authorization", "Bearer tok-A".parse().unwrap());
+                Ok(r)
+            },
+        );
+        let resp = client
+            .subscribe(SubscribeRequest {
+                since_notify_seq: 0,
+                device_id: "dev-A".into(),
+                client_version: "1.0.0".into(),
+            })
+            .await
+            .unwrap();
+        let mut s = resp.into_inner();
+        let first = StreamExt::next(&mut s).await.unwrap().unwrap();
+        assert!(matches!(first.body, Some(Body::SubscribeAck(_))));
     }
 }

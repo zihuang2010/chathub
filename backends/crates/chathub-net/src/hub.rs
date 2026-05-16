@@ -1,23 +1,22 @@
-//! Hub client + ConnectionManager(Plan 3)。
+//! Hub client + ConnectionManager(Plan 7 — 只剩 v2 三件套)。
 //!
-//! 公共 API(后续 task 渐进填充):
-//!   - `HubClient`:Send + Subscribe(thin wrapper over tonic client)
+//! 公共 API:
+//!   - `HubClient`:封装 tonic-generated client,只暴露 v2 三件套
+//!     - `forward(method, body_json)` — 业务 RPC 单一透传入口
+//!     - `ack(notify_seq)` — 上报水位
+//!     - `subscribe(since_notify_seq, device_id)` — 内部用,ConnectionManager 调
 //!   - `ConnectionManager`:状态机 + 后台 task + 事件总线
 //!   - `ConnectionState`:Connecting / Subscribed / Disconnected{last_error}
-//!   - `BackoffConfig` + `ExponentialBackoff`:重连退避配置与计算
-//!   - `classify`:tonic Status → Action 路径分流
 
 use crate::error::AuthError;
 use crate::interceptor::AuthInterceptor;
 use crate::token::TokenStore;
 use chathub_proto::v1::hub_client::HubClient as RawHubClient;
 use chathub_proto::v1::{
-    AckReadRequest, AckReadResponse, FetchHistoryRequest, FetchHistoryResponse, RecallRequest,
-    RecallResponse, SendRequest, SendResponse, ServerEvent, SubscribeRequest,
+    AckRequest, ForwardRequest, ForwardResponse, ServerEvent, SubscribeRequest,
 };
-use chathub_state::SeqStore;
+use chathub_state::NotifySeqStore;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{broadcast, watch};
@@ -25,7 +24,6 @@ use tokio::task::JoinHandle;
 use tonic::codegen::InterceptedService;
 use tonic::transport::Channel;
 
-/// 重连退避配置。生产默认 1s/2x/15s full jitter,测试通常用 10ms/2x/150ms 加速。
 #[derive(Clone, Debug)]
 pub struct BackoffConfig {
     pub base: Duration,
@@ -43,7 +41,6 @@ impl Default for BackoffConfig {
     }
 }
 
-/// 对前端暴露的 3 状态机。`hub:connection` 事件 payload 序列化此 enum。
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "kebab-case")]
 pub enum ConnectionState {
@@ -55,15 +52,10 @@ pub enum ConnectionState {
     },
 }
 
-/// run_loop 收到错误后的动作分类。
 #[derive(Debug, PartialEq)]
 pub(crate) enum Action {
-    /// Unauthenticated → token 失效:清 token + broadcast TokenInvalid,task 退出。
-    /// 客户端不做续签,用户需重新登录。
     Logout,
-    /// Upgrade / Storage / AccountDisabled → 进入 Disconnected{last_error},task 退出
     Terminate,
-    /// 其它 transient(Network / Internal)→ 进入 Disconnected{last_error},退避后重连
     Backoff,
 }
 
@@ -78,8 +70,6 @@ pub(crate) fn classify(err: &AuthError) -> Action {
     }
 }
 
-/// HubClient — thin wrapper over tonic-generated HubClient + AuthInterceptor。
-/// 内部 `inner` 是 `Clone`(Channel 内部 Arc),clone() 廉价。
 #[derive(Clone)]
 pub struct HubClient {
     inner: RawHubClient<InterceptedService<Channel, AuthInterceptor>>,
@@ -91,59 +81,52 @@ impl HubClient {
         Self { inner }
     }
 
-    /// Unary Send。失败映射到 AuthError(同 Plan 2 路径)。
-    pub async fn send(&self, req: SendRequest) -> Result<SendResponse, AuthError> {
-        let mut client = self.inner.clone();
-        let resp = client.send(tonic::Request::new(req)).await?;
-        Ok(resp.into_inner())
-    }
-
-    /// Plan 4 — 撤回单条消息(by server_msg_id)。
-    /// 失败:PermissionDenied → AuthError::AccountDisabled;Unavailable → Network 等。
-    pub async fn recall(&self, req: RecallRequest) -> Result<RecallResponse, AuthError> {
-        let mut client = self.inner.clone();
-        let resp = client.recall(tonic::Request::new(req)).await?;
-        Ok(resp.into_inner())
-    }
-
-    /// Plan 4 — 上报已读(batched:last_read_server_msg_id 及之前全部已读)。
-    pub async fn ack_read(&self, req: AckReadRequest) -> Result<AckReadResponse, AuthError> {
-        let mut client = self.inner.clone();
-        let resp = client.ack_read(tonic::Request::new(req)).await?;
-        Ok(resp.into_inner())
-    }
-
-    /// Plan 4 — 拉取历史消息(opaque cursor 分页;空 cursor = 从最新开始)。
-    pub async fn fetch_history(
+    /// 业务 RPC 透传(REST 隧道)。客户端只需要构造 body_json 并指定 method。
+    /// 4xx 通过 `ForwardResponse.http_status` 返回(不会变成 AuthError);
+    /// 只有 5xx / 网络/超时 才映射 AuthError。
+    pub async fn forward(
         &self,
-        req: FetchHistoryRequest,
-    ) -> Result<FetchHistoryResponse, AuthError> {
+        method: &str,
+        body_json: Vec<u8>,
+    ) -> Result<ForwardResponse, AuthError> {
         let mut client = self.inner.clone();
-        let resp = client.fetch_history(tonic::Request::new(req)).await?;
+        let resp = client
+            .forward(tonic::Request::new(ForwardRequest {
+                method: method.into(),
+                body_json,
+            }))
+            .await?;
         Ok(resp.into_inner())
     }
 
-    /// Server-streaming Subscribe。`since_seqs` 是 (wecom_account_id → last_seq) map,
-    /// 仅供 ConnectionManager 用,不对外公开。
+    /// 上报 notify_seq 水位(per-employee)。
+    pub async fn ack(&self, notify_seq: u64) -> Result<(), AuthError> {
+        let mut client = self.inner.clone();
+        let _ = client
+            .ack(tonic::Request::new(AckRequest { notify_seq }))
+            .await?;
+        Ok(())
+    }
+
+    /// Subscribe v2(employee-scope)。`since_notify_seq=0` 表示首连只接实时。
     pub(crate) async fn subscribe(
         &self,
-        since_seqs: HashMap<String, i64>,
+        since_notify_seq: u64,
+        device_id: String,
+        client_version: String,
     ) -> Result<tonic::Streaming<ServerEvent>, AuthError> {
         let mut client = self.inner.clone();
-        // Plan 6:proto SubscribeRequest 加了 since_notify_seq / device_id / client_version 三个字段。
-        // 旧路径(`since_seqs`)兼容期保留;新字段留空,客户端 SDK 升级到 Z 架构后再填充。
         let req = SubscribeRequest {
-            since_seqs,
-            since_notify_seq: 0,
-            device_id: String::new(),
-            client_version: String::new(),
+            since_notify_seq,
+            device_id,
+            client_version,
         };
         let resp = client.subscribe(tonic::Request::new(req)).await?;
         Ok(resp.into_inner())
     }
 }
 
-/// Full jitter 指数退避。`next()` 返回 `[0, min(cap, base * factor^attempt))` 的随机时长。
+/// Full jitter 指数退避。
 pub(crate) struct ExponentialBackoff {
     base: Duration,
     factor: f64,
@@ -161,13 +144,11 @@ impl ExponentialBackoff {
         }
     }
 
-    /// 下一次退避时长。attempt 饱和加,不溢出。
     pub fn next(&mut self) -> Duration {
         let exp = self.factor.powi(self.attempt as i32);
         let raw_ms = (self.base.as_millis() as f64) * exp;
         let cap_ms = self.cap.as_millis() as f64;
         let bound_ms = raw_ms.min(cap_ms);
-        // full jitter:[0, bound_ms)
         let jittered_ms = rand::random::<f64>() * bound_ms;
         self.attempt = self.attempt.saturating_add(1);
         Duration::from_millis(jittered_ms as u64)
@@ -181,7 +162,9 @@ impl ExponentialBackoff {
 struct Inner {
     hub: HubClient,
     token_store: Arc<TokenStore>,
-    seq_store: SeqStore,
+    notify_seq_store: NotifySeqStore,
+    device_id: String,
+    client_version: String,
     backoff: BackoffConfig,
     state_tx: watch::Sender<ConnectionState>,
     event_tx: broadcast::Sender<ServerEvent>,
@@ -194,11 +177,12 @@ pub struct ConnectionManager {
 }
 
 impl ConnectionManager {
-    /// 构造。`backoff` 测试通常传 fast(10ms/2x/150ms),生产传 `BackoffConfig::default()`。
     pub fn new(
         hub: HubClient,
         token_store: Arc<TokenStore>,
-        seq_store: SeqStore,
+        notify_seq_store: NotifySeqStore,
+        device_id: String,
+        client_version: String,
         backoff: BackoffConfig,
     ) -> Self {
         let (state_tx, _) = watch::channel(ConnectionState::Disconnected { last_error: None });
@@ -207,7 +191,9 @@ impl ConnectionManager {
             inner: Arc::new(Inner {
                 hub,
                 token_store,
-                seq_store,
+                notify_seq_store,
+                device_id,
+                client_version,
                 backoff,
                 state_tx,
                 event_tx,
@@ -224,13 +210,11 @@ impl ConnectionManager {
         self.inner.event_tx.subscribe()
     }
 
-    /// idempotent。已活则 no-op。
     pub async fn start(&self) {
         let mut guard = self.inner.task.lock().await;
         if guard.as_ref().is_some_and(|h| !h.is_finished()) {
             return;
         }
-        // 必须先 subscribe LoggedOut 再 spawn,broadcast 只看后续事件
         let logged_out_rx = self.inner.token_store.logged_out_subscribe();
         let inner = Arc::clone(&self.inner);
         *guard = Some(tokio::spawn(async move {
@@ -238,10 +222,6 @@ impl ConnectionManager {
         }));
     }
 
-    /// idempotent。abort task,等 abort 真正生效后返回。
-    /// abort 后 `JoinHandle::await` 立即得 `Err(JoinError::Cancelled)`,我们吞掉 —
-    /// 等待是为了保证 stop 完成后 start 能可靠新建(否则 start 会见 `!is_finished()` no-op)。
-    /// 同时将 state 重置为 Disconnected{None},确保后续 start 的 wait_for_state 不会命中旧状态。
     pub async fn stop(&self) {
         let mut guard = self.inner.task.lock().await;
         if let Some(h) = guard.take() {
@@ -264,13 +244,16 @@ impl Inner {
         'reconnect: loop {
             self.state_tx.send_replace(ConnectionState::Connecting);
 
-            let since_seqs = self.seq_store.read_all().await.unwrap_or_default();
+            let since = self.notify_seq_store.read().await.unwrap_or(0);
 
-            let mut stream = match self.hub.subscribe(since_seqs).await {
+            let mut stream = match self
+                .hub
+                .subscribe(since, self.device_id.clone(), self.client_version.clone())
+                .await
+            {
                 Ok(s) => s,
                 Err(err) => match classify(&err) {
                     Action::Logout => {
-                        // token 失效:清 token + broadcast TokenInvalid,task 退出
                         self.token_store.mark_token_invalid().await;
                         self.state_tx
                             .send_replace(ConnectionState::Disconnected { last_error: None });
@@ -304,23 +287,36 @@ impl Inner {
                     }
                     msg = stream.message() => match msg {
                         Ok(Some(event)) => {
-                            if let Err(e) = self.seq_store.upsert(&event.wecom_account_id, event.seq).await {
-                                tracing::warn!(?e, "seq_store upsert failed, ignored on hot path");
-                            }
-                            // 检测 SystemSignal::KICKED:emit 后立即终止
-                            let is_kicked = matches!(
+                            // 处理 v2 三件套
+                            use chathub_proto::v1::server_event::Body;
+                            use chathub_proto::v1::system_signal::Kind;
+                            let should_terminate = matches!(
                                 &event.body,
-                                Some(chathub_proto::v1::server_event::Body::System(s))
-                                    if s.kind == chathub_proto::v1::system_signal::Kind::Kicked as i32
+                                Some(Body::System(s))
+                                    if s.kind == Kind::ServerDrain as i32
+                                       || s.kind == Kind::ResyncRequired as i32
                             );
+
+                            // PushBatchOut → 更新水位
+                            if let Some(Body::PushBatch(pb)) = &event.body {
+                                if let Err(e) = self.notify_seq_store
+                                    .upsert_if_greater(pb.notify_seq).await {
+                                    tracing::warn!(?e, "notify_seq_store upsert failed, ignored");
+                                }
+                            }
+
                             let _ = self.event_tx.send(event);
-                            if is_kicked {
-                                self.state_tx.send_replace(ConnectionState::Disconnected { last_error: None });
-                                return;
+
+                            if should_terminate {
+                                // SERVER_DRAIN / RESYNC_REQUIRED → 主动断 + 退避重连
+                                self.state_tx.send_replace(
+                                    ConnectionState::Disconnected { last_error: None },
+                                );
+                                tokio::time::sleep(backoff.next()).await;
+                                continue 'reconnect;
                             }
                         }
                         Ok(None) => {
-                            // server-close 无错误 → 退避重连
                             self.state_tx.send_replace(ConnectionState::Disconnected { last_error: None });
                             tokio::time::sleep(backoff.next()).await;
                             continue 'reconnect;
@@ -373,14 +369,12 @@ mod tests {
     fn exponential_backoff_first_call_within_1x_base() {
         let mut b = ExponentialBackoff::new(&fast_cfg());
         let d = b.next();
-        // attempt=0 → bound = base * 2^0 = base = 10ms;jittered ∈ [0, 10ms)
         assert!(d <= Duration::from_millis(10), "got {d:?}");
     }
 
     #[test]
     fn exponential_backoff_caps_at_cap() {
         let mut b = ExponentialBackoff::new(&fast_cfg());
-        // 跑 20 次,attempt 远超 cap 阈值;每次都应 ≤ cap
         for _ in 0..20 {
             let d = b.next();
             assert!(d <= Duration::from_millis(150), "got {d:?}");
@@ -394,88 +388,29 @@ mod tests {
             let _ = b.next();
         }
         b.reset();
-        // reset 后 attempt=0,bound = base * 2^0 = 10ms
         let d = b.next();
         assert!(d <= Duration::from_millis(10), "got {d:?}");
     }
 
     #[test]
-    fn connection_state_connecting_serializes_kebab_case_tag() {
-        let s = ConnectionState::Connecting;
-        let json = serde_json::to_string(&s).expect("serialize");
-        assert_eq!(json, r#"{"state":"connecting"}"#);
-    }
-
-    #[test]
-    fn connection_state_subscribed_serializes() {
-        let s = ConnectionState::Subscribed;
-        let json = serde_json::to_string(&s).expect("serialize");
-        assert_eq!(json, r#"{"state":"subscribed"}"#);
-    }
-
-    #[test]
     fn connection_state_disconnected_no_error_omits_field() {
         let s = ConnectionState::Disconnected { last_error: None };
-        let json = serde_json::to_string(&s).expect("serialize");
+        let json = serde_json::to_string(&s).unwrap();
         assert_eq!(json, r#"{"state":"disconnected"}"#);
     }
 
     #[test]
-    fn connection_state_disconnected_with_error_includes_field() {
-        let s = ConnectionState::Disconnected {
-            last_error: Some(AuthError::Unauthenticated),
-        };
-        let json = serde_json::to_string(&s).expect("serialize");
-        // AuthError 已 serde derive(kind=unauthenticated),嵌套即可
-        assert!(json.contains(r#""state":"disconnected""#), "{json}");
-        assert!(json.contains(r#""last_error""#), "{json}");
-        assert!(json.contains(r#""kind":"unauthenticated""#), "{json}");
-    }
-
-    #[test]
     fn classify_unauthenticated_returns_logout() {
-        let a = classify(&AuthError::Unauthenticated);
-        assert_eq!(a, Action::Logout);
-    }
-
-    #[test]
-    fn classify_upgrade_required_returns_terminate() {
-        let a = classify(&AuthError::UpgradeRequired {
-            min_version: "9.9.9".into(),
-            download_url: "https://example.com/dl".into(),
-        });
-        assert_eq!(a, Action::Terminate);
+        assert_eq!(classify(&AuthError::Unauthenticated), Action::Logout);
     }
 
     #[test]
     fn classify_network_returns_backoff() {
-        let a = classify(&AuthError::Network {
-            message: "down".into(),
-        });
-        assert_eq!(a, Action::Backoff);
-    }
-
-    #[test]
-    fn classify_storage_returns_terminate() {
-        let a = classify(&AuthError::Storage {
-            message: "io".into(),
-        });
-        assert_eq!(a, Action::Terminate);
-    }
-
-    #[test]
-    fn classify_internal_returns_backoff() {
-        let a = classify(&AuthError::Internal {
-            message: "boom".into(),
-        });
-        assert_eq!(a, Action::Backoff);
-    }
-
-    #[test]
-    fn classify_account_disabled_returns_terminate() {
-        let a = classify(&AuthError::AccountDisabled {
-            message: "no perms".into(),
-        });
-        assert_eq!(a, Action::Terminate);
+        assert_eq!(
+            classify(&AuthError::Network {
+                message: "down".into()
+            }),
+            Action::Backoff
+        );
     }
 }

@@ -14,7 +14,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         proto_root.join("chathub/v1/common.proto"),
         proto_root.join("chathub/v1/auth.proto"),
         proto_root.join("chathub/v1/error.proto"),
-        proto_root.join("chathub/v1/message.proto"),
         proto_root.join("chathub/v1/event.proto"),
         proto_root.join("chathub/v1/hub.proto"),
     ];
@@ -29,36 +28,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .build_client(true)
         .build_server(true) // server 端 Plan 2 stub_relay 测试要用
         .compile_well_known_types(false)
-        .type_attribute(".chathub.v1.UserProfile",  "#[derive(serde::Serialize, serde::Deserialize)]")
-        .type_attribute(".chathub.v1.WecomAccount", "#[derive(serde::Serialize, serde::Deserialize)]")
-        .type_attribute(".chathub.v1.MessageBody",       "#[derive(serde::Serialize, serde::Deserialize)]")
-        .type_attribute(".chathub.v1.MessageBody.Kind",  "#[derive(serde::Serialize, serde::Deserialize)]")
-        .type_attribute(".chathub.v1.TextBody",          "#[derive(serde::Serialize, serde::Deserialize)]")
-        .type_attribute(".chathub.v1.Mention",           "#[derive(serde::Serialize, serde::Deserialize)]")
-        .type_attribute(".chathub.v1.ReplyToRef",        "#[derive(serde::Serialize, serde::Deserialize)]")
-        .type_attribute(".chathub.v1.RemoteId",          "#[derive(serde::Serialize, serde::Deserialize)]")
-        // ↓↓↓ Plan 3 新增 5 条(SystemSignal.Kind 是 nested regular enum,父 message
-        //      的 attribute 已 cascade,显式加会触发 conflicting impl Serialize)↓↓↓
+        // Plan 7 — legacy types 全删,只剩 v2 三件套 + Auth 用到的 UserProfile/WecomAccount。
+        .type_attribute(".chathub.v1.UserProfile",   "#[derive(serde::Serialize, serde::Deserialize)]")
+        .type_attribute(".chathub.v1.WecomAccount",  "#[derive(serde::Serialize, serde::Deserialize)]")
         .type_attribute(".chathub.v1.ServerEvent",       "#[derive(serde::Serialize, serde::Deserialize)]")
         .type_attribute(".chathub.v1.ServerEvent.Body",  "#[derive(serde::Serialize, serde::Deserialize)]")
-        .type_attribute(".chathub.v1.IncomingMsg",       "#[derive(serde::Serialize, serde::Deserialize)]")
         .type_attribute(".chathub.v1.SystemSignal",      "#[derive(serde::Serialize, serde::Deserialize)]")
-        .type_attribute(".chathub.v1.SendResponse",      "#[derive(serde::Serialize, serde::Deserialize)]")
-        // ↓↓↓ Plan 4 新增:ServerEvent.Body 的 3 个 oneof variant 类型需要 serde
-        //      MessageStatusChange.Status 是 nested enum,父 message attribute 已 cascade,
-        //      不单独加(否则 conflicting impl,与 SystemSignal.Kind 同理)↓↓↓
-        .type_attribute(".chathub.v1.MessageRecalled",     "#[derive(serde::Serialize, serde::Deserialize)]")
-        .type_attribute(".chathub.v1.ReadReceipt",         "#[derive(serde::Serialize, serde::Deserialize)]")
-        .type_attribute(".chathub.v1.MessageStatusChange", "#[derive(serde::Serialize, serde::Deserialize)]")
-        // ↓↓↓ Plan 4 新增:Tauri 命令返回类型(send_message 模式)↓↓↓
-        .type_attribute(".chathub.v1.RecallResponse",       "#[derive(serde::Serialize, serde::Deserialize)]")
-        .type_attribute(".chathub.v1.AckReadResponse",      "#[derive(serde::Serialize, serde::Deserialize)]")
-        .type_attribute(".chathub.v1.FetchHistoryResponse", "#[derive(serde::Serialize, serde::Deserialize)]")
-        .type_attribute(".chathub.v1.HistoryMessage",       "#[derive(serde::Serialize, serde::Deserialize)]")
-        // ↓↓↓ Plan 6 新增:ServerEvent.Body 加了 push_batch + subscribe_ack 两个 variant,
-        //     这两个 message 必须实现 serde(否则父 Body 的 derive 编不过)。↓↓↓
-        .type_attribute(".chathub.v1.PushBatchOut",         "#[derive(serde::Serialize, serde::Deserialize)]")
-        .type_attribute(".chathub.v1.SubscribeAck",         "#[derive(serde::Serialize, serde::Deserialize)]")
+        .type_attribute(".chathub.v1.PushBatchOut",      "#[derive(serde::Serialize, serde::Deserialize)]")
+        .type_attribute(".chathub.v1.SubscribeAck",      "#[derive(serde::Serialize, serde::Deserialize)]")
         .compile_protos(&proto_files, &[proto_root])?;
 
     Ok(())

@@ -1,15 +1,16 @@
-//! chathub-test-subscribe — 本地联调辅助:用预签 JWT 直接调 hub.Subscribe,持续打印事件。
+//! chathub-test-subscribe — 本地联调辅助:直接调 hub.Subscribe(v2),持续打印事件。
 //!
-//! 用法(env 入参):
-//!   TOKEN=$(USER_ID=u-test ACCOUNTS=wa-1 cargo run -q -p chathub-relay --bin chathub-mint-jwt) \
-//!     ACCOUNTS=wa-1 [RELAY_URL=http://127.0.0.1:50051] \
+//! 用法:
+//!   TOKEN=<biz-token> SINCE=0 DEVICE_ID=dev-A \
+//!     [RELAY_URL=http://127.0.0.1:50051] \
 //!     cargo run -p chathub-relay --bin chathub-test-subscribe
 //!
-//! ACCOUNTS 控制 SubscribeRequest.since_seqs 的 keys(value 全 0,从最新开始)。
+//! TOKEN  = 业务后台签发的 access_token(由业务后台 /v1/verify_token 验证)
+//! SINCE  = since_notify_seq(0 = 首连只接实时)
+//! DEVICE_ID = 客户端生成的设备标识
 
 use chathub_proto::v1::hub_client::HubClient;
 use chathub_proto::v1::SubscribeRequest;
-use std::collections::HashMap;
 use std::time::Duration;
 use tonic::metadata::MetadataValue;
 use tonic::transport::{Channel, Endpoint};
@@ -19,14 +20,12 @@ use tonic::Request;
 async fn main() -> anyhow::Result<()> {
     let url = std::env::var("RELAY_URL").unwrap_or_else(|_| "http://127.0.0.1:50051".to_string());
     let token = std::env::var("TOKEN")
-        .map_err(|_| anyhow::anyhow!("TOKEN env required (mint via chathub-mint-jwt)"))?;
-
-    let mut since_seqs: HashMap<String, i64> = HashMap::new();
-    if let Ok(s) = std::env::var("ACCOUNTS") {
-        for a in s.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()) {
-            since_seqs.insert(a.to_string(), 0);
-        }
-    }
+        .map_err(|_| anyhow::anyhow!("TOKEN env required (业务后台签发的 access_token)"))?;
+    let since: u64 = std::env::var("SINCE")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+    let device_id = std::env::var("DEVICE_ID").unwrap_or_else(|_| "test-device".to_string());
 
     let channel: Channel = Endpoint::from_shared(url.clone())?
         .http2_keep_alive_interval(Duration::from_secs(10))
@@ -49,26 +48,18 @@ async fn main() -> anyhow::Result<()> {
         Ok(req)
     });
 
-    eprintln!(
-        "[client] subscribing url={url} accounts={:?}",
-        since_seqs.keys().collect::<Vec<_>>()
-    );
+    eprintln!("[client] subscribing url={url} since={since} device_id={device_id}");
     let mut stream = hub
         .subscribe(SubscribeRequest {
-            since_seqs,
-            // Plan 6 新增字段,本地联调脚本暂不用,留空即可。
-            since_notify_seq: 0,
-            device_id: String::new(),
-            client_version: String::new(),
+            since_notify_seq: since,
+            device_id,
+            client_version: "test-client".into(),
         })
         .await?
         .into_inner();
 
     while let Some(evt) = stream.message().await? {
-        println!(
-            "[event] account={} seq={} body={:?}",
-            evt.wecom_account_id, evt.seq, evt.body
-        );
+        println!("[event] body={:?}", evt.body);
     }
     eprintln!("[client] stream closed");
     Ok(())
