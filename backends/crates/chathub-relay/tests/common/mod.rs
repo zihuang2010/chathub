@@ -19,7 +19,7 @@ use chathub_relay::downstream::DownstreamClient;
 use chathub_relay::hub_service::{HubSvc, ProtocolInterceptor, TokenAuthenticator};
 use chathub_relay::push::{self, PushState};
 use chathub_relay::router::Router;
-use chathub_relay::storage::events::EventStore;
+use chathub_relay::storage::events::{EventLog, EventStore};
 use chathub_relay::storage::seqs::SeqAllocator;
 use chathub_relay::storage::Storage;
 use std::net::SocketAddr;
@@ -53,6 +53,7 @@ pub async fn spawn_relay() -> RelayHarness {
     let storage = Storage::open(&db).await.unwrap();
     let seqs = SeqAllocator::new(storage.clone());
     let events = EventStore::new(storage.clone());
+    let events_log = EventLog::new(storage.clone());
     let router = Arc::new(Router::new());
     let dn_client = Arc::new(DownstreamClient::new(&downstream.uri(), "dn-secret").unwrap());
 
@@ -85,6 +86,7 @@ pub async fn spawn_relay() -> RelayHarness {
         secret: "push-secret".into(),
         seqs,
         events: events.clone(),
+        events_log,
         router: router.clone(),
     };
     let push_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

@@ -1,7 +1,8 @@
 //! axum router: POST /internal/push (Bearer) + GET /healthz。
 
+use crate::event_policy::{self, EventPolicy};
 use crate::router::{Router, RouterError};
-use crate::storage::events::EventStore;
+use crate::storage::events::{EventLog, EventRow, EventStore};
 use crate::storage::seqs::SeqAllocator;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
@@ -17,8 +18,15 @@ pub struct PushState {
     pub secret: String,
     pub seqs: SeqAllocator,
     pub events: EventStore,
+    /// Plan 6:新事件日志(employee_id + notify_seq + event_index 主键)。
+    /// 旧 `events` 字段继续给 legacy `/internal/push` 用,新 `events_log` 给 `/internal/push/v2` 用。
+    pub events_log: EventLog,
     pub router: Arc<Router>,
 }
+
+/// 业务后台 → relay 的 clientId 白名单(spec §3:本期固定 "rh_wxchat")。
+/// stage 4+ 可改为 env 配置;当前硬编码已经够。
+const ALLOWED_CLIENT_IDS: &[&str] = &["rh_wxchat"];
 
 // ─── 入站 JSON 协议 ─────────────────────────────────────────────────────────────
 //
@@ -213,7 +221,193 @@ pub fn app(state: PushState) -> AxumRouter {
     AxumRouter::new()
         .route("/healthz", get(|| async { (StatusCode::OK, "ok") }))
         .route("/internal/push", post(handle_push))
+        // Plan 6 — spec §3 字段格式;旧 endpoint 兼容期保留。
+        .route("/internal/push/v2", post(handle_push_v2))
         .with_state(state)
+}
+
+// ─── stage 3: /internal/push/v2 ────────────────────────────────────────
+//
+// 入参对应 docs/工具网关通知事件与字段规范.md §3 外层通知包 + §5 events[]。
+// relay 不解析业务 payload —— events 数组每个元素当作 opaque JSON,入库时回写整原文。
+// 本阶段只做"鉴权 + 分类 + 入 events_v2",fanout 留到 stage 3.5(router 加 employee 索引)。
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PushBatchIn {
+    pub notify_seq: u64,
+    pub client_id: String,
+    pub employee_id: i64,
+    #[serde(default)]
+    pub batch_id: Option<String>,
+    #[serde(default)]
+    pub batch_time: Option<String>,
+    pub events: Vec<serde_json::Value>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PushBatchAck {
+    pub notify_seq: u64,
+    /// 实际入库的 events 数(INSERT OR IGNORE 之后)。
+    /// 重投时:全部 IGNORE → 0;首次:= 该 batch 内 Persist 类 events 数。
+    pub inserted: usize,
+    /// Control 类事件数(ControlOnly,不入库)。stage 4 触发 force_close 流程。
+    pub control_count: usize,
+}
+
+#[tracing::instrument(
+    skip_all,
+    fields(
+        notify_seq = body.notify_seq,
+        client_id = %body.client_id,
+        employee_id = body.employee_id,
+        events_count = body.events.len(),
+    )
+)]
+async fn handle_push_v2(
+    State(state): State<PushState>,
+    headers: HeaderMap,
+    Json(body): Json<PushBatchIn>,
+) -> axum::response::Response {
+    let started = Instant::now();
+
+    // 1. Bearer secret 校验
+    let want = format!("Bearer {}", state.secret);
+    let ok = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s == want)
+        .unwrap_or(false);
+    if !ok {
+        tracing::warn!(status = 401, "push v2 auth failed");
+        return (StatusCode::UNAUTHORIZED, "invalid secret").into_response();
+    }
+
+    // 2. clientId 白名单
+    if !ALLOWED_CLIENT_IDS.iter().any(|&c| c == body.client_id) {
+        tracing::warn!(status = 403, "push v2 client_id rejected");
+        return (StatusCode::FORBIDDEN, "client_id not allowed").into_response();
+    }
+
+    // 3. 基本字段校验
+    if body.employee_id == 0 {
+        tracing::warn!(status = 400, "push v2 employee_id missing");
+        return (StatusCode::BAD_REQUEST, "employeeId required").into_response();
+    }
+    if body.events.is_empty() {
+        tracing::warn!(status = 400, "push v2 events empty");
+        return (StatusCode::BAD_REQUEST, "events must be non-empty").into_response();
+    }
+
+    // 4. 分类 + 准备 EventRow(Persist 类) / 计数 Control 类
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+
+    let mut rows: Vec<EventRow> = Vec::with_capacity(body.events.len());
+    let mut control_count = 0usize;
+    let mut unknown_count = 0usize;
+
+    for (index, event_value) in body.events.iter().enumerate() {
+        let event_type = event_value
+            .get("eventType")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        if event_type.is_empty() {
+            tracing::warn!(
+                status = 400,
+                event_index = index,
+                "push v2 missing eventType",
+            );
+            return (StatusCode::BAD_REQUEST, "events[i].eventType required").into_response();
+        }
+
+        match event_policy::policy(event_type) {
+            EventPolicy::ControlOnly => {
+                control_count += 1;
+                // stage 4 在此触发 force_close 流程;stage 3 仅计数
+            }
+            EventPolicy::Persist => {
+                if !is_known_event_type(event_type) {
+                    unknown_count += 1;
+                    tracing::warn!(
+                        event_type,
+                        event_index = index,
+                        "push v2 unknown eventType (persisted by default)"
+                    );
+                }
+                let payload_json = serde_json::to_string(event_value).unwrap_or_else(|_| {
+                    // serde_json::Value → string 实践上不会失败;落空字符串保险
+                    String::new()
+                });
+                rows.push(EventRow {
+                    employee_id: body.employee_id,
+                    notify_seq: body.notify_seq as i64,
+                    event_index: index as i64,
+                    event_type: event_type.to_string(),
+                    event_reason: extract_str(event_value, "eventReason"),
+                    conversation_id: extract_str(event_value, "conversationId"),
+                    customer_user_id: extract_str(event_value, "customerUserId"),
+                    external_user_id: extract_str(event_value, "externalUserId"),
+                    client_id: body.client_id.clone(),
+                    batch_id: body.batch_id.clone(),
+                    batch_time: body.batch_time.clone(),
+                    event_time: extract_str(event_value, "eventTime"),
+                    payload_json,
+                    created_at_ms: now_ms,
+                });
+            }
+        }
+    }
+
+    // 5. 入库(INSERT OR IGNORE 天然幂等)
+    let inserted = match state.events_log.insert_batch(rows).await {
+        Ok(n) => n,
+        Err(e) => {
+            tracing::warn!(status = 500, error = %e, "push v2 persist failed");
+            return (StatusCode::INTERNAL_SERVER_ERROR, "persist").into_response();
+        }
+    };
+
+    // 6. TODO(stage 3.5):fanout 到 employee 的在线连接
+    // 当前 router 还不知道 employee_id → ConnectionId,events 入库后等客户端 since_notify_seq 续点。
+
+    tracing::info!(
+        persisted = inserted,
+        control_count,
+        unknown_count,
+        elapsed_ms = started.elapsed().as_millis() as u64,
+        status = 200,
+        "push v2 ok",
+    );
+
+    (
+        StatusCode::OK,
+        Json(PushBatchAck {
+            notify_seq: body.notify_seq,
+            inserted,
+            control_count,
+        }),
+    )
+        .into_response()
+}
+
+fn extract_str(value: &serde_json::Value, key: &str) -> Option<String> {
+    value.get(key).and_then(|v| v.as_str()).map(String::from)
+}
+
+fn is_known_event_type(event_type: &str) -> bool {
+    matches!(
+        event_type,
+        "MESSAGE_UPSERT"
+            | "SESSION_SUMMARY_UPSERT"
+            | "FRIEND_UPSERT"
+            | "ACCOUNT_BINDING_CHANGE"
+            | "ACCOUNT_STATUS_CHANGE"
+            | "CONNECTION_FORCE_CLOSE"
+    )
 }
 
 async fn handle_push(
@@ -369,6 +563,7 @@ mod tests {
             secret: "ps".into(),
             seqs: SeqAllocator::new(storage.clone()),
             events: EventStore::new(storage.clone()),
+            events_log: EventLog::new(storage.clone()),
             router: Arc::new(Router::new()),
         }
     }
@@ -583,5 +778,273 @@ mod tests {
         };
         let err = st.router.fanout("wa-1", probe).unwrap_err();
         assert!(matches!(err, RouterError::NoStream));
+    }
+
+    // ─── stage 3:/internal/push/v2 测试 ────────────────────────────────
+
+    fn v2_body(notify_seq: u64, employee_id: i64, events: serde_json::Value) -> String {
+        serde_json::json!({
+            "notifySeq": notify_seq,
+            "clientId": "rh_wxchat",
+            "employeeId": employee_id,
+            "batchId": format!("rh_wxchat:{employee_id}:{notify_seq}"),
+            "batchTime": "2026-05-14 10:30:00",
+            "events": events,
+        })
+        .to_string()
+    }
+
+    async fn post_v2(
+        app: AxumRouter,
+        body: String,
+        secret: &str,
+    ) -> (StatusCode, serde_json::Value) {
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/internal/push/v2")
+                    .header("authorization", format!("Bearer {secret}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = resp.status();
+        let raw = axum::body::to_bytes(resp.into_body(), 4096).await.unwrap();
+        let v: serde_json::Value = if raw.is_empty() {
+            serde_json::Value::Null
+        } else {
+            serde_json::from_slice(&raw).unwrap_or(serde_json::Value::Null)
+        };
+        (status, v)
+    }
+
+    #[tokio::test]
+    async fn push_v2_happy_path_persists_message_upsert() {
+        let st = make_state().await;
+        let log = st.events_log.clone();
+        let body = v2_body(
+            1001,
+            42,
+            serde_json::json!([{
+                "eventType": "MESSAGE_UPSERT",
+                "eventReason": "CUSTOMER_MESSAGE_RECEIVED",
+                "conversationId": "conv-1",
+                "customerUserId": "rocky",
+                "externalUserId": "ext-1",
+                "eventTime": "2026-05-14 10:30:00",
+                "message": {
+                    "localMessageId": "LM_1",
+                    "messageDirection": 2,
+                    "messageType": 1,
+                    "messageStatus": 0,
+                    "sendStatus": 0,
+                    "contentText": "你好",
+                    "contentSummary": "你好"
+                }
+            }]),
+        );
+        let (status, ack) = post_v2(app(st), body, "ps").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(ack["inserted"], 1);
+        assert_eq!(ack["controlCount"], 0);
+        assert_eq!(ack["notifySeq"], 1001);
+
+        // 入库后能查到
+        let rows = log.query_since(42, 0, 10).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].notify_seq, 1001);
+        assert_eq!(rows[0].event_type, "MESSAGE_UPSERT");
+        assert_eq!(
+            rows[0].event_reason.as_deref(),
+            Some("CUSTOMER_MESSAGE_RECEIVED")
+        );
+        assert_eq!(rows[0].conversation_id.as_deref(), Some("conv-1"));
+        // payload_json 完整保留(含业务 message 字段)
+        let payload: serde_json::Value = serde_json::from_str(&rows[0].payload_json).unwrap();
+        assert_eq!(payload["message"]["localMessageId"], "LM_1");
+        assert_eq!(payload["message"]["contentText"], "你好");
+    }
+
+    #[tokio::test]
+    async fn push_v2_auth_failure_returns_401() {
+        let st = make_state().await;
+        let body = v2_body(
+            1,
+            42,
+            serde_json::json!([{ "eventType": "MESSAGE_UPSERT" }]),
+        );
+        let (status, _) = post_v2(app(st), body, "wrong-secret").await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn push_v2_unknown_client_id_returns_403() {
+        let st = make_state().await;
+        let body = serde_json::json!({
+            "notifySeq": 1,
+            "clientId": "other_client",
+            "employeeId": 42,
+            "batchTime": "2026-05-14 10:30:00",
+            "events": [{ "eventType": "MESSAGE_UPSERT" }],
+        })
+        .to_string();
+        let (status, _) = post_v2(app(st), body, "ps").await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn push_v2_missing_employee_id_returns_400() {
+        let st = make_state().await;
+        let body = serde_json::json!({
+            "notifySeq": 1,
+            "clientId": "rh_wxchat",
+            "employeeId": 0,
+            "batchTime": "2026-05-14 10:30:00",
+            "events": [{ "eventType": "MESSAGE_UPSERT" }],
+        })
+        .to_string();
+        let (status, _) = post_v2(app(st), body, "ps").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn push_v2_empty_events_returns_400() {
+        let st = make_state().await;
+        let body = v2_body(1, 42, serde_json::json!([]));
+        let (status, _) = post_v2(app(st), body, "ps").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn push_v2_missing_event_type_returns_400() {
+        let st = make_state().await;
+        let body = v2_body(1, 42, serde_json::json!([{ "eventReason": "FOO" }]));
+        let (status, _) = post_v2(app(st), body, "ps").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn push_v2_idempotent_on_duplicate_notify_seq() {
+        let st = make_state().await;
+        let log = st.events_log.clone();
+        let body = v2_body(
+            500,
+            42,
+            serde_json::json!([
+                { "eventType": "MESSAGE_UPSERT", "conversationId": "c1" },
+                { "eventType": "SESSION_SUMMARY_UPSERT", "conversationId": "c1" },
+            ]),
+        );
+
+        // 第一次:2 行入库
+        let (s1, ack1) = post_v2(app(st.clone()), body.clone(), "ps").await;
+        assert_eq!(s1, StatusCode::OK);
+        assert_eq!(ack1["inserted"], 2);
+
+        // 第二次同 notify_seq:200 但 0 行新入库
+        let (s2, ack2) = post_v2(app(st), body, "ps").await;
+        assert_eq!(s2, StatusCode::OK);
+        assert_eq!(ack2["inserted"], 0);
+
+        // 事件日志里仍然只有 2 行(没重复)
+        let rows = log.query_since(42, 0, 100).await.unwrap();
+        assert_eq!(rows.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn push_v2_force_close_event_not_persisted() {
+        let st = make_state().await;
+        let log = st.events_log.clone();
+        let body = v2_body(
+            7,
+            42,
+            serde_json::json!([{
+                "eventType": "CONNECTION_FORCE_CLOSE",
+                "eventReason": "EXCLUSIVE_LOGIN",
+                "forceClose": { "closeScope": "EMPLOYEE", "reasonCode": "EXCLUSIVE_LOGIN" }
+            }]),
+        );
+        let (status, ack) = post_v2(app(st), body, "ps").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(ack["inserted"], 0);
+        assert_eq!(ack["controlCount"], 1);
+        // 没入事件日志
+        let rows = log.query_since(42, 0, 10).await.unwrap();
+        assert_eq!(rows.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn push_v2_unknown_event_type_persisted_by_default() {
+        // 向前兼容:业务后台先升级时,relay 仍然保住事件等续点
+        let st = make_state().await;
+        let log = st.events_log.clone();
+        let body = v2_body(
+            9,
+            42,
+            serde_json::json!([{
+                "eventType": "FUTURE_EVENT_TYPE",
+                "future_field": "foo"
+            }]),
+        );
+        let (status, ack) = post_v2(app(st), body, "ps").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(ack["inserted"], 1);
+        let rows = log.query_since(42, 0, 10).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].event_type, "FUTURE_EVENT_TYPE");
+    }
+
+    #[tokio::test]
+    async fn push_v2_batch_with_multiple_events_preserves_order() {
+        let st = make_state().await;
+        let log = st.events_log.clone();
+        let body = v2_body(
+            100,
+            42,
+            serde_json::json!([
+                { "eventType": "MESSAGE_UPSERT", "conversationId": "c1" },
+                { "eventType": "SESSION_SUMMARY_UPSERT", "conversationId": "c1" },
+                { "eventType": "FRIEND_UPSERT", "customerUserId": "u1" },
+            ]),
+        );
+        let (status, ack) = post_v2(app(st), body, "ps").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(ack["inserted"], 3);
+
+        let rows = log.query_since(42, 0, 10).await.unwrap();
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0].event_index, 0);
+        assert_eq!(rows[1].event_index, 1);
+        assert_eq!(rows[2].event_index, 2);
+        assert_eq!(rows[0].event_type, "MESSAGE_UPSERT");
+        assert_eq!(rows[1].event_type, "SESSION_SUMMARY_UPSERT");
+        assert_eq!(rows[2].event_type, "FRIEND_UPSERT");
+    }
+
+    #[tokio::test]
+    async fn push_v2_persist_and_control_events_in_same_batch() {
+        // 同 batch 里 Persist 类入库,Control 类只计数
+        let st = make_state().await;
+        let log = st.events_log.clone();
+        let body = v2_body(
+            200,
+            42,
+            serde_json::json!([
+                { "eventType": "MESSAGE_UPSERT", "conversationId": "c1" },
+                { "eventType": "CONNECTION_FORCE_CLOSE", "forceClose": { "closeScope": "EMPLOYEE" } },
+            ]),
+        );
+        let (status, ack) = post_v2(app(st), body, "ps").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(ack["inserted"], 1);
+        assert_eq!(ack["controlCount"], 1);
+
+        let rows = log.query_since(42, 0, 10).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].event_type, "MESSAGE_UPSERT");
+        assert_eq!(rows[0].event_index, 0); // batch 内是第 0 个;FORCE_CLOSE 在第 1 个但跳过
     }
 }
