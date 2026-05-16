@@ -716,6 +716,7 @@ dependencies = [
  "anyhow",
  "arc-swap",
  "axum",
+ "base64 0.22.1",
  "bytes",
  "chathub-net",
  "chathub-proto",
