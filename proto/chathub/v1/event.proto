@@ -8,9 +8,12 @@ import "chathub/v1/message.proto";
 // ServerEvent 由 Hub.Subscribe 推送。Plan 3 有 IncomingMsg + SystemSignal;
 // Plan 4 加 MessageRecalled / ReadReceipt / MessageStatusChange;
 // Plan 5 起加 AccountStatus / PresenceChange(tag 14/15)。
+// Plan 6 新增 PushBatchOut(tag 14)+ SubscribeAck(tag 91) — Z 架构事件平面。
+//   - 旧 oneof 变体(incoming/recalled/read_receipt/status_change)兼容期保留
+//   - SystemSignal 新增 KIND_RESYNC_REQUIRED(见下方)
 message ServerEvent {
-  string wecom_account_id = 1;
-  int64  seq              = 2;
+  string wecom_account_id = 1;   // 旧:per-account 路由;新架构里 PushBatchOut/SubscribeAck 可留空
+  int64  seq              = 2;   // 旧:per-account seq;新架构里 PushBatchOut.notify_seq 是权威
   // 3-9 reserved for envelope-level fields
 
   oneof body {
@@ -18,10 +21,34 @@ message ServerEvent {
     MessageRecalled      recalled      = 11;
     ReadReceipt          read_receipt  = 12;
     MessageStatusChange  status_change = 13;
+    // Plan 6 新增 ───────────────────────────────
+    PushBatchOut         push_batch    = 14;   // 业务事件批次(events_json 原文透传)
     SystemSignal         system        = 90;
-    // 14-89 reserved for business events (Plan 5+)
-    // 91-99 reserved for system signals (Plan 5+)
+    SubscribeAck         subscribe_ack = 91;   // Subscribe 首帧:重放范围 + resync_required
+    // 15-89 reserved for business events
+    // 92-99 reserved for system signals
   }
+}
+
+// Plan 6 — 业务事件批次(对应 docs/工具网关通知事件与字段规范.md 的外层通知包)。
+// 由 relay 接 POST /internal/push 后 fanout 给 employee 的 Subscribe 流。
+message PushBatchOut {
+  uint64 notify_seq   = 1;   // 业务后台分配,客户端续点游标
+  string client_id    = 2;   // 固定 "rh_wxchat"(本期)
+  int64  employee_id  = 3;   // 目标员工
+  string batch_id     = 4;   // 业务后台分配,便于排查
+  string batch_time   = 5;   // "yyyy-MM-dd HH:mm:ss"
+  string device_id    = 6;   // relay 附上(取自 ConnectionEntry,标识投到了哪台设备)
+  bytes  events_json  = 7;   // events[] 数组的 JSON 原文;客户端 JSON.parse 后按 eventType 分支
+}
+
+// Plan 6 — Subscribe 首帧:告诉客户端 relay 这次能重放的范围,
+// 以及是否超出保留窗口(resync_required=true 时客户端走 recentFriends / message/history 兜底)。
+message SubscribeAck {
+  uint64 resumed_from_seq = 1;   // == request.since_notify_seq
+  uint64 replayed_to_seq  = 2;   // 重放到的最高 notify_seq(进入实时模式前)
+  bool   resync_required  = 3;
+  string resync_reason    = 4;   // "since out of retention window" / "events table missing" / ...
 }
 
 message IncomingMsg {
@@ -65,9 +92,11 @@ message MessageStatusChange {
 
 message SystemSignal {
   enum Kind {
-    KIND_UNSPECIFIED  = 0;
-    KIND_KICKED       = 1;
-    KIND_SERVER_DRAIN = 2;
+    KIND_UNSPECIFIED      = 0;
+    KIND_KICKED           = 1;
+    KIND_SERVER_DRAIN     = 2;
+    // Plan 6 新增:per-conn channel 满或事件日志不可用时,通知客户端走兜底 API
+    KIND_RESYNC_REQUIRED  = 3;
   }
   Kind   kind   = 1;
   string detail = 2;

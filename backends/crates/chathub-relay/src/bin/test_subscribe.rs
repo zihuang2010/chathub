@@ -54,7 +54,13 @@ async fn main() -> anyhow::Result<()> {
         since_seqs.keys().collect::<Vec<_>>()
     );
     let mut stream = hub
-        .subscribe(SubscribeRequest { since_seqs })
+        .subscribe(SubscribeRequest {
+            since_seqs,
+            // Plan 6 新增字段,本地联调脚本暂不用,留空即可。
+            since_notify_seq: 0,
+            device_id: String::new(),
+            client_version: String::new(),
+        })
         .await?
         .into_inner();
 

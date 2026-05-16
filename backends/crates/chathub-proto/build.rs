@@ -55,6 +55,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .type_attribute(".chathub.v1.AckReadResponse",      "#[derive(serde::Serialize, serde::Deserialize)]")
         .type_attribute(".chathub.v1.FetchHistoryResponse", "#[derive(serde::Serialize, serde::Deserialize)]")
         .type_attribute(".chathub.v1.HistoryMessage",       "#[derive(serde::Serialize, serde::Deserialize)]")
+        // ↓↓↓ Plan 6 新增:ServerEvent.Body 加了 push_batch + subscribe_ack 两个 variant,
+        //     这两个 message 必须实现 serde(否则父 Body 的 derive 编不过)。↓↓↓
+        .type_attribute(".chathub.v1.PushBatchOut",         "#[derive(serde::Serialize, serde::Deserialize)]")
+        .type_attribute(".chathub.v1.SubscribeAck",         "#[derive(serde::Serialize, serde::Deserialize)]")
         .compile_protos(&proto_files, &[proto_root])?;
 
     Ok(())

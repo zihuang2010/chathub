@@ -6,9 +6,14 @@ import "chathub/v1/event.proto";
 import "chathub/v1/message.proto";
 
 // Hub service:Plan 3 起 Subscribe + Send;Plan 4 起 Recall + AckRead + FetchHistory。
-// 后续 Plan 5 加 ListWecomAccounts / EnableAccount / DisableAccount。
+// Plan 6 起 Ack(notify_seq 水位)+ Forward(业务 RPC 单一透传,Z 架构)。
+// 旧的 Send/Recall/AckRead/FetchHistory 保留为兼容,callers 切到 Forward 后 cleanup。
 service Hub {
   rpc Subscribe   (SubscribeRequest)    returns (stream ServerEvent);
+  // Plan 6 新增 ─────────────────────────────────────────
+  rpc Ack         (AckRequest)          returns (AckResponse);
+  rpc Forward     (ForwardRequest)      returns (ForwardResponse);
+  // 兼容期保留(阶段 5 删除):
   rpc Send        (SendRequest)         returns (SendResponse);
   rpc Recall      (RecallRequest)       returns (RecallResponse);
   rpc AckRead     (AckReadRequest)      returns (AckReadResponse);
@@ -16,7 +21,33 @@ service Hub {
 }
 
 message SubscribeRequest {
+  // 旧:per-wecom-account seq map(兼容期保留,Plan 6 起客户端走 since_notify_seq)。
   map<string, int64> since_seqs = 1;
+  // Plan 6 新增:employee 维度的续点游标(0=首连只接实时;>0=重放 > 该 seq 的事件)。
+  uint64 since_notify_seq       = 2;
+  // 客户端生成 + 持久化的设备标识(供业务后台 force_close 定向)。
+  string device_id              = 3;
+  // 客户端业务版本(协议版本仍由 metadata chathub-client-version 传)。
+  string client_version         = 4;
+}
+
+// Plan 6 — 客户端处理完一批事件后上报已处理水位(per-employee 维度,身份从 token 取)。
+// 仅用于 relay 内部观测;不参与事件日志清理(清理走 TTL)。
+message AckRequest {
+  uint64 notify_seq = 1;
+}
+message AckResponse {}
+
+// Plan 6 — 业务 RPC 透传统一入口。Relay 不解析 body_json,按 method 查 DownstreamRoutes
+// 拼路径 POST 到业务后台。HTTP 错误 → gRPC Status 映射:
+//   401 Unauthenticated / 403 PermissionDenied / 4xx InvalidArgument / 5xx Internal /
+//   网络/超时 Unavailable。
+message ForwardRequest {
+  string method    = 1;   // "send" / "recall" / "ack_read" / "fetch_history" / 未来新增
+  bytes  body_json = 2;   // 业务请求 JSON 原文,relay 透传
+}
+message ForwardResponse {
+  bytes  body_json = 1;   // 业务响应 JSON 原文,客户端 SDK 自己 deserialize
 }
 
 message SendRequest {

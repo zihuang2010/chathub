@@ -183,6 +183,7 @@ async fn subscribe_with_valid_token_receives_pushed_event() {
     let mut stream = hub
         .subscribe(SubscribeRequest {
             since_seqs: Default::default(),
+            ..Default::default()
         })
         .await
         .unwrap()
@@ -227,6 +228,7 @@ async fn subscribe_with_inactive_token_is_rejected() {
     let err = hub
         .subscribe(SubscribeRequest {
             since_seqs: Default::default(),
+            ..Default::default()
         })
         .await
         .unwrap_err();
@@ -252,6 +254,7 @@ async fn subscribe_resumes_after_push_using_since_seqs() {
         let mut s1 = hub
             .subscribe(SubscribeRequest {
                 since_seqs: Default::default(),
+                ..Default::default()
             })
             .await
             .unwrap()
@@ -277,7 +280,10 @@ async fn subscribe_resumes_after_push_using_since_seqs() {
     let mut since = HashMap::new();
     since.insert("wa-1".to_string(), 2_i64);
     let mut s2 = hub2
-        .subscribe(SubscribeRequest { since_seqs: since })
+        .subscribe(SubscribeRequest {
+            since_seqs: since,
+            ..Default::default()
+        })
         .await
         .unwrap()
         .into_inner();
@@ -307,6 +313,7 @@ async fn kicked_on_second_subscribe_with_different_device() {
     let mut s1 = hub1
         .subscribe(SubscribeRequest {
             since_seqs: Default::default(),
+            ..Default::default()
         })
         .await
         .unwrap()
@@ -318,6 +325,7 @@ async fn kicked_on_second_subscribe_with_different_device() {
     let _s2 = hub2
         .subscribe(SubscribeRequest {
             since_seqs: Default::default(),
+            ..Default::default()
         })
         .await
         .unwrap()
@@ -367,6 +375,7 @@ async fn send_translates_to_downstream_and_emits_status_change() {
     let mut stream = hub
         .subscribe(SubscribeRequest {
             since_seqs: Default::default(),
+            ..Default::default()
         })
         .await
         .unwrap()

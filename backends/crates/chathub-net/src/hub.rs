@@ -130,7 +130,14 @@ impl HubClient {
         since_seqs: HashMap<String, i64>,
     ) -> Result<tonic::Streaming<ServerEvent>, AuthError> {
         let mut client = self.inner.clone();
-        let req = SubscribeRequest { since_seqs };
+        // Plan 6:proto SubscribeRequest 加了 since_notify_seq / device_id / client_version 三个字段。
+        // 旧路径(`since_seqs`)兼容期保留;新字段留空,客户端 SDK 升级到 Z 架构后再填充。
+        let req = SubscribeRequest {
+            since_seqs,
+            since_notify_seq: 0,
+            device_id: String::new(),
+            client_version: String::new(),
+        };
         let resp = client.subscribe(tonic::Request::new(req)).await?;
         Ok(resp.into_inner())
     }

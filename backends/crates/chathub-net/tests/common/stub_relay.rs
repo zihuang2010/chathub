@@ -123,8 +123,9 @@ fn upgrade_required_status() -> Status {
 
 use chathub_proto::v1::hub_server::{Hub, HubServer};
 use chathub_proto::v1::{
-    AckReadRequest, AckReadResponse, FetchHistoryRequest, FetchHistoryResponse, RecallRequest,
-    RecallResponse, SendRequest, SendResponse, ServerEvent, SubscribeRequest,
+    AckReadRequest, AckReadResponse, AckRequest, AckResponse, FetchHistoryRequest,
+    FetchHistoryResponse, ForwardRequest, ForwardResponse, RecallRequest, RecallResponse,
+    SendRequest, SendResponse, ServerEvent, SubscribeRequest,
 };
 use std::collections::HashMap;
 use tokio::sync::mpsc;
@@ -249,6 +250,18 @@ impl Hub for StubHub {
             FetchHistoryStubOutcome::Ok(r) => Ok(Response::new(r)),
             FetchHistoryStubOutcome::Status(st) => Err(st),
         }
+    }
+
+    // Plan 6 占位:client 测试不使用 Ack/Forward,返回 Unimplemented 即可。
+    async fn ack(&self, _req: Request<AckRequest>) -> Result<Response<AckResponse>, Status> {
+        Err(Status::unimplemented("Ack not stubbed"))
+    }
+
+    async fn forward(
+        &self,
+        _req: Request<ForwardRequest>,
+    ) -> Result<Response<ForwardResponse>, Status> {
+        Err(Status::unimplemented("Forward not stubbed"))
     }
 }
 

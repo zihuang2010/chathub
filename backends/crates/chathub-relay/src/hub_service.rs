@@ -14,8 +14,9 @@ use crate::storage::events::EventStore;
 use crate::storage::seqs::SeqAllocator;
 use chathub_proto::v1::hub_server::Hub;
 use chathub_proto::v1::{
-    AckReadRequest, AckReadResponse, FetchHistoryRequest, FetchHistoryResponse, RecallRequest,
-    RecallResponse, SendRequest, SendResponse, ServerEvent, SubscribeRequest,
+    AckReadRequest, AckReadResponse, AckRequest, AckResponse, FetchHistoryRequest,
+    FetchHistoryResponse, ForwardRequest, ForwardResponse, RecallRequest, RecallResponse,
+    SendRequest, SendResponse, ServerEvent, SubscribeRequest,
 };
 use prost::Message;
 use sha2::{Digest, Sha256};
@@ -376,6 +377,25 @@ impl Hub for HubSvc {
             next_cursor: resp.next_cursor,
         }))
     }
+
+    // Plan 6 stage 4 占位 — 正式实现在 stage 4 完成。
+    //
+    // Ack:per-employee ack_marks 更新(纯观测,不影响事件日志清理)。
+    // Forward:业务 RPC 透传单一入口,按 method 查 DownstreamRoutes 拼路径 POST 到下游。
+    async fn ack(&self, _req: Request<AckRequest>) -> Result<Response<AckResponse>, Status> {
+        Err(Status::unimplemented(
+            "Hub.Ack not yet implemented (Plan 6 stage 4)",
+        ))
+    }
+
+    async fn forward(
+        &self,
+        _req: Request<ForwardRequest>,
+    ) -> Result<Response<ForwardResponse>, Status> {
+        Err(Status::unimplemented(
+            "Hub.Forward not yet implemented (Plan 6 stage 4)",
+        ))
+    }
 }
 
 fn now_ms() -> i64 {
@@ -581,6 +601,7 @@ mod tests {
         let stream = client
             .subscribe(SubscribeRequest {
                 since_seqs: Default::default(),
+                ..Default::default()
             })
             .await
             .unwrap()
@@ -618,6 +639,7 @@ mod tests {
         let err = client
             .subscribe(SubscribeRequest {
                 since_seqs: Default::default(),
+                ..Default::default()
             })
             .await
             .unwrap_err();
@@ -641,6 +663,7 @@ mod tests {
         let s1 = c1
             .subscribe(SubscribeRequest {
                 since_seqs: Default::default(),
+                ..Default::default()
             })
             .await
             .unwrap()
@@ -651,6 +674,7 @@ mod tests {
         let _s2 = c2
             .subscribe(SubscribeRequest {
                 since_seqs: Default::default(),
+                ..Default::default()
             })
             .await
             .unwrap()
@@ -688,6 +712,7 @@ mod tests {
         let s1 = c1
             .subscribe(SubscribeRequest {
                 since_seqs: Default::default(),
+                ..Default::default()
             })
             .await
             .unwrap()
@@ -697,6 +722,7 @@ mod tests {
         let _s2 = c2
             .subscribe(SubscribeRequest {
                 since_seqs: Default::default(),
+                ..Default::default()
             })
             .await
             .unwrap()
@@ -743,7 +769,10 @@ mod tests {
         let mut since = std::collections::HashMap::new();
         since.insert("wa-1".to_string(), 2_i64);
         let stream = client
-            .subscribe(SubscribeRequest { since_seqs: since })
+            .subscribe(SubscribeRequest {
+                since_seqs: since,
+                ..Default::default()
+            })
             .await
             .unwrap()
             .into_inner();
