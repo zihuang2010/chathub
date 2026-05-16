@@ -9,7 +9,7 @@
 //!   不进任何 struct / cache / 日志字段(日志只允许出现 token 前 8 char + ***)。
 
 use crate::config::{DownstreamRoutes, HttpMethod};
-use crate::error::RelayError;
+use crate::error::{map_downstream_4xx_5xx, RelayError};
 use reqwest::Client;
 use serde::Deserialize;
 use std::time::{Duration, Instant};
@@ -216,12 +216,10 @@ impl DownstreamClient {
                 elapsed_ms,
                 "oauth2 login non-2xx",
             );
-            return Err(match code {
-                401 | 403 => RelayError::InvalidCreds,
-                400 => RelayError::InvalidArg,
-                c if c >= 500 => RelayError::Transient,
-                _ => RelayError::Internal,
-            });
+            return Err(map_downstream_4xx_5xx(
+                code,
+                "oauth2 login returned non-2xx",
+            ));
         }
 
         let jdd: JddTokenVO = resp.json().await.map_err(|e| {
@@ -259,7 +257,17 @@ impl DownstreamClient {
         Ok(())
     }
 
-    /// OAuth2 introspection 风格 verify:Bearer = 要校验的 token,空 body。
+    /// OAuth2 introspection 风格 verify:Bearer = 要校验的 token,空 JSON body `{}`。
+    ///
+    /// 协议形态(2026-05-16 修复 415 后):
+    ///   POST {verify_token_path}
+    ///   Authorization: Bearer <client_token>
+    ///   Content-Type: application/json
+    ///   Body: {}
+    ///
+    /// 为什么发 `{}` 而不是真正空 body:多数后台(Spring Boot 默认 @PostMapping)
+    /// 在请求**无 Content-Type 或无 body** 时直接返 415 Unsupported Media Type,
+    /// 不进 handler。`{}` + JSON header 是最不可能被挑刺的形态。
     pub async fn verify_token(&self, client_token: &str) -> Result<VerifyTokenResp, RelayError> {
         let url = format!("{}{}", self.base_url, self.paths.verify_token);
         let started = Instant::now();
@@ -268,6 +276,8 @@ impl DownstreamClient {
             .http
             .post(&url)
             .bearer_auth(client_token)
+            .header("Content-Type", "application/json")
+            .body("{}")
             .timeout(VERIFY_TOKEN_TIMEOUT)
             .send()
             .await
@@ -297,11 +307,10 @@ impl DownstreamClient {
                 elapsed_ms,
                 "verify_token non-2xx",
             );
-            return Err(match code {
-                401 | 403 => RelayError::InvalidCreds,
-                c if c >= 500 => RelayError::Transient,
-                _ => RelayError::Internal,
-            });
+            return Err(map_downstream_4xx_5xx(
+                code,
+                "verify_token returned non-2xx",
+            ));
         }
 
         let body: VerifyTokenResp = resp
@@ -568,6 +577,8 @@ mod tests {
         Mock::given(method("POST"))
             .and(path("/v1/verify_token"))
             .and(header("authorization", "Bearer client-xyz"))
+            // 415 修复:必须发 Content-Type + body `{}`,否则 Spring 后台 415
+            .and(header("content-type", "application/json"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "active": true,
                 "user_id": "u-9",
@@ -582,6 +593,38 @@ mod tests {
         let resp = client.verify_token("client-xyz").await.unwrap();
         assert!(resp.active);
         assert_eq!(resp.employee_id, 42);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn verify_token_415_maps_protocol_mismatch() {
+        let mock = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/verify_token"))
+            .respond_with(ResponseTemplate::new(415))
+            .mount(&mock)
+            .await;
+        let client = DownstreamClient::new_with_defaults(&mock.uri()).unwrap();
+        let err = client.verify_token("client-xyz").await.unwrap_err();
+        match err {
+            RelayError::ProtocolMismatch { code, .. } => assert_eq!(code, 415),
+            other => panic!("expected ProtocolMismatch, got {other:?}"),
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn verify_token_404_maps_protocol_mismatch() {
+        let mock = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/verify_token"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&mock)
+            .await;
+        let client = DownstreamClient::new_with_defaults(&mock.uri()).unwrap();
+        let err = client.verify_token("client-xyz").await.unwrap_err();
+        assert!(matches!(
+            err,
+            RelayError::ProtocolMismatch { code: 404, .. }
+        ));
     }
 
     #[tokio::test(flavor = "multi_thread")]

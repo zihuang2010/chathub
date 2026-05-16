@@ -67,6 +67,8 @@ pub(crate) fn classify(err: &AuthError) -> Action {
         AuthError::Storage { .. } => Action::Terminate,
         AuthError::Internal { .. } => Action::Backoff,
         AuthError::AccountDisabled { .. } => Action::Terminate,
+        // 协议契约不匹配 → 永久错,客户端不重试不退出登录(token 没问题,接口对不上)
+        AuthError::ProtocolMismatch { .. } => Action::Terminate,
     }
 }
 
@@ -421,6 +423,17 @@ mod tests {
                 message: "down".into()
             }),
             Action::Backoff
+        );
+    }
+
+    #[test]
+    fn classify_protocol_mismatch_returns_terminate() {
+        // 关键:防止 verify_token 415/404 死循环
+        assert_eq!(
+            classify(&AuthError::ProtocolMismatch {
+                detail: "downstream_protocol_mismatch:415:verify_token".into()
+            }),
+            Action::Terminate
         );
     }
 }

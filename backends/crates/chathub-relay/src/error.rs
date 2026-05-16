@@ -27,6 +27,12 @@ pub enum RelayError {
     #[error("internal")]
     Internal,
 
+    /// 下游协议契约不匹配(verify_token / login / 业务接口 收到 400/404/415/422 等)。
+    /// 这类错误是"永久"的 —— relay 跟后台对不上接口形态,客户端无脑重试无意义。
+    /// 客户端应 Terminate(不 Logout、不 Backoff),提示用户"协议错误,请联系管理员"。
+    #[error("downstream protocol mismatch (HTTP {code}): {reason}")]
+    ProtocolMismatch { code: u16, reason: String },
+
     #[error("storage: {0}")]
     Storage(#[from] crate::storage::StorageError),
 
@@ -58,9 +64,31 @@ impl From<RelayError> for tonic::Status {
             }
             RelayError::InvalidArg => Status::invalid_argument("invalid argument"),
             RelayError::Transient => Status::unavailable("downstream unavailable"),
+            // ProtocolMismatch → FailedPrecondition + 无 details(UpgradeRequired 用 details
+            // 区分;chathub-net::From<Status> 检测无 details 时归类为 ProtocolMismatch)
+            RelayError::ProtocolMismatch { code, reason } => {
+                Status::failed_precondition(format!("downstream_protocol_mismatch:{code}:{reason}"))
+            }
             RelayError::Internal | RelayError::Http(_) | RelayError::Storage(_) => {
                 Status::internal("internal")
             }
         }
+    }
+}
+
+/// 把 downstream HTTP 状态码统一映射成 RelayError。
+/// - 401/403 → InvalidCreds(客户端 Logout)
+/// - 400/404/415/422 → ProtocolMismatch(客户端 Terminate)
+/// - 5xx → Transient(客户端 Backoff)
+/// - 其他 → Internal
+pub fn map_downstream_4xx_5xx(code: u16, context: &str) -> RelayError {
+    match code {
+        401 | 403 => RelayError::InvalidCreds,
+        400 | 404 | 415 | 422 => RelayError::ProtocolMismatch {
+            code,
+            reason: context.to_string(),
+        },
+        c if c >= 500 => RelayError::Transient,
+        _ => RelayError::Internal,
     }
 }

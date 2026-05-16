@@ -27,6 +27,11 @@ pub enum AuthError {
 
     #[error("account disabled: {message}")]
     AccountDisabled { message: String },
+
+    /// 下游协议契约不匹配(relay → 业务后台某接口收到 400/404/415 等永久错)。
+    /// 客户端应 **Terminate**(不 Logout、不 Backoff),提示"协议错误,请联系管理员"。
+    #[error("downstream protocol mismatch: {detail}")]
+    ProtocolMismatch { detail: String },
 }
 
 impl From<tonic::Status> for AuthError {
@@ -46,6 +51,13 @@ impl From<tonic::Status> for AuthError {
             PermissionDenied => AuthError::AccountDisabled {
                 message: s.message().to_string(),
             },
+            // FailedPrecondition + 无 ErrorDetail details → relay 标记的"协议契约不匹配"
+            // (relay 通过 "downstream_protocol_mismatch:" 前缀串达,客户端 Terminate 不重试)
+            FailedPrecondition if s.message().starts_with("downstream_protocol_mismatch:") => {
+                AuthError::ProtocolMismatch {
+                    detail: s.message().to_string(),
+                }
+            }
             FailedPrecondition => AuthError::Internal {
                 message: format!("precondition: {}", s.message()),
             },
@@ -156,6 +168,30 @@ mod tests {
             AuthError::Internal { message } => assert!(message.contains("boom")),
             other => panic!("wrong: {other:?}"),
         }
+    }
+
+    #[test]
+    fn failed_precondition_with_protocol_prefix_maps_to_protocol_mismatch() {
+        // relay 用 "downstream_protocol_mismatch:" 前缀串达,客户端识别
+        let status = Status::failed_precondition(
+            "downstream_protocol_mismatch:415:verify_token returned non-2xx",
+        );
+        let err: AuthError = status.into();
+        match err {
+            AuthError::ProtocolMismatch { detail } => {
+                assert!(detail.contains("415"));
+                assert!(detail.contains("verify_token"));
+            }
+            other => panic!("expected ProtocolMismatch, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn failed_precondition_without_special_prefix_falls_back_to_internal() {
+        // 没 protocol 前缀也没 upgrade details → 退化为 Internal(保留旧行为)
+        let status = Status::failed_precondition("some other precondition");
+        let err: AuthError = status.into();
+        assert!(matches!(err, AuthError::Internal { .. }));
     }
 
     #[test]
