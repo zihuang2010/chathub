@@ -89,7 +89,11 @@ relay  → POST $RELAY_DOWNSTREAM_URL$RELAY_PATH_SEND
 ```
 
 - 加新业务方法 = 加 `RELAY_PATH_*` 环境变量;**relay 二进制不变**
-- HTTP 错误映射:401 → `Unauthenticated`,403 → `PermissionDenied`,4xx → `InvalidArgument`,5xx → `Internal`,网络/超时 → `Unavailable`
+- **REST 隧道语义**(P0-5):
+  - 2xx → gRPC Ok + `ForwardResponse { body_json, http_status }`
+  - 4xx → 同样 Ok(REST 风格透传),客户端**根据 `http_status` 自行判断业务错**,relay 不替它解读
+  - 5xx → `Status::Internal`(transport-level)
+  - 网络/超时 → `Status::Unavailable`
 
 ## 业务后台 → relay push (`POST /internal/push/v2`)
 
@@ -120,7 +124,8 @@ curl -X POST http://127.0.0.1:50052/internal/push/v2 \
 ```
 
 - **幂等**:同 `(employeeId, notifySeq, event_index)` 重投 → `inserted=0`(SQLite 主键 `INSERT OR IGNORE`)
-- **clientId 白名单**:本期硬编码 `["rh_wxchat"]`,非白名单返 403
+- **clientId 白名单**:env `RELAY_ALLOWED_CLIENT_IDS`(逗号分隔)控制,默认 `["rh_wxchat"]`,非白名单返 403
+- **Bearer 校验**:常数时间比较(P0-2),防时序攻击
 - **事件分类**:5 种业务事件入事件日志(`MESSAGE_UPSERT` / `SESSION_SUMMARY_UPSERT` / `FRIEND_UPSERT` / `ACCOUNT_BINDING_CHANGE` / `ACCOUNT_STATUS_CHANGE`),`CONNECTION_FORCE_CLOSE` 仅作控制信号不入库,未知 eventType 默认入库(向前兼容)
 - **离线员工**:事件入库但 fanout 0 投递,客户端下次 Subscribe v2 用 `since_notify_seq` 续点拉
 
