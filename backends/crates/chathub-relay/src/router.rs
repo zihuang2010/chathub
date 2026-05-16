@@ -15,8 +15,10 @@
 //! 锁序:`employees` 与 `ack_marks` 互相独立,不与旧锁交叉。
 
 use chathub_proto::v1::ServerEvent;
+use dashmap::DashMap;
 use parking_lot::RwLock;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::mpsc;
 use tonic::Status;
 use uuid::Uuid;
@@ -90,7 +92,9 @@ pub struct Router {
     accounts: RwLock<HashMap<String, ChannelEntry>>,
     // 新:employee 索引(Plan 6)
     employees: RwLock<HashMap<i64, Vec<EmployeeStream>>>,
-    ack_marks: RwLock<HashMap<i64, u64>>,
+    // P1-4:ack_marks 用 DashMap + AtomicU64,per-key 细粒度锁 + 无锁 CAS,
+    // 高 Ack QPS 下不再被整张 HashMap 写锁串行化
+    ack_marks: DashMap<i64, AtomicU64>,
 }
 
 impl Default for Router {
@@ -105,7 +109,7 @@ impl Router {
             users: RwLock::new(HashMap::new()),
             accounts: RwLock::new(HashMap::new()),
             employees: RwLock::new(HashMap::new()),
-            ack_marks: RwLock::new(HashMap::new()),
+            ack_marks: DashMap::new(),
         }
     }
 
@@ -331,20 +335,22 @@ impl Router {
 
     /// Hub.Ack 处理:更新该 employee 已确认的最高 notify_seq(monotonic,不退)。
     /// 仅供内部观测;事件日志清理走 TTL,不依赖此值。
+    ///
+    /// P1-4 实现:DashMap 提供 per-key 锁,fetch_max 原子 CAS,
+    /// 高 QPS 不再受全局写锁串行化拖累。
     pub fn update_ack_mark(&self, employee_id: i64, notify_seq: u64) {
-        let mut marks = self.ack_marks.write();
-        let entry = marks.entry(employee_id).or_insert(0);
-        if notify_seq > *entry {
-            *entry = notify_seq;
-        }
+        let entry = self
+            .ack_marks
+            .entry(employee_id)
+            .or_insert_with(|| AtomicU64::new(0));
+        let _ = entry.fetch_max(notify_seq, Ordering::Relaxed);
     }
 
     /// 取该 employee 当前已确认水位(无记录返 0)。
     pub fn get_ack_mark(&self, employee_id: i64) -> u64 {
         self.ack_marks
-            .read()
             .get(&employee_id)
-            .copied()
+            .map(|e| e.load(Ordering::Relaxed))
             .unwrap_or(0)
     }
 }
