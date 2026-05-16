@@ -41,6 +41,7 @@ async fn main() -> anyhow::Result<()> {
         events: events.clone(),
         downstream: downstream.clone(),
         auth: Arc::new(TokenAuthenticator::new(downstream.clone())),
+        routes: cfg.routes.clone(),
     };
 
     let grpc_listener = TcpListener::bind(cfg.grpc_addr).await?;

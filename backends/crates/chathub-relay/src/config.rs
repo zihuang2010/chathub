@@ -3,6 +3,7 @@
 //!
 //! Relay 退化为纯隔道后,不再需要 JWT 签发 / refresh 相关配置。
 
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
@@ -23,6 +24,62 @@ pub struct Config {
     pub downstream_secret: String,
     pub push_secret: String,
     pub log: LogConfig,
+    /// Plan 6:Hub.Forward 的 method → 业务后台 HTTP 路径映射。
+    pub routes: DownstreamRoutes,
+}
+
+/// `Hub.Forward(method, body_json)` 时,relay 用这张表把 method 转成业务后台路径。
+///
+/// 每个 method 对应一个 env var(`RELAY_PATH_<METHOD-UPPERCASE>`),不设时走默认值。
+/// 加新业务 method 时:
+///   1. 加默认值到 `DEFAULT_ROUTES`
+///   2. 业务后台部署对应路径
+///   3. 客户端 SDK 调 `Hub.Forward("new_method", body)` 即可,relay 不需要重新编译
+#[derive(Clone, Debug)]
+pub struct DownstreamRoutes {
+    map: HashMap<String, String>,
+}
+
+/// 默认 method → path 映射。`(method, default_path, env_var)`。
+const DEFAULT_ROUTES: &[(&str, &str, &str)] = &[
+    ("send", "/v1/send", "RELAY_PATH_SEND"),
+    ("recall", "/v1/recall", "RELAY_PATH_RECALL"),
+    ("ack_read", "/v1/ack_read", "RELAY_PATH_ACK_READ"),
+    (
+        "fetch_history",
+        "/v1/fetch_history",
+        "RELAY_PATH_FETCH_HISTORY",
+    ),
+    // verify_token / login / logout 由 relay 自己直接调,不经 Forward 通道。
+];
+
+impl DownstreamRoutes {
+    pub fn from_env() -> Self {
+        let mut map = HashMap::new();
+        for (method, default_path, env_var) in DEFAULT_ROUTES {
+            let path = std::env::var(env_var).unwrap_or_else(|_| (*default_path).into());
+            map.insert((*method).into(), path);
+        }
+        Self { map }
+    }
+
+    /// 测试用,固定默认路径。
+    pub fn default_for_test() -> Self {
+        let mut map = HashMap::new();
+        for (method, default_path, _) in DEFAULT_ROUTES {
+            map.insert((*method).into(), (*default_path).into());
+        }
+        Self { map }
+    }
+
+    pub fn path_for(&self, method: &str) -> Option<&str> {
+        self.map.get(method).map(|s| s.as_str())
+    }
+
+    /// 已知的所有 method,主要给日志/调试用。
+    pub fn known_methods(&self) -> Vec<&str> {
+        self.map.keys().map(|s| s.as_str()).collect()
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -59,6 +116,7 @@ impl Config {
                     .unwrap_or_else(|_| "relay".into()),
                 stdout: parse_stdout_format("RELAY_LOG_STDOUT")?,
             },
+            routes: DownstreamRoutes::from_env(),
         })
     }
 }
@@ -111,6 +169,10 @@ mod tests {
             "RELAY_LOG_DIR",
             "RELAY_LOG_FILE_PREFIX",
             "RELAY_LOG_STDOUT",
+            "RELAY_PATH_SEND",
+            "RELAY_PATH_RECALL",
+            "RELAY_PATH_ACK_READ",
+            "RELAY_PATH_FETCH_HISTORY",
         ] {
             std::env::remove_var(k);
         }
@@ -219,6 +281,45 @@ mod tests {
             ConfigError::Invalid { var, .. } => assert_eq!(var, "RELAY_LOG_STDOUT"),
             other => panic!("wrong: {other:?}"),
         }
+        clear_all();
+    }
+
+    #[test]
+    fn downstream_routes_default_when_no_env() {
+        let _g = ENV_LOCK.lock();
+        clear_all();
+        let r = DownstreamRoutes::from_env();
+        assert_eq!(r.path_for("send"), Some("/v1/send"));
+        assert_eq!(r.path_for("recall"), Some("/v1/recall"));
+        assert_eq!(r.path_for("ack_read"), Some("/v1/ack_read"));
+        assert_eq!(r.path_for("fetch_history"), Some("/v1/fetch_history"));
+        assert_eq!(r.path_for("unknown"), None);
+    }
+
+    #[test]
+    fn downstream_routes_env_overrides() {
+        let _g = ENV_LOCK.lock();
+        clear_all();
+        std::env::set_var("RELAY_PATH_SEND", "/v2/messages/send");
+        std::env::set_var("RELAY_PATH_RECALL", "/v2/messages/recall");
+        let r = DownstreamRoutes::from_env();
+        assert_eq!(r.path_for("send"), Some("/v2/messages/send"));
+        assert_eq!(r.path_for("recall"), Some("/v2/messages/recall"));
+        // 没设的仍是 default
+        assert_eq!(r.path_for("ack_read"), Some("/v1/ack_read"));
+        clear_all();
+    }
+
+    #[test]
+    fn config_from_env_includes_routes() {
+        let _g = ENV_LOCK.lock();
+        clear_all();
+        std::env::set_var("RELAY_PUSH_SECRET", "ps");
+        std::env::set_var("RELAY_DOWNSTREAM_URL", "http://dn.local");
+        std::env::set_var("RELAY_DOWNSTREAM_SECRET", "dn-secret");
+        std::env::set_var("RELAY_PATH_SEND", "/v3/send");
+        let cfg = Config::from_env().expect("config");
+        assert_eq!(cfg.routes.path_for("send"), Some("/v3/send"));
         clear_all();
     }
 

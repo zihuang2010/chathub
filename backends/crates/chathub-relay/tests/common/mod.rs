@@ -66,6 +66,7 @@ pub async fn spawn_relay() -> RelayHarness {
         events: events.clone(),
         downstream: dn_client.clone(),
         auth: Arc::new(TokenAuthenticator::new(dn_client.clone())),
+        routes: chathub_relay::config::DownstreamRoutes::default_for_test(),
     };
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

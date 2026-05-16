@@ -1,6 +1,7 @@
 //! DownstreamClient — reqwest 封装下游 HTTP 合约(spec §9.2)。
 //! 共用错误转化:HTTP code → RelayError。
 
+use crate::config::DownstreamRoutes;
 use crate::error::RelayError;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -61,6 +62,12 @@ pub struct VerifyTokenResp {
     /// token 过期时间(ms);用于 relay 侧缓存 TTL。缺省时缓存用固定上限。
     #[serde(default)]
     pub exp_ms: Option<i64>,
+    /// Plan 6:员工数值 ID(spec §3 employeeId)。relay 用这个做 router 索引、
+    /// Hub.Ack 水位、Hub.Forward 的 X-Relay-Employee-Id header。
+    /// 老 mock / 业务后台未返回时默认 0,Plan 6 的 Subscribe v2 / Ack / Forward 会
+    /// 拒绝 employee_id=0 的调用(legacy 路径不受影响)。
+    #[serde(default)]
+    pub employee_id: i64,
 }
 
 #[derive(Deserialize, Debug, Clone)]
@@ -141,6 +148,100 @@ impl DownstreamClient {
         req: FetchHistoryReq<'_>,
     ) -> Result<FetchHistoryResp, RelayError> {
         self.post_json("/v1/fetch_history", &req).await
+    }
+
+    // ─── Plan 6 — Hub.Forward 透传 ────────────────────────────────────
+    //
+    // Relay 不解析 body_json,按 routes 查到 method 对应的 HTTP 路径后整段透传到
+    // 业务后台。relay 自己的 Bearer secret + 经 relay 认证的 employee_id(放在
+    // `X-Relay-Employee-Id` header)告诉业务后台:这次请求是某 employee 发起的、
+    // 已经通过 relay 的 verify_token 鉴权。
+
+    pub async fn forward(
+        &self,
+        routes: &DownstreamRoutes,
+        method: &str,
+        employee_id: i64,
+        body_bytes: &[u8],
+    ) -> Result<Vec<u8>, RelayError> {
+        let path = routes.path_for(method).ok_or(RelayError::InvalidArg)?;
+        let url = format!("{}{}", self.base_url, path);
+        let started = Instant::now();
+
+        tracing::debug!(
+            target: "chathub_relay::downstream",
+            method,
+            url = %url,
+            employee_id,
+            body_len = body_bytes.len(),
+            "forward request",
+        );
+
+        let body_owned = body_bytes.to_vec();
+        let resp = self
+            .http
+            .post(&url)
+            .bearer_auth(&self.secret)
+            .header("X-Relay-Employee-Id", employee_id.to_string())
+            .header("Content-Type", "application/json")
+            .body(body_owned)
+            .send()
+            .await
+            .map_err(|e| {
+                tracing::warn!(
+                    target: "chathub_relay::downstream",
+                    method,
+                    error = %e,
+                    elapsed_ms = started.elapsed().as_millis() as u64,
+                    "forward network error",
+                );
+                if e.is_timeout() || e.is_connect() {
+                    RelayError::Transient
+                } else {
+                    RelayError::Http(e.to_string())
+                }
+            })?;
+
+        let status = resp.status();
+        let elapsed_ms = started.elapsed().as_millis() as u64;
+        let body = resp.bytes().await.map_err(|e| {
+            tracing::warn!(
+                target: "chathub_relay::downstream",
+                method,
+                status = status.as_u16(),
+                error = %e,
+                elapsed_ms,
+                "forward body read failed",
+            );
+            RelayError::Http(e.to_string())
+        })?;
+
+        if status.is_success() {
+            tracing::info!(
+                target: "chathub_relay::downstream",
+                method,
+                status = status.as_u16(),
+                body_len = body.len(),
+                elapsed_ms,
+                "forward ok",
+            );
+            return Ok(body.to_vec());
+        }
+
+        tracing::warn!(
+            target: "chathub_relay::downstream",
+            method,
+            status = status.as_u16(),
+            elapsed_ms,
+            "forward non-2xx",
+        );
+        Err(match status.as_u16() {
+            401 => RelayError::InvalidCreds,
+            403 => RelayError::AccountDisabled,
+            400..=499 => RelayError::InvalidArg,
+            500..=599 => RelayError::Internal,
+            _ => RelayError::Http(format!("unexpected status {}", status.as_u16())),
+        })
     }
 
     /// 统一的 POST + JSON helper:负责发请求、记日志、翻译响应。

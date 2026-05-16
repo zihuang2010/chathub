@@ -7,6 +7,7 @@
 //!     调业务后台 verifyToken 拿连接身份 `UserCtx`,带进程内缓存。
 //!   - 已建立的 stream 不重验;token 失效靠下次重连时 verifyToken 失败自然拒。
 
+use crate::config::DownstreamRoutes;
 use crate::downstream::{DownstreamClient, VerifyTokenReq};
 use crate::error::RelayError;
 use crate::router::{Router, StreamTicket};
@@ -34,6 +35,9 @@ pub struct UserCtx {
     pub user_id: String,
     pub accounts: Vec<String>,
     pub device_id: String,
+    /// Plan 6:员工数值 ID。老 mock / 未升级业务后台返 0;
+    /// Plan 6 的 Subscribe v2 / Ack / Forward 拒绝 0(legacy 路径不依赖此字段)。
+    pub employee_id: i64,
 }
 
 /// 拦截器提取的 Bearer token,放进 extensions 供各 method 异步校验。
@@ -136,6 +140,7 @@ impl TokenAuthenticator {
             user_id: resp.user_id,
             accounts: resp.accounts,
             device_id: resp.device_id,
+            employee_id: resp.employee_id,
         };
 
         // 3. 写缓存
@@ -179,6 +184,8 @@ pub struct HubSvc {
     pub events: EventStore,
     pub downstream: Arc<DownstreamClient>,
     pub auth: Arc<TokenAuthenticator>,
+    /// Plan 6:Hub.Forward 的 method → HTTP path 映射(env-driven)。
+    pub routes: DownstreamRoutes,
 }
 
 impl HubSvc {
@@ -378,23 +385,66 @@ impl Hub for HubSvc {
         }))
     }
 
-    // Plan 6 stage 4 占位 — 正式实现在 stage 4 完成。
+    // ─── Plan 6 stage 4:Hub.Ack ─────────────────────────────────────
     //
-    // Ack:per-employee ack_marks 更新(纯观测,不影响事件日志清理)。
-    // Forward:业务 RPC 透传单一入口,按 method 查 DownstreamRoutes 拼路径 POST 到下游。
-    async fn ack(&self, _req: Request<AckRequest>) -> Result<Response<AckResponse>, Status> {
-        Err(Status::unimplemented(
-            "Hub.Ack not yet implemented (Plan 6 stage 4)",
-        ))
+    // 客户端处理完一批事件后上报 notify_seq 水位。relay 内部观测用,不参与事件
+    // 日志清理(清理走 TTL)。员工身份从 token 取,客户端不能伪造。
+    #[tracing::instrument(skip_all, fields(notify_seq))]
+    async fn ack(&self, req: Request<AckRequest>) -> Result<Response<AckResponse>, Status> {
+        let ctx = self.authenticate(&req).await?;
+        if ctx.employee_id == 0 {
+            tracing::warn!(
+                user_id = %ctx.user_id,
+                "Hub.Ack rejected: employee_id missing from verify_token"
+            );
+            return Err(Status::failed_precondition(
+                "employee_id missing from verify_token; business backend not yet upgraded",
+            ));
+        }
+        let r = req.into_inner();
+        tracing::Span::current().record("notify_seq", r.notify_seq);
+        self.router.update_ack_mark(ctx.employee_id, r.notify_seq);
+        tracing::debug!(
+            employee_id = ctx.employee_id,
+            notify_seq = r.notify_seq,
+            "Hub.Ack ok"
+        );
+        Ok(Response::new(AckResponse {}))
     }
 
+    // ─── Plan 6 stage 4:Hub.Forward ──────────────────────────────────
+    //
+    // 业务 RPC 透传统一入口。relay 不解析 body_json,按 method 查 DownstreamRoutes
+    // 拼路径 POST 到业务后台。relay 自己的 secret + 经认证的 employee_id 通过
+    // X-Relay-Employee-Id header 告诉业务后台:这是已鉴权的某员工的请求。
+    #[tracing::instrument(skip_all, fields(method, employee_id, body_len))]
     async fn forward(
         &self,
-        _req: Request<ForwardRequest>,
+        req: Request<ForwardRequest>,
     ) -> Result<Response<ForwardResponse>, Status> {
-        Err(Status::unimplemented(
-            "Hub.Forward not yet implemented (Plan 6 stage 4)",
-        ))
+        let ctx = self.authenticate(&req).await?;
+        if ctx.employee_id == 0 {
+            tracing::warn!(
+                user_id = %ctx.user_id,
+                "Hub.Forward rejected: employee_id missing from verify_token"
+            );
+            return Err(Status::failed_precondition(
+                "employee_id missing from verify_token; business backend not yet upgraded",
+            ));
+        }
+        let r = req.into_inner();
+        tracing::Span::current().record("method", &r.method);
+        tracing::Span::current().record("employee_id", ctx.employee_id);
+        tracing::Span::current().record("body_len", r.body_json.len());
+
+        let resp_bytes = self
+            .downstream
+            .forward(&self.routes, &r.method, ctx.employee_id, &r.body_json)
+            .await
+            .map_err(Status::from)?;
+        Ok(Response::new(ForwardResponse {
+            body_json: resp_bytes,
+        }))
     }
 }
 
@@ -471,6 +521,7 @@ mod tests {
             events: events.clone(),
             downstream: downstream.clone(),
             auth: Arc::new(TokenAuthenticator::new(downstream)),
+            routes: crate::config::DownstreamRoutes::default_for_test(),
         };
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -816,6 +867,7 @@ mod tests {
             events: EventStore::new(storage),
             downstream: downstream.clone(),
             auth: Arc::new(TokenAuthenticator::new(downstream)),
+            routes: crate::config::DownstreamRoutes::default_for_test(),
         };
 
         let mut req = Request::new(RecallRequest {
@@ -857,6 +909,7 @@ mod tests {
             events: EventStore::new(storage),
             downstream: downstream.clone(),
             auth: Arc::new(TokenAuthenticator::new(downstream)),
+            routes: crate::config::DownstreamRoutes::default_for_test(),
         };
 
         let mut req = Request::new(AckReadRequest {
