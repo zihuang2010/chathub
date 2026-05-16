@@ -8,7 +8,6 @@
 //! 在 Hook 闭包里类型推断很难写)。微观成本可忽略(每次 interact 多一次 µs 级 PRAGMA)。
 
 pub mod events;
-pub mod kv;
 pub mod migrations;
 pub mod seqs;
 

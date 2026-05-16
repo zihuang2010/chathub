@@ -24,19 +24,21 @@ Rust gRPC + HTTP gateway。Plan 6 起从"有状态认证服务器"重构为**无
 
 ### 可选(带默认)
 
-| Env                        | Default                    | 含义                                              |
-| -------------------------- | -------------------------- | ------------------------------------------------- |
-| `RELAY_GRPC_ADDR`          | `127.0.0.1:50051`          | gRPC 监听地址                                     |
-| `RELAY_PUSH_ADDR`          | `127.0.0.1:50052`          | HTTP /internal/push 监听地址                      |
-| `RELAY_DB_PATH`            | `./relay.db`               | SQLite 文件路径                                   |
-| `RELAY_LOG_DIR`            | `./logs`                   | 日志文件目录(按日轮转 JSON)                       |
-| `RELAY_LOG_FILE_PREFIX`    | `relay`                    | 日志文件前缀,生成 `<prefix>.YYYY-MM-DD`           |
-| `RELAY_LOG_STDOUT`         | `compact`                  | stdout 格式:`off` / `compact` / `pretty` / `json` |
-| `RUST_LOG`                 | `info,chathub_relay=debug` | EnvFilter 标准入口                                |
-| `RELAY_PATH_SEND`          | `/v1/send`                 | Hub.Forward `"send"` 的业务后台路径               |
-| `RELAY_PATH_RECALL`        | `/v1/recall`               | 同上,`"recall"`                                   |
-| `RELAY_PATH_ACK_READ`      | `/v1/ack_read`             | 同上,`"ack_read"`                                 |
-| `RELAY_PATH_FETCH_HISTORY` | `/v1/fetch_history`        | 同上,`"fetch_history"`                            |
+| Env                          | Default                    | 含义                                                |
+| ---------------------------- | -------------------------- | --------------------------------------------------- |
+| `RELAY_GRPC_ADDR`            | `127.0.0.1:50051`          | gRPC 监听地址                                       |
+| `RELAY_PUSH_ADDR`            | `127.0.0.1:50052`          | HTTP /internal/push 监听地址                        |
+| `RELAY_DB_PATH`              | `./relay.db`               | SQLite 文件路径                                     |
+| `RELAY_LOG_DIR`              | `./logs`                   | 日志文件目录(按日轮转 JSON)                         |
+| `RELAY_LOG_FILE_PREFIX`      | `relay`                    | 日志文件前缀,生成 `<prefix>.YYYY-MM-DD`             |
+| `RELAY_LOG_STDOUT`           | `compact`                  | stdout 格式:`off` / `compact` / `pretty` / `json`   |
+| `RUST_LOG`                   | `info,chathub_relay=debug` | EnvFilter 标准入口                                  |
+| `RELAY_PATH_SEND`            | `/v1/send`                 | Hub.Forward `"send"` 的业务后台路径                 |
+| `RELAY_PATH_RECALL`          | `/v1/recall`               | 同上,`"recall"`                                     |
+| `RELAY_PATH_ACK_READ`        | `/v1/ack_read`             | 同上,`"ack_read"`                                   |
+| `RELAY_PATH_FETCH_HISTORY`   | `/v1/fetch_history`        | 同上,`"fetch_history"`                              |
+| `RELAY_FORCE_CLOSE_GRACE_MS` | `2000`                     | P0-3:收到 CONNECTION_FORCE_CLOSE 后等多久才摘除连接 |
+| `RELAY_ALLOWED_CLIENT_IDS`   | `rh_wxchat`                | P1-7:逗号分隔的 push v2 clientId 白名单             |
 
 ## 启动
 
@@ -130,5 +132,8 @@ curl -X POST http://127.0.0.1:50052/internal/push/v2 \
 - **事件日志保留**:`events_v2` 默认 TTL 7 天(stage 5+ 可配),超窗口客户端走兜底 API
 - **关键不变量**:relay **不解析** 业务 `payload_json`;新增 eventType 不需 relay 升级
 - **DownstreamRoutes**:加新业务方法只改 env + 业务后台部署,relay 不动
-- **TokenAuthenticator**:LRU 缓存(10k 条,TTL ≤ 5 min)+ singleflight(并发首次 miss 只 1 次 verify_token)
+- **TokenAuthenticator**:LRU 缓存(10k 条,TTL ≤ 5 min)+ singleflight(并发首次 miss 只 1 次 verify_token)+ RAII guard(leader panic 也能清理 inflight)
+- **SQLite 并发**:WAL + `busy_timeout=5s` + per-checkout PRAGMA reapply(`Storage::conn()`)
+- **Hub.Forward 错误语义**:4xx 不映射成 gRPC error(避免客户端误判鉴权失败),通过 `ForwardResponse.http_status` 返回上游状态码;只有 5xx / 网络/超时 转 `Status::Internal/Unavailable`
+- **Graceful shutdown**:Ctrl-C / SIGTERM → 广播 `SystemSignal::SERVER_DRAIN` → 等 2s → tonic/axum graceful_shutdown
 - **本期不做**:多实例、mTLS、密钥轮换、限流、metrics endpoint
