@@ -5,6 +5,7 @@
 //! logout 走 Bearer 客户端原 token。
 
 use crate::downstream::{DownstreamClient, LoginReq};
+use crate::hub_service::{TokenAuthenticator, UserCtx};
 use chathub_proto::v1::auth_server::Auth;
 use chathub_proto::v1::{
     LoginRequest, LoginResponse, LogoutRequest, LogoutResponse, UserProfile, WecomAccount,
@@ -14,6 +15,9 @@ use tonic::{Request, Response, Status};
 
 pub struct AuthSvc {
     pub downstream: Arc<DownstreamClient>,
+    /// 与 HubSvc 共享同一个 TokenAuthenticator —— login 成功后预填 cache,
+    /// 让 Subscribe 直接命中,跳过 verify_token 一跳。
+    pub auth: Arc<TokenAuthenticator>,
 }
 
 #[tonic::async_trait]
@@ -39,10 +43,26 @@ impl Auth for AuthSvc {
             })?;
         tracing::info!(
             user_id = %resp.user_id,
+            employee_id = resp.employee_id,
             wecom_accounts = resp.wecom_accounts.len(),
             elapsed_ms = started.elapsed().as_millis() as u64,
             "login ok"
         );
+
+        // 预填 TokenAuthenticator cache:接下来的 Subscribe / Ack / Forward 直接命中,
+        // 不再调 verify_token。device_id 取自客户端 LoginRequest;accounts 留空
+        // (前端走 list_accounts 单独拉,relay 不需要也不该在这里假装知道)。
+        self.auth
+            .prepopulate(
+                &resp.access_token,
+                UserCtx {
+                    user_id: resp.user_id.clone(),
+                    accounts: Vec::new(),
+                    device_id: r.device_id.clone(),
+                    employee_id: resp.employee_id,
+                },
+            )
+            .await;
 
         Ok(Response::new(LoginResponse {
             access_token: resp.access_token,
@@ -97,7 +117,8 @@ mod tests {
 
     async fn spawn_auth(downstream_uri: &str) -> (SocketAddr, tokio::task::JoinHandle<()>) {
         let downstream = Arc::new(DownstreamClient::new_with_defaults(downstream_uri).unwrap());
-        let svc = AuthSvc { downstream };
+        let auth = Arc::new(TokenAuthenticator::new(downstream.clone()));
+        let svc = AuthSvc { downstream, auth };
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();

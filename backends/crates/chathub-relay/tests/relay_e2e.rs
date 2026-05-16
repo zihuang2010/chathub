@@ -408,6 +408,73 @@ async fn hub_ack_round_trip() {
         .expect("ack ok");
 }
 
+// ─── login 预填 cache ─────────────────────────────────────────────────────
+
+/// 验证关键优化:login 成功后 relay 预填 TokenAuthenticator cache,
+/// 紧接着 Subscribe **不调** verify_token —— mock 上**不挂** verify_token endpoint,
+/// 如果还调,wiremock 默认 404 → relay ProtocolMismatch → Subscribe 失败。
+#[tokio::test(flavor = "multi_thread")]
+async fn login_prepopulates_cache_subscribe_skips_verify_token() {
+    use chathub_proto::v1::LoginRequest;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, ResponseTemplate};
+
+    let h = spawn_relay().await;
+    Mock::given(method("POST"))
+        .and(path("/account-app/oauth2/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "accessToken": {
+                "tokenValue": "freshly-minted-token",
+                "tokenType": { "value": "Bearer" },
+                "issuedAt": "2026-05-16 10:00:00",
+                "expiresAt": "2026-05-16 22:00:00"
+            },
+            "userId": 88,
+            "nickName": "Bob",
+            "channel": 3
+        })))
+        .mount(&h.downstream)
+        .await;
+
+    // 1. login
+    let mut auth_client =
+        chathub_proto::v1::auth_client::AuthClient::connect(format!("http://{}", h.grpc_addr))
+            .await
+            .unwrap();
+    let login_resp = auth_client
+        .login(LoginRequest {
+            username: "u".into(),
+            password: "p".into(),
+            device_id: "dev-A".into(),
+            device_name: "Mac".into(),
+            client_ver: "".into(),
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(login_resp.access_token, "freshly-minted-token");
+
+    // 2. 用刚拿到的 token 立即 Subscribe(走 cache 预填路径,不调 verify_token)
+    let ch = raw_channel(h.grpc_addr).await;
+    let mut hub = hub_client(ch, "freshly-minted-token".into());
+    let mut stream = hub
+        .subscribe(SubscribeRequest {
+            since_notify_seq: 0,
+            device_id: "dev-A".into(),
+            client_version: "1.0.0".into(),
+        })
+        .await
+        .expect("subscribe should succeed via cache prepopulate (no verify_token call)")
+        .into_inner();
+
+    // 第一帧应该是 SubscribeAck(employee_id=88 from prepopulated UserCtx)
+    let ack = stream.next().await.unwrap().unwrap();
+    match ack.body {
+        Some(Body::SubscribeAck(_)) => {} // good — Subscribe 通了,确认 cache 命中
+        other => panic!("expected SubscribeAck, got {other:?}"),
+    }
+}
+
 // ─── Forward 客户端 token 透传 + GET dispatch ───────────────────────────
 
 #[tokio::test(flavor = "multi_thread")]

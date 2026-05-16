@@ -192,6 +192,16 @@ impl TokenAuthenticator {
 
         result.map(|(ctx, _ttl)| ctx)
     }
+
+    /// 登录成功后由 AuthSvc 调用 —— 把刚 mint 出来的 token + 已知 UserCtx 写进 cache,
+    /// 让紧接着的 Subscribe 直接命中,避开多余的 verify_token 一跳。
+    ///
+    /// 业务端"自动续期"模型下,verify_token 只在 cache miss(客户端重启 / relay 重启
+    /// / 5min TTL 过期)时才调,真正"登录刚结束就 Subscribe"那一次完全跳过。
+    pub async fn prepopulate(&self, token: &str, ctx: UserCtx) {
+        let key = cache_key(token);
+        self.cache.insert(key, ctx).await;
+    }
 }
 
 fn cache_key(token: &str) -> String {

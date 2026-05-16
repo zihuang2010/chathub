@@ -41,14 +41,17 @@ async fn main() -> anyhow::Result<()> {
         },
     )?);
 
+    // 共享 TokenAuthenticator:AuthSvc.login 后预填,HubSvc.{subscribe,ack,forward} 命中
+    let auth = Arc::new(TokenAuthenticator::new(downstream.clone()));
     let auth_svc = AuthSvc {
         downstream: downstream.clone(),
+        auth: auth.clone(),
     };
     let hub_svc = HubSvc {
         router: router.clone(),
         events_log: events_log.clone(),
         downstream: downstream.clone(),
-        auth: Arc::new(TokenAuthenticator::new(downstream.clone())),
+        auth: auth.clone(),
         routes: cfg.routes.clone(),
     };
 

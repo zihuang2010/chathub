@@ -49,6 +49,9 @@ pub struct LoginReq<'a> {
 pub struct LoginResp {
     pub access_token: String,
     pub user_id: String,
+    /// 数值员工 ID(来自 JddTokenVO.userId)。AuthSvc 用它预填 TokenAuthenticator cache,
+    /// 让登录后的 Subscribe 直接命中,跳过 verify_token 一跳。
+    pub employee_id: i64,
     pub display_name: String,
     pub avatar_url: String,
     pub role: String,
@@ -242,6 +245,7 @@ impl DownstreamClient {
         Ok(LoginResp {
             access_token: jdd.access_token.token_value,
             user_id: jdd.user_id.to_string(),
+            employee_id: jdd.user_id, // 数值 ID,关键给 cache prepopulate 用
             display_name: jdd.nick_name.unwrap_or_default(),
             avatar_url: String::new(),
             role: String::new(),
