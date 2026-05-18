@@ -6,6 +6,7 @@ import { type Section } from "@/components/workbench/nav";
 import { AccountsPage } from "@/components/workbench/accounts/AccountsPage";
 import { CustomersPage } from "@/components/workbench/customers/CustomersPage";
 import { MessagesPage } from "@/components/workbench/messages/MessagesPage";
+import { useAccounts } from "@/lib/api/useAccounts";
 import { FONT_BODY } from "@/lib/theme";
 
 export function Workbench() {
@@ -13,6 +14,9 @@ export function Workbench() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   // 跨页跳转用的一次性意图：账号页点卡片 → 客户页消费后清空。
   const [pendingAccountFilter, setPendingAccountFilter] = useState<string | null>(null);
+
+  // 账号列表 — 整个 workbench 共享一份。账号页 / 客户页都从这里读。
+  const accountsState = useAccounts();
 
   const openAccountInCustomers = useCallback((accountId: string) => {
     setPendingAccountFilter(accountId);
@@ -39,14 +43,15 @@ export function Workbench() {
         onToggleCollapsed={() => setSidebarCollapsed((collapsed) => !collapsed)}
       />
       {section === "messages" ? (
-        <MessagesPage />
+        <MessagesPage accounts={accountsState.accounts} />
       ) : section === "customers" ? (
         <CustomersPage
+          accounts={accountsState.accounts}
           pendingAccountFilter={pendingAccountFilter}
           onConsumePendingFilter={consumePendingAccountFilter}
         />
       ) : section === "accounts" ? (
-        <AccountsPage onOpenInCustomers={openAccountInCustomers} />
+        <AccountsPage accountsState={accountsState} onOpenInCustomers={openAccountInCustomers} />
       ) : (
         <PlaceholderPage section={section} />
       )}

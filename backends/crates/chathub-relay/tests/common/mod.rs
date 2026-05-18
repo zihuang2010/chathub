@@ -111,18 +111,33 @@ pub async fn spawn_relay() -> RelayHarness {
     }
 }
 
-/// 在业务后台 mock 上挂一条 verifyToken,返回带 employee_id 的连接身份。
-/// 新合约(OAuth2 重构后):relay 用 `Authorization: Bearer <token>` 发空 body。
-pub async fn mount_verify_token(mock: &MockServer, token: &str, employee_id: i64, device_id: &str) {
+/// 在业务后台 mock 上挂一条 verifyToken,返回带 employeeId 的连接身份。
+/// 新合约:relay 用 `Authorization: Bearer <token>` 发空 body,响应仅 employeeId + 几个
+/// 可空 string 字段。`_device_id` 保留参数兼容旧调用点,实际不入响应 — Subscribe 自行
+/// 从 gRPC 请求体取 device_id。
+pub async fn mount_verify_token(
+    mock: &MockServer,
+    token: &str,
+    employee_id: i64,
+    _device_id: &str,
+) {
+    // 业务后台 2026-05-17 起统一包络:`{code:1, msg:"成功", data:{...}}`
     Mock::given(method("POST"))
-        .and(path("/v1/verify_token"))
+        .and(path(
+            "/wechat-business-app/rpc/v1/wecomAggregate/connection/verifyToken",
+        ))
         .and(header("authorization", &*format!("Bearer {token}")))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "active": true,
-            "user_id": format!("u-{employee_id}"),
-            "device_id": device_id,
-            "accounts": Vec::<String>::new(),
-            "employee_id": employee_id,
+            "code": 1,
+            "serviceCode": "",
+            "msg": "成功",
+            "data": {
+                "employeeId": employee_id,
+                "username": "",
+                "nickName": "",
+                "mobile": "",
+                "channel": ""
+            }
         })))
         .mount(mock)
         .await;

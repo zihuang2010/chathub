@@ -73,16 +73,22 @@ async fn fixture_self_test_healthz_returns_ok() {
 // ─── Auth 透传(OAuth2)─────────────────────────────────────────────────
 
 fn jdd_response() -> serde_json::Value {
+    // 业务后台 2026-05-17 起统一包络 `{code:1, msg:"成功", data:JddTokenVO}`。
     serde_json::json!({
-        "accessToken": {
-            "tokenValue": "biz-tok-7",
-            "tokenType": { "value": "Bearer" },
-            "issuedAt": "2026-05-16 10:00:00",
-            "expiresAt": "2026-05-16 22:00:00"
-        },
-        "userId": 7,
-        "nickName": "Alice",
-        "channel": 3
+        "code": 1,
+        "serviceCode": "",
+        "msg": "成功",
+        "data": {
+            "accessToken": {
+                "tokenValue": "biz-tok-7",
+                "tokenType": { "value": "Bearer" },
+                "issuedAt": "2026-05-16 10:00:00",
+                "expiresAt": "2026-05-16 22:00:00"
+            },
+            "userId": 7,
+            "nickName": "Alice",
+            "channel": 3
+        }
     })
 }
 
@@ -385,6 +391,7 @@ async fn forward_routes_to_business_backend() {
         .forward(ForwardRequest {
             method: "send".into(),
             body_json: bytes::Bytes::from_static(br#"{"conversationId":"c1"}"#),
+            query: Default::default(),
         })
         .await
         .unwrap()
@@ -423,15 +430,20 @@ async fn login_prepopulates_cache_subscribe_skips_verify_token() {
     Mock::given(method("POST"))
         .and(path("/account-app/oauth2/token"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "accessToken": {
-                "tokenValue": "freshly-minted-token",
-                "tokenType": { "value": "Bearer" },
-                "issuedAt": "2026-05-16 10:00:00",
-                "expiresAt": "2026-05-16 22:00:00"
-            },
-            "userId": 88,
-            "nickName": "Bob",
-            "channel": 3
+            "code": 1,
+            "serviceCode": "",
+            "msg": "成功",
+            "data": {
+                "accessToken": {
+                    "tokenValue": "freshly-minted-token",
+                    "tokenType": { "value": "Bearer" },
+                    "issuedAt": "2026-05-16 10:00:00",
+                    "expiresAt": "2026-05-16 22:00:00"
+                },
+                "userId": 88,
+                "nickName": "Bob",
+                "channel": 3
+            }
         })))
         .mount(&h.downstream)
         .await;
@@ -499,6 +511,7 @@ async fn forward_passes_client_token_not_relay_secret_to_backend() {
         .forward(ForwardRequest {
             method: "send".into(),
             body_json: bytes::Bytes::from_static(br#"{"x":1}"#),
+            query: Default::default(),
         })
         .await
         .unwrap()
@@ -520,8 +533,16 @@ async fn forward_list_accounts_dispatches_get() {
         ))
         .and(header("authorization", "Bearer tok-list"))
         .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_json(serde_json::json!([{"wxCsAccountId": "wa-1", "name": "abc"}])),
+            ResponseTemplate::new(200).set_body_json(serde_json::json!([{
+                "wecomAccountId": "wa-1",
+                "wecomName": "abc",
+                "wecomAccount": "mock_wa-1",
+                "wecomAlias": "wa-1_alias",
+                "wecomAvatar": "https://example.com/avatar/wa-1.png",
+                "wecomStatus": 1,
+                "gender": 1,
+                "position": "工程师"
+            }])),
         )
         .mount(&h.downstream)
         .await;
@@ -532,11 +553,12 @@ async fn forward_list_accounts_dispatches_get() {
         .forward(ForwardRequest {
             method: "list_accounts".into(),
             body_json: bytes::Bytes::new(),
+            query: Default::default(),
         })
         .await
         .unwrap()
         .into_inner();
     assert_eq!(resp.http_status, 200);
     let arr: serde_json::Value = serde_json::from_slice(&resp.body_json).unwrap();
-    assert_eq!(arr[0]["wxCsAccountId"], "wa-1");
+    assert_eq!(arr[0]["wecomAccountId"], "wa-1");
 }

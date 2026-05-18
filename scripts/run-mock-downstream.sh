@@ -13,7 +13,7 @@
 #   - 每个 HTTP 请求/响应整段 dump 到 stdout(method/URL/headers/body)
 #   - OAuth2 token 接受任意 Basic + 任意 username/password → 返 JddTokenVO
 #   - verify_token / logout / 业务接口 接受任意 Bearer
-#   - listMine 返 MOCK_ACCOUNTS 列表(默认 wa-1)
+#   - listMine 返 MOCK_ACCOUNTS 列表(脚本不预设,fallback 到 binary 内置 30 条)
 
 set -euo pipefail
 
@@ -33,7 +33,8 @@ export MOCK_OAUTH_CLIENT_SECRET="${MOCK_OAUTH_CLIENT_SECRET:-${RELAY_OAUTH_CLIEN
 export MOCK_DOWNSTREAM_ADDR="${MOCK_DOWNSTREAM_ADDR:-127.0.0.1:8080}"
 export MOCK_USER_ID="${MOCK_USER_ID:-1234}"
 export MOCK_NICK_NAME="${MOCK_NICK_NAME:-Mock User}"
-export MOCK_ACCOUNTS="${MOCK_ACCOUNTS:-wa-1}"
+# MOCK_ACCOUNTS 不预设 — 让 binary 内置默认(30 条样例账号)生效。
+# 想跑特定列表时显式 export:`MOCK_ACCOUNTS=wa-1,wa-2 scripts/run-mock-downstream.sh`
 # MOCK_TOKEN 不指定时,mock 启动会随机生成一个
 
 export RUST_LOG="${RUST_LOG:-info,mock_downstream=debug}"
@@ -41,7 +42,7 @@ export RUST_LOG="${RUST_LOG:-info,mock_downstream=debug}"
 echo "[mock-downstream] addr=${MOCK_DOWNSTREAM_ADDR}"
 echo "[mock-downstream] oauth client_id=${MOCK_OAUTH_CLIENT_ID} client_secret=${MOCK_OAUTH_CLIENT_SECRET}"
 echo "[mock-downstream] user_id=${MOCK_USER_ID} nick_name=${MOCK_NICK_NAME}"
-echo "[mock-downstream] accounts=${MOCK_ACCOUNTS}"
+echo "[mock-downstream] accounts=${MOCK_ACCOUNTS:-<binary 内置默认 30 条>}"
 echo "[mock-downstream] RUST_LOG=${RUST_LOG}"
 echo "[mock-downstream] 每个请求/响应都会整段 dump 到 stdout"
 

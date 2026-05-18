@@ -23,6 +23,14 @@ export interface CustomerStore {
  */
 export function useCustomerStore(initial: readonly Customer[]): CustomerStore {
   const [customers, setCustomers] = useState<Customer[]>(() => initial.map((c) => ({ ...c })));
+  // React 官方 "Adjusting state on prop change" 模式:在 render 阶段对比上一次的引用,
+  // 不同则用新数据 reset。本地修改(星标/标签)在数据 reload 后丢失 —— 真接口暂无 patch API,
+  // 这是预期行为。调用方需对 `initial` 做 useMemo,否则每次 render 都会触发重置。
+  const [lastSeenInitial, setLastSeenInitial] = useState(initial);
+  if (lastSeenInitial !== initial) {
+    setLastSeenInitial(initial);
+    setCustomers(initial.map((c) => ({ ...c })));
+  }
 
   const patchCustomer = useCallback((id: string, patch: Partial<Customer>) => {
     setCustomers((prev) => prev.map((c) => (c.id === id ? { ...c, ...patch } : c)));

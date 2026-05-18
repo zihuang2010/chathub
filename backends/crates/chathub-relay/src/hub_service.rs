@@ -23,7 +23,7 @@ use chathub_proto::v1::{
 };
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 use tokio::sync::{mpsc, OnceCell};
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::service::Interceptor;
@@ -94,7 +94,9 @@ impl Interceptor for ProtocolInterceptor {
 //   - 缓存满时 moka 自动按 LRU 淘汰 → 避免老实现 `cache.clear()` 引发的 thundering-herd。
 //   - cache key 保留 SHA-256(防 token 明文驻留内存,即便短时也少一份风险)。
 
-const MAX_CACHE_ENTRIES: u64 = 10_000;
+/// `TokenAuthenticator::new` 不指定容量时的默认上限。生产由 `Config::auth_cache_max_entries`
+/// 通过 env 注入,该常量仅作 `new()` 测试 / 老 caller 的兜底。
+const DEFAULT_CACHE_ENTRIES: u64 = 10_000;
 const MAX_CACHE_TTL: Duration = Duration::from_secs(300);
 
 /// OnceCell 里存的 — UserCtx + cache TTL(leader 算一次,follower 共享)。
@@ -122,11 +124,17 @@ pub struct TokenAuthenticator {
 }
 
 impl TokenAuthenticator {
+    /// 默认容量构造 — 测试用 / 老 caller 兜底。生产用 `with_capacity`。
     pub fn new(downstream: Arc<DownstreamClient>) -> Self {
+        Self::with_capacity(downstream, DEFAULT_CACHE_ENTRIES)
+    }
+
+    /// 由 `Config::auth_cache_max_entries` 注入容量。
+    pub fn with_capacity(downstream: Arc<DownstreamClient>, max_entries: u64) -> Self {
         Self {
             downstream,
             cache: moka::future::Cache::builder()
-                .max_capacity(MAX_CACHE_ENTRIES)
+                .max_capacity(max_entries)
                 .time_to_live(MAX_CACHE_TTL)
                 .build(),
             inflight: dashmap::DashMap::new(),
@@ -159,6 +167,10 @@ impl TokenAuthenticator {
         };
 
         // 3. 调 verify_token(只有 leader 的 future 会被 OnceCell 真正 poll)
+        // 新合约只返 {employeeId, username, nickName, mobile, channel} —
+        // employeeId 缺失 / 0 这里不拒,落给 Subscribe/Ack/Forward 层以 FailedPrecondition
+        // 返回更友好的 "business backend upgrade required" 信息(见 hub_service:324/445/478)。
+        // device_id 由 Subscribe 自带,UserCtx 这里留空。
         let downstream = self.downstream.clone();
         let token_owned = token.to_string();
         let result = cell
@@ -167,16 +179,13 @@ impl TokenAuthenticator {
                     .verify_token(&token_owned)
                     .await
                     .map_err(Status::from)?;
-                if !resp.active {
-                    return Err(Status::unauthenticated("token inactive"));
-                }
                 let ctx = UserCtx {
-                    user_id: resp.user_id,
-                    accounts: resp.accounts,
-                    device_id: resp.device_id,
+                    user_id: resp.employee_id.to_string(),
+                    accounts: Vec::new(),
+                    device_id: String::new(),
                     employee_id: resp.employee_id,
                 };
-                Ok((ctx, cache_ttl(resp.exp_ms)))
+                Ok((ctx, MAX_CACHE_TTL))
             })
             .await
             .clone();
@@ -207,23 +216,6 @@ impl TokenAuthenticator {
 fn cache_key(token: &str) -> String {
     let digest = Sha256::digest(token.as_bytes());
     hex::encode(&digest[..8])
-}
-
-fn cache_ttl(exp_ms: Option<i64>) -> Duration {
-    match exp_ms {
-        Some(exp) => {
-            let remain = (exp - now_ms()).max(0) as u64;
-            Duration::from_millis(remain).min(MAX_CACHE_TTL)
-        }
-        None => MAX_CACHE_TTL,
-    }
-}
-
-fn now_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
 }
 
 // ─── HubSvc ────────────────────────────────────────────────────────────────
@@ -497,6 +489,7 @@ impl Hub for HubSvc {
                 &r.method,
                 ctx.employee_id,
                 &r.body_json,
+                &r.query,
                 &client_token,
             )
             .await
@@ -532,34 +525,57 @@ mod tests {
         r
     }
 
-    /// 业务后台 mock verify_token:返回带 employee_id 的 UserCtx。
-    /// OAuth2 重构后:relay 用 `Authorization: Bearer <token>` 发空 body。
-    async fn mount_verify_token(mock: &MockServer, token: &str, employee_id: i64, device_id: &str) {
+    const VERIFY_PATH: &str = "/wechat-business-app/rpc/v1/wecomAggregate/connection/verifyToken";
+
+    /// 2026-05-17 包络化后,业务后台响应统一是 `{code:1, msg:"成功", data:...}`。
+    /// 测试 fixture 用这个 helper 把原 payload 包成成功包络。
+    fn envelope_ok_json(data: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({
+            "code": 1,
+            "serviceCode": "",
+            "msg": "成功",
+            "data": data
+        })
+    }
+
+    /// 业务后台 mock verify_token:返回带 employeeId 的连接身份。
+    /// `_device_id` 仅为保留旧调用点签名,新合约响应不携带 device_id —
+    /// Subscribe 自行从 gRPC 请求体里取。
+    async fn mount_verify_token(
+        mock: &MockServer,
+        token: &str,
+        employee_id: i64,
+        _device_id: &str,
+    ) {
         Mock::given(method("POST"))
-            .and(path("/v1/verify_token"))
+            .and(path(VERIFY_PATH))
             .and(header("authorization", &*format!("Bearer {token}")))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "active": true,
-                "user_id": format!("u-{employee_id}"),
-                "device_id": device_id,
-                "accounts": Vec::<String>::new(),
-                "employee_id": employee_id,
-            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(envelope_ok_json(
+                serde_json::json!({
+                    "employeeId": employee_id,
+                    "username": "",
+                    "nickName": "",
+                    "mobile": "",
+                    "channel": ""
+                }),
+            )))
             .mount(mock)
             .await;
     }
 
-    /// 业务后台 mock verify_token,但**不**返 employee_id(模拟未升级的后台)。
+    /// 业务后台 mock verify_token,但**不**返 employeeId(老后台 / 未关联员工)。
     async fn mount_verify_token_no_employee(mock: &MockServer, token: &str) {
         Mock::given(method("POST"))
-            .and(path("/v1/verify_token"))
+            .and(path(VERIFY_PATH))
             .and(header("authorization", &*format!("Bearer {token}")))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "active": true,
-                "user_id": "u-X",
-                "device_id": "d-X",
-                "accounts": Vec::<String>::new(),
-            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(envelope_ok_json(
+                serde_json::json!({
+                    "username": "",
+                    "nickName": "",
+                    "mobile": "",
+                    "channel": ""
+                }),
+            )))
             .mount(mock)
             .await;
     }
@@ -652,17 +668,37 @@ mod tests {
         let auth = TokenAuthenticator::new(downstream);
         let ctx = auth.authenticate("tok-1").await.unwrap();
         assert_eq!(ctx.employee_id, 7);
-        assert_eq!(ctx.device_id, "dev-A");
+        // 新合约 verifyToken 不返 device_id;Subscribe 自行从 gRPC 请求体取。
+        assert_eq!(ctx.device_id, "");
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn authenticator_inactive_token_unauthenticated() {
+    async fn authenticator_missing_employee_id_returns_ctx_with_zero() {
+        // 新合约:200 但 body 不带 employeeId(老后台 / 未关联员工) — authenticate 不在此层拒,
+        // 留给 Subscribe/Ack/Forward 层用 FailedPrecondition + 信息更全的错误消息拒。
         let mock = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path("/v1/verify_token"))
+            .and(path(VERIFY_PATH))
             .respond_with(
-                ResponseTemplate::new(200).set_body_json(serde_json::json!({ "active": false })),
+                ResponseTemplate::new(200)
+                    .set_body_json(envelope_ok_json(serde_json::json!({ "username": "" }))),
             )
+            .mount(&mock)
+            .await;
+        let downstream =
+            Arc::new(crate::downstream::DownstreamClient::new_with_defaults(&mock.uri()).unwrap());
+        let auth = TokenAuthenticator::new(downstream);
+        let ctx = auth.authenticate("tok-noemp").await.unwrap();
+        assert_eq!(ctx.employee_id, 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn authenticator_backend_401_maps_unauthenticated() {
+        // 新合约:token 失效 → 后台直接 401(不是 200 + active=false)→ Unauthenticated
+        let mock = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path(VERIFY_PATH))
+            .respond_with(ResponseTemplate::new(401))
             .mount(&mock)
             .await;
         let downstream =
@@ -676,11 +712,12 @@ mod tests {
     async fn authenticator_caches_result_second_call_skips_downstream() {
         let mock = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path("/v1/verify_token"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "active": true, "user_id": "u-1", "device_id": "d-A",
-                "accounts": Vec::<String>::new(), "employee_id": 42,
-            })))
+            .and(path(VERIFY_PATH))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(envelope_ok_json(serde_json::json!({
+                    "employeeId": 42, "username": "", "nickName": "", "mobile": "", "channel": ""
+                }))),
+            )
             .expect(1) // wiremock 在 drop 时校验:必须恰好 1 次
             .mount(&mock)
             .await;
@@ -695,14 +732,13 @@ mod tests {
     async fn authenticator_singleflight_50_concurrent_calls_one_verify() {
         let mock = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path("/v1/verify_token"))
+            .and(path(VERIFY_PATH))
             .respond_with(
                 ResponseTemplate::new(200)
                     .set_delay(Duration::from_millis(100))
-                    .set_body_json(serde_json::json!({
-                        "active": true, "user_id": "u-X", "device_id": "d-X",
-                        "accounts": Vec::<String>::new(), "employee_id": 42,
-                    })),
+                    .set_body_json(envelope_ok_json(serde_json::json!({
+                        "employeeId": 42, "username": "", "nickName": "", "mobile": "", "channel": ""
+                    }))),
             )
             .expect(1)
             .mount(&mock)
@@ -793,8 +829,8 @@ mod tests {
         let svc = build_svc(&mock).await;
         let err = svc.subscribe(sub_request("dev-A", 0)).await.unwrap_err();
         assert_eq!(err.code(), tonic::Code::FailedPrecondition);
-        // 错误信息带 user_id 上下文
-        assert!(err.message().contains("u-X"));
+        // 新合约下 user_id 派生自 employeeId,缺失时为 "0";断言错误信息提示了 employee_id 问题
+        assert!(err.message().contains("employee_id missing"));
     }
 
     // ── Ack ──────────────────────────────────────────────────────────────
@@ -851,6 +887,7 @@ mod tests {
         let mut req = Request::new(ForwardRequest {
             method: "send".into(),
             body_json: bytes::Bytes::from_static(br#"{"conversationId":"c1","contentText":"hi"}"#),
+            query: Default::default(),
         });
         req.extensions_mut().insert(BearerToken("tok-A".into()));
         let resp = svc.forward(req).await.unwrap().into_inner();
@@ -875,6 +912,7 @@ mod tests {
         let mut req = Request::new(ForwardRequest {
             method: "send".into(),
             body_json: bytes::Bytes::from_static(b"{}"),
+            query: Default::default(),
         });
         req.extensions_mut().insert(BearerToken("tok-A".into()));
         let resp = svc
@@ -900,6 +938,7 @@ mod tests {
         let mut req = Request::new(ForwardRequest {
             method: "send".into(),
             body_json: bytes::Bytes::from_static(b"{}"),
+            query: Default::default(),
         });
         req.extensions_mut().insert(BearerToken("tok-A".into()));
         let err = svc.forward(req).await.unwrap_err();
@@ -914,6 +953,7 @@ mod tests {
         let mut req = Request::new(ForwardRequest {
             method: "totally_unknown_method".into(),
             body_json: bytes::Bytes::from_static(b"{}"),
+            query: Default::default(),
         });
         req.extensions_mut().insert(BearerToken("tok-A".into()));
         let err = svc.forward(req).await.unwrap_err();
@@ -928,6 +968,7 @@ mod tests {
         let mut req = Request::new(ForwardRequest {
             method: "send".into(),
             body_json: bytes::Bytes::from_static(b"{}"),
+            query: Default::default(),
         });
         req.extensions_mut().insert(BearerToken("tok-A".into()));
         let err = svc.forward(req).await.unwrap_err();

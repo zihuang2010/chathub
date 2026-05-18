@@ -25,6 +25,11 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilte
 async fn main() -> anyhow::Result<()> {
     let cfg = Config::from_env()?;
     let _log_guard = init_tracing(&cfg)?;
+    tracing::info!(
+        target: "chathub_relay::config",
+        "effective configuration:\n{}",
+        cfg.dump_redacted()
+    );
     let storage = Storage::open(&cfg.db_path).await?;
     let router = Arc::new(Router::new());
     let events_log = EventLog::new(storage.clone());
@@ -42,7 +47,11 @@ async fn main() -> anyhow::Result<()> {
     )?);
 
     // 共享 TokenAuthenticator:AuthSvc.login 后预填,HubSvc.{subscribe,ack,forward} 命中
-    let auth = Arc::new(TokenAuthenticator::new(downstream.clone()));
+    // 容量来自 RELAY_AUTH_CACHE_MAX_ENTRIES,防止恶意刷不同 token 触发缓存无界增长。
+    let auth = Arc::new(TokenAuthenticator::with_capacity(
+        downstream.clone(),
+        cfg.auth_cache_max_entries,
+    ));
     let auth_svc = AuthSvc {
         downstream: downstream.clone(),
         auth: auth.clone(),

@@ -4,8 +4,8 @@ import { Plus, RefreshCw } from "lucide-react";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { ToastViewport, showToast } from "@/components/ui/toast";
 import { WorkbenchPanel } from "@/components/workbench/WorkbenchPanel";
-import { MOCK_ACCOUNTS } from "@/components/workbench/customers/data";
 import { downloadCsv } from "@/components/workbench/customers/utils";
+import type { UseAccountsResult } from "@/lib/api/useAccounts";
 
 import { AccountCard } from "./AccountCard";
 import { AccountListRow } from "./AccountListRow";
@@ -17,12 +17,15 @@ import { useAccountsView } from "./useAccountsView";
 import { toAccountsCsv } from "./utils";
 
 interface AccountsPageProps {
+  /** Workbench 持有的共享账号状态(accounts/loading/error/refetch)。 */
+  accountsState: UseAccountsResult;
   /** 卡片点击 → 跳客户页并锁定该账号过滤的回调；状态由 Workbench 持有。 */
   onOpenInCustomers: (accountId: string) => void;
 }
 
-export function AccountsPage({ onOpenInCustomers }: AccountsPageProps) {
-  const view = useAccountsView({ accounts: MOCK_ACCOUNTS });
+export function AccountsPage({ accountsState, onOpenInCustomers }: AccountsPageProps) {
+  const { accounts, loading, error, refetch } = accountsState;
+  const view = useAccountsView({ accounts });
 
   const handleExport = useCallback(() => {
     if (view.filteredRows.length === 0) {
@@ -34,8 +37,14 @@ export function AccountsPage({ onOpenInCustomers }: AccountsPageProps) {
     showToast(`已导出 ${view.filteredRows.length} 个账号`, { type: "success" });
   }, [view.filteredRows]);
 
-  const isFilteredEmpty = view.totalCount === 0 && view.hasActiveFilters;
-  const isTrulyEmpty = view.totalCount === 0 && !view.hasActiveFilters;
+  const handleRefresh = useCallback(async () => {
+    // 用户主动点刷新 = 走 force=true 强制透传 listMine,绕过本地 cache
+    await refetch({ force: true });
+    showToast("已刷新账号列表", { type: "success" });
+  }, [refetch]);
+
+  const isFilteredEmpty = !loading && !error && view.totalCount === 0 && view.hasActiveFilters;
+  const isTrulyEmpty = !loading && !error && view.totalCount === 0 && !view.hasActiveFilters;
 
   return (
     <ErrorBoundary>
@@ -44,6 +53,8 @@ export function AccountsPage({ onOpenInCustomers }: AccountsPageProps) {
           <PageHeader
             totalAccounts={view.kpis.totalAccounts}
             onlineAccounts={view.kpis.onlineAccounts}
+            onRefresh={handleRefresh}
+            refreshing={loading}
           />
           <div className="min-h-0 flex-1 overflow-y-auto">
             <AccountsKpiStrip kpis={view.kpis} />
@@ -79,7 +90,11 @@ export function AccountsPage({ onOpenInCustomers }: AccountsPageProps) {
             />
 
             <div className="px-4 pb-4">
-              {isTrulyEmpty ? (
+              {loading ? (
+                <LoadingState />
+              ) : error ? (
+                <ErrorState message={error} onRetry={refetch} />
+              ) : isTrulyEmpty ? (
                 <EmptyState />
               ) : isFilteredEmpty ? (
                 <FilteredEmpty onReset={view.reset} />
@@ -122,10 +137,11 @@ export function AccountsPage({ onOpenInCustomers }: AccountsPageProps) {
 interface PageHeaderProps {
   totalAccounts: number;
   onlineAccounts: number;
+  onRefresh: () => void | Promise<void>;
+  refreshing: boolean;
 }
 
-function PageHeader({ totalAccounts, onlineAccounts }: PageHeaderProps) {
-  const handleRefresh = () => showToast("已刷新账号状态", { type: "success" });
+function PageHeader({ totalAccounts, onlineAccounts, onRefresh, refreshing }: PageHeaderProps) {
   const handleBind = () => showToast("绑定账号功能开发中", { type: "info" });
 
   return (
@@ -147,10 +163,11 @@ function PageHeader({ totalAccounts, onlineAccounts }: PageHeaderProps) {
       <div className="flex shrink-0 items-center gap-2">
         <button
           type="button"
-          onClick={handleRefresh}
-          className="focus-ring inline-flex h-9 items-center gap-1.5 rounded-md border border-workbench-line bg-workbench-surface px-3 text-[13px] text-workbench-text transition-colors hover:border-workbench-line-strong"
+          onClick={() => void onRefresh()}
+          disabled={refreshing}
+          className="focus-ring inline-flex h-9 items-center gap-1.5 rounded-md border border-workbench-line bg-workbench-surface px-3 text-[13px] text-workbench-text transition-colors hover:border-workbench-line-strong disabled:cursor-not-allowed disabled:opacity-60"
         >
-          <RefreshCw size={14} />
+          <RefreshCw size={14} className={refreshing ? "animate-spin" : ""} />
           刷新
         </button>
         <button
@@ -173,6 +190,37 @@ function EmptyState() {
       <p className="max-w-[280px] text-[12px] text-workbench-text-muted">
         绑定企业微信账号后，将在此查看每个账号下的客户活跃情况。
       </p>
+    </div>
+  );
+}
+
+function LoadingState() {
+  return (
+    <div className="flex h-[280px] flex-col items-center justify-center gap-2 px-6 text-center">
+      <RefreshCw size={20} className="animate-spin text-workbench-text-muted" />
+      <p className="text-[12px] text-workbench-text-muted">正在加载账号列表…</p>
+    </div>
+  );
+}
+
+function ErrorState({
+  message,
+  onRetry,
+}: {
+  message: string;
+  onRetry: () => void | Promise<void>;
+}) {
+  return (
+    <div className="flex h-[280px] flex-col items-center justify-center gap-3 px-6 text-center">
+      <p className="text-[14px] font-medium text-workbench-text">加载账号失败</p>
+      <p className="max-w-[360px] break-all text-[12px] text-workbench-text-muted">{message}</p>
+      <button
+        type="button"
+        onClick={() => void onRetry()}
+        className="focus-ring mt-1 inline-flex h-7 items-center rounded-md bg-workbench-surface-active px-3 text-[12px] font-medium text-workbench-accent transition-colors hover:bg-workbench-accent hover:text-white"
+      >
+        点击重试
+      </button>
     </div>
   );
 }

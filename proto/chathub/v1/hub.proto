@@ -39,8 +39,11 @@ message AckResponse {}
 //   - 5xx → Status::Internal
 //   - 网络/超时 → Status::Unavailable
 message ForwardRequest {
-  string method    = 1;   // "send" / "recall" / "ack_read" / "fetch_history" / 未来新增
-  bytes  body_json = 2;   // 业务请求 JSON 原文,relay 透传
+  string method    = 1;   // "send" / "recall" / "ack_read" / "fetch_history" / "list_accounts" / 未来新增
+  bytes  body_json = 2;   // 业务请求 JSON 原文,relay 透传(GET 路径 relay 会丢弃 body)
+  // 查询参数 — GET 路径专用(relay 拼到 URL query string;POST 路径忽略)。
+  // 空 map = 不传。值已 raw,relay 内部用 reqwest .query() 自动 URL-encode。
+  map<string,string> query = 3;
 }
 message ForwardResponse {
   bytes  body_json   = 1;   // 业务响应 JSON 原文,客户端 SDK 自己 deserialize

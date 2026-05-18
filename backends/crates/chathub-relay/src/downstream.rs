@@ -7,12 +7,62 @@
 //!
 //! 安全约束:`client_token` 仅作 `&str` 在函数参数 / `bearer_auth()` 之间流转,
 //!   不进任何 struct / cache / 日志字段(日志只允许出现 token 前 8 char + ***)。
+//!   日志输出需走 [`crate::secret::redact_token`] 强制脱敏,不要直接拼明文 token。
 
 use crate::config::{DownstreamRoutes, HttpMethod};
 use crate::error::{map_downstream_4xx_5xx, RelayError};
 use reqwest::Client;
 use serde::Deserialize;
 use std::time::{Duration, Instant};
+
+/// 业务后台统一响应包络(2026-05-17 起):
+///   { "code": 1, "serviceCode": "...", "msg": "成功", "data": {...} }
+/// 成功 = `code == 1`,其余视为业务错(`msg` 直接展示给用户)。
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Envelope<T> {
+    code: i32,
+    #[serde(default)]
+    service_code: String,
+    #[serde(default)]
+    msg: String,
+    #[serde(default = "Option::default")]
+    data: Option<T>,
+}
+
+/// 解 envelope 后取 `data`:
+///   - 解析失败 → `RelayError::Internal`(契约错,relay 跟后台对不上 envelope 形态)
+///   - `code != 1` → `RelayError::BusinessError`(把 service_code + msg 透传给客户端)
+///   - `code == 1` 但 data 缺失 → 调用方自行决定(返 `None`,典型如 logout 不关心)
+fn unwrap_envelope<T>(bytes: &[u8], op: &str) -> Result<Option<T>, RelayError>
+where
+    T: serde::de::DeserializeOwned,
+{
+    let env: Envelope<T> = serde_json::from_slice(bytes).map_err(|e| {
+        tracing::warn!(
+            target: "chathub_relay::downstream",
+            op,
+            error = %e,
+            "envelope parse failed (upstream protocol violation)",
+        );
+        RelayError::Internal
+    })?;
+    if env.code != 1 {
+        tracing::warn!(
+            target: "chathub_relay::downstream",
+            op,
+            code = env.code,
+            service_code = %env.service_code,
+            msg = %env.msg,
+            "business error (envelope code != 1)",
+        );
+        return Err(RelayError::BusinessError {
+            service_code: env.service_code,
+            msg: env.msg,
+        });
+    }
+    Ok(env.data)
+}
 
 #[derive(Clone)]
 pub struct DownstreamClient {
@@ -85,22 +135,22 @@ pub struct ForwardOutcome {
 }
 
 /// verifyToken 响应:relay 据此拿到连接身份。
+///
+/// 业务合约(camelCase):
+///   { "employeeId": 1234, "username": "", "nickName": "", "mobile": "", "channel": "" }
+///
+/// `employeeId == 0`(或缺失)视为未激活,鉴权失败。其它字段当前 relay 不消费,
+/// 仅 `username` / `nickName` 留作未来可能的日志增强,不进 UserCtx。
 #[derive(Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct VerifyTokenResp {
-    #[serde(default)]
-    pub active: bool,
-    #[serde(default)]
-    pub user_id: String,
-    #[serde(default)]
-    pub device_id: String,
-    #[serde(default)]
-    pub accounts: Vec<String>,
-    /// token 过期时间(epoch ms);用于 relay 侧缓存 TTL。缺省时缓存用固定上限(5 min)。
-    #[serde(default)]
-    pub exp_ms: Option<i64>,
-    /// 员工数值 ID。老 mock / 业务后台未升级时为 0,Subscribe/Ack/Forward 拒。
+    /// 员工数值 ID。0 或缺失 → 鉴权失败。
     #[serde(default)]
     pub employee_id: i64,
+    #[serde(default)]
+    pub username: String,
+    #[serde(default)]
+    pub nick_name: String,
 }
 
 #[derive(Deserialize, Debug, Clone)]
@@ -157,7 +207,8 @@ impl DownstreamClient {
             base_url,
             AuthPaths {
                 login: "/account-app/oauth2/token".into(),
-                verify_token: "/v1/verify_token".into(),
+                verify_token: "/wechat-business-app/rpc/v1/wecomAggregate/connection/verifyToken"
+                    .into(),
                 logout: "/auth/logout".into(),
             },
             OAuthCreds {
@@ -225,15 +276,24 @@ impl DownstreamClient {
             ));
         }
 
-        let jdd: JddTokenVO = resp.json().await.map_err(|e| {
+        let body_bytes = resp.bytes().await.map_err(|e| {
             tracing::warn!(
                 target: "chathub_relay::downstream",
                 error = %e,
                 elapsed_ms,
-                "oauth2 login JSON parse failed (upstream protocol violation)",
+                "oauth2 login body read failed",
             );
-            RelayError::Internal
+            RelayError::Http(e.to_string())
         })?;
+        let jdd: JddTokenVO =
+            unwrap_envelope::<JddTokenVO>(&body_bytes, "login")?.ok_or_else(|| {
+                tracing::warn!(
+                    target: "chathub_relay::downstream",
+                    elapsed_ms,
+                    "oauth2 login envelope ok but data missing",
+                );
+                RelayError::Internal
+            })?;
 
         tracing::info!(
             target: "chathub_relay::downstream",
@@ -255,9 +315,42 @@ impl DownstreamClient {
     }
 
     /// 透传客户端登出到业务后台。best-effort:网络错也不阻断。
+    /// 业务后台返 `{code:1, msg:"成功", data:null}` 形态;envelope 解析失败/code!=1 时
+    /// 也只 warn-log 不阻断(logout 关键路径不应被业务报错卡住)。
     pub async fn logout(&self, client_token: &str) -> Result<(), RelayError> {
         let url = format!("{}{}", self.base_url, self.paths.logout);
-        let _ = self.http.post(&url).bearer_auth(client_token).send().await;
+        let resp = match self.http.post(&url).bearer_auth(client_token).send().await {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!(
+                    target: "chathub_relay::downstream",
+                    error = %e,
+                    "logout network error — ignored (best-effort)",
+                );
+                return Ok(());
+            }
+        };
+        let status = resp.status();
+        if !status.is_success() {
+            tracing::warn!(
+                target: "chathub_relay::downstream",
+                status = status.as_u16(),
+                "logout non-2xx — ignored (best-effort)",
+            );
+            return Ok(());
+        }
+        let bytes = match resp.bytes().await {
+            Ok(b) => b,
+            Err(_) => return Ok(()),
+        };
+        // envelope 不强求 — 后台可能 200 + 空 body / 错误 envelope,都不阻断 logout 流程
+        if let Err(e) = unwrap_envelope::<serde::de::IgnoredAny>(&bytes, "logout") {
+            tracing::warn!(
+                target: "chathub_relay::downstream",
+                error = %e,
+                "logout envelope reported error — ignored (best-effort)",
+            );
+        }
         Ok(())
     }
 
@@ -317,15 +410,23 @@ impl DownstreamClient {
             ));
         }
 
-        let body: VerifyTokenResp = resp
-            .json()
+        let body_bytes = resp
+            .bytes()
             .await
             .map_err(|e| RelayError::Http(e.to_string()))?;
+        let body: VerifyTokenResp =
+            unwrap_envelope::<VerifyTokenResp>(&body_bytes, "verify_token")?.ok_or_else(|| {
+                tracing::warn!(
+                    target: "chathub_relay::downstream",
+                    elapsed_ms,
+                    "verify_token envelope ok but data missing",
+                );
+                RelayError::Internal
+            })?;
 
         tracing::info!(
             target: "chathub_relay::downstream",
             elapsed_ms,
-            user_id = %body.user_id,
             employee_id = body.employee_id,
             "verify_token ok",
         );
@@ -345,6 +446,7 @@ impl DownstreamClient {
         method: &str,
         employee_id: i64,
         body_bytes: &[u8],
+        query: &std::collections::HashMap<String, String>,
         client_token: &str,
     ) -> Result<ForwardOutcome, RelayError> {
         let spec = routes.get(method).ok_or(RelayError::InvalidArg)?;
@@ -358,6 +460,7 @@ impl DownstreamClient {
             url = %url,
             employee_id,
             body_len = body_bytes.len(),
+            query_len = query.len(),
             "forward request",
         );
 
@@ -371,13 +474,23 @@ impl DownstreamClient {
                         "GET method given non-empty body — ignored",
                     );
                 }
-                self.http.get(&url)
+                // GET 路径:query map 拼到 URL 上(reqwest 自动 URL-encode)
+                self.http.get(&url).query(query)
             }
-            HttpMethod::Post => self
-                .http
-                .post(&url)
-                .header("Content-Type", "application/json")
-                .body(body_bytes.to_vec()),
+            HttpMethod::Post => {
+                if !query.is_empty() {
+                    tracing::debug!(
+                        target: "chathub_relay::downstream",
+                        method,
+                        query_len = query.len(),
+                        "POST method given query params — ignored (POST 用 body 传参)",
+                    );
+                }
+                self.http
+                    .post(&url)
+                    .header("Content-Type", "application/json")
+                    .body(body_bytes.to_vec())
+            }
         };
 
         let resp = builder
@@ -459,8 +572,19 @@ mod tests {
     use wiremock::matchers::{body_string_contains, header, method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
-    fn jdd_response() -> serde_json::Value {
+    /// 2026-05-17 包络化后,业务后台响应统一是 `{code:1, serviceCode, msg, data}`。
+    /// 测试 fixture 用这个 helper 把原 payload 包成成功包络。
+    fn envelope_ok_json(data: serde_json::Value) -> serde_json::Value {
         serde_json::json!({
+            "code": 1,
+            "serviceCode": "",
+            "msg": "成功",
+            "data": data
+        })
+    }
+
+    fn jdd_response() -> serde_json::Value {
+        envelope_ok_json(serde_json::json!({
             "accessToken": {
                 "tokenValue": "biz-tok-abc",
                 "tokenType": { "value": "Bearer" },
@@ -472,7 +596,7 @@ mod tests {
             "nickName": "Alice",
             "mobile": "1380000000",
             "channel": 3
-        })
+        }))
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -575,35 +699,37 @@ mod tests {
         assert!(matches!(err, RelayError::Internal));
     }
 
+    const VERIFY_PATH: &str = "/wechat-business-app/rpc/v1/wecomAggregate/connection/verifyToken";
+
     #[tokio::test(flavor = "multi_thread")]
     async fn verify_token_uses_client_token_as_bearer_and_empty_body() {
         let mock = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path("/v1/verify_token"))
+            .and(path(VERIFY_PATH))
             .and(header("authorization", "Bearer client-xyz"))
             // 415 修复:必须发 Content-Type + body `{}`,否则 Spring 后台 415
             .and(header("content-type", "application/json"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "active": true,
-                "user_id": "u-9",
-                "device_id": "dev-X",
-                "accounts": ["wa-1"],
-                "exp_ms": 1_900_000_000_000i64,
-                "employee_id": 42
-            })))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(envelope_ok_json(serde_json::json!({
+                    "employeeId": 1231231233112313_i64,
+                    "username": "",
+                    "nickName": "",
+                    "mobile": "",
+                    "channel": ""
+                }))),
+            )
             .mount(&mock)
             .await;
         let client = DownstreamClient::new_with_defaults(&mock.uri()).unwrap();
         let resp = client.verify_token("client-xyz").await.unwrap();
-        assert!(resp.active);
-        assert_eq!(resp.employee_id, 42);
+        assert_eq!(resp.employee_id, 1231231233112313);
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn verify_token_415_maps_protocol_mismatch() {
         let mock = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path("/v1/verify_token"))
+            .and(path(VERIFY_PATH))
             .respond_with(ResponseTemplate::new(415))
             .mount(&mock)
             .await;
@@ -619,7 +745,7 @@ mod tests {
     async fn verify_token_404_maps_protocol_mismatch() {
         let mock = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path("/v1/verify_token"))
+            .and(path(VERIFY_PATH))
             .respond_with(ResponseTemplate::new(404))
             .mount(&mock)
             .await;
@@ -635,7 +761,7 @@ mod tests {
     async fn verify_token_401_maps_invalid_creds() {
         let mock = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path("/v1/verify_token"))
+            .and(path(VERIFY_PATH))
             .respond_with(ResponseTemplate::new(401))
             .mount(&mock)
             .await;
@@ -665,7 +791,14 @@ mod tests {
         let client = DownstreamClient::new_with_defaults(&mock.uri()).unwrap();
         let routes = DownstreamRoutes::default_for_test();
         let outcome = client
-            .forward(&routes, "send", 42, br#"{"x":1}"#, "client-xyz")
+            .forward(
+                &routes,
+                "send",
+                42,
+                br#"{"x":1}"#,
+                &std::collections::HashMap::new(),
+                "client-xyz",
+            )
             .await
             .unwrap();
         assert_eq!(outcome.http_status, 200);
@@ -688,7 +821,14 @@ mod tests {
         let routes = DownstreamRoutes::default_for_test();
         // 即使传非空 body,GET 也忽略
         let outcome = client
-            .forward(&routes, "list_accounts", 42, b"ignored-body", "client-xyz")
+            .forward(
+                &routes,
+                "list_accounts",
+                42,
+                b"ignored-body",
+                &std::collections::HashMap::new(),
+                "client-xyz",
+            )
             .await
             .unwrap();
         assert_eq!(outcome.http_status, 200);
@@ -697,12 +837,43 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn forward_get_passes_query_params_into_url() {
+        use wiremock::matchers::query_param;
+        let mock = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(
+                "/wechat-business-app/wecom-cs/v1/wecomAggregate/account/listMine",
+            ))
+            .and(query_param("enabled", "true"))
+            .and(header("authorization", "Bearer client-xyz"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+            .mount(&mock)
+            .await;
+        let client = DownstreamClient::new_with_defaults(&mock.uri()).unwrap();
+        let routes = DownstreamRoutes::default_for_test();
+        let mut q = std::collections::HashMap::new();
+        q.insert("enabled".to_string(), "true".to_string());
+        let outcome = client
+            .forward(&routes, "list_accounts", 42, b"", &q, "client-xyz")
+            .await
+            .unwrap();
+        assert_eq!(outcome.http_status, 200);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn forward_unknown_method_returns_invalid_arg() {
         let mock = MockServer::start().await;
         let client = DownstreamClient::new_with_defaults(&mock.uri()).unwrap();
         let routes = DownstreamRoutes::default_for_test();
         let err = client
-            .forward(&routes, "unknown_method", 1, b"", "tok")
+            .forward(
+                &routes,
+                "unknown_method",
+                1,
+                b"",
+                &std::collections::HashMap::new(),
+                "tok",
+            )
             .await
             .unwrap_err();
         assert!(matches!(err, RelayError::InvalidArg));
@@ -722,7 +893,14 @@ mod tests {
         let client = DownstreamClient::new_with_defaults(&mock.uri()).unwrap();
         let routes = DownstreamRoutes::default_for_test();
         let outcome = client
-            .forward(&routes, "send", 1, b"{}", "tok")
+            .forward(
+                &routes,
+                "send",
+                1,
+                b"{}",
+                &std::collections::HashMap::new(),
+                "tok",
+            )
             .await
             .unwrap();
         assert_eq!(outcome.http_status, 403);
@@ -739,7 +917,14 @@ mod tests {
         let client = DownstreamClient::new_with_defaults(&mock.uri()).unwrap();
         let routes = DownstreamRoutes::default_for_test();
         let err = client
-            .forward(&routes, "send", 1, b"{}", "tok")
+            .forward(
+                &routes,
+                "send",
+                1,
+                b"{}",
+                &std::collections::HashMap::new(),
+                "tok",
+            )
             .await
             .unwrap_err();
         assert!(matches!(err, RelayError::Internal));

@@ -32,6 +32,12 @@ pub enum AuthError {
     /// 客户端应 **Terminate**(不 Logout、不 Backoff),提示"协议错误,请联系管理员"。
     #[error("downstream protocol mismatch: {detail}")]
     ProtocolMismatch { detail: String },
+
+    /// 业务后台 envelope `code != 1`(2026-05-17 统一包络后)。
+    /// `service_code` / `msg` 由后台决定;UI 直接展示 `msg`。
+    /// 客户端不重试不退出登录 —— token 没问题,只是业务侧拒绝本次操作。
+    #[error("business error ({service_code}): {msg}")]
+    Business { service_code: String, msg: String },
 }
 
 impl From<tonic::Status> for AuthError {
@@ -58,6 +64,11 @@ impl From<tonic::Status> for AuthError {
                     detail: s.message().to_string(),
                 }
             }
+            // FailedPrecondition + "business_error:" 前缀 → 业务包络 code != 1
+            // (relay 把 {serviceCode, msg} 用 JSON 串达;失败回退保留原 message 当 msg)
+            FailedPrecondition if s.message().starts_with("business_error:") => {
+                parse_business_error(s.message())
+            }
             FailedPrecondition => AuthError::Internal {
                 message: format!("precondition: {}", s.message()),
             },
@@ -81,6 +92,29 @@ impl From<tonic::transport::Error> for AuthError {
         AuthError::Network {
             message: e.to_string(),
         }
+    }
+}
+
+fn parse_business_error(message: &str) -> AuthError {
+    // 形态:`business_error:{"serviceCode":"...","msg":"..."}`
+    let payload = message.trim_start_matches("business_error:");
+    #[derive(serde::Deserialize)]
+    struct B {
+        #[serde(default, rename = "serviceCode")]
+        service_code: String,
+        #[serde(default)]
+        msg: String,
+    }
+    match serde_json::from_str::<B>(payload) {
+        Ok(b) => AuthError::Business {
+            service_code: b.service_code,
+            msg: b.msg,
+        },
+        // JSON 解析失败 → 把整个 payload 当 msg(防呆,不至于丢业务错信息)
+        Err(_) => AuthError::Business {
+            service_code: String::new(),
+            msg: payload.to_string(),
+        },
     }
 }
 
@@ -202,5 +236,38 @@ mod tests {
             json.contains("\"kind\":\"unauthenticated\""),
             "json = {json}"
         );
+    }
+
+    #[test]
+    fn business_error_prefix_round_trips_service_code_and_msg() {
+        // relay 用 `business_error:{"serviceCode":"...","msg":"..."}` 串达
+        let msg = serde_json::json!({
+            "serviceCode": "wecom.balance.insufficient",
+            "msg": "余额不足"
+        })
+        .to_string();
+        let status = Status::failed_precondition(format!("business_error:{msg}"));
+        let err: AuthError = status.into();
+        match err {
+            AuthError::Business { service_code, msg } => {
+                assert_eq!(service_code, "wecom.balance.insufficient");
+                assert_eq!(msg, "余额不足");
+            }
+            other => panic!("expected Business, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn business_error_with_garbage_payload_falls_back_to_msg() {
+        // 容错:relay 串达失败 → 整个 payload 当 msg,至少不丢业务错信息
+        let status = Status::failed_precondition("business_error:not-valid-json");
+        let err: AuthError = status.into();
+        match err {
+            AuthError::Business { service_code, msg } => {
+                assert!(service_code.is_empty());
+                assert_eq!(msg, "not-valid-json");
+            }
+            other => panic!("expected Business, got {other:?}"),
+        }
     }
 }

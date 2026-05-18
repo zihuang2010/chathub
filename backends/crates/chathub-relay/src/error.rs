@@ -33,6 +33,11 @@ pub enum RelayError {
     #[error("downstream protocol mismatch (HTTP {code}): {reason}")]
     ProtocolMismatch { code: u16, reason: String },
 
+    /// 业务后台 envelope `code != 1`(2026-05-17 起统一包络)。
+    /// `service_code` / `msg` 由后台决定;relay 不解释语义,直接传 msg 给客户端展示。
+    #[error("business error ({service_code}): {msg}")]
+    BusinessError { service_code: String, msg: String },
+
     #[error("storage: {0}")]
     Storage(#[from] crate::storage::StorageError),
 
@@ -68,6 +73,17 @@ impl From<RelayError> for tonic::Status {
             // 区分;chathub-net::From<Status> 检测无 details 时归类为 ProtocolMismatch)
             RelayError::ProtocolMismatch { code, reason } => {
                 Status::failed_precondition(format!("downstream_protocol_mismatch:{code}:{reason}"))
+            }
+            // BusinessError → FailedPrecondition + "business_error:" 前缀 + JSON payload。
+            // 同 ProtocolMismatch 一样靠 message 前缀消歧:chathub-net::From<Status> 识别后
+            // 解析为 AuthError::Business { service_code, msg },前端 UI 直接拿 msg 展示。
+            RelayError::BusinessError { service_code, msg } => {
+                let payload = serde_json::json!({
+                    "serviceCode": service_code,
+                    "msg": msg,
+                })
+                .to_string();
+                Status::failed_precondition(format!("business_error:{payload}"))
             }
             RelayError::Internal | RelayError::Http(_) | RelayError::Storage(_) => {
                 Status::internal("internal")

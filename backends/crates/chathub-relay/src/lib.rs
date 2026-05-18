@@ -15,4 +15,5 @@ pub mod event_policy;
 pub mod hub_service;
 pub mod push;
 pub mod router;
+pub mod secret;
 pub mod storage;

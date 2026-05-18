@@ -1,12 +1,16 @@
 import type { ReactNode } from "react";
+import { useMemo, useState } from "react";
 import * as Popover from "@radix-ui/react-popover";
+import { Search } from "lucide-react";
 
+import type { Account } from "@/lib/types/account";
 import { cn } from "@/lib/utils";
 
 import { STRINGS } from "./strings";
 
 interface AccountDropdownProps {
-  accounts: string[];
+  accounts: readonly Account[];
+  /** 单选语义。值是 `account.name`(兼容 conversation.account 字段) — `null` 表示"全部"。 */
   selectedAccount: string | null;
   onSelect: (account: string | null) => void;
   open?: boolean;
@@ -19,6 +23,15 @@ interface AccountDropdownProps {
   title?: string;
 }
 
+/**
+ * 消息页"按账号筛选"下拉。视觉/交互对齐客户页 `AccountPicker`(头像、搜索、滚动、分组),
+ * 但保持**单选**语义(message 域是单选过滤,而客户页是多选)。
+ *
+ * 与 AccountPicker 的差异:
+ *   - 单选(无 checkbox/Star/recent/footer)
+ *   - 顶部固定"全部账号"选项
+ *   - 滚动区 max-h 控制 30+ 条不溢出弹层
+ */
 export function AccountDropdown({
   accounts,
   selectedAccount,
@@ -32,55 +45,114 @@ export function AccountDropdown({
   contentClassName,
   title,
 }: AccountDropdownProps) {
+  const [query, setQuery] = useState("");
+
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return accounts;
+    return accounts.filter((a) =>
+      [a.name, a.ownerName, a.city].some((v) => v?.toLowerCase().includes(q)),
+    );
+  }, [accounts, query]);
+
   const handleSelect = (account: string | null) => {
     onSelect(account);
     onOpenChange?.(false);
+    setQuery("");
   };
 
   return (
-    <Popover.Root open={open} onOpenChange={onOpenChange}>
+    <Popover.Root
+      open={open}
+      onOpenChange={(o) => {
+        onOpenChange?.(o);
+        if (!o) setQuery("");
+      }}
+    >
       <Popover.Trigger asChild>{children}</Popover.Trigger>
       <Popover.Portal>
         <Popover.Content
           align={align}
           side={side}
           sideOffset={sideOffset}
-          role="listbox"
+          role="dialog"
           aria-label={title ?? STRINGS.conversationList.accountListLabel}
           className={cn(
-            "z-20 rounded-lg border border-workbench-line bg-workbench-surface p-2 shadow-wb-popover-strong outline-none",
+            // 与 AccountPicker 对齐:固定宽 + 最大高 + flex 列 + overflow-hidden
+            "z-20 flex max-h-[480px] w-[280px] flex-col overflow-hidden rounded-xl border border-workbench-line bg-workbench-surface shadow-wb-popover-strong outline-none",
             contentClassName,
           )}
         >
           {title && (
-            <div className="mb-1 px-1 text-wb-2xs font-medium text-workbench-text">{title}</div>
+            <div className="border-b border-workbench-line px-3 py-2 text-wb-2xs font-medium text-workbench-text">
+              {title}
+            </div>
           )}
-          <AccountOption
-            active={!selectedAccount}
-            label={STRINGS.rangePill.allAccountsBare}
-            onClick={() => handleSelect(null)}
-          />
-          {accounts.map((account) => (
-            <AccountOption
-              key={account}
-              active={selectedAccount === account}
-              label={account}
-              onClick={() => handleSelect(account)}
+          <SearchBox value={query} onChange={setQuery} />
+          <div className="flex-1 overflow-y-auto px-1 py-1">
+            {/* "全部账号" — 固定置顶,搜索不参与过滤 */}
+            <AllAccountsRow
+              active={!selectedAccount}
+              total={accounts.length}
+              onClick={() => handleSelect(null)}
             />
-          ))}
+            <Group title={`全部账号 (${formatTotalCount(accounts.length)})`}>
+              {filtered.length === 0 ? (
+                <Empty>未找到匹配的账号</Empty>
+              ) : (
+                filtered.map((a) => (
+                  <AccountRow
+                    key={a.id}
+                    account={a}
+                    active={selectedAccount === a.name}
+                    onClick={() => handleSelect(a.name)}
+                  />
+                ))
+              )}
+            </Group>
+          </div>
         </Popover.Content>
       </Popover.Portal>
     </Popover.Root>
   );
 }
 
-function AccountOption({
+function SearchBox({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  return (
+    <div className="relative border-b border-workbench-line p-2">
+      <Search
+        size={13}
+        className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-workbench-text-muted"
+      />
+      <input
+        type="search"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder="搜索账号名称或成员"
+        className="focus-ring h-8 w-full rounded-lg border border-workbench-line bg-workbench-surface-subtle pl-7 pr-2 text-[12px] text-workbench-text placeholder:text-workbench-text-muted focus:bg-workbench-surface"
+      />
+    </div>
+  );
+}
+
+function Group({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <div className="mb-1.5">
+      <div className="px-2 pb-1 pt-1.5 text-[11px] font-medium uppercase tracking-wider text-workbench-text-muted">
+        {title}
+      </div>
+      <div className="flex flex-col gap-0.5">{children}</div>
+    </div>
+  );
+}
+
+function AllAccountsRow({
   active,
-  label,
+  total,
   onClick,
 }: {
   active: boolean;
-  label: string;
+  total: number;
   onClick: () => void;
 }) {
   return (
@@ -90,14 +162,84 @@ function AccountOption({
       aria-selected={active}
       onClick={onClick}
       className={cn(
-        "focus-ring flex h-9 w-full items-center justify-between gap-2 rounded-md px-2 text-left text-wb-2xs font-medium transition-colors",
-        active
-          ? "bg-workbench-surface-active text-workbench-accent"
-          : "text-workbench-text-secondary hover:bg-workbench-surface-subtle",
+        "focus-ring flex h-9 w-full items-center gap-2 rounded-md px-2 text-left text-[12px] transition-colors",
+        active ? "bg-workbench-surface-active" : "hover:bg-workbench-surface-subtle",
       )}
     >
-      <span className="truncate">{label}</span>
-      {active && <span className="size-1.5 rounded-full bg-workbench-accent" />}
+      <span
+        aria-hidden
+        className="grid size-6 shrink-0 place-items-center rounded-full bg-workbench-surface-active text-[10px] font-medium text-workbench-accent"
+      >
+        全
+      </span>
+      <span
+        className={cn(
+          "min-w-0 flex-1 truncate font-medium",
+          active ? "text-workbench-accent" : "text-workbench-text",
+        )}
+      >
+        {STRINGS.rangePill.allAccountsBare}
+      </span>
+      <span className="shrink-0 rounded-full bg-workbench-surface-subtle px-1.5 py-0.5 font-numeric text-[11px] tabular-nums text-workbench-text-muted">
+        {formatTotalCount(total)}
+      </span>
+      {active && <span className="ml-1 size-1.5 shrink-0 rounded-full bg-workbench-accent" />}
     </button>
   );
+}
+
+function AccountRow({
+  account,
+  active,
+  onClick,
+}: {
+  account: Account;
+  active: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      role="option"
+      aria-selected={active}
+      onClick={onClick}
+      className={cn(
+        "focus-ring flex h-9 w-full items-center gap-2 rounded-md px-2 text-left text-[12px] transition-colors",
+        active ? "bg-workbench-surface-active" : "hover:bg-workbench-surface-subtle",
+      )}
+    >
+      <Avatar account={account} />
+      <span
+        className={cn(
+          "min-w-0 flex-1 truncate",
+          active ? "font-medium text-workbench-accent" : "text-workbench-text",
+        )}
+      >
+        {account.name}
+      </span>
+      {active && <span className="size-1.5 shrink-0 rounded-full bg-workbench-accent" />}
+    </button>
+  );
+}
+
+function Avatar({ account }: { account: Account }) {
+  return (
+    <span
+      aria-hidden
+      className="grid size-6 shrink-0 place-items-center rounded-full text-[10.5px] font-medium text-workbench-text"
+      style={{ background: `hsl(var(--wb-avatar-${account.colorToken}))` }}
+    >
+      {account.name.slice(0, 1)}
+    </span>
+  );
+}
+
+function Empty({ children }: { children: ReactNode }) {
+  return (
+    <div className="px-2 py-3 text-center text-wb-2xs text-workbench-text-muted">{children}</div>
+  );
+}
+
+function formatTotalCount(n: number): string {
+  return n > 99 ? "100+" : `${n}`;
 }

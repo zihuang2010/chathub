@@ -1,8 +1,12 @@
-//! SessionStore:UserProfile 当前会话 + WecomAccount 镜像 → SQLite。
+//! SessionStore:UserProfile 当前会话 → SQLite。
+//!
+//! 2026-05-17 起,wecom_accounts 镜像不再在 login 时由 SessionStore 写入
+//! (LoginResp.wecom_accounts 已永远为空,前端通过 `list_accounts` 命令走
+//! `AccountCacheStore` 独立同步)。SessionStore 只负责 UserProfile 单行。
 
 use crate::error::StateError;
 use crate::pool::SqlitePool;
-use chathub_proto::v1::{UserProfile, WecomAccount};
+use chathub_proto::v1::UserProfile;
 
 #[derive(Clone)]
 pub struct SessionStore {
@@ -14,22 +18,15 @@ impl SessionStore {
         Self { pool }
     }
 
-    /// 写入(或覆盖)当前用户会话与其授权账号镜像。
+    /// 写入(或覆盖)当前用户会话。
     /// 同一时刻只允许一个 session(由 current_session.id = 1 约束)。
-    pub async fn upsert_session(
-        &self,
-        profile: &UserProfile,
-        accounts: &[WecomAccount],
-    ) -> Result<(), StateError> {
+    pub async fn upsert_session(&self, profile: &UserProfile) -> Result<(), StateError> {
         let profile = profile.clone();
-        let accounts: Vec<WecomAccount> = accounts.to_vec();
         let now = now_unix_ms();
 
         let conn = self.pool.pool().get().await?;
         conn.interact(move |c| -> Result<(), StateError> {
-            let tx = c.transaction()?;
-            // current_session 永远只有一行(id = 1)
-            tx.execute(
+            c.execute(
                 "INSERT INTO current_session (id, user_id, display_name, avatar_url, role, tenant_id, logged_in_at_ms) \
                  VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6) \
                  ON CONFLICT(id) DO UPDATE SET \
@@ -44,22 +41,6 @@ impl SessionStore {
                     profile.role, profile.tenant_id, now,
                 ],
             )?;
-            // wecom_accounts:全表替换为该 user 的最新列表
-            tx.execute(
-                "DELETE FROM wecom_accounts WHERE user_id = ?1",
-                rusqlite::params![profile.user_id],
-            )?;
-            for acc in &accounts {
-                tx.execute(
-                    "INSERT OR REPLACE INTO wecom_accounts (wecom_account_id, user_id, corp_id, agent_id, display_name, enabled, cached_at_ms) \
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                    rusqlite::params![
-                        acc.wecom_account_id, profile.user_id, acc.corp_id,
-                        acc.agent_id, acc.display_name, acc.enabled as i64, now,
-                    ],
-                )?;
-            }
-            tx.commit()?;
             Ok(())
         })
         .await??;
@@ -88,40 +69,17 @@ impl SessionStore {
         Ok(profile)
     }
 
-    pub async fn read_wecom_accounts(
-        &self,
-        user_id: &str,
-    ) -> Result<Vec<WecomAccount>, StateError> {
-        let user_id = user_id.to_string();
-        let conn = self.pool.pool().get().await?;
-        let accounts: Vec<WecomAccount> = conn
-            .interact(move |c| -> Result<Vec<WecomAccount>, StateError> {
-                let mut stmt = c.prepare(
-                    "SELECT wecom_account_id, corp_id, agent_id, display_name, enabled \
-                 FROM wecom_accounts WHERE user_id = ?1 ORDER BY wecom_account_id",
-                )?;
-                let rows = stmt
-                    .query_map(rusqlite::params![user_id], |row| {
-                        Ok(WecomAccount {
-                            wecom_account_id: row.get(0)?,
-                            corp_id: row.get(1)?,
-                            agent_id: row.get::<_, i64>(2)? as u32,
-                            display_name: row.get(3)?,
-                            enabled: row.get::<_, i64>(4)? != 0,
-                        })
-                    })?
-                    .collect::<Result<Vec<_>, _>>()?;
-                Ok(rows)
-            })
-            .await??;
-        Ok(accounts)
-    }
-
+    /// 登出 / 切账号时清空当前 session 镜像 + 账号缓存 + 账号水位。
+    /// 账号缓存与水位由 `AccountCacheStore` 管,但 SessionStore::clear() 一起清
+    /// 是登出语义的自然一部分 —— 三件事必须原子完成。
     pub async fn clear(&self) -> Result<(), StateError> {
         let conn = self.pool.pool().get().await?;
         conn.interact(|c| -> Result<(), rusqlite::Error> {
-            c.execute("DELETE FROM current_session", [])?;
-            c.execute("DELETE FROM wecom_accounts", [])?;
+            let tx = c.transaction()?;
+            tx.execute("DELETE FROM current_session", [])?;
+            tx.execute("DELETE FROM wecom_accounts", [])?;
+            tx.execute("DELETE FROM wecom_account_watermark", [])?;
+            tx.commit()?;
             Ok(())
         })
         .await??;
@@ -151,80 +109,27 @@ mod tests {
         }
     }
 
-    fn sample_accounts() -> Vec<WecomAccount> {
-        vec![
-            WecomAccount {
-                wecom_account_id: "wa-1".into(),
-                corp_id: "wwd00".into(),
-                agent_id: 1000001,
-                display_name: "杭州企微-小美".into(),
-                enabled: true,
-            },
-            WecomAccount {
-                wecom_account_id: "wa-2".into(),
-                corp_id: "wwd00".into(),
-                agent_id: 1000002,
-                display_name: "上海企微-大白".into(),
-                enabled: false,
-            },
-        ]
-    }
-
     #[tokio::test]
     async fn upsert_then_read_round_trip() {
         let pool = SqlitePool::in_memory().await.unwrap();
         let store = SessionStore::new(pool);
-        store
-            .upsert_session(&sample_profile(), &sample_accounts())
-            .await
-            .unwrap();
+        store.upsert_session(&sample_profile()).await.unwrap();
 
         let p = store.read_current().await.unwrap().expect("profile");
         assert_eq!(p, sample_profile());
-
-        let accs = store.read_wecom_accounts("u-1").await.unwrap();
-        assert_eq!(accs.len(), 2);
-        assert_eq!(accs[0].wecom_account_id, "wa-1");
-        assert!(!accs[1].enabled);
     }
 
     #[tokio::test]
-    async fn upsert_replaces_existing_accounts_for_same_user() {
+    async fn clear_removes_session() {
         let pool = SqlitePool::in_memory().await.unwrap();
         let store = SessionStore::new(pool);
-        store
-            .upsert_session(&sample_profile(), &sample_accounts())
-            .await
-            .unwrap();
-
-        let new_accounts = vec![WecomAccount {
-            wecom_account_id: "wa-9".into(),
-            corp_id: "wwd00".into(),
-            agent_id: 9000001,
-            display_name: "新账号".into(),
-            enabled: true,
-        }];
-        store
-            .upsert_session(&sample_profile(), &new_accounts)
-            .await
-            .unwrap();
-
-        let accs = store.read_wecom_accounts("u-1").await.unwrap();
-        assert_eq!(accs.len(), 1);
-        assert_eq!(accs[0].wecom_account_id, "wa-9");
-    }
-
-    #[tokio::test]
-    async fn clear_removes_session_and_accounts() {
-        let pool = SqlitePool::in_memory().await.unwrap();
-        let store = SessionStore::new(pool);
-        store
-            .upsert_session(&sample_profile(), &sample_accounts())
-            .await
-            .unwrap();
+        store.upsert_session(&sample_profile()).await.unwrap();
         store.clear().await.unwrap();
 
         assert!(store.read_current().await.unwrap().is_none());
-        assert!(store.read_wecom_accounts("u-1").await.unwrap().is_empty());
     }
+
+    // clear() 同时清 wecom_accounts + wecom_account_watermark 的行为
+    // 在 `account_cache::tests` 里通过 AccountCacheStore 高层 API 校验,
+    // 避免在这里手插 SQL(deadpool-sqlite + ":memory:" 多 conn 状态不共享)。
 }

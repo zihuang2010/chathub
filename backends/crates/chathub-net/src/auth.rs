@@ -29,12 +29,9 @@ impl AuthApi {
         let profile = resp.user.ok_or_else(|| AuthError::Internal {
             message: "login response missing user".into(),
         })?;
-        let accounts = resp.wecom_accounts;
-
-        self.session_store
-            .upsert_session(&profile, &accounts)
-            .await?;
-
+        // 2026-05-17:LoginResp.wecom_accounts 永远空,账号列表走 `list_accounts` 命令 +
+        // `AccountCacheStore` 独立同步。SessionStore 只镜像 UserProfile。
+        self.session_store.upsert_session(&profile).await?;
         Ok(profile)
     }
 

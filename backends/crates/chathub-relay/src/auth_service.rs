@@ -134,16 +134,22 @@ mod tests {
     }
 
     fn jdd_response() -> serde_json::Value {
+        // 业务后台 2026-05-17 起统一包络:`{code:1, msg:"成功", data:JddTokenVO}`
         serde_json::json!({
-            "accessToken": {
-                "tokenValue": "biz-tok-7",
-                "tokenType": { "value": "Bearer" },
-                "issuedAt": "2026-05-16 10:00:00",
-                "expiresAt": "2026-05-16 22:00:00"
-            },
-            "userId": 7,
-            "nickName": "Alice",
-            "channel": 3
+            "code": 1,
+            "serviceCode": "",
+            "msg": "成功",
+            "data": {
+                "accessToken": {
+                    "tokenValue": "biz-tok-7",
+                    "tokenType": { "value": "Bearer" },
+                    "issuedAt": "2026-05-16 10:00:00",
+                    "expiresAt": "2026-05-16 22:00:00"
+                },
+                "userId": 7,
+                "nickName": "Alice",
+                "channel": 3
+            }
         })
     }
 

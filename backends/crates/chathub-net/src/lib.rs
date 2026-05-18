@@ -9,16 +9,20 @@
 //!   - `AuthError`:统一错误类型 + From<Status>
 //!   - `HubClient` / `ConnectionManager` / `ConnectionState` / `BackoffConfig`
 
+pub mod account_event;
 pub mod auth;
 pub mod channel;
 pub mod error;
+pub mod friend_event;
 pub mod hub;
 pub mod interceptor;
 pub mod token;
 
+pub use account_event::{AccountChanged, AccountEventApplier};
 pub use auth::{AuthApi, LoggedOutReason};
 pub use channel::build_endpoint;
 pub use error::AuthError;
+pub use friend_event::{friend_to_row, FriendChanged, FriendEventApplier};
 pub use hub::*;
 pub use interceptor::AuthInterceptor;
 pub use token::{TokenState, TokenStore};

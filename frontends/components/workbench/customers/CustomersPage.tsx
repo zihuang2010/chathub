@@ -3,41 +3,85 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { ToastViewport, showToast } from "@/components/ui/toast";
 import { WorkbenchPanel } from "@/components/workbench/WorkbenchPanel";
+import { adaptFriendToCustomer } from "@/lib/api/customers";
+import { useFriends } from "@/lib/api/useFriends";
+import type { Account } from "@/lib/types/account";
 
 import { CustomerDetailPanel } from "./CustomerDetailPanel";
 import { CustomerList } from "./CustomerList";
 import { CustomersHeader } from "./CustomersHeader";
-import { MOCK_ACCOUNTS, MOCK_CUSTOMERS, MOCK_RECENT_MESSAGES } from "./data";
+import { MOCK_RECENT_MESSAGES } from "./data";
 import { STRINGS } from "./strings";
 import { downloadCsv, toCsv } from "./utils";
-import { useCustomersFilters } from "./useCustomersFilters";
 import { useCustomerSelection } from "./useCustomerSelection";
+import { useCustomersFilters } from "./useCustomersFilters";
 import { useCustomerStore } from "./useCustomerStore";
 
 interface CustomersPageProps {
+  /** 由 Workbench 提供的账号列表(来自 list_accounts);为空数组时筛选下拉空,UI 仍可用。 */
+  accounts: readonly Account[];
   /**
-   * 来自其他页面（账号页卡片点击）的"锁定该账号过滤"意图。CustomersPage 在
-   * useEffect 中一次性消费并调 onConsumePendingFilter 通知 Workbench 清空，
+   * 来自其他页面(账号页卡片点击)的"锁定该账号过滤"意图。CustomersPage 在
+   * useEffect 中一次性消费并调 onConsumePendingFilter 通知 Workbench 清空,
    * 之后用户在 AccountPicker 中正常增删该选中集。
    */
   pendingAccountFilter?: string | null;
   onConsumePendingFilter?: () => void;
 }
 
+const EMPTY_ACCOUNTS_SET: ReadonlySet<string> = new Set();
+
 export function CustomersPage({
+  accounts,
   pendingAccountFilter,
   onConsumePendingFilter,
-}: CustomersPageProps = {}) {
-  const store = useCustomerStore(MOCK_CUSTOMERS);
-  const filters = useCustomersFilters({ source: store.customers });
+}: CustomersPageProps) {
+  // 受控的账号筛选 state:由 CustomersPage 持有,同时驱动 API 入参 + 本地 filter,
+  // 避免 selectedAccountIds 被 filter 内部持有导致的循环依赖。
+  const [selectedAccountIds, setSelectedAccountIds] =
+    useState<ReadonlySet<string>>(EMPTY_ACCOUNTS_SET);
+
+  // API 入参账号:UI 没选时拉所有可见账号。
+  const apiAccountIds = useMemo(() => {
+    if (selectedAccountIds.size > 0) {
+      return [...selectedAccountIds].sort();
+    }
+    return accounts.map((a) => a.id);
+  }, [selectedAccountIds, accounts]);
+
+  // 阶段 2:Tauri `list_friends` 返全量(行存)。分页 / 筛选 / 排序均本地完成。
+  const { friends, error, refetch } = useFriends(apiAccountIds);
+
+  useEffect(() => {
+    if (error) showToast(`加载客户列表失败: ${error}`, { type: "error" });
+  }, [error]);
+
+  // 行存每条带 wecomAccountId,adapter 用 map 查账号显示名;多账号 / 单账号一致路径。
+  const accountNameById = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const a of accounts) m.set(a.id, a.name);
+    return m;
+  }, [accounts]);
+
+  const adapted = useMemo(() => {
+    return friends.map((r) =>
+      adaptFriendToCustomer(r, {
+        accountName: accountNameById.get(r.wecomAccountId) ?? "—",
+      }),
+    );
+  }, [friends, accountNameById]);
+
+  const store = useCustomerStore(adapted);
+  const filters = useCustomersFilters({
+    source: store.customers,
+    selectedAccountIdsValue: selectedAccountIds,
+    onSelectedAccountIdsChange: setSelectedAccountIds,
+  });
   const selection = useCustomerSelection();
 
-  const [requestedCustomerId, setRequestedCustomerId] = useState<string | null>(
-    () => MOCK_CUSTOMERS[0]?.id ?? null,
-  );
+  const [requestedCustomerId, setRequestedCustomerId] = useState<string | null>(null);
 
-  // 渲染期派生有效的激活客户：若用户选中的客户被过滤掉，则回退到第一条；空列表为 null。
-  // 用户的选择仍保留在 requestedCustomerId 中，筛选恢复后可重新生效。
+  // 渲染期派生有效的激活客户:若用户选中的客户被过滤掉,则回退到第一条;空列表为 null。
   const activeCustomerId = useMemo(() => {
     if (filters.filteredCustomers.length === 0) return null;
     if (
@@ -55,21 +99,24 @@ export function CustomersPage({
     exitSelection();
   }, [exitSelection, filters.activeTab]);
 
-  // 一次性消费"账号页跳过来的锁定意图"：写入选中账号集 + 提示，调回调清空，
-  // 让用户后续可以在 AccountPicker 中自由增删。
-  const setSelectedAccountIdsExact = filters.setSelectedAccountIdsExact;
+  // 一次性消费"账号页跳过来的锁定意图":在 render 阶段对比 lastConsumedPending 做 set,
+  // 再用 useEffect 触发 toast + 通知父级,避开 react-hooks/set-state-in-effect。
+  const [lastConsumedPending, setLastConsumedPending] = useState<string | null>(null);
+  const isNewPending = !!pendingAccountFilter && pendingAccountFilter !== lastConsumedPending;
+  if (isNewPending) {
+    setLastConsumedPending(pendingAccountFilter);
+    setSelectedAccountIds(new Set([pendingAccountFilter!]));
+  }
   useEffect(() => {
-    if (!pendingAccountFilter) return;
-    const account = MOCK_ACCOUNTS.find((a) => a.id === pendingAccountFilter);
-    setSelectedAccountIdsExact(new Set([pendingAccountFilter]));
+    if (!isNewPending) return;
+    const account = accounts.find((a) => a.id === pendingAccountFilter);
     if (account) {
       showToast(`已锁定账号「${account.name}」的客户列表`, { type: "info" });
     }
     onConsumePendingFilter?.();
-  }, [pendingAccountFilter, setSelectedAccountIdsExact, onConsumePendingFilter]);
+  }, [isNewPending, pendingAccountFilter, accounts, onConsumePendingFilter]);
 
-  // 任意筛选变化（账号/标签/搜索/Tab）会改变可见集，把当前选中收敛到交集。
-  // 否则用户对"看不见的项"批量操作的语义不可控（导出/移交/星标都会包含隐藏行）。
+  // 任意筛选变化(账号/标签/搜索/Tab)会改变可见集,把当前选中收敛到交集。
   const pruneSelection = selection.pruneTo;
   useEffect(() => {
     const visibleIds = new Set(filters.filteredCustomers.map((c) => c.id));
@@ -82,7 +129,7 @@ export function CustomersPage({
   );
 
   const activeAccount = activeCustomer?.accountId
-    ? MOCK_ACCOUNTS.find((a) => a.id === activeCustomer.accountId)
+    ? accounts.find((a) => a.id === activeCustomer.accountId)
     : undefined;
 
   const recentMessages = useMemo(() => {
@@ -95,10 +142,6 @@ export function CustomersPage({
   const isMultiSelectActive = selection.isMultiSelectActive;
   const toggleSelectionMode = selection.toggleMode;
 
-  /**
-   * 工具栏 master checkbox：未在多选时点击 → 进入多选并选中可见全部；
-   * 已选完则清空回到 0；否则补齐到全选可见集。
-   */
   const onSelectAllInView = useCallback(() => {
     if (!isMultiSelectActive) {
       toggleSelectionMode();
@@ -111,8 +154,6 @@ export function CustomersPage({
     return filters.filteredCustomers.every((c) => selection.selectedIds.has(c.id));
   }, [filters.filteredCustomers, selection.selectedIds]);
 
-  // 拆出方法引用，深依赖 selection 对象会让该 callback 每次选中改变都重建
-  // → 传给 memoized CustomerListRow 的 onSelect 也跟着抖，memo 失效。
   const toggleSelection = selection.toggle;
   const handleSelectCustomer = useCallback(
     (id: string) => {
@@ -125,6 +166,7 @@ export function CustomersPage({
     [isMultiSelectActive, toggleSelection],
   );
 
+  // 真接口暂无 patch API,本地态会被下一次 useFriends 重拉覆盖,先保留交互手感。
   const handleToggleStar = useCallback(
     (id: string) => {
       const next = store.toggleStarred(id);
@@ -167,7 +209,7 @@ export function CustomersPage({
   );
 
   const handleOpenChat = useCallback((customerId: string) => {
-    showToast(`将打开与该客户的会话（${customerId}）`, { type: "info" });
+    showToast(`将打开与该客户的会话(${customerId})`, { type: "info" });
   }, []);
 
   // ── 批量动作 ─────────────────────────────────────────────────────────────
@@ -238,14 +280,15 @@ export function CustomersPage({
     showToast(STRINGS.toasts.viewToggleStub, { type: "info" });
   }, []);
   const handleStubExport = useCallback(() => {
-    showToast(STRINGS.toasts.exportStub, { type: "info" });
-  }, []);
+    void refetch({ force: true });
+    showToast("已强制刷新客户列表", { type: "info" });
+  }, [refetch]);
 
   const handleEditCustomer = useCallback((id: string) => {
-    showToast(`将打开客户编辑面板（${id}）`, { type: "info" });
+    showToast(`将打开客户编辑面板(${id})`, { type: "info" });
   }, []);
   const handleRowMore = useCallback((id: string) => {
-    showToast(`更多操作菜单（${id}）`, { type: "info" });
+    showToast(`更多操作菜单(${id})`, { type: "info" });
   }, []);
 
   return (
@@ -258,7 +301,7 @@ export function CustomersPage({
             tabCounts={filters.tabCounts}
             searchTerm={filters.searchTerm}
             onSearchChange={filters.setSearchTerm}
-            accounts={MOCK_ACCOUNTS}
+            accounts={accounts}
             selectedAccountIds={filters.selectedAccountIds}
             accountCounts={filters.accountCounts}
             onToggleAccount={filters.toggleAccountId}
@@ -286,7 +329,7 @@ export function CustomersPage({
               <CustomerList
                 paginatedCustomers={filters.paginatedCustomers}
                 filteredTotal={filters.filteredCustomers.length}
-                accounts={MOCK_ACCOUNTS}
+                accounts={accounts}
                 activeTab={filters.activeTab}
                 activeCustomerId={activeCustomerId}
                 page={filters.page}

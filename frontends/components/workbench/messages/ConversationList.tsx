@@ -1,6 +1,7 @@
 import { memo, useMemo, useState } from "react";
 import { ChevronDown, Menu, Search } from "lucide-react";
 
+import type { Account } from "@/lib/types/account";
 import { cn } from "@/lib/utils";
 
 import { AccountDropdown } from "./AccountDropdown";
@@ -17,7 +18,7 @@ interface ConversationListProps {
   selectedId: string;
   onSelect: (id: string) => void;
   width: number;
-  accountOptions: string[];
+  accounts: readonly Account[];
   selectedAccount: string | null;
   onAccountChange: (account: string | null) => void;
 }
@@ -27,7 +28,7 @@ export const ConversationList = memo(function ConversationList({
   selectedId,
   onSelect,
   width,
-  accountOptions,
+  accounts,
   selectedAccount,
   onAccountChange,
 }: ConversationListProps) {
@@ -55,7 +56,7 @@ export const ConversationList = memo(function ConversationList({
         <FilterToolbar
           statusTab={statusTab}
           onStatusChange={setStatusTab}
-          accountOptions={accountOptions}
+          accounts={accounts}
           selectedAccount={selectedAccount}
           onAccountChange={onAccountChange}
           accountPickerOpen={accountPickerOpen}
@@ -114,7 +115,7 @@ function SearchBar({
 function FilterToolbar({
   statusTab,
   onStatusChange,
-  accountOptions,
+  accounts,
   selectedAccount,
   onAccountChange,
   accountPickerOpen,
@@ -122,7 +123,7 @@ function FilterToolbar({
 }: {
   statusTab: StatusTab;
   onStatusChange: (value: StatusTab) => void;
-  accountOptions: string[];
+  accounts: readonly Account[];
   selectedAccount: string | null;
   onAccountChange: (account: string | null) => void;
   accountPickerOpen: boolean;
@@ -145,7 +146,7 @@ function FilterToolbar({
         className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto pr-1 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
       >
         <AccountDropdown
-          accounts={accountOptions}
+          accounts={accounts}
           selectedAccount={selectedAccount}
           onSelect={onAccountChange}
           open={accountPickerOpen}

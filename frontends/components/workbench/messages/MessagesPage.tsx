@@ -4,6 +4,7 @@ import type { KeyboardEvent, PointerEvent as ReactPointerEvent } from "react";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { ToastViewport } from "@/components/ui/toast";
 import { WorkbenchPanel } from "@/components/workbench/WorkbenchPanel";
+import type { Account } from "@/lib/types/account";
 import { cn } from "@/lib/utils";
 
 import { ChatArea } from "./ChatArea";
@@ -28,7 +29,13 @@ import {
 import { useChatMessages } from "./useChatMessages";
 import { useDetailsWindow } from "./useDetailsWindow";
 
-export function MessagesPage() {
+interface MessagesPageProps {
+  /** 由 Workbench 提供的账号列表(来自 list_accounts)。下拉只用 name 列表;
+   *  会话切换仍依赖本地 MOCK_CONVERSATIONS,新真账号未必命中本地会话 mock。 */
+  accounts: readonly Account[];
+}
+
+export function MessagesPage({ accounts }: MessagesPageProps) {
   const [selectedId, setSelectedId] = useState<string>(MOCK_CONVERSATIONS[0].id);
   const [selectedAccount, setSelectedAccount] = useState<string | null>(null);
   const [conversationListWidth, setConversationListWidth] = useState(
@@ -43,10 +50,8 @@ export function MessagesPage() {
     chatAreaRef,
   });
 
-  const accountOptions = useMemo(
-    () => Array.from(new Set(MOCK_CONVERSATIONS.map((c) => c.account))),
-    [],
-  );
+  // 账号筛选下拉数据源 — Workbench 透传的 list_accounts。下游组件直接吃 Account[],
+  // 自带头像/颜色/搜索字段。同 name 由 dropdown 内部按 id key 区分,不去重。
   const conversation = useMemo(
     () => MOCK_CONVERSATIONS.find((c) => c.id === selectedId) ?? MOCK_CONVERSATIONS[0],
     [selectedId],
@@ -171,7 +176,7 @@ export function MessagesPage() {
           selectedId={selectedId}
           onSelect={setSelectedId}
           width={conversationListWidth}
-          accountOptions={accountOptions}
+          accounts={accounts}
           selectedAccount={selectedAccount}
           onAccountChange={handleAccountChange}
         />
@@ -212,7 +217,7 @@ export function MessagesPage() {
           <ChatArea
             conversation={conversation}
             messages={messages}
-            accountOptions={accountOptions}
+            accounts={accounts}
             selectedAccount={selectedAccount}
             onAccountChange={handleAccountChange}
             detailsOpen={detailsOpen}

@@ -1,31 +1,31 @@
 import { useState } from "react";
 import { ChevronDown, ListFilter, X } from "lucide-react";
 
+import type { Account } from "@/lib/types/account";
 import { cn } from "@/lib/utils";
 
 import { AccountDropdown } from "./AccountDropdown";
 import { STRINGS } from "./strings";
 
 interface RangePillProps {
-  accountOptions: string[];
+  accounts: readonly Account[];
   selectedAccount: string | null;
   onAccountChange: (account: string | null) => void;
 }
 
-export function RangePill({ accountOptions, selectedAccount, onAccountChange }: RangePillProps) {
+export function RangePill({ accounts, selectedAccount, onAccountChange }: RangePillProps) {
   const [open, setOpen] = useState(false);
-  const label = selectedAccount ?? STRINGS.rangePill.allAccounts(accountOptions.length);
+  const label = selectedAccount ?? STRINGS.rangePill.allAccounts(accounts.length);
 
   return (
     <div className="bg-workbench-surface px-4 pb-1.5 pt-2">
       <div className="flex items-center justify-between gap-3 text-wb-2xs font-medium">
         <AccountDropdown
-          accounts={accountOptions}
+          accounts={accounts}
           selectedAccount={selectedAccount}
           onSelect={onAccountChange}
           open={open}
           onOpenChange={setOpen}
-          contentClassName="w-[240px]"
           title={STRINGS.rangePill.selectAccount}
         >
           <button

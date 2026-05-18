@@ -60,6 +60,13 @@ export interface CustomersFiltersResult extends CustomersFiltersState {
 interface Options {
   source: readonly Customer[];
   initialSort?: SortKey;
+  /**
+   * 受控模式:由外部提供 `selectedAccountIds` + setter,内部不再持状态。
+   * 用于让账号筛选同时驱动 API 入参(`useFriends(accountIds, ...)`)与本地客户端过滤,
+   * 避免循环依赖。两者都不提供时退化为非受控(内部 useState)。
+   */
+  selectedAccountIdsValue?: ReadonlySet<string>;
+  onSelectedAccountIdsChange?: (next: ReadonlySet<string>) => void;
 }
 
 const EMPTY_ACCOUNTS: ReadonlySet<string> = new Set();
@@ -69,9 +76,25 @@ const EMPTY_FOLLOW_UPS: ReadonlySet<FollowUpStatus> = new Set();
 export function useCustomersFilters({
   source,
   initialSort = "lastContact",
+  selectedAccountIdsValue,
+  onSelectedAccountIdsChange,
 }: Options): CustomersFiltersResult {
   const [activeTab, setActiveTabState] = useState<CustomerTab>("all");
-  const [selectedAccountIds, setSelectedAccountIds] = useState<ReadonlySet<string>>(EMPTY_ACCOUNTS);
+  const [internalSelectedAccountIds, setInternalSelectedAccountIds] =
+    useState<ReadonlySet<string>>(EMPTY_ACCOUNTS);
+  const controlled = selectedAccountIdsValue !== undefined && !!onSelectedAccountIdsChange;
+  const selectedAccountIds = controlled ? selectedAccountIdsValue! : internalSelectedAccountIds;
+  const setSelectedAccountIds = useCallback(
+    (next: ReadonlySet<string> | ((prev: ReadonlySet<string>) => ReadonlySet<string>)) => {
+      if (controlled) {
+        const value = typeof next === "function" ? next(selectedAccountIds) : next;
+        onSelectedAccountIdsChange!(value);
+      } else {
+        setInternalSelectedAccountIds(next);
+      }
+    },
+    [controlled, onSelectedAccountIdsChange, selectedAccountIds],
+  );
   const [searchTerm, setSearchTermState] = useState("");
   const [tagFilters, setTagFilters] = useState<readonly string[]>([]);
   const [stageFilter, setStageFilter] = useState<ReadonlySet<CustomerStage>>(EMPTY_STAGES);
@@ -107,8 +130,10 @@ export function useCustomersFilters({
   // 顺序：账号 → Tab → 阶段 → 跟进 → 标签 → 搜索 → 排序。
   const filteredCustomers = useMemo(() => {
     const result = source.filter((c) => {
-      if (selectedAccountIds.size > 0) {
-        if (!c.accountId || !selectedAccountIds.has(c.accountId)) return false;
+      if (selectedAccountIds.size > 0 && c.accountId) {
+        // 受控模式下 source 已被 API 按 selectedAccountIds 过滤,c.accountId 多为 undefined,
+        // 这里只在确有归属时做兜底校验。
+        if (!selectedAccountIds.has(c.accountId)) return false;
       }
       if (!matchesTab(c, activeTab)) return false;
       if (stageFilter.size > 0) {
@@ -156,9 +181,11 @@ export function useCustomersFilters({
       lost: 0,
     };
     for (const c of source) {
-      // Tab 计数仅按账号过滤，让用户能看到"切到该账号有几个待签约/流失"。
-      if (selectedAccountIds.size > 0) {
-        if (!c.accountId || !selectedAccountIds.has(c.accountId)) continue;
+      // 受控模式下 source 已被 API 按 selectedAccountIds 过滤,
+      // 多账号场景 c.accountId 多为 undefined(API 响应未下发单条归属)。
+      // 仅在确有归属时做兜底排除,缺归属的视为属于选中集合 —— 跟 filteredCustomers 一致。
+      if (selectedAccountIds.size > 0 && c.accountId && !selectedAccountIds.has(c.accountId)) {
+        continue;
       }
       counts.all += 1;
       if (isKeyCustomer(c)) counts.key += 1;
@@ -195,25 +222,31 @@ export function useCustomersFilters({
     setPage(1);
   }, []);
 
-  const toggleAccountId = useCallback((id: string) => {
-    setSelectedAccountIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-    setPage(1);
-  }, []);
+  const toggleAccountId = useCallback(
+    (id: string) => {
+      setSelectedAccountIds((prev) => {
+        const next = new Set(prev);
+        if (next.has(id)) next.delete(id);
+        else next.add(id);
+        return next;
+      });
+      setPage(1);
+    },
+    [setSelectedAccountIds],
+  );
 
   const clearAccounts = useCallback(() => {
     setSelectedAccountIds(EMPTY_ACCOUNTS);
     setPage(1);
-  }, []);
+  }, [setSelectedAccountIds]);
 
-  const setSelectedAccountIdsExact = useCallback((ids: ReadonlySet<string>) => {
-    setSelectedAccountIds(ids);
-    setPage(1);
-  }, []);
+  const setSelectedAccountIdsExact = useCallback(
+    (ids: ReadonlySet<string>) => {
+      setSelectedAccountIds(ids);
+      setPage(1);
+    },
+    [setSelectedAccountIds],
+  );
 
   const setSearchTerm = useCallback((term: string) => {
     setSearchTermState(term);

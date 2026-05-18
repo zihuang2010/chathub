@@ -2,6 +2,7 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import { ArrowDown } from "lucide-react";
 
 import { showToast } from "@/components/ui/toast";
+import type { Account } from "@/lib/types/account";
 import { cn } from "@/lib/utils";
 
 import { ChatEmptyState, ChatErrorState, ChatLoadingState } from "./ChatStates";
@@ -19,7 +20,7 @@ import { type ScrollMetrics, WorkbenchScrollArea } from "./WorkbenchScrollArea";
 interface ChatAreaProps {
   conversation: Conversation;
   messages: Message[];
-  accountOptions: string[];
+  accounts: readonly Account[];
   selectedAccount: string | null;
   onAccountChange: (account: string | null) => void;
   detailsOpen: boolean;
@@ -114,7 +115,7 @@ function buildTimelineItems(messages: Message[], conversation: Conversation): Ti
 export const ChatArea = memo(function ChatArea({
   conversation,
   messages,
-  accountOptions,
+  accounts,
   selectedAccount,
   onAccountChange,
   detailsOpen,
@@ -320,7 +321,7 @@ export const ChatArea = memo(function ChatArea({
     <div className="relative flex h-full min-w-0 flex-1 flex-col overflow-hidden bg-workbench-surface">
       <ChatHeader conversation={conversation} />
       <RangePill
-        accountOptions={accountOptions}
+        accounts={accounts}
         selectedAccount={selectedAccount}
         onAccountChange={onAccountChange}
       />

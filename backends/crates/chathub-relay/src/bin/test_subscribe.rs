@@ -5,7 +5,7 @@
 //!     [RELAY_URL=http://127.0.0.1:50051] \
 //!     cargo run -p chathub-relay --bin chathub-test-subscribe
 //!
-//! TOKEN  = 业务后台签发的 access_token(由业务后台 /v1/verify_token 验证)
+//! TOKEN  = 业务后台签发的 access_token(由业务后台 verifyToken 接口验证)
 //! SINCE  = since_notify_seq(0 = 首连只接实时)
 //! DEVICE_ID = 客户端生成的设备标识
 

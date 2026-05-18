@@ -1,5 +1,5 @@
 //! Config — relay 启动配置;`from_env()` 读 env var。
-//! 必填(无默认):RELAY_DOWNSTREAM_URL / RELAY_PUSH_SECRET
+//! 必填(无默认):RELAY_DOWNSTREAM_URL / RELAY_PUSH_SECRET(或 RELAY_PUSH_SECRET_FILE)
 //!
 //! 鉴权模型(2026-05-16 OAuth2 重构):
 //!   - relay → 业务后台所有业务请求,用客户端 raw Bearer token(透传)
@@ -26,6 +26,8 @@ pub enum ConfigError {
         #[source]
         source: std::io::Error,
     },
+    #[error("config validation failed: {0}")]
+    ValidationFailed(String),
 }
 
 #[derive(Clone, Debug)]
@@ -47,7 +49,7 @@ pub struct Config {
     pub routes: DownstreamRoutes,
     /// Auth.Login 的 OAuth2 路径(env `RELAY_PATH_LOGIN`,默认 `/account-app/oauth2/token`)。
     pub path_login: String,
-    /// verify_token 路径(env `RELAY_PATH_VERIFY_TOKEN`,默认 `/v1/verify_token`)。
+    /// verify_token 路径(env `RELAY_PATH_VERIFY_TOKEN`,默认 `/wechat-business-app/rpc/v1/wecomAggregate/connection/verifyToken`)。
     pub path_verify_token: String,
     /// logout 路径(env `RELAY_PATH_LOGOUT`,默认 `/auth/logout`)。
     pub path_logout: String,
@@ -59,6 +61,9 @@ pub struct Config {
     pub force_close_grace_ms: u64,
     /// Push v2 接收的 clientId 白名单。env `RELAY_ALLOWED_CLIENT_IDS`(逗号分隔),默认 `rh_wxchat`。
     pub allowed_client_ids: Vec<String>,
+    /// TokenAuthenticator moka cache 最大条目数。env `RELAY_AUTH_CACHE_MAX_ENTRIES`,默认 10000。
+    /// 高 QPS / 大量不同 token 场景调高;受限内存场景调低。
+    pub auth_cache_max_entries: u64,
 }
 
 /// `Hub.Forward(method, body_json)` 时,relay 用这张表把 method 转成 (HTTP verb, 业务后台路径)。
@@ -114,6 +119,12 @@ const DEFAULT_ROUTES: &[(&str, HttpMethod, &str, &str)] = &[
         HttpMethod::Get,
         "/wechat-business-app/wecom-cs/v1/wecomAggregate/account/listMine",
         "RELAY_PATH_LIST_ACCOUNTS",
+    ),
+    (
+        "list_friends",
+        HttpMethod::Post,
+        "/wechat-business-app/wecom-cs/v1/wecomAggregate/account/listFriends",
+        "RELAY_PATH_LIST_FRIENDS",
     ),
     // verify_token / login / logout 由 relay 自己直接调,不经 Forward 通道。
 ];
@@ -211,6 +222,12 @@ impl Config {
         // F2 安全:非 https 必须 opt-in,防意外明文上行 token
         validate_downstream_scheme(&downstream_url)?;
 
+        let cfg = Self::build_from_env(downstream_url)?;
+        cfg.validate()?;
+        Ok(cfg)
+    }
+
+    fn build_from_env(downstream_url: String) -> Result<Self, ConfigError> {
         Ok(Self {
             grpc_addr: parse_addr_or("RELAY_GRPC_ADDR", "127.0.0.1:50051")?,
             push_addr: parse_addr_or("RELAY_PUSH_ADDR", "127.0.0.1:50052")?,
@@ -218,11 +235,16 @@ impl Config {
                 .unwrap_or_else(|_| "./relay.db".into())
                 .into(),
             downstream_url,
-            push_secret: required("RELAY_PUSH_SECRET")?,
+            // F2 安全:与 OAuth secret 对齐,支持 *_FILE 路径(secrets manager / k8s secret 挂载)。
+            push_secret: required_secret_with_file_fallback(
+                "RELAY_PUSH_SECRET",
+                "RELAY_PUSH_SECRET_FILE",
+            )?,
             path_login: std::env::var("RELAY_PATH_LOGIN")
                 .unwrap_or_else(|_| "/account-app/oauth2/token".into()),
-            path_verify_token: std::env::var("RELAY_PATH_VERIFY_TOKEN")
-                .unwrap_or_else(|_| "/v1/verify_token".into()),
+            path_verify_token: std::env::var("RELAY_PATH_VERIFY_TOKEN").unwrap_or_else(|_| {
+                "/wechat-business-app/rpc/v1/wecomAggregate/connection/verifyToken".into()
+            }),
             path_logout: std::env::var("RELAY_PATH_LOGOUT")
                 .unwrap_or_else(|_| "/auth/logout".into()),
             oauth_client_id: std::env::var("RELAY_OAUTH_CLIENT_ID")
@@ -261,7 +283,120 @@ impl Config {
                 .filter(|s| !s.is_empty())
                 .map(|s| s.split(',').map(|x| x.trim().to_string()).collect())
                 .unwrap_or_else(|| vec!["rh_wxchat".to_string()]),
+            auth_cache_max_entries: std::env::var("RELAY_AUTH_CACHE_MAX_ENTRIES")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .filter(|n: &u64| *n > 0)
+                .unwrap_or(10_000),
         })
+    }
+
+    /// 解析后的聚合校验 —— 单点检查跨字段约束。错误用 `ValidationFailed` 一次返回全量,
+    /// 而不是让 ops 一条一条改 + 重启。
+    fn validate(&self) -> Result<(), ConfigError> {
+        let mut errors: Vec<String> = Vec::new();
+
+        // grpc 和 push 不能监听同一端口
+        if self.grpc_addr == self.push_addr {
+            errors.push(format!(
+                "RELAY_GRPC_ADDR ({}) 与 RELAY_PUSH_ADDR ({}) 不能相同",
+                self.grpc_addr, self.push_addr
+            ));
+        }
+
+        // TLS 配置必须成对出现
+        match (&self.tls_cert_path, &self.tls_key_path) {
+            (Some(_), None) => errors.push(
+                "RELAY_TLS_CERT_PATH 已设置但 RELAY_TLS_KEY_PATH 缺失;TLS 需成对出现否则会 fallback 到 plaintext"
+                    .into(),
+            ),
+            (None, Some(_)) => errors.push(
+                "RELAY_TLS_KEY_PATH 已设置但 RELAY_TLS_CERT_PATH 缺失;TLS 需成对出现否则会 fallback 到 plaintext"
+                    .into(),
+            ),
+            _ => {}
+        }
+
+        if self.push_max_body_bytes == 0 {
+            errors.push("RELAY_PUSH_MAX_BODY_BYTES 不能为 0".into());
+        }
+        if self.event_retention_days == 0 {
+            errors.push("RELAY_EVENT_RETENTION_DAYS 不能为 0(否则 GC 启动即清空所有事件)".into());
+        }
+        if self.allowed_client_ids.is_empty() {
+            errors.push("RELAY_ALLOWED_CLIENT_IDS 不能为空 — 否则没有任何 client 能 push".into());
+        }
+
+        // 弱约束 — eprintln 不阻止启动(dev 脚本默认 `push-secret` 长度 11 会触发)。
+        // 用 eprintln 而非 tracing::warn!,因为本函数在 init_tracing 之前调用。
+        if self.push_secret.len() < 32 {
+            eprintln!(
+                "[chathub-relay] WARN: RELAY_PUSH_SECRET 长度 {} < 32,生产建议 ≥ 32 字符以抵抗暴力枚举",
+                self.push_secret.len()
+            );
+        }
+
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(ConfigError::ValidationFailed(errors.join("; ")))
+        }
+    }
+
+    /// 启动日志用 — 把所有生效配置 dump 出来,**自动脱敏 secret 字段**。
+    /// Ops 看一眼就知道当前 relay 实际生效的是什么,无需翻 env 现场。
+    pub fn dump_redacted(&self) -> String {
+        use crate::secret::Redacted;
+        let tls = match (&self.tls_cert_path, &self.tls_key_path) {
+            (Some(c), Some(k)) => format!("enabled(cert={}, key={})", c.display(), k.display()),
+            _ => "disabled (plaintext)".into(),
+        };
+        let mut routes: Vec<&String> = self.routes.map.keys().collect();
+        routes.sort();
+        format!(
+            "Config {{\n\
+             \x20  grpc_addr             = {}\n\
+             \x20  push_addr             = {}\n\
+             \x20  db_path               = {}\n\
+             \x20  downstream_url        = {}\n\
+             \x20  push_secret           = {}\n\
+             \x20  path_login            = {}\n\
+             \x20  path_verify_token     = {}\n\
+             \x20  path_logout           = {}\n\
+             \x20  oauth_client_id       = {}\n\
+             \x20  oauth_client_secret   = {}\n\
+             \x20  tls                   = {}\n\
+             \x20  push_max_body_bytes   = {}\n\
+             \x20  event_retention_days  = {}\n\
+             \x20  force_close_grace_ms  = {}\n\
+             \x20  allowed_client_ids    = {:?}\n\
+             \x20  auth_cache_max_entries= {}\n\
+             \x20  log.dir               = {}\n\
+             \x20  log.file_prefix       = {}\n\
+             \x20  log.stdout            = {:?}\n\
+             \x20  routes                = {:?}\n\
+             }}",
+            self.grpc_addr,
+            self.push_addr,
+            self.db_path.display(),
+            self.downstream_url,
+            Redacted(&self.push_secret),
+            self.path_login,
+            self.path_verify_token,
+            self.path_logout,
+            self.oauth_client_id,
+            Redacted(&self.oauth_client_secret),
+            tls,
+            self.push_max_body_bytes,
+            self.event_retention_days,
+            self.force_close_grace_ms,
+            self.allowed_client_ids,
+            self.auth_cache_max_entries,
+            self.log.dir.display(),
+            self.log.file_prefix,
+            self.log.stdout,
+            routes,
+        )
     }
 }
 
@@ -313,15 +448,39 @@ fn read_secret_with_file_fallback(
     file_var: &'static str,
     default: &str,
 ) -> Result<String, ConfigError> {
-    if let Ok(path) = std::env::var(file_var) {
-        let content = std::fs::read_to_string(&path).map_err(|e| ConfigError::Io {
-            var: file_var,
-            path: path.clone(),
-            source: e,
-        })?;
-        return Ok(content.trim().to_string());
+    if let Some(v) = read_secret_file_if_set(file_var)? {
+        return Ok(v);
     }
     Ok(std::env::var(direct_var).unwrap_or_else(|_| default.to_string()))
+}
+
+/// 必填 secret 的 *_FILE 回退:优先 file_var,其次 direct_var,二者皆缺 → `Missing(direct_var)`。
+fn required_secret_with_file_fallback(
+    direct_var: &'static str,
+    file_var: &'static str,
+) -> Result<String, ConfigError> {
+    if let Some(v) = read_secret_file_if_set(file_var)? {
+        if v.is_empty() {
+            return Err(ConfigError::Invalid {
+                var: file_var,
+                message: "file is empty".into(),
+            });
+        }
+        return Ok(v);
+    }
+    required(direct_var)
+}
+
+fn read_secret_file_if_set(file_var: &'static str) -> Result<Option<String>, ConfigError> {
+    let Ok(path) = std::env::var(file_var) else {
+        return Ok(None);
+    };
+    let content = std::fs::read_to_string(&path).map_err(|e| ConfigError::Io {
+        var: file_var,
+        path: path.clone(),
+        source: e,
+    })?;
+    Ok(Some(content.trim().to_string()))
 }
 
 fn parse_addr_or(var: &'static str, default: &str) -> Result<SocketAddr, ConfigError> {
@@ -356,6 +515,7 @@ mod tests {
             "RELAY_PATH_ACK_READ",
             "RELAY_PATH_FETCH_HISTORY",
             "RELAY_PATH_LIST_ACCOUNTS",
+            "RELAY_PATH_LIST_FRIENDS",
             "RELAY_PATH_LOGIN",
             "RELAY_PATH_VERIFY_TOKEN",
             "RELAY_PATH_LOGOUT",
@@ -392,7 +552,10 @@ mod tests {
         assert_eq!(cfg.push_secret, "ps");
         assert_eq!(cfg.downstream_url, "http://dn.local");
         assert_eq!(cfg.path_login, "/account-app/oauth2/token");
-        assert_eq!(cfg.path_verify_token, "/v1/verify_token");
+        assert_eq!(
+            cfg.path_verify_token,
+            "/wechat-business-app/rpc/v1/wecomAggregate/connection/verifyToken"
+        );
         assert_eq!(cfg.path_logout, "/auth/logout");
         assert_eq!(cfg.oauth_client_id, "rh_wxchat");
         assert_eq!(cfg.oauth_client_secret, "rh_wxchat");
@@ -658,5 +821,105 @@ mod tests {
             other => panic!("wrong: {other:?}"),
         }
         clear_all();
+    }
+
+    #[test]
+    fn validate_rejects_same_grpc_and_push_addr() {
+        let _g = ENV_LOCK.lock();
+        clear_all();
+        set_required();
+        std::env::set_var("RELAY_GRPC_ADDR", "127.0.0.1:60001");
+        std::env::set_var("RELAY_PUSH_ADDR", "127.0.0.1:60001");
+        let err = Config::from_env().unwrap_err();
+        assert!(matches!(err, ConfigError::ValidationFailed(_)));
+        clear_all();
+    }
+
+    #[test]
+    fn validate_rejects_tls_cert_without_key() {
+        let _g = ENV_LOCK.lock();
+        clear_all();
+        set_required();
+        std::env::set_var("RELAY_TLS_CERT_PATH", "/tmp/cert.pem");
+        // KEY_PATH 故意不设
+        let err = Config::from_env().unwrap_err();
+        match err {
+            ConfigError::ValidationFailed(m) => assert!(m.contains("RELAY_TLS_KEY_PATH")),
+            other => panic!("wrong: {other:?}"),
+        }
+        clear_all();
+    }
+
+    #[test]
+    fn validate_rejects_zero_retention() {
+        let _g = ENV_LOCK.lock();
+        clear_all();
+        set_required();
+        std::env::set_var("RELAY_EVENT_RETENTION_DAYS", "0");
+        let err = Config::from_env().unwrap_err();
+        match err {
+            ConfigError::ValidationFailed(m) => assert!(m.contains("RELAY_EVENT_RETENTION_DAYS")),
+            other => panic!("wrong: {other:?}"),
+        }
+        clear_all();
+    }
+
+    #[test]
+    fn dump_redacted_hides_push_and_oauth_secrets() {
+        let _g = ENV_LOCK.lock();
+        clear_all();
+        set_required();
+        std::env::set_var("RELAY_PUSH_SECRET", "super-secret-push-token-xyz-abc-123");
+        std::env::set_var(
+            "RELAY_OAUTH_CLIENT_SECRET",
+            "super-secret-oauth-value-xyz-456",
+        );
+        let cfg = Config::from_env().unwrap();
+        let dump = cfg.dump_redacted();
+        // 不能出现完整 secret;只允许出现脱敏前 8 char
+        assert!(!dump.contains("super-secret-push-token-xyz-abc-123"));
+        assert!(!dump.contains("super-secret-oauth-value-xyz-456"));
+        // 应包含前 8 + ***
+        assert!(dump.contains("super-se***"));
+        // 同时也覆盖了非 secret 字段透出
+        assert!(dump.contains("auth_cache_max_entries"));
+        clear_all();
+    }
+
+    #[test]
+    fn auth_cache_max_entries_default_and_override() {
+        let _g = ENV_LOCK.lock();
+        clear_all();
+        set_required();
+        let cfg = Config::from_env().unwrap();
+        assert_eq!(cfg.auth_cache_max_entries, 10_000);
+
+        std::env::set_var("RELAY_AUTH_CACHE_MAX_ENTRIES", "50000");
+        let cfg = Config::from_env().unwrap();
+        assert_eq!(cfg.auth_cache_max_entries, 50_000);
+
+        // 0 → fallback 默认(filter > 0)
+        std::env::set_var("RELAY_AUTH_CACHE_MAX_ENTRIES", "0");
+        let cfg = Config::from_env().unwrap();
+        assert_eq!(cfg.auth_cache_max_entries, 10_000);
+        clear_all();
+    }
+
+    #[test]
+    fn push_secret_from_file_overrides_direct() {
+        let _g = ENV_LOCK.lock();
+        clear_all();
+        std::env::set_var("RELAY_DOWNSTREAM_URL", "http://dn.local");
+        std::env::set_var("RELAY_ALLOW_HTTP", "true");
+        // 写一个临时文件
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("push.secret");
+        std::fs::write(&path, "file-based-push-secret\n").unwrap();
+        std::env::set_var("RELAY_PUSH_SECRET_FILE", &path);
+        // direct 不设
+        let cfg = Config::from_env().unwrap();
+        assert_eq!(cfg.push_secret, "file-based-push-secret");
+        clear_all();
+        std::env::remove_var("RELAY_PUSH_SECRET_FILE");
     }
 }

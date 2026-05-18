@@ -45,6 +45,9 @@ impl SqlitePool {
                 M::up(include_str!("../migrations/V1__init.sql")),
                 M::up(include_str!("../migrations/V2__seqs.sql")),
                 M::up(include_str!("../migrations/V3__kv.sql")),
+                M::up(include_str!("../migrations/V4__account_cache.sql")),
+                M::up(include_str!("../migrations/V5__friends_cache.sql")),
+                M::up(include_str!("../migrations/V6__friends_store.sql")),
             ]);
             migrations
                 .to_latest(c)
@@ -77,15 +80,15 @@ mod tests {
         let conn = pool.pool().get().await.expect("get conn");
         let table_count: i64 = conn.interact(|c| {
             c.query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN ('current_session', 'wecom_accounts', 'wecom_account_seqs')",
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN ('current_session', 'wecom_accounts', 'wecom_account_watermark', 'kv')",
                 [],
                 |r| r.get(0),
             )
         }).await.expect("interact").expect("query");
 
         assert_eq!(
-            table_count, 3,
-            "V1+V2 migrations should create three tables"
+            table_count, 4,
+            "V1+V3+V4 migrations should leave four user tables (wecom_account_seqs dropped in V4)"
         );
     }
 

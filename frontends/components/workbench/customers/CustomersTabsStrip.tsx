@@ -44,9 +44,13 @@ export const CustomersTabsStrip = memo(function CustomersTabsStrip({
             )}
           >
             <span>{tab.label}</span>
+            {/* 数字位宽预留到 5 位数(含千分位逗号,如 "99,999" = 6 字符);
+                `text-left` 让数字紧贴 label,右侧预留宽度做成 tab 内的"占位",
+                位数变化(0/30/100/1,234/99,999)时 tab 横向不再 reflow。
+                `tabular-nums` 等宽数字,`inline-block` 让 `min-w` 生效。 */}
             <span
               className={cn(
-                "wb-num text-[12.5px] tabular-nums",
+                "wb-num inline-block min-w-[6ch] text-left text-[12.5px] tabular-nums",
                 active ? "text-workbench-accent" : "text-workbench-text-muted",
               )}
             >
