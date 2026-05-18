@@ -43,7 +43,7 @@ pub struct Config {
     pub tls_key_path: Option<PathBuf>,
     /// push body 最大字节数,防 body-bomb DoS(F2)。env `RELAY_PUSH_MAX_BODY_BYTES`,默认 1MB。
     pub push_max_body_bytes: usize,
-    /// 后台 GC 间隔(秒),events_v2 保留 days(F5)。env `RELAY_EVENT_RETENTION_DAYS`,默认 7。
+    /// 后台 GC 间隔(秒),hub_events 保留 days(F5)。env `RELAY_EVENT_RETENTION_DAYS`,默认 7。
     pub event_retention_days: u64,
     /// Hub.Forward 的 method → 业务后台 HTTP (verb, path) 映射。
     pub routes: DownstreamRoutes,

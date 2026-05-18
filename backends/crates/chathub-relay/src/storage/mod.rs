@@ -96,9 +96,9 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn open_leaves_only_events_v2_after_migrations() {
+    async fn open_leaves_only_hub_events_after_migrations() {
         // Plan 7:legacy 表(events/seq_counters/sessions/kv)都被 003_drop_legacy 删了,
-        // 只剩 events_v2 业务表 + rusqlite_migration 的元数据表。
+        // 只剩 hub_events 业务表 + rusqlite_migration 的元数据表。
         let tmp = tempfile::tempdir().unwrap();
         let db = tmp.path().join("t.db");
         let storage = Storage::open(&db).await.expect("open");
@@ -119,8 +119,9 @@ mod tests {
             .unwrap()
             .unwrap();
 
-        assert!(names.contains(&"events_v2".to_string()));
+        assert!(names.contains(&"hub_events".to_string()));
         assert!(!names.contains(&"events".to_string()));
+        assert!(!names.contains(&"events_v2".to_string()));
         assert!(!names.contains(&"seq_counters".to_string()));
         assert!(!names.contains(&"sessions".to_string()));
         assert!(!names.contains(&"kv".to_string()));

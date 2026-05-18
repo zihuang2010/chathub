@@ -249,7 +249,7 @@ impl HubSvc {
     }
 }
 
-/// 把 events_v2 一组(同 notify_seq)行序列化为 PushBatchOut 帧并 send。
+/// 把 hub_events 一组(同 notify_seq)行序列化为 PushBatchOut 帧并 send。
 async fn send_replay_batch(
     tx: &mpsc::Sender<Result<ServerEvent, Status>>,
     group: &[EventRow],
@@ -299,7 +299,7 @@ impl Hub for HubSvc {
     /// Subscribe(Plan 7 — employee-scope 唯一路径):
     /// 1. 要求 employee_id 非 0(老业务后台未升级则 FailedPrecondition)
     /// 2. 第一帧发 SubscribeAck(resumed_from_seq / replayed_to_seq / resync_required)
-    /// 3. 重放 events_v2 > since_notify_seq 的事件,按 notify_seq 分组成 PushBatchOut
+    /// 3. 重放 hub_events > since_notify_seq 的事件,按 notify_seq 分组成 PushBatchOut
     /// 4. register_employee 到 router,后续实时 push v2 由 fanout_employee 投递
     /// 5. 起 cleanup task,客户端断开时(rx 被 drop)自动 drop_employee_stream
     #[tracing::instrument(skip_all, fields(employee_id, device_id, since_notify_seq))]
@@ -310,7 +310,7 @@ impl Hub for HubSvc {
         let ctx = self.authenticate(&req).await?;
         let inner = req.into_inner();
         tracing::Span::current().record("employee_id", ctx.employee_id);
-        tracing::Span::current().record("device_id", &inner.device_id.as_str());
+        tracing::Span::current().record("device_id", inner.device_id.as_str());
         tracing::Span::current().record("since_notify_seq", inner.since_notify_seq);
 
         if ctx.employee_id == 0 {
@@ -997,6 +997,8 @@ mod tests {
         (addr, mock)
     }
 
+    // tonic::Status ~176B,with_interceptor 闭包 Result<_, Status> 必然 large(上游契约)。
+    #[allow(clippy::result_large_err)]
     #[tokio::test(flavor = "multi_thread")]
     async fn subscribe_full_stack_first_frame_is_subscribe_ack() {
         let (addr, _mock) = spawn_hub_listening().await;

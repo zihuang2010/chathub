@@ -212,6 +212,9 @@ pub fn friend_to_row(f: crate::hub::WecomFriend, wecom_account_id: &str) -> Weco
     }
 }
 
+// 临时返回值:由 decode_action 产出后立即 match 消费,从不存进集合 / clone。
+// 大 variant 在栈上一过性,Box 化只会给好友事件热路径加一次堆分配换零收益。
+#[allow(clippy::large_enum_variant)]
 enum Decoded {
     Action(FriendBindingAction),
     Fallback(&'static str),

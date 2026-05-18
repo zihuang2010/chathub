@@ -434,6 +434,7 @@ pub struct ConnectionManager {
 }
 
 impl ConnectionManager {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         hub: HubClient,
         token_store: Arc<TokenStore>,

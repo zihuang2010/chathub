@@ -3,7 +3,8 @@
 //! Subscribe v2 时客户端把这个值作为 `since_notify_seq` 传给 relay,relay 用它续点。
 //! 写入热路径在 ConnectionManager 收到 PushBatchOut 处理完之后,WAL+UPSERT 亚毫秒。
 //!
-//! 存储:复用 kv 表(key="notify_seq"),与 LocalTokenStore 同库。
+//! 存储:`hub_settings` 表(key="notify_seq"),与 LocalTokenStore 的
+//! `hub_secrets` 同库不同表(见 docs/db/conventions.md §3 KV 拆分约定)。
 
 use crate::error::StateError;
 use crate::pool::SqlitePool;
@@ -27,7 +28,7 @@ impl NotifySeqStore {
         let val = conn
             .interact(|c| -> Result<u64, StateError> {
                 let result: Result<String, _> = c.query_row(
-                    "SELECT value FROM kv WHERE key = ?1",
+                    "SELECT value FROM hub_settings WHERE key = ?1",
                     rusqlite::params![KEY_NOTIFY_SEQ],
                     |r| r.get(0),
                 );
@@ -48,7 +49,7 @@ impl NotifySeqStore {
             let now = now_unix_ms();
             // 用 CASE 在 SQL 内做"取 max"语义,避免 read-then-write race
             c.execute(
-                "INSERT INTO kv (key, value, updated_at) VALUES (?1, ?2, ?3) \
+                "INSERT INTO hub_settings (key, value, updated_at) VALUES (?1, ?2, ?3) \
                  ON CONFLICT(key) DO UPDATE SET \
                    value = CASE WHEN CAST(excluded.value AS INTEGER) > CAST(value AS INTEGER) \
                                 THEN excluded.value ELSE value END, \
@@ -65,7 +66,7 @@ impl NotifySeqStore {
         let conn = self.pool.pool().get().await?;
         conn.interact(|c| -> Result<(), rusqlite::Error> {
             c.execute(
-                "DELETE FROM kv WHERE key = ?1",
+                "DELETE FROM hub_settings WHERE key = ?1",
                 rusqlite::params![KEY_NOTIFY_SEQ],
             )?;
             Ok(())

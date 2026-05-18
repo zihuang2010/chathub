@@ -1,6 +1,6 @@
 //! SessionStore:UserProfile 当前会话 → SQLite。
 //!
-//! 2026-05-17 起,wecom_accounts 镜像不再在 login 时由 SessionStore 写入
+//! 2026-05-17 起,hub_wecom_accounts 镜像不再在 login 时由 SessionStore 写入
 //! (LoginResp.wecom_accounts 已永远为空,前端通过 `list_accounts` 命令走
 //! `AccountCacheStore` 独立同步)。SessionStore 只负责 UserProfile 单行。
 
@@ -19,7 +19,7 @@ impl SessionStore {
     }
 
     /// 写入(或覆盖)当前用户会话。
-    /// 同一时刻只允许一个 session(由 current_session.id = 1 约束)。
+    /// 同一时刻只允许一个 session(由 hub_current_session.id = 1 约束)。
     pub async fn upsert_session(&self, profile: &UserProfile) -> Result<(), StateError> {
         let profile = profile.clone();
         let now = now_unix_ms();
@@ -27,7 +27,7 @@ impl SessionStore {
         let conn = self.pool.pool().get().await?;
         conn.interact(move |c| -> Result<(), StateError> {
             c.execute(
-                "INSERT INTO current_session (id, user_id, display_name, avatar_url, role, tenant_id, logged_in_at_ms) \
+                "INSERT INTO hub_current_session (id, user_id, display_name, avatar_url, role, tenant_id, logged_in_at_ms) \
                  VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6) \
                  ON CONFLICT(id) DO UPDATE SET \
                    user_id = excluded.user_id, \
@@ -51,7 +51,7 @@ impl SessionStore {
         let conn = self.pool.pool().get().await?;
         let profile: Option<UserProfile> = conn.interact(move |c| -> Result<Option<UserProfile>, StateError> {
             c.query_row(
-                "SELECT user_id, display_name, avatar_url, role, tenant_id FROM current_session WHERE id = 1",
+                "SELECT user_id, display_name, avatar_url, role, tenant_id FROM hub_current_session WHERE id = 1",
                 [],
                 |row| {
                     Ok(UserProfile {
@@ -76,9 +76,9 @@ impl SessionStore {
         let conn = self.pool.pool().get().await?;
         conn.interact(|c| -> Result<(), rusqlite::Error> {
             let tx = c.transaction()?;
-            tx.execute("DELETE FROM current_session", [])?;
-            tx.execute("DELETE FROM wecom_accounts", [])?;
-            tx.execute("DELETE FROM wecom_account_watermark", [])?;
+            tx.execute("DELETE FROM hub_current_session", [])?;
+            tx.execute("DELETE FROM hub_wecom_accounts", [])?;
+            tx.execute("DELETE FROM hub_wecom_account_watermark", [])?;
             tx.commit()?;
             Ok(())
         })

@@ -6,7 +6,7 @@
 //!   - **全量同步**:Tauri `list_friends` 命令通过 `is_fresh()` 判 TTL,失效则调
 //!     `HubClient::list_all_friends_for_account()` 循环拉所有页 → `replace_all_for_account` 入库。
 //!   - **增量事件**:`FriendBindingAction` 走 `apply_binding`(对照 `account_cache::BindingAction`)。
-//!   - **水位**:`wecom_friend_watermark`,"取大不取小"UPSERT,应对 relay redelivery。
+//!   - **水位**:`hub_wecom_friend_watermark`,"取大不取小"UPSERT,应对 relay redelivery。
 //!
 //! 文件名 `friends_cache.rs` 沿用(避免改 mod.rs / lib.rs 导出),但实际语义已经从
 //! "响应级缓存" 升级到"行存 + 增量同步"。
@@ -93,7 +93,7 @@ impl FriendsStore {
                             external_type, external_gender, external_mobile, follow_remark, \
                             follow_description, remark_corp_name, add_time, add_way, follow_state, \
                             wechat_channels_nickname, wechat_channels_source, last_sync_time, sync_status \
-                     FROM wecom_friends WHERE wecom_account_id IN ({placeholders}) \
+                     FROM hub_wecom_friends WHERE wecom_account_id IN ({placeholders}) \
                      ORDER BY wecom_account_id, add_time DESC"
                 );
                 let mut stmt = c.prepare(&sql)?;
@@ -143,7 +143,7 @@ impl FriendsStore {
         conn.interact(move |c| -> Result<(), StateError> {
             let tx = c.transaction()?;
             tx.execute(
-                "DELETE FROM wecom_friends WHERE wecom_account_id = ?1",
+                "DELETE FROM hub_wecom_friends WHERE wecom_account_id = ?1",
                 rusqlite::params![account_id],
             )?;
             for r in &rows {
@@ -171,7 +171,7 @@ impl FriendsStore {
                     external_user_id,
                 } => {
                     c.execute(
-                        "DELETE FROM wecom_friends \
+                        "DELETE FROM hub_wecom_friends \
                          WHERE wecom_account_id = ?1 AND external_user_id = ?2",
                         rusqlite::params![wecom_account_id, external_user_id],
                     )?;
@@ -191,7 +191,7 @@ impl FriendsStore {
         let fresh = conn
             .interact(move |c| -> Result<bool, StateError> {
                 let res: rusqlite::Result<i64> = c.query_row(
-                    "SELECT full_synced_at_ms FROM wecom_friend_sync_state \
+                    "SELECT full_synced_at_ms FROM hub_wecom_friend_sync_state \
                      WHERE wecom_account_id = ?1",
                     rusqlite::params![account_id],
                     |r| r.get(0),
@@ -220,7 +220,7 @@ impl FriendsStore {
         let conn = self.pool.pool().get().await?;
         conn.interact(move |c| -> Result<(), StateError> {
             c.execute(
-                "INSERT INTO wecom_friend_sync_state \
+                "INSERT INTO hub_wecom_friend_sync_state \
                    (wecom_account_id, employee_id, full_synced_at_ms, last_total) \
                  VALUES (?1, ?2, ?3, ?4) \
                  ON CONFLICT(wecom_account_id) DO UPDATE SET \
@@ -249,7 +249,7 @@ impl FriendsStore {
         let conn = self.pool.pool().get().await?;
         conn.interact(move |c| -> Result<(), StateError> {
             c.execute(
-                "INSERT INTO wecom_friend_watermark (client_id, employee_id, last_seq, updated_at_ms) \
+                "INSERT INTO hub_wecom_friend_watermark (client_id, employee_id, last_seq, updated_at_ms) \
                  VALUES (?1, ?2, ?3, ?4) \
                  ON CONFLICT(client_id, employee_id) DO UPDATE SET \
                    last_seq = CASE WHEN excluded.last_seq > last_seq THEN excluded.last_seq ELSE last_seq END, \
@@ -274,7 +274,7 @@ impl FriendsStore {
         let seq = conn
             .interact(move |c| -> Result<u64, StateError> {
                 let res: rusqlite::Result<i64> = c.query_row(
-                    "SELECT last_seq FROM wecom_friend_watermark \
+                    "SELECT last_seq FROM hub_wecom_friend_watermark \
                      WHERE client_id = ?1 AND employee_id = ?2",
                     rusqlite::params![client_id, employee_id],
                     |r| r.get(0),
@@ -297,16 +297,16 @@ impl FriendsStore {
             let tx = c.transaction()?;
             // 删 sync_state 的同时把对应 wecom_account_id 下的 friends 也删掉
             tx.execute(
-                "DELETE FROM wecom_friends WHERE wecom_account_id IN \
-                   (SELECT wecom_account_id FROM wecom_friend_sync_state WHERE employee_id = ?1)",
+                "DELETE FROM hub_wecom_friends WHERE wecom_account_id IN \
+                   (SELECT wecom_account_id FROM hub_wecom_friend_sync_state WHERE employee_id = ?1)",
                 rusqlite::params![employee_id],
             )?;
             tx.execute(
-                "DELETE FROM wecom_friend_sync_state WHERE employee_id = ?1",
+                "DELETE FROM hub_wecom_friend_sync_state WHERE employee_id = ?1",
                 rusqlite::params![employee_id],
             )?;
             tx.execute(
-                "DELETE FROM wecom_friend_watermark WHERE employee_id = ?1",
+                "DELETE FROM hub_wecom_friend_watermark WHERE employee_id = ?1",
                 rusqlite::params![employee_id],
             )?;
             tx.commit()?;
@@ -323,7 +323,7 @@ fn insert_or_replace_row(
     now_ms: i64,
 ) -> rusqlite::Result<usize> {
     c.execute(
-        "INSERT OR REPLACE INTO wecom_friends ( \
+        "INSERT OR REPLACE INTO hub_wecom_friends ( \
            wecom_account_id, external_user_id, external_name, external_position, \
            external_avatar, external_corp_name, external_corp_full_name, external_type, \
            external_gender, external_mobile, follow_remark, follow_description, \

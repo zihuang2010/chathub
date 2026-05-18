@@ -246,7 +246,7 @@ fn row_to_item(r: WecomAccountRow) -> ListAccountsItem {
 
 fn filter_rows(rows: Vec<WecomAccountRow>, enabled: Option<bool>) -> Vec<ListAccountsItem> {
     rows.into_iter()
-        .filter(|r| enabled.is_none_or(|want| (r.wecom_status == 1) == want))
+        .filter(|r| enabled.map_or(true, |want| (r.wecom_status == 1) == want))
         .map(row_to_item)
         .collect()
 }

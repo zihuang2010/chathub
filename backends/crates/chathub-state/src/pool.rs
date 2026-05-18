@@ -78,17 +78,25 @@ mod tests {
         let pool = SqlitePool::in_memory().await.expect("pool open");
 
         let conn = pool.pool().get().await.expect("get conn");
-        let table_count: i64 = conn.interact(|c| {
-            c.query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN ('current_session', 'wecom_accounts', 'wecom_account_watermark', 'kv')",
-                [],
-                |r| r.get(0),
-            )
-        }).await.expect("interact").expect("query");
+        let table_count: i64 = conn
+            .interact(|c| {
+                c.query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN (\
+                   'hub_current_session', 'hub_wecom_accounts', 'hub_wecom_account_watermark', \
+                   'hub_secrets', 'hub_settings', \
+                   'hub_wecom_friends', 'hub_wecom_friend_sync_state', 'hub_wecom_friend_watermark'\
+                 )",
+                    [],
+                    |r| r.get(0),
+                )
+            })
+            .await
+            .expect("interact")
+            .expect("query");
 
         assert_eq!(
-            table_count, 4,
-            "V1+V3+V4 migrations should leave four user tables (wecom_account_seqs dropped in V4)"
+            table_count, 8,
+            "全部 V1-V6 跑完应剩 8 张 hub_ 前缀业务表(account_seqs/friends_cache 已在 V4/V6 DROP)"
         );
     }
 

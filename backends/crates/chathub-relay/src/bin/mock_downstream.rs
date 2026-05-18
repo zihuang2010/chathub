@@ -593,7 +593,7 @@ async fn list_mine(
     let items: Vec<ListMineItem> = state
         .accounts
         .iter()
-        .filter(|a| q.enabled.is_none_or(|want| a.enabled == want))
+        .filter(|a| q.enabled.map_or(true, |want| a.enabled == want))
         .map(|a| ListMineItem {
             wecom_account_id: a.wecom_account_id.clone(),
             wecom_name: a.display_name.clone(),
@@ -652,7 +652,7 @@ async fn list_friends(
     }
 
     let total = all.len() as u64;
-    let pages = ((total + size as u64 - 1) / size as u64).max(1) as u32;
+    let pages = total.div_ceil(size as u64).max(1) as u32;
     let offset = ((current.saturating_sub(1)) as u64).saturating_mul(size as u64) as usize;
     let end = (offset + size as usize).min(all.len());
     let records: Vec<MockFriend> = if offset >= all.len() {

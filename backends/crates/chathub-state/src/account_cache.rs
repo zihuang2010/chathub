@@ -5,7 +5,7 @@
 //!     单 employee 范围内 DELETE + 批量 INSERT,事务内完成,无中间态。
 //!   - 增量事件(`ACCOUNT_BINDING_CHANGE` 的 4 个 reason)走 `apply_binding`,
 //!     每个 reason 对应一种 SQL 动作。INSERT OR REPLACE / UPDATE / 不存在行的 DELETE 都自然幂等。
-//!   - 水位(`wecom_account_watermark`)走 `advance_watermark`,套 [`crate::NotifySeqStore`] 的
+//!   - 水位(`hub_wecom_account_watermark`)走 `advance_watermark`,套 [`crate::NotifySeqStore`] 的
 //!     "取大不取小" UPSERT 套路,应对 relay redelivery。
 //!
 //! 命名:内部字段 `employee_id`(= `UserProfile.user_id`,同一个 String)。
@@ -71,7 +71,7 @@ impl AccountCacheStore {
                 let mut stmt = c.prepare(
                     "SELECT wecom_account_id, employee_id, wecom_name, wecom_account, wecom_alias, \
                             wecom_avatar, wecom_status, gender, position \
-                     FROM wecom_accounts WHERE employee_id = ?1 ORDER BY wecom_account_id",
+                     FROM hub_wecom_accounts WHERE employee_id = ?1 ORDER BY wecom_account_id",
                 )?;
                 let rows = stmt
                     .query_map(rusqlite::params![employee_id], |row| {
@@ -107,12 +107,12 @@ impl AccountCacheStore {
         conn.interact(move |c| -> Result<(), StateError> {
             let tx = c.transaction()?;
             tx.execute(
-                "DELETE FROM wecom_accounts WHERE employee_id = ?1",
+                "DELETE FROM hub_wecom_accounts WHERE employee_id = ?1",
                 rusqlite::params![employee_id],
             )?;
             for r in &rows {
                 tx.execute(
-                    "INSERT OR REPLACE INTO wecom_accounts (wecom_account_id, employee_id, wecom_name, wecom_account, wecom_alias, wecom_avatar, wecom_status, gender, position, updated_at_ms) \
+                    "INSERT OR REPLACE INTO hub_wecom_accounts (wecom_account_id, employee_id, wecom_name, wecom_account, wecom_alias, wecom_avatar, wecom_status, gender, position, updated_at_ms) \
                      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                     rusqlite::params![
                         r.wecom_account_id, r.employee_id, r.wecom_name, r.wecom_account,
@@ -136,7 +136,7 @@ impl AccountCacheStore {
             match action {
                 BindingAction::Added(r) => {
                     c.execute(
-                        "INSERT OR REPLACE INTO wecom_accounts (wecom_account_id, employee_id, wecom_name, wecom_account, wecom_alias, wecom_avatar, wecom_status, gender, position, updated_at_ms) \
+                        "INSERT OR REPLACE INTO hub_wecom_accounts (wecom_account_id, employee_id, wecom_name, wecom_account, wecom_alias, wecom_avatar, wecom_status, gender, position, updated_at_ms) \
                          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                         rusqlite::params![
                             r.wecom_account_id, r.employee_id, r.wecom_name, r.wecom_account,
@@ -147,20 +147,20 @@ impl AccountCacheStore {
                 }
                 BindingAction::Disabled { wecom_account_id } => {
                     c.execute(
-                        "UPDATE wecom_accounts SET wecom_status = 0, updated_at_ms = ?2 \
+                        "UPDATE hub_wecom_accounts SET wecom_status = 0, updated_at_ms = ?2 \
                          WHERE wecom_account_id = ?1",
                         rusqlite::params![wecom_account_id, now],
                     )?;
                 }
                 BindingAction::Transferred { wecom_account_id, employee_id } => {
                     c.execute(
-                        "DELETE FROM wecom_accounts WHERE wecom_account_id = ?1 AND employee_id = ?2",
+                        "DELETE FROM hub_wecom_accounts WHERE wecom_account_id = ?1 AND employee_id = ?2",
                         rusqlite::params![wecom_account_id, employee_id],
                     )?;
                 }
                 BindingAction::AliasChanged { wecom_account_id, wecom_alias } => {
                     c.execute(
-                        "UPDATE wecom_accounts SET wecom_alias = ?2, updated_at_ms = ?3 \
+                        "UPDATE hub_wecom_accounts SET wecom_alias = ?2, updated_at_ms = ?3 \
                          WHERE wecom_account_id = ?1",
                         rusqlite::params![wecom_account_id, wecom_alias, now],
                     )?;
@@ -186,7 +186,7 @@ impl AccountCacheStore {
         let conn = self.pool.pool().get().await?;
         conn.interact(move |c| -> Result<(), StateError> {
             c.execute(
-                "INSERT INTO wecom_account_watermark (client_id, employee_id, last_seq, updated_at_ms) \
+                "INSERT INTO hub_wecom_account_watermark (client_id, employee_id, last_seq, updated_at_ms) \
                  VALUES (?1, ?2, ?3, ?4) \
                  ON CONFLICT(client_id, employee_id) DO UPDATE SET \
                    last_seq = CASE WHEN excluded.last_seq > last_seq THEN excluded.last_seq ELSE last_seq END, \
@@ -211,7 +211,7 @@ impl AccountCacheStore {
         let seq = conn
             .interact(move |c| -> Result<u64, StateError> {
                 let res: rusqlite::Result<i64> = c.query_row(
-                    "SELECT last_seq FROM wecom_account_watermark \
+                    "SELECT last_seq FROM hub_wecom_account_watermark \
                      WHERE client_id = ?1 AND employee_id = ?2",
                     rusqlite::params![client_id, employee_id],
                     |r| r.get(0),
@@ -233,11 +233,11 @@ impl AccountCacheStore {
         conn.interact(move |c| -> Result<(), StateError> {
             let tx = c.transaction()?;
             tx.execute(
-                "DELETE FROM wecom_accounts WHERE employee_id = ?1",
+                "DELETE FROM hub_wecom_accounts WHERE employee_id = ?1",
                 rusqlite::params![employee_id],
             )?;
             tx.execute(
-                "DELETE FROM wecom_account_watermark WHERE employee_id = ?1",
+                "DELETE FROM hub_wecom_account_watermark WHERE employee_id = ?1",
                 rusqlite::params![employee_id],
             )?;
             tx.commit()?;

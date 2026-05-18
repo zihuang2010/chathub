@@ -1,8 +1,11 @@
-//! LocalTokenStore:把 device_id 与业务后台 token 存进 SQLite kv 表。
+//! LocalTokenStore:把 device_id 与业务后台 token 存进 `hub_secrets` 表。
 //!
 //! 替代原 KeyringTokenStore(macOS Keychain),消除启动时的钥匙串授权弹窗。
 //!
-//! kv key 约定:
+//! `hub_secrets` 是本地凭据 KV 表(见 docs/db/conventions.md §3 拆分约定),
+//! 跟 NotifySeqStore 的 `hub_settings`(运行时状态)语义解耦。
+//!
+//! key 约定:
 //!   - "device_id" → 持久 UUIDv4(本地设备唯一标识)
 //!   - "token"     → 业务后台签发的 token 串
 
@@ -28,7 +31,7 @@ impl LocalTokenStore {
         let id = conn
             .interact(|c| -> Result<String, StateError> {
                 c.execute(
-                    "INSERT INTO kv (key, value, updated_at) VALUES (?1, ?2, ?3) \
+                    "INSERT INTO hub_secrets (key, value, updated_at) VALUES (?1, ?2, ?3) \
                      ON CONFLICT(key) DO NOTHING",
                     rusqlite::params![
                         KEY_DEVICE_ID,
@@ -37,7 +40,7 @@ impl LocalTokenStore {
                     ],
                 )?;
                 let id: String = c.query_row(
-                    "SELECT value FROM kv WHERE key = ?1",
+                    "SELECT value FROM hub_secrets WHERE key = ?1",
                     rusqlite::params![KEY_DEVICE_ID],
                     |r| r.get(0),
                 )?;
@@ -52,7 +55,7 @@ impl LocalTokenStore {
         let val = conn
             .interact(|c| -> Result<Option<String>, StateError> {
                 c.query_row(
-                    "SELECT value FROM kv WHERE key = ?1",
+                    "SELECT value FROM hub_secrets WHERE key = ?1",
                     rusqlite::params![KEY_TOKEN],
                     |r| r.get::<_, String>(0),
                 )
@@ -74,7 +77,7 @@ impl LocalTokenStore {
         let conn = self.pool.pool().get().await?;
         conn.interact(move |c| -> Result<(), StateError> {
             c.execute(
-                "INSERT INTO kv (key, value, updated_at) VALUES (?1, ?2, ?3) \
+                "INSERT INTO hub_secrets (key, value, updated_at) VALUES (?1, ?2, ?3) \
                  ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
                 rusqlite::params![KEY_TOKEN, token, now_unix_ms()],
             )?;
@@ -88,7 +91,7 @@ impl LocalTokenStore {
         let conn = self.pool.pool().get().await?;
         conn.interact(|c| -> Result<(), rusqlite::Error> {
             c.execute(
-                "DELETE FROM kv WHERE key = ?1",
+                "DELETE FROM hub_secrets WHERE key = ?1",
                 rusqlite::params![KEY_TOKEN],
             )?;
             Ok(())

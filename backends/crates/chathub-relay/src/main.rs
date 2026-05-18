@@ -78,7 +78,7 @@ async fn main() -> anyhow::Result<()> {
 
     tracing::info!(grpc=%cfg.grpc_addr, push=%cfg.push_addr, "relay listening");
 
-    // F5:events_v2 GC task —— 后台跑,每 60s 排干超 retention 的批次(LIMIT 5000)。
+    // F5:hub_events GC task —— 后台跑,每 60s 排干超 retention 的批次(LIMIT 5000)。
     let gc_log = events_log.clone();
     let retention_days = cfg.event_retention_days;
     tokio::spawn(async move {
@@ -100,13 +100,13 @@ async fn main() -> anyhow::Result<()> {
                         }
                     }
                     Err(e) => {
-                        tracing::warn!(error = %e, "events_v2 cleanup failed");
+                        tracing::warn!(error = %e, "hub_events cleanup failed");
                         break;
                     }
                 }
             }
             if total > 0 {
-                tracing::info!(deleted = total, retention_days, "events_v2 gc ran");
+                tracing::info!(deleted = total, retention_days, "hub_events gc ran");
             }
         }
     });

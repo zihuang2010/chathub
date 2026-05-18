@@ -16,6 +16,9 @@ use tonic::metadata::MetadataValue;
 use tonic::transport::{Channel, Endpoint};
 use tonic::Request;
 
+// tonic::Status 本身 ~176B,with_interceptor 的闭包返回 Result<_, Status> 必然 large;
+// 这是 tonic 上游契约,不是本地可改的。test 工具不在热路径上,直接 allow。
+#[allow(clippy::result_large_err)]
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> anyhow::Result<()> {
     let url = std::env::var("RELAY_URL").unwrap_or_else(|_| "http://127.0.0.1:50051".to_string());

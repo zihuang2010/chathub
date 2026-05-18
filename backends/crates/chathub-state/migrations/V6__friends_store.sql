@@ -6,14 +6,14 @@
 --   2) 前端可以查全量算 tabCounts / accountCounts,不再被单页 100 卡住
 --   3) 配 FRIEND_* 推送事件 + 水位,实现增量同步,事件 keep data fresh,TTL 仅兜底
 --
--- 模板对照 V4__account_cache.sql 的 wecom_accounts + wecom_account_watermark 设计。
+-- 模板对照 V4__account_cache.sql 的 hub_wecom_accounts + hub_wecom_account_watermark 设计。
 
 -- 1) 删 V5 整页缓存表(被行存取代)
-DROP TABLE IF EXISTS wecom_friends_cache;
+DROP TABLE IF EXISTS hub_wecom_friends_cache;
 
 -- 2) 好友行存:per (wecom_account_id, external_user_id);wecom_account_id 来自查询入参,
 --    不依赖 API 响应的单条 accountId 字段(响应不下发),写入时由 Tauri 层附加。
-CREATE TABLE wecom_friends (
+CREATE TABLE hub_wecom_friends (
     wecom_account_id         TEXT    NOT NULL,
     external_user_id         TEXT    NOT NULL,
     external_name            TEXT    NOT NULL,
@@ -37,20 +37,20 @@ CREATE TABLE wecom_friends (
     updated_at_ms            INTEGER NOT NULL,
     PRIMARY KEY (wecom_account_id, external_user_id)
 );
-CREATE INDEX idx_wecom_friends_account_addtime ON wecom_friends(wecom_account_id, add_time DESC);
+CREATE INDEX idx_hub_wecom_friends_account_addtime ON hub_wecom_friends(wecom_account_id, add_time DESC);
 
 -- 3) 同步状态:per wecom_account_id 标记"是否已全量同步过 + 上次同步时间"。
 --    Tauri list_friends 命令据此判断 TTL 兜底要不要重拉。
-CREATE TABLE wecom_friend_sync_state (
+CREATE TABLE hub_wecom_friend_sync_state (
     wecom_account_id  TEXT    PRIMARY KEY,
     employee_id       TEXT    NOT NULL,
     full_synced_at_ms INTEGER NOT NULL,
     last_total        INTEGER NOT NULL DEFAULT 0
 );
-CREATE INDEX idx_wecom_friend_sync_state_employee ON wecom_friend_sync_state(employee_id);
+CREATE INDEX idx_hub_wecom_friend_sync_state_employee ON hub_wecom_friend_sync_state(employee_id);
 
--- 4) 事件水位,完全对照 wecom_account_watermark 设计("取大不取小"应对 redelivery)。
-CREATE TABLE wecom_friend_watermark (
+-- 4) 事件水位,完全对照 hub_wecom_account_watermark 设计("取大不取小"应对 redelivery)。
+CREATE TABLE hub_wecom_friend_watermark (
     client_id     TEXT    NOT NULL,
     employee_id   TEXT    NOT NULL,
     last_seq      INTEGER NOT NULL DEFAULT 0,

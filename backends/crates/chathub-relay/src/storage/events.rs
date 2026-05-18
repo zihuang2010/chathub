@@ -1,10 +1,10 @@
-//! events_v2 表:employee_id 维度,带完整 batch 字段。
+//! hub_events 表:employee_id 维度,带完整 batch 字段。
 //! 主键 (employee_id, notify_seq, event_index);INSERT OR IGNORE 天然幂等。
 //! Plan 7 — 旧 ring-buffer EventStore 已删,统一走 EventLog。
 
 use super::{Storage, StorageError};
 
-/// 一条事件的所有列(对应 events_v2 表)。
+/// 一条事件的所有列(对应 hub_events 表)。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EventRow {
     pub employee_id: i64,
@@ -48,7 +48,7 @@ impl EventLog {
                 let mut total = 0usize;
                 {
                     let mut stmt = tx.prepare(
-                        "INSERT OR IGNORE INTO events_v2(\
+                        "INSERT OR IGNORE INTO hub_events(\
                            employee_id, notify_seq, event_index, event_type, event_reason,\
                            conversation_id, customer_user_id, external_user_id,\
                            client_id, batch_id, batch_time, event_time,\
@@ -98,7 +98,7 @@ impl EventLog {
                             conversation_id, customer_user_id, external_user_id,\
                             client_id, batch_id, batch_time, event_time,\
                             payload_json, created_at_ms \
-                     FROM events_v2 \
+                     FROM hub_events \
                      WHERE employee_id = ?1 AND notify_seq > ?2 \
                      ORDER BY notify_seq ASC, event_index ASC \
                      LIMIT ?3",
@@ -141,7 +141,7 @@ impl EventLog {
         let row = conn
             .interact(move |c| -> Result<Option<(i64, i64)>, rusqlite::Error> {
                 let mut stmt = c.prepare(
-                    "SELECT notify_seq, created_at_ms FROM events_v2 \
+                    "SELECT notify_seq, created_at_ms FROM hub_events \
                      WHERE employee_id = ?1 \
                      ORDER BY notify_seq ASC LIMIT 1",
                 )?;
@@ -169,8 +169,8 @@ impl EventLog {
         let deleted = conn
             .interact(move |c| -> Result<usize, rusqlite::Error> {
                 c.execute(
-                    "DELETE FROM events_v2 WHERE rowid IN (\
-                       SELECT rowid FROM events_v2 \
+                    "DELETE FROM hub_events WHERE rowid IN (\
+                       SELECT rowid FROM hub_events \
                        WHERE created_at_ms < ?1 \
                        LIMIT ?2\
                      )",

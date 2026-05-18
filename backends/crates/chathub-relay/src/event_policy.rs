@@ -2,7 +2,7 @@
 //!
 //! 业务后台 push 的每个 event 有一个字符串 `eventType`(spec §6 定义了 6 种)。
 //! relay 不解析业务 payload,但要决定:
-//!   - **Persist**:写入 events_v2 事件日志(离线漏掉会让客户端 UI 显示错状态;
+//!   - **Persist**:写入 hub_events 事件日志(离线漏掉会让客户端 UI 显示错状态;
 //!     续点必须能补)。
 //!   - **ControlOnly**:不入库,fanout 后执行特殊控制动作(目前只有
 //!     `CONNECTION_FORCE_CLOSE`:推给客户端后启动 grace timer 关闭连接)。
@@ -12,7 +12,7 @@
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EventPolicy {
-    /// 写入 events_v2 事件日志,fanout 给在线连接(由 stage 3.5+ 的 router 完成)。
+    /// 写入 hub_events 事件日志,fanout 给在线连接(由 stage 3.5+ 的 router 完成)。
     Persist,
     /// 不入库;仅 fanout 后触发控制动作(force_close grace timer 等)。
     ControlOnly,
