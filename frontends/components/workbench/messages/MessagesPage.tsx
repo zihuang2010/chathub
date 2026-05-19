@@ -388,7 +388,6 @@ export function MessagesPage({ accounts }: MessagesPageProps) {
               error={messagesError}
               onRetry={retryMessages}
               hasMoreHistory={hasMoreMessages}
-              loadingHistory={messagesLoading}
               onLoadMoreHistory={loadMoreMessages}
               quickReplies={MOCK_QUICK_REPLIES}
               mentionCandidates={MOCK_CONVERSATIONS}

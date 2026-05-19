@@ -27,7 +27,12 @@ interface ChatAreaProps {
   onAccountChange: (account: string | null) => void;
   detailsOpen: boolean;
   onToggleDetails: () => void;
-  /** Set when an external store reports loading the message history. */
+  /**
+   * 来自外部 history store 的"任意 fetch 进行中"信号。同时承担两个语义:
+   *   - 初次加载: `loading && localMessages.length === 0` → 渲染 ChatLoadingState
+   *   - 翻页加载: maybeLoadOlderHistory 用它做"重入 guard"
+   * (旧 API 用 `loading` + `loading` 双 flag 表达同一份数据,合并后语义更清晰。)
+   */
   loading?: boolean;
   /** Set when an external store reports a fetch error. */
   error?: Error | null;
@@ -35,8 +40,6 @@ interface ChatAreaProps {
   onRetry?: () => void;
   /** Whether older history exists above the currently loaded timeline. */
   hasMoreHistory?: boolean;
-  /** True while the history source is fetching either the initial page or an older page. */
-  loadingHistory?: boolean;
   /** Called when the user scrolls near the top and older messages should be loaded. */
   onLoadMoreHistory?: () => Promise<void> | void;
   /** Quick-reply templates surfaced in the composer popover. */
@@ -145,7 +148,6 @@ export const ChatArea = memo(function ChatArea({
   error,
   onRetry,
   hasMoreHistory = false,
-  loadingHistory = false,
   onLoadMoreHistory,
   quickReplies,
   mentionCandidates,
@@ -294,7 +296,7 @@ export const ChatArea = memo(function ChatArea({
   const maybeLoadOlderHistory = useCallback(
     (m: ScrollMetrics) => {
       if (m.scrollTop > HISTORY_TOP_LOAD_THRESHOLD) return;
-      if (!hasMoreHistory || loadingHistory || !onLoadMoreHistory) return;
+      if (!hasMoreHistory || loading || !onLoadMoreHistory) return;
       if (historyLoadInFlightRef.current) return;
       if (pendingInitialScrollToLatestRef.current) return;
       const node = scrollRef.current;
@@ -320,7 +322,7 @@ export const ChatArea = memo(function ChatArea({
           historyLoadInFlightRef.current = false;
         });
     },
-    [conversation.id, hasMoreHistory, loadingHistory, onLoadMoreHistory],
+    [conversation.id, hasMoreHistory, loading, onLoadMoreHistory],
   );
 
   // 仅由 user-initiated scroll event 触发(WorkbenchScrollArea 内部把 native
@@ -424,7 +426,7 @@ export const ChatArea = memo(function ChatArea({
     if (!anchor || anchor.conversationId !== conversation.id) return;
 
     if (localMessages.length <= anchor.messageCount) {
-      if (!loadingHistory && !historyLoadInFlightRef.current) {
+      if (!loading && !historyLoadInFlightRef.current) {
         prependAnchorRef.current = null;
       }
       return;
@@ -442,7 +444,7 @@ export const ChatArea = memo(function ChatArea({
       node.scrollHeight - node.scrollTop - node.clientHeight < AT_BOTTOM_THRESHOLD;
     wasAtBottomRef.current = nextAtBottom;
     setAtBottom((prev) => (prev === nextAtBottom ? prev : nextAtBottom));
-  }, [conversation.id, loadingHistory, localMessages.length]);
+  }, [conversation.id, loading, localMessages.length]);
 
   // pill 的"消失"现在由 handleUserScroll 内 getBoundingClientRect 判定
   // (divider 进入视口 / 在视口下方 = 用户已看到),不再用 IntersectionObserver。
