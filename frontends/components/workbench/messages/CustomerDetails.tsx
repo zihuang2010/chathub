@@ -17,7 +17,8 @@ const TABS: { value: DetailsTab; label: string }[] = [
 ];
 
 interface CustomerDetailsProps {
-  customer: Customer;
+  /** 客户档案数据;真实接口对接前传 null,profile tab 走"未对接"空态。 */
+  customer: Customer | null;
   quickReplies: QuickReply[];
 }
 
@@ -36,7 +37,12 @@ export const CustomerDetails = memo(function CustomerDetails({
         aria-labelledby={`customer-details-tab-${tab}`}
         className="flex-1 overflow-y-auto"
       >
-        {tab === "profile" && <ProfileTab customer={customer} quickReplies={quickReplies} />}
+        {tab === "profile" &&
+          (customer ? (
+            <ProfileTab customer={customer} quickReplies={quickReplies} />
+          ) : (
+            <EmptyTab text={STRINGS.empty.loading} />
+          ))}
         {tab === "replies" && <EmptyTab text={STRINGS.customerDetails.emptyReplies} />}
         {tab === "trace" && <EmptyTab text={STRINGS.customerDetails.emptyTrace} />}
       </div>
@@ -115,7 +121,7 @@ function ProfileHeader({ customer }: { customer: Customer }) {
       <div
         role="img"
         aria-label={customer.name}
-        className="size-10 shrink-0 rounded-full bg-cover bg-center"
+        className="size-10 shrink-0 rounded-xl bg-cover bg-center"
         style={{
           backgroundColor: pickAvatarColor(customer.id),
           backgroundImage: `url(${pickCustomerAvatarImage(customer.name)})`,

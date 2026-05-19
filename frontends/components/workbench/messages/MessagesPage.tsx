@@ -22,16 +22,17 @@ import {
 } from "./constants";
 import { ConversationList } from "./ConversationList";
 import { CustomerDetails } from "./CustomerDetails";
-import type { Conversation } from "./data";
-import {
-  MOCK_CONVERSATIONS,
-  MOCK_CUSTOMERS_BY_CONVERSATION,
-  MOCK_MESSAGES_BY_CONVERSATION,
-  MOCK_QUICK_REPLIES,
-} from "./data";
+import type { Conversation, QuickReply } from "./data";
 import { MessagesSkeleton } from "./MessagesSkeleton";
 import { useChatMessages } from "./useChatMessages";
 import { useDetailsWindow } from "./useDetailsWindow";
+
+// 数据接口尚未对接,先用 module-level 空数组替代 MOCK 假数据。
+// 引用稳定(同一模块级变量在 React render 间不变),下游 memo 不因每次 render 失效。
+// 类型不用 readonly 以匹配 ChatArea/CustomerDetails 既有 props 形态;
+// 通过 module-level 常量 + 不导出避免外部 mutation。
+const EMPTY_QUICK_REPLIES: QuickReply[] = [];
+const EMPTY_MENTION_CANDIDATES: Conversation[] = [];
 
 /**
  * 把后端最近会话条目适配成 ConversationList 现有 `Conversation` 形态。
@@ -206,20 +207,13 @@ export function MessagesPage({ accounts }: MessagesPageProps) {
     loadMore: loadMoreMessages,
     retry: retryMessages,
   } = useChatMessages({
-    source: MOCK_MESSAGES_BY_CONVERSATION,
     conversationId: conversation?.id ?? "",
     wecomAccountId: selectedEntry?.wecomAccountId,
     externalUserId: selectedEntry?.externalUserId,
   });
-  // 客户详情真实接口未落地;短期保留 MOCK_CUSTOMERS_BY_CONVERSATION.c1 作开发期 placeholder。
-  // TODO(customer-details API): 接通后改为 null + 组件层空态。
-  const customer = useMemo(
-    () =>
-      conversation
-        ? (MOCK_CUSTOMERS_BY_CONVERSATION[conversation.id] ?? MOCK_CUSTOMERS_BY_CONVERSATION.c1)
-        : null,
-    [conversation],
-  );
+  // 客户详情真实接口(useCustomer)未落地;暂传 null,由 CustomerDetails 渲染空态。
+  // TODO(customer-details API): 接通后改成 useCustomer(conversationId)。
+  const customer = null;
 
   const clampConversationListWidth = useCallback(
     (nextWidth: number) => {
@@ -389,8 +383,10 @@ export function MessagesPage({ accounts }: MessagesPageProps) {
               onRetry={retryMessages}
               hasMoreHistory={hasMoreMessages}
               onLoadMoreHistory={loadMoreMessages}
-              quickReplies={MOCK_QUICK_REPLIES}
-              mentionCandidates={MOCK_CONVERSATIONS}
+              // TODO(quick-replies API): 接通 useQuickReplies(employeeId) 后透传;暂空
+              quickReplies={EMPTY_QUICK_REPLIES}
+              // TODO(@mention API): 接通 useMentionCandidates(conversationId) 后透传
+              mentionCandidates={EMPTY_MENTION_CANDIDATES}
             />
           </ErrorBoundary>
         ) : (
@@ -399,9 +395,9 @@ export function MessagesPage({ accounts }: MessagesPageProps) {
           </div>
         )}
       </div>
-      {detailsOpen && conversation && customer && (
+      {detailsOpen && conversation && (
         <ErrorBoundary {...errorBoundaryProps}>
-          <CustomerDetails customer={customer} quickReplies={MOCK_QUICK_REPLIES} />
+          <CustomerDetails customer={customer} quickReplies={EMPTY_QUICK_REPLIES} />
         </ErrorBoundary>
       )}
       <ToastViewport />

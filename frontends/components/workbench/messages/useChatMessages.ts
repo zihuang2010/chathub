@@ -1,49 +1,53 @@
-import { useCallback, useMemo, useState } from "react";
+import { useMessageHistory } from "@/lib/api/useMessageHistory";
 
 import type { Message } from "./data";
 
 // ─── Chat messages fetch hook ───────────────────────────────────────────────
 //
-// Mock mode resolves synchronously, so messages are derived from props during
-// render — no skeleton flash on conversation switch, no flash of the previous
-// conversation's messages under the new header. A per-conversationId cache
-// keeps repeated visits O(1).
+// 当前对接 `fetch_message_history` Tauri 命令。`useMessageHistory` 内部按
+// (wecomAccountId, externalUserId) 启用;两者任一缺省时,enabled=false,本 hook
+// 返回空状态。调用方拿到 conversation 时若没有真实 (wecomAccountId,externalUserId)
+// (例如空态/未对接路径),应避免渲染 ChatArea。
 //
-// When wiring a real backend: replace the synchronous body of `messages` with
-// a useEffect-based async fetch and re-introduce a `loading` state machine.
-// The cache + retry contract stays the same.
+// 设计说明:原版 useChatMessages 双路径(real + mock source) — mock 路径在
+// MOCK_MESSAGES_BY_CONVERSATION 删除后已无消费者,本 hook 简化为单一真实路径。
 
-interface UseChatMessagesResult {
+export interface UseChatMessagesResult {
   messages: Message[];
   loading: boolean;
   error: Error | null;
   retry: () => void;
+  hasMore: boolean;
+  loadMore: () => Promise<void>;
 }
 
-interface UseChatMessagesOptions {
-  /** Map containing message arrays keyed by conversation id (mock store). */
-  source: Record<string, Message[]>;
+export interface UseChatMessagesOptions {
+  /** 当前会话 ID(用于 Message.conversationId 字段填充)。 */
   conversationId: string;
+  /** 当前会话归属的企微账号 ID。跟 externalUserId 同时非空时本 hook 启用。 */
+  wecomAccountId?: string;
+  /** 当前会话对方的 external_user_id;跟 wecomAccountId 一起决定是否启用。 */
+  externalUserId?: string;
 }
 
 export function useChatMessages({
-  source,
   conversationId,
+  wecomAccountId,
+  externalUserId,
 }: UseChatMessagesOptions): UseChatMessagesResult {
-  const [retryNonce, setRetryNonce] = useState(0);
-
-  const messages = useMemo(() => {
-    // Keep retryNonce in the dependency graph so the public retry contract
-    // remains stable when this mock hook is replaced with an async fetcher.
-    void retryNonce;
-    return source[conversationId] ?? [];
-    // retryNonce is intentionally a dep: bumping it (after cache eviction in
-    // `retry`) forces a re-read so the new fetch result lands in the cache.
-  }, [conversationId, source, retryNonce]);
-
-  const retry = useCallback(() => {
-    setRetryNonce((n) => n + 1);
-  }, []);
-
-  return { messages, loading: false, error: null, retry };
+  const enabled = !!wecomAccountId && !!externalUserId;
+  const real = useMessageHistory({
+    wecomAccountId: wecomAccountId ?? "",
+    externalUserId: externalUserId ?? "",
+    conversationId,
+    enabled,
+  });
+  return {
+    messages: real.messages,
+    loading: real.loading,
+    error: real.error ? new Error(real.error) : null,
+    retry: real.retry,
+    hasMore: real.hasMore,
+    loadMore: real.loadMore,
+  };
 }
