@@ -74,6 +74,10 @@ function MacTitleBar({ controls, tone }: { controls: WindowControls; tone: Tone 
       className="absolute inset-x-0 top-0 z-[100] flex h-10 select-none items-center rounded-t-[10px]"
       style={{
         WebkitUserSelect: "none",
+        // 200ms 颜色过渡 —— 避免 splash 收尾瞬间 transparent → frosted 顿变。
+        // backdrop-filter 浏览器对 transition 支持不一,但在 transparent → blur 切换
+        // 期间和 background 同步生效,体感是"整体淡入"。
+        transition: "background-color 200ms ease-out",
         // 与 Sidebar 共用 FROSTED_GLASS_STYLE，保证两者像素级一致——色差带的
         // 排查史在 plans 文件里。圆角在此处是因为 backdrop-filter 自带 stacking
         // context，不总能遵守祖先的 border-radius。

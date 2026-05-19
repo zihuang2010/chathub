@@ -48,6 +48,11 @@ impl SqlitePool {
                 M::up(include_str!("../migrations/V4__account_cache.sql")),
                 M::up(include_str!("../migrations/V5__friends_cache.sql")),
                 M::up(include_str!("../migrations/V6__friends_store.sql")),
+                M::up(include_str!("../migrations/V7__recent_sessions.sql")),
+                M::up(include_str!("../migrations/V8__friends_employee_id.sql")),
+                M::up(include_str!("../migrations/V9__recents_employee_id.sql")),
+                M::up(include_str!("../migrations/V10__local_draft_text.sql")),
+                M::up(include_str!("../migrations/V11__recents_removed.sql")),
             ]);
             migrations
                 .to_latest(c)
@@ -84,7 +89,8 @@ mod tests {
                     "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN (\
                    'hub_current_session', 'hub_wecom_accounts', 'hub_wecom_account_watermark', \
                    'hub_secrets', 'hub_settings', \
-                   'hub_wecom_friends', 'hub_wecom_friend_sync_state', 'hub_wecom_friend_watermark'\
+                   'hub_wecom_friends', 'hub_wecom_friend_sync_state', 'hub_wecom_friend_watermark', \
+                   'hub_conversation_recents', 'hub_recent_session_watermark'\
                  )",
                     [],
                     |r| r.get(0),
@@ -95,8 +101,8 @@ mod tests {
             .expect("query");
 
         assert_eq!(
-            table_count, 8,
-            "全部 V1-V6 跑完应剩 8 张 hub_ 前缀业务表(account_seqs/friends_cache 已在 V4/V6 DROP)"
+            table_count, 10,
+            "全部 V1-V9 跑完应剩 10 张 hub_ 前缀业务表(account_seqs/friends_cache 已在 V4/V6 DROP;V8/V9 ALTER 不增表)"
         );
     }
 

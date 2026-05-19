@@ -1,5 +1,7 @@
 import { memo, useMemo, useState } from "react";
+import type { ReactNode } from "react";
 import { ChevronDown, Menu, Search } from "lucide-react";
+import * as ContextMenu from "@radix-ui/react-context-menu";
 
 import type { Account } from "@/lib/types/account";
 import { cn } from "@/lib/utils";
@@ -17,20 +19,30 @@ interface ConversationListProps {
   conversations: Conversation[];
   selectedId: string;
   onSelect: (id: string) => void;
+  /** 右键菜单切换"置顶/取消置顶"。next 是切换后的目标态。
+   *  乐观更新由后端 ChangeNotice → useResource refetch 接管,这里不必维护本地状态。 */
+  onTogglePin?: (id: string, next: boolean) => void | Promise<void>;
+  /** 右键菜单"移除会话"。V11 后端持久化软删除;新消息严格晚于 removed_at_ms 时自动恢复。 */
+  onRemove?: (id: string) => void;
   width: number;
   accounts: readonly Account[];
   selectedAccount: string | null;
   onAccountChange: (account: string | null) => void;
+  /** 搜索框右边的辅助 slot,目前用于挂同步状态色点。 */
+  syncSlot?: ReactNode;
 }
 
 export const ConversationList = memo(function ConversationList({
   conversations,
   selectedId,
   onSelect,
+  onTogglePin,
+  onRemove,
   width,
   accounts,
   selectedAccount,
   onAccountChange,
+  syncSlot,
 }: ConversationListProps) {
   const [statusTab, setStatusTab] = useState<StatusTab>("all");
   const [searchQuery, setSearchQuery] = useState("");
@@ -52,7 +64,12 @@ export const ConversationList = memo(function ConversationList({
   return (
     <div className="flex h-full shrink-0 flex-col bg-workbench-surface" style={{ width }}>
       <div className="flex flex-col gap-2 px-3 pb-1.5 pt-3">
-        <SearchBar value={searchQuery} onChange={setSearchQuery} compact={isCompact} />
+        <div className="flex items-center gap-2">
+          <div className="min-w-0 flex-1">
+            <SearchBar value={searchQuery} onChange={setSearchQuery} compact={isCompact} />
+          </div>
+          {syncSlot}
+        </div>
         <FilterToolbar
           statusTab={statusTab}
           onStatusChange={setStatusTab}
@@ -65,6 +82,10 @@ export const ConversationList = memo(function ConversationList({
       </div>
 
       <WorkbenchScrollArea className="flex-1" viewportClassName="pb-1.5 pt-0.5 pr-2">
+        {/* 账号筛选 / 状态 tab 切换 = React 自然 reconciliation,不再裹一层
+            AnimatePresence mode="wait" + 256ms crossfade —— 那个动画的中间空白
+            瞬间反而让用户感觉"列表闪了一下"。React 用 ConversationItem 的 key=c.id
+            去 diff 新旧列表,在大多数情况只是增删几个 item,视觉上即时切换更丝滑。 */}
         {filteredConversations.length > 0 ? (
           filteredConversations.map((c) => (
             <ConversationItem
@@ -72,6 +93,8 @@ export const ConversationList = memo(function ConversationList({
               conversation={c}
               selected={c.id === selectedId}
               onSelect={onSelect}
+              onTogglePin={onTogglePin}
+              onRemove={onRemove}
             />
           ))
         ) : (
@@ -209,24 +232,31 @@ const ConversationItem = memo(function ConversationItem({
   conversation,
   selected,
   onSelect,
+  onTogglePin,
+  onRemove,
 }: {
   conversation: Conversation;
   selected: boolean;
   onSelect: (id: string) => void;
+  onTogglePin?: (id: string, next: boolean) => void | Promise<void>;
+  onRemove?: (id: string) => void;
 }) {
-  const { id, name, avatarColor, preview, account, time, unread, online } = conversation;
+  const { id, name, avatarColor, preview, account, time, unread, online, draftText, pinned } =
+    conversation;
+  const isPinned = pinned === true;
 
-  return (
+  const row = (
     <button
       type="button"
       onClick={() => onSelect(id)}
       className={cn(
-        "focus-ring group relative mx-2 grid w-[calc(100%-1rem)] grid-cols-[44px_minmax(0,1fr)] items-start gap-3 rounded-xl px-3 py-2 text-left transition-colors",
+        "focus-ring group relative mx-2 grid w-[calc(100%-1rem)] grid-cols-[44px_minmax(0,1fr)] items-start gap-3 overflow-hidden rounded-xl px-3 py-2 text-left transition-colors",
+        // 置顶视觉指示已经搬到头像左上 pin 徽标,行本体只有选中/默认两态。
         selected ? "bg-workbench-surface-active" : "hover:bg-workbench-surface-subtle",
       )}
     >
-      <div className="mt-1">
-        <ConversationAvatar name={name} color={avatarColor} online={online} />
+      <div className="relative mt-1">
+        <ConversationAvatar name={name} color={avatarColor} online={online} pinned={isPinned} />
       </div>
       <div className="min-w-0 pr-11 pt-px">
         <div className="flex min-w-0 items-center gap-1.5">
@@ -236,12 +266,22 @@ const ConversationItem = memo(function ConversationItem({
           </span>
         </div>
         <div className="mt-0.5 truncate text-wb-2xs font-medium text-workbench-text-muted">
-          {unread > 0 && (
-            <span className="wb-num mr-0.5 font-medium text-workbench-text-muted">
-              {STRINGS.conversationList.unreadPreviewPrefix(unread)}
-            </span>
+          {draftText ? (
+            <>
+              <span className="mr-1 font-medium text-rose-500">
+                {STRINGS.conversationList.draftPrefix}
+              </span>
+              <span className="text-workbench-text-secondary">{draftText}</span>
+            </>
+          ) : (
+            <>
+              {unread > 0 && (
+                // 与 preview 同色(muted),仅作"未读"语义标签;红色由右侧数字徽标承担。
+                <span className="mr-1 font-medium">{STRINGS.conversationList.unreadPrefix}</span>
+              )}
+              {preview}
+            </>
           )}
-          {preview}
         </div>
         <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-wb-3xs">
           <span className="shrink-0 font-medium text-workbench-text-muted">
@@ -256,11 +296,56 @@ const ConversationItem = memo(function ConversationItem({
         {time}
       </span>
       {unread > 0 && (
+        // 圆点 → 数字徽标:1-2 位居中圆形,3 位(99+)自动横向撑出胶囊形。
+        // 与 preview 前缀 [未读] 互补:文字表状态、数字表量级;尺寸刻意 14×14 (text-[9px])
+        // 让数字徽标"知趣",不与文本流抢眼。bottom-5 比原 bottom-3 微抬 8px,落在
+        // preview 行与 from 行之间,不贴底也不顶第二行。
         <span
           aria-label={STRINGS.conversationList.unreadCount(unread)}
-          className="absolute bottom-4 right-3 size-2 rounded-full bg-workbench-unread/85"
-        />
+          className="wb-num absolute bottom-5 right-3 grid h-[14px] min-w-[14px] place-items-center rounded-full bg-workbench-unread px-1 text-[9px] font-semibold leading-none text-white"
+        >
+          {unread > 99 ? "99+" : unread}
+        </span>
       )}
     </button>
+  );
+
+  // 没有任何菜单操作可用时退化为纯 button,避免 mock/占位环境下闪一个空菜单。
+  if (!onTogglePin && !onRemove) return row;
+
+  const itemClassName = cn(
+    "cursor-default rounded px-2 py-1.5 text-wb-2xs text-workbench-text outline-none transition-colors",
+    "data-[highlighted]:bg-workbench-surface-subtle",
+  );
+
+  return (
+    <ContextMenu.Root>
+      <ContextMenu.Trigger asChild>{row}</ContextMenu.Trigger>
+      <ContextMenu.Portal>
+        <ContextMenu.Content
+          className="z-30 min-w-[140px] overflow-hidden rounded-md border border-workbench-line bg-workbench-surface p-1 shadow-wb-popover"
+          onCloseAutoFocus={(e) => e.preventDefault()}
+        >
+          {onTogglePin && (
+            <ContextMenu.Item
+              onSelect={() => void onTogglePin(id, !isPinned)}
+              className={itemClassName}
+            >
+              {isPinned
+                ? STRINGS.conversationList.contextUnpin
+                : STRINGS.conversationList.contextPin}
+            </ContextMenu.Item>
+          )}
+          {onRemove && (
+            <ContextMenu.Item
+              onSelect={() => onRemove(id)}
+              className={cn(itemClassName, "text-workbench-danger")}
+            >
+              {STRINGS.conversationList.contextRemove}
+            </ContextMenu.Item>
+          )}
+        </ContextMenu.Content>
+      </ContextMenu.Portal>
+    </ContextMenu.Root>
   );
 });

@@ -32,7 +32,17 @@ export const STRINGS = {
     statusTabsLabel: "会话状态筛选",
     accountListLabel: "账号列表",
     unreadCount: (n: number) => `${n > 99 ? "99+" : n} 条未读`,
-    unreadPreviewPrefix: (n: number) => `[${n > 99 ? "99+" : n}条]`,
+    /** 接待列表行 preview 区的"未读"语义前缀,与 draftPrefix 同 rose-500 样式。
+     *  仅在 unread > 0 且无草稿时显示;与右下角红色数字徽标互补:文字表状态,数字表量级。 */
+    unreadPrefix: "[未读]",
+    /** 接待列表行的"草稿"前缀。当 conversation.draftText 非空时,preview 区显示。 */
+    draftPrefix: "[草稿]",
+    /** 接待列表行右键菜单的"置顶"操作文案。 */
+    contextPin: "置顶会话",
+    /** 接待列表行右键菜单的"取消置顶"操作文案。 */
+    contextUnpin: "取消置顶",
+    /** 接待列表行右键菜单的"移除会话"操作文案。V11 后端持久化软删除,新消息严格晚于 removed_at_ms 时自动恢复。 */
+    contextRemove: "移除会话",
   },
   status: {
     unreadDivider: (n: number) => `以下为未读消息 (${n})`,
@@ -42,6 +52,8 @@ export const STRINGS = {
     recalledPlaceholder: "(已撤回)",
     scrollToBottom: "回到底部",
     newMessagesBelow: (n: number) => `${n > 99 ? "99+" : n} 条新消息`,
+    /** 顶部浮动 pill,提示视口上方还有未读;点击跳到 UnreadDivider。 */
+    unreadAbove: (n: number) => `↑ ${n > 99 ? "99+" : n} 条未读`,
     recalledByMe: "你撤回了一条消息",
     recalledByPeer: "对方撤回了一条消息",
   },
@@ -88,6 +100,7 @@ export const STRINGS = {
     voiceDuration: (sec: number) => `${sec}″`,
     imageAlt: (name?: string) => name ?? "图片附件",
     openImage: "查看大图",
+    imageLoadFailed: "图片加载失败",
   },
   composer: {
     placeholder: "请输入消息",

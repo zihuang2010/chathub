@@ -6,17 +6,21 @@ use tauri::{Emitter, Manager, State};
 use tracing::info;
 
 use chathub_net::{
-    friend_to_row, AccountEventApplier, AuthApi, AuthError, AuthInterceptor, BackoffConfig,
-    ConnectionManager, ConnectionState, FriendEventApplier, HubClient, ListAccountsFilter,
-    ListAccountsItem, LoggedOutReason, TokenStore,
+    friend_to_row, record_to_remote, AccountEventApplier, AuthApi, AuthError, AuthInterceptor,
+    BackoffConfig, ChangeNotice, ChangeScope, ChangeTopic, ConnectionManager, ConnectionState,
+    FetchMessageHistoryRequest, FetchMessageHistoryResp, FriendEventApplier, HubClient,
+    ListAccountsFilter, ListAccountsItem, ListRecentFriendsRequest, ListRecentFriendsResp,
+    LoggedOutReason, RecentSessionEventApplier, TokenStore,
 };
 use chathub_proto::v1::UserProfile;
 use chathub_state::{
-    AccountCacheStore, FriendsStore, LocalTokenStore, NotifySeqStore, SessionStore, SqlitePool,
-    WecomAccountRow, WecomFriendRow,
+    AccountCacheStore, FriendsStore, LocalTokenStore, NotifySeqStore, RecentSessionRow,
+    RecentSessionsStore, SessionStore, SqlitePool, WecomAccountRow, WecomFriendRow,
+    RECENT_SESSIONS_GLOBAL_LIMIT, RECENT_SESSIONS_PER_ACCOUNT_LIMIT,
 };
 use std::time::{Duration, Instant};
 use tokio::sync::broadcast as tokio_broadcast;
+use tokio::sync::broadcast::channel as broadcast_channel;
 
 // ============================== 现有命令保留 ==============================
 
@@ -291,11 +295,11 @@ async fn list_friends(
             let friends = hub.list_all_friends_for_account(acct).await?;
             let rows: Vec<WecomFriendRow> = friends
                 .into_iter()
-                .map(|f| friend_to_row(f, acct))
+                .map(|f| friend_to_row(f, acct, employee_id))
                 .collect();
             let total = rows.len() as u64;
             store
-                .replace_all_for_account(acct, &rows)
+                .replace_all_for_account(employee_id, acct, &rows)
                 .await
                 .map_err(|e| AuthError::Internal {
                     message: format!("friends replace_all: {e}"),
@@ -309,13 +313,223 @@ async fn list_friends(
         }
     }
 
-    // 2) 从 SQLite 读所有选中账号的全量行
+    // 2) 从 SQLite 读所有选中账号的全量行(按当前 employee 过滤)
     store
-        .read_for_account_ids(&account_ids)
+        .read_for_account_ids(employee_id, &account_ids)
         .await
         .map_err(|e| AuthError::Internal {
             message: format!("friends read: {e}"),
         })
+}
+
+// ============================== message/history 历史消息 ==============================
+
+/// 拉取一条会话的历史消息(按天分组,cursor 分页)。
+///
+/// 透传到业务后台 `/wechat-business-app/wecom-cs/v1/wecomAggregate/message/history`。
+/// 不入库,不订阅事件 —— 消息历史是临时拉取,数据量大,客户端只缓存当前打开会话的几页。
+/// `req.cursor=""` 表示首页;后续传上一次的 `nextCursor`;`direction="before"` 往更早翻。
+#[tauri::command]
+async fn fetch_message_history(
+    hub: State<'_, HubClient>,
+    req: FetchMessageHistoryRequest,
+) -> Result<FetchMessageHistoryResp, AuthError> {
+    hub.fetch_message_history(req).await
+}
+
+// ============================== session/recentFriends 接待好友列表 ==============================
+
+/// 头部缓存读取上限 —— UI 默认列表最多展示 200 条;尾部走远端 cursor 分页(不写库)。
+const RECENT_FRIENDS_LIST_LIMIT: usize = 200;
+
+/// 仅从本地行存读"接待好友列表"。打开消息页时**优先**调它,秒开。
+///
+/// 多键 ORDER BY:`pinned DESC, pinned_at_ms DESC, MAX(last_msg_ms, draft_ms) DESC, last_msg_ms DESC`,
+/// `account_filter=None` 表示该员工全部账号合并。
+/// `employee_id` 来自当前会话,SQL 强制过滤,跨员工不可见。
+///
+/// **未登录返空,不报错**:本命令是本地缓存读取,未登录(冷启动 try_resume_session 未完成 /
+/// 用户登出后)就应该是 0 行,而不是抛 Unauthenticated 让 UI 误报"同步失败"。
+/// 防御性已经由 list_top 内部 WHERE employee_id 兜底,即使本地表里有别人的残留行也读不到。
+#[tauri::command]
+async fn list_recent_friends(
+    store: State<'_, RecentSessionsStore>,
+    auth_api: State<'_, Arc<AuthApi>>,
+    account_filter: Option<String>,
+) -> Result<Vec<RecentSessionRow>, AuthError> {
+    let employee_id = match auth_api.current_session().await? {
+        Some(p) => p.user_id,
+        None => return Ok(Vec::new()),
+    };
+    let filter = account_filter.filter(|s| !s.is_empty());
+    store
+        .list_top(&employee_id, filter, RECENT_FRIENDS_LIST_LIMIT)
+        .await
+        .map_err(|e| AuthError::Internal {
+            message: format!("recents list_top: {e}"),
+        })
+}
+
+/// 远端拉一页"接待好友列表"。
+///   - `persist=true`(通常仅首页 cursor="")→ records 同步 UPSERT 到本地表(仅远端列),
+///     成功后 trim 到 `RECENT_SESSIONS_MAX_ROWS` 并 emit `recent_friends_changed`。
+///   - `persist=false`(滚动加载更多 / 带筛选的搜索)→ 仅透传响应,不写库不发事件。
+///
+/// `persist=true` 时,所有 UPSERT 行打上当前 employee_id 标记,trim 也按 employee 维度执行。
+#[tauri::command]
+async fn list_recent_friends_remote_page(
+    app: tauri::AppHandle,
+    hub: State<'_, HubClient>,
+    store: State<'_, RecentSessionsStore>,
+    auth_api: State<'_, Arc<AuthApi>>,
+    change_tx: State<'_, tokio_broadcast::Sender<ChangeNotice>>,
+    req: ListRecentFriendsRequest,
+    persist: bool,
+) -> Result<ListRecentFriendsResp, AuthError> {
+    let resp = hub.list_recent_friends(req).await?;
+    if persist && !resp.records.is_empty() {
+        let profile = auth_api
+            .current_session()
+            .await?
+            .ok_or(AuthError::Unauthenticated)?;
+        let employee_id = profile.user_id.as_str();
+        let rows: Vec<_> = resp
+            .records
+            .iter()
+            .cloned()
+            .map(|r| record_to_remote(r, employee_id))
+            .collect();
+        store
+            .upsert_remote_many(&rows)
+            .await
+            .map_err(|e| AuthError::Internal {
+                message: format!("recents upsert_remote_many: {e}"),
+            })?;
+        if let Err(e) = store
+            .trim(
+                employee_id,
+                RECENT_SESSIONS_PER_ACCOUNT_LIMIT,
+                RECENT_SESSIONS_GLOBAL_LIMIT,
+            )
+            .await
+        {
+            tracing::warn!(target: "chathub::recents", ?e, "trim failed; ignoring");
+        }
+        // C6 单发:仅 ChangeNotice(LocalCommand)。前端 ChangeBus 接收后通知 useResource refetch。
+        let _ = change_tx.send(ChangeNotice::command_upsert(
+            ChangeTopic::RecentSessions,
+            ChangeScope::employee(employee_id),
+        ));
+        // app 参数仍需保留(命令签名依赖),但 app.emit("recent_friends_changed") 已废弃。
+        let _ = app;
+    }
+    Ok(resp)
+}
+
+/// 置顶 / 取消置顶。只动本地列(pinned/pinned_at_ms),严防远端列被覆盖。
+/// SQL 同时校验 employee_id,跨员工不可触发(防御 conversation_id 被恶意 / 错误传入)。
+/// 成功后 emit `recent_friends_changed`,让前端 refetch 默认列表拿到新顺序。
+#[tauri::command]
+async fn set_conversation_pinned(
+    app: tauri::AppHandle,
+    store: State<'_, RecentSessionsStore>,
+    auth_api: State<'_, Arc<AuthApi>>,
+    change_tx: State<'_, tokio_broadcast::Sender<ChangeNotice>>,
+    conversation_id: String,
+    pinned: bool,
+) -> Result<(), AuthError> {
+    let profile = auth_api
+        .current_session()
+        .await?
+        .ok_or(AuthError::Unauthenticated)?;
+    let employee_id = profile.user_id.as_str();
+    store
+        .set_pinned(employee_id, &conversation_id, pinned)
+        .await
+        .map_err(|e| AuthError::Internal {
+            message: format!("recents set_pinned: {e}"),
+        })?;
+    // C6 单发:ChangeNotice(LocalCommand);scope 带 conversation_id 让 ChangeBus 精准 match。
+    let _ = change_tx.send(ChangeNotice::command_upsert(
+        ChangeTopic::RecentSessions,
+        ChangeScope {
+            employee_id: employee_id.to_string(),
+            conversation_id: Some(conversation_id),
+            ..Default::default()
+        },
+    ));
+    let _ = app;
+    Ok(())
+}
+
+/// 软移除 / 取消移除接待会话(V11)。只动本地列 removed/removed_at_ms。
+/// employee_id 由当前会话注入,跨员工 no-op。
+/// 成功后 emit `ChangeNotice`,让前端 refetch 默认列表过滤掉/恢复该行。
+#[tauri::command]
+async fn set_conversation_removed(
+    app: tauri::AppHandle,
+    store: State<'_, RecentSessionsStore>,
+    auth_api: State<'_, Arc<AuthApi>>,
+    change_tx: State<'_, tokio_broadcast::Sender<ChangeNotice>>,
+    conversation_id: String,
+    removed: bool,
+) -> Result<(), AuthError> {
+    let profile = auth_api
+        .current_session()
+        .await?
+        .ok_or(AuthError::Unauthenticated)?;
+    let employee_id = profile.user_id.as_str();
+    store
+        .set_removed(employee_id, &conversation_id, removed)
+        .await
+        .map_err(|e| AuthError::Internal {
+            message: format!("recents set_removed: {e}"),
+        })?;
+    let _ = change_tx.send(ChangeNotice::command_upsert(
+        ChangeTopic::RecentSessions,
+        ChangeScope {
+            employee_id: employee_id.to_string(),
+            conversation_id: Some(conversation_id),
+            ..Default::default()
+        },
+    ));
+    let _ = app;
+    Ok(())
+}
+
+/// 草稿写入(V10):text="" 清空,非空保存为草稿。ChatArea 输入框 debounce 后调一次。
+/// 只动本地列 + employee_id 校验。
+#[tauri::command]
+async fn set_conversation_draft(
+    app: tauri::AppHandle,
+    store: State<'_, RecentSessionsStore>,
+    auth_api: State<'_, Arc<AuthApi>>,
+    change_tx: State<'_, tokio_broadcast::Sender<ChangeNotice>>,
+    conversation_id: String,
+    text: String,
+) -> Result<(), AuthError> {
+    let profile = auth_api
+        .current_session()
+        .await?
+        .ok_or(AuthError::Unauthenticated)?;
+    let employee_id = profile.user_id.as_str();
+    store
+        .set_draft(employee_id, &conversation_id, &text)
+        .await
+        .map_err(|e| AuthError::Internal {
+            message: format!("recents set_draft: {e}"),
+        })?;
+    // C6 单发:ChangeNotice(LocalCommand)。
+    let _ = change_tx.send(ChangeNotice::command_upsert(
+        ChangeTopic::RecentSessions,
+        ChangeScope {
+            employee_id: employee_id.to_string(),
+            conversation_id: Some(conversation_id),
+            ..Default::default()
+        },
+    ));
+    let _ = app;
+    Ok(())
 }
 
 // ============================== run() ==============================
@@ -339,7 +553,7 @@ pub fn run() {
 
             // tauri::async_runtime::block_on 在 setup 同步完成 SQLite 与 endpoint 初始化。
             // setup 闭包本身不在 async 上下文,block_on 安全可用。
-            let (auth_api, hub_client, conn_manager, account_cache, friends_store) = tauri::async_runtime::block_on(async {
+            let (auth_api, hub_client, conn_manager, account_cache, friends_store, recents_store, change_notice_tx) = tauri::async_runtime::block_on(async {
                 std::fs::create_dir_all(&app_data).ok();
                 let pool = SqlitePool::open(app_data.join("state.sqlite"))
                     .await.map_err(|e| e.to_string())?;
@@ -347,6 +561,7 @@ pub fn run() {
                 let notify_seq_store = NotifySeqStore::new(pool.clone());
                 let account_cache = AccountCacheStore::new(pool.clone());
                 let friends_store = FriendsStore::new(pool.clone());
+                let recents_store = RecentSessionsStore::new(pool.clone());
                 let local_store = LocalTokenStore::new(pool);
                 // device_id 从本地 SQLite 取(首次启动生成),不再用 macOS 钥匙串。
                 let device_id = local_store.ensure_device_id()
@@ -357,15 +572,26 @@ pub fn run() {
                 let token_store = Arc::new(TokenStore::new(endpoint, local_store, device_id.clone()));
                 let interceptor = AuthInterceptor::new(token_store.clone());
                 let hub_client = HubClient::new(channel, interceptor);
+                // C1+C2 统一变更通知通道 —— 由 setup 阶段创建,在所有 applier 与 ConnectionManager
+                // 之间共享。256 buffer 同 hub.event_tx,够事件风暴使用。
+                let (change_notice_tx, _) = broadcast_channel::<ChangeNotice>(256);
                 // 2026-05-17:Subscribe 流里 ACCOUNT_* 事件 → AccountCacheStore + broadcast。
                 let account_applier = Arc::new(AccountEventApplier::new(
                     account_cache.clone(),
                     hub_client.clone(),
+                    change_notice_tx.clone(),
                 ));
                 // 阶段 2:Subscribe 流里 FRIEND_* 事件 → FriendsStore 行存 + broadcast。
                 let friend_applier = Arc::new(FriendEventApplier::new(
                     friends_store.clone(),
                     hub_client.clone(),
+                    change_notice_tx.clone(),
+                ));
+                // 阶段 3:Subscribe 流里 MESSAGE_UPSERT / SESSION_SUMMARY_UPSERT → RecentSessionsStore + broadcast。
+                let recent_applier = Arc::new(RecentSessionEventApplier::new(
+                    recents_store.clone(),
+                    hub_client.clone(),
+                    change_notice_tx.clone(),
                 ));
                 let conn_manager = Arc::new(ConnectionManager::new(
                     hub_client.clone(),
@@ -376,9 +602,11 @@ pub fn run() {
                     BackoffConfig::default(),
                     Some(account_applier),
                     Some(friend_applier),
+                    Some(recent_applier),
+                    change_notice_tx.clone(),
                 ));
                 let auth_api = AuthApi::new(token_store, session_store);
-                Ok::<_, String>((auth_api, hub_client, conn_manager, account_cache, friends_store))
+                Ok::<_, String>((auth_api, hub_client, conn_manager, account_cache, friends_store, recents_store, change_notice_tx))
             }).map_err(Box::<dyn std::error::Error>::from)?;
             let auth_api = Arc::new(auth_api);
             app.manage(Arc::clone(&auth_api));
@@ -386,6 +614,9 @@ pub fn run() {
             app.manage(Arc::clone(&conn_manager));
             app.manage(account_cache);
             app.manage(friends_store);
+            app.manage(recents_store);
+            // change_notice_tx 也 manage 一份,Tauri 命令(pin/draft 等)用它直接发 LocalCommand 通知
+            app.manage(change_notice_tx);
 
             // 启动时 try_resume(后台 task,不阻塞 setup);成功后启动 ConnectionManager
             let api_for_resume = Arc::clone(&auth_api);
@@ -461,45 +692,50 @@ pub fn run() {
                 }
             });
 
-            // ---- 2026-05-17:accounts_changed 桥接(broadcast<AccountChanged> → app.emit) ----
-            // Subscribe 流里 ACCOUNT_BINDING_CHANGE 事件被 AccountEventApplier 写完 cache 后
-            // broadcast 出来,这里 emit 给前端;前端 useAccounts 收到事件后 refetch(读 cache)。
-            if let Some(mut rx) = conn_manager.account_event_subscribe() {
-                let app_for_account = app_handle.clone();
-                tauri::async_runtime::spawn(async move {
-                    loop {
-                        match rx.recv().await {
-                            Ok(change) => {
-                                let _ = app_for_account.emit("accounts_changed", &change);
-                            }
-                            Err(tokio_broadcast::error::RecvError::Lagged(n)) => {
-                                tracing::warn!(target: "chathub::accounts", skipped = n, "accounts_changed lagged");
-                            }
-                            Err(tokio_broadcast::error::RecvError::Closed) => break,
-                        }
-                    }
-                });
-            }
+            // ---- C6 拆双发后:accounts_changed / friends_changed / recent_friends_changed
+            // 这 3 条旧通道全部下线,统一走 hub:change(下面那段)。前端 hook 也都已迁移
+            // 到 useResource + ChangeBus,不再 listen 旧名。
 
-            // ---- 阶段 2:friends_changed 桥接(broadcast<FriendChanged> → app.emit) ----
-            // Subscribe 流里 FRIEND_BINDING_CHANGE 事件被 FriendEventApplier 写完行存后
-            // broadcast 出来,这里 emit 给前端;前端 useFriends 收到事件后 refetch(读行存)。
-            if let Some(mut rx) = conn_manager.friend_event_subscribe() {
-                let app_for_friends = app_handle.clone();
-                tauri::async_runtime::spawn(async move {
-                    loop {
-                        match rx.recv().await {
-                            Ok(change) => {
-                                let _ = app_for_friends.emit("friends_changed", &change);
-                            }
-                            Err(tokio_broadcast::error::RecvError::Lagged(n)) => {
-                                tracing::warn!(target: "chathub::friends", skipped = n, "friends_changed lagged");
-                            }
-                            Err(tokio_broadcast::error::RecvError::Closed) => break,
+            // ---- C3:hub:change 桥接(统一变更通知通道) ----
+            // 所有 applier / 用户命令 / resync 都通过 change_notice_tx 发 ChangeNotice;
+            // 前端 ChangeBus 全局 listen("hub:change") 后按 topic+scope 分发给 useResource。
+            // 注意:本通道在 C2-C5 期间与旧的 accounts_changed / friends_changed /
+            // recent_friends_changed 双发存在,C6 拆除旧通道。
+            let mut change_rx = conn_manager.change_notice_subscribe();
+            let app_for_change = app_handle.clone();
+            tauri::async_runtime::spawn(async move {
+                loop {
+                    match change_rx.recv().await {
+                        Ok(notice) => {
+                            let _ = app_for_change.emit("hub:change", &notice);
                         }
+                        Err(tokio_broadcast::error::RecvError::Lagged(n)) => {
+                            tracing::warn!(target: "chathub::change", skipped = n, "hub:change lagged");
+                        }
+                        Err(tokio_broadcast::error::RecvError::Closed) => break,
                     }
-                });
-            }
+                }
+            });
+
+            // ---- R1:hub:resync 桥接 ----
+            // ConnectionManager 在 SubscribeAck.resync_required=true 或
+            // SystemSignal::ResyncRequired 时 broadcast ResyncSignal,这里 emit 给前端。
+            // 前端 useRecentFriends 收事件后调一次 refreshFirstPage 全量对齐。
+            let mut resync_rx = conn_manager.resync_subscribe();
+            let app_for_resync = app_handle.clone();
+            tauri::async_runtime::spawn(async move {
+                loop {
+                    match resync_rx.recv().await {
+                        Ok(signal) => {
+                            let _ = app_for_resync.emit("hub:resync", &signal);
+                        }
+                        Err(tokio_broadcast::error::RecvError::Lagged(n)) => {
+                            tracing::warn!(target: "chathub::resync", skipped = n, "hub:resync lagged");
+                        }
+                        Err(tokio_broadcast::error::RecvError::Closed) => break,
+                    }
+                }
+            });
 
             Ok(())
         })
@@ -507,6 +743,9 @@ pub fn run() {
             greet, take_screenshot,
             login, logout, current_session,
             hub_forward, hub_ack, hub_state, list_accounts, list_friends,
+            list_recent_friends, list_recent_friends_remote_page,
+            set_conversation_pinned, set_conversation_draft, set_conversation_removed,
+            fetch_message_history,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
