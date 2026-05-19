@@ -109,7 +109,7 @@ export const ConversationList = memo(function ConversationList({
 
 // ─── Search and secondary filters ───────────────────────────────────────────
 
-function SearchBar({
+const SearchBar = memo(function SearchBar({
   value,
   onChange,
   compact,
@@ -133,9 +133,9 @@ function SearchBar({
       />
     </div>
   );
-}
+});
 
-function FilterToolbar({
+const FilterToolbar = memo(function FilterToolbar({
   statusTab,
   onStatusChange,
   accounts,
@@ -224,7 +224,7 @@ function FilterToolbar({
       </button>
     </div>
   );
-}
+});
 
 // ─── Single conversation row ────────────────────────────────────────────────
 

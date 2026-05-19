@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ChangeEvent, KeyboardEvent, PointerEvent as ReactPointerEvent } from "react";
 import * as Popover from "@radix-ui/react-popover";
 import { invoke, isTauri } from "@tauri-apps/api/core";
@@ -34,7 +34,7 @@ import { EmojiPicker } from "./EmojiPicker";
 import type { ReplyTarget } from "./MessageBubble";
 import { QuickRepliesPanel } from "./QuickRepliesPanel";
 import { STRINGS } from "./strings";
-import { clearDraft, useDraft } from "./useDraftStore";
+import { clearDraft, useDraft, useFileAttachments } from "./useDraftStore";
 import { formatFileSize } from "./utils";
 
 interface MessageComposerProps {
@@ -86,30 +86,21 @@ export function MessageComposer({
   onCancelReply,
 }: MessageComposerProps) {
   const [draft, setDraftValue] = useDraft(conversationId);
+  const [pendingFileAttachments, setPendingFileAttachments] = useFileAttachments(conversationId);
   const [isResizing, setIsResizing] = useState(false);
   const [quickRepliesOpen, setQuickRepliesOpen] = useState(false);
   const [emojiOpen, setEmojiOpen] = useState(false);
-  const [pendingFileAttachments, setPendingFileAttachments] = useState<MessageAttachment[]>([]);
   const editorRef = useRef<Editor | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const imageInputRef = useRef<HTMLInputElement | null>(null);
   const resizeStartRef = useRef({ y: 0, height });
 
-  // 跟踪 composer 创建的所有 blob: URL(待发送文件附件)。
-  // 内嵌图片走 data: URL,不进 set;file chip 的 url 由本 set 管理:
-  // submitDraft 把已交付给消息气泡的 url 从 set 中删除（ownership 转移），
-  // unmount 时 set 内剩下的均是从未发送的 → 全部 revoke 释放内存。
-  const createdBlobUrlsRef = useRef<Set<string>>(new Set());
-  const trackBlobUrl = (url: string) => {
-    createdBlobUrlsRef.current.add(url);
-  };
-  useEffect(() => {
-    const tracked = createdBlobUrlsRef.current;
-    return () => {
-      tracked.forEach((url) => URL.revokeObjectURL(url));
-      tracked.clear();
-    };
-  }, []);
+  // 文件附件 blob URL 的生命周期由 useFileAttachments store 持有,跨切会话存活:
+  // - 用户显式移除 chip → removePendingFileAttachment 立即 revoke
+  // - 发送消息 → ownership 转给 MessageBubble,submitDraft 仅从 store 清空但不 revoke
+  // - LRU 淘汰(>50 会话)→ store 自动 revoke
+  // - 页面 unload → 浏览器统一回收 document scope 内的所有 blob URL
+  // 因此 composer 实例自身不再需要 unmount cleanup。
 
   // Esc 取消引用回复。skipIfInInput=false 因为编辑器是 contenteditable，用户
   // 在编辑器中正是最常按 Esc 取消引用的场景；IME composition 与 popover dismiss
@@ -120,12 +111,20 @@ export function MessageComposer({
   });
 
   // Derive canSend from the TipTap doc and file tray.
-  const blocks = docToBlocks(draft);
-  const textBlocks = blocks.filter((b): b is { type: "text"; value: string } => b.type === "text");
-  // 段间换行已由 docToBlocks 写入单个 text block 的 value 内（"\n"），
-  // 相邻 text block 之间的间隔代表"被图片打断"，此时不该再注入额外换行。
-  const textJoined = textBlocks.map((b) => b.value).join("");
-  const charLength = Array.from(textJoined).length;
+  // useMemo([draft]) 包住 docToBlocks + 字符统计 —— 每字符输入都跑 filter/map/join
+  // 在 IME 长输入下会卡顿,memo 后只在 draft 引用变化时重算。
+  const { blocks, textJoined, charLength } = useMemo(() => {
+    const blocks = docToBlocks(draft);
+    const textBlocks = blocks.filter(
+      (b): b is { type: "text"; value: string } => b.type === "text",
+    );
+    // 段间换行已由 docToBlocks 写入单个 text block 的 value 内("\n"),
+    // 相邻 text block 之间的间隔代表"被图片打断",此时不该再注入额外换行。
+    const textJoined = textBlocks.map((b) => b.value).join("");
+    // [...str].length 比 Array.from(str).length 更地道,语义同(按 code point 计数)。
+    const charLength = [...textJoined].length;
+    return { blocks, textJoined, charLength };
+  }, [draft]);
   const overLimit = charLength >= COMPOSER_MAX_CHARS;
   const nearLimit = charLength >= COMPOSER_WARN_CHARS;
   const canSend =
@@ -198,29 +197,24 @@ export function MessageComposer({
 
   const handleFilePicker = (event: ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(event.target.files ?? []);
-    const next: MessageAttachment[] = files.map((file) => {
-      const url = URL.createObjectURL(file);
-      trackBlobUrl(url);
-      return {
-        type: "file",
-        url,
-        name: file.name,
-        sizeBytes: file.size,
-      };
-    });
-    setPendingFileAttachments((prev) => [...prev, ...next]);
+    const next: MessageAttachment[] = files.map((file) => ({
+      type: "file",
+      url: URL.createObjectURL(file),
+      name: file.name,
+      sizeBytes: file.size,
+    }));
+    setPendingFileAttachments([...pendingFileAttachments, ...next]);
     event.target.value = "";
   };
 
   const removePendingFileAttachment = (target: MessageAttachment) => {
     URL.revokeObjectURL(target.url);
-    createdBlobUrlsRef.current.delete(target.url);
-    setPendingFileAttachments((prev) => prev.filter((p) => p !== target));
+    setPendingFileAttachments(pendingFileAttachments.filter((p) => p !== target));
   };
 
   // ─── Screenshot ───────────────────────────────────────────────────────────
 
-  const handleScreenshot = async () => {
+  const handleScreenshot = useCallback(async () => {
     // Tauri webviews don't expose getDisplayMedia, so screenshots go through a
     // native Rust command. Outside Tauri (pure web preview), nudge the user to
     // use the OS screenshot tool + paste into the editor instead.
@@ -258,19 +252,23 @@ export function MessageComposer({
         { type: "error" },
       );
     }
-  };
+  }, []);
 
   // ─── Quick replies & emoji ─────────────────────────────────────────────────
+  // useCallback 包裹 → memo(ToolButton/popover children) 的 props 引用稳定,真正生效。
 
-  const handleQuickReplySelect = (reply: QuickReply) => {
+  const handleQuickReplySelect = useCallback((reply: QuickReply) => {
     editorRef.current?.chain().focus().insertContent(reply.preview).run();
     setQuickRepliesOpen(false);
-  };
+  }, []);
 
-  const handleEmojiSelect = (emoji: string) => {
+  const handleEmojiSelect = useCallback((emoji: string) => {
     editorRef.current?.chain().focus().insertContent(emoji).run();
     setEmojiOpen(false);
-  };
+  }, []);
+
+  const handleImageButton = useCallback(() => imageInputRef.current?.click(), []);
+  const handleFileButton = useCallback(() => fileInputRef.current?.click(), []);
 
   // ─── Resize ───────────────────────────────────────────────────────────────
 
@@ -334,13 +332,11 @@ export function MessageComposer({
     onSend?.(
       textJoined.trim(),
       finalBlocks.length > 0 ? finalBlocks : undefined,
-      fileAttachments.length > 0 ? fileAttachments : undefined,
+      fileAttachments.length > 0 ? [...fileAttachments] : undefined,
       replyDraft?.id,
     );
-    // 把已交付给气泡的 blob URL 从跟踪 set 中移除（ownership 转移），
-    // 否则 unmount cleanup 会把消息里仍在用的附件 url 撤销，导致显示空白。
-    // 图片现在走 data: URL 嵌入,不在 createdBlobUrlsRef 中,无需处理。
-    fileAttachments.forEach((att) => createdBlobUrlsRef.current.delete(att.url));
+    // 清空 store 中的待发送附件;blob URL 的 ownership 已交给 MessageBubble,
+    // 故只删 store entry,不在此处 revoke。
     setPendingFileAttachments([]);
     // Reset draft (sets EMPTY_DOC in the store).
     clearDraft(conversationId);
@@ -442,14 +438,10 @@ export function MessageComposer({
           <ToolButton
             icon={ImagePlus}
             label={STRINGS.composer.image}
-            onClick={() => imageInputRef.current?.click()}
+            onClick={handleImageButton}
             withHoverDot
           />
-          <ToolButton
-            icon={Paperclip}
-            label={STRINGS.composer.file}
-            onClick={() => fileInputRef.current?.click()}
-          />
+          <ToolButton icon={Paperclip} label={STRINGS.composer.file} onClick={handleFileButton} />
           <button
             type="button"
             title={detailsOpen ? STRINGS.composer.collapseRight : STRINGS.composer.expandRight}
@@ -567,7 +559,9 @@ export function MessageComposer({
   );
 }
 
-function ToolButton({
+// Memo:工具栏每次 composer state (draft / replyDraft / 高度) 变化都重渲;
+// 各 ToolButton props 引用稳定时跳过重渲。
+const ToolButton = memo(function ToolButton({
   icon: Icon,
   label,
   onClick,
@@ -598,9 +592,9 @@ function ToolButton({
       )}
     </button>
   );
-}
+});
 
-function ReplyPreview({
+const ReplyPreview = memo(function ReplyPreview({
   draft,
   onCancel,
 }: {
@@ -630,9 +624,9 @@ function ReplyPreview({
       </button>
     </div>
   );
-}
+});
 
-function FileChip({
+const FileChip = memo(function FileChip({
   attachment,
   onRemove,
 }: {
@@ -663,4 +657,4 @@ function FileChip({
       </button>
     </div>
   );
-}
+});
