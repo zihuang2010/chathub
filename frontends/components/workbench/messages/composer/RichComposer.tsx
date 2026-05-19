@@ -43,6 +43,9 @@ export function RichComposer({
   );
 
   const editor = useEditor({
+    // 切会话时父组件按 conversation.id key 重挂载本组件,新 editor 实例需自动 focus
+    // 到末尾,这样用户切到新会话可以直接打字,不必先点输入区。
+    autofocus: "end",
     extensions: [
       StarterKit.configure({
         heading: false,
