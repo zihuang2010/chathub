@@ -95,7 +95,8 @@ export function MessageComposer({
   const imageInputRef = useRef<HTMLInputElement | null>(null);
   const resizeStartRef = useRef({ y: 0, height });
 
-  // 跟踪 composer 创建的所有 blob: URL（含 inline 图片 + 待发送文件附件）。
+  // 跟踪 composer 创建的所有 blob: URL(待发送文件附件)。
+  // 内嵌图片走 data: URL,不进 set;file chip 的 url 由本 set 管理:
   // submitDraft 把已交付给消息气泡的 url 从 set 中删除（ownership 转移），
   // unmount 时 set 内剩下的均是从未发送的 → 全部 revoke 释放内存。
   const createdBlobUrlsRef = useRef<Set<string>>(new Set());
@@ -164,17 +165,29 @@ export function MessageComposer({
   /** Insert image files as inline image nodes in the TipTap editor. */
   const insertImageFiles = (files: File[]) => {
     if (!editorRef.current || files.length === 0) return;
+    // 内嵌图片走 data: URL 而非 blob: URL。
+    // blob URL 是 composer 实例级资源:切会话时本组件按 conversation.id 重挂载,
+    // unmount cleanup(createdBlobUrlsRef effect) 会把所有 tracked blob 全 revoke,
+    // 但 draft 存在 module-level useDraftStore.Map 中跨实例存活,image 节点 src 仍
+    // 指向已死的 blob → 切回原会话时显示为损坏图。
+    // data URL 把 bytes 编码进 src,无外部对象生命周期,切换/重载稳定显示。
+    // 体积代价:base64 比 raw 多 ~33%;超过 useDraftStore 500KB 持久化上限时内存
+    // 仍保留,仅丢失重载后的恢复——切会话场景不受影响。
     files.forEach((file) => {
-      const url = URL.createObjectURL(file);
-      trackBlobUrl(url);
-      editorRef
-        .current!.chain()
-        .focus()
-        .insertContent({
-          type: "image",
-          attrs: { src: url, alt: file.name },
-        })
-        .run();
+      const reader = new FileReader();
+      reader.onload = () => {
+        const dataUrl = typeof reader.result === "string" ? reader.result : null;
+        if (!dataUrl || !editorRef.current) return;
+        editorRef.current
+          .chain()
+          .focus()
+          .insertContent({
+            type: "image",
+            attrs: { src: dataUrl, alt: file.name },
+          })
+          .run();
+      };
+      reader.readAsDataURL(file);
     });
   };
 
@@ -325,10 +338,8 @@ export function MessageComposer({
       replyDraft?.id,
     );
     // 把已交付给气泡的 blob URL 从跟踪 set 中移除（ownership 转移），
-    // 否则 unmount cleanup 会把消息里仍在用的图片/附件 url 撤销，导致显示空白。
-    finalBlocks.forEach((block) => {
-      if (block.type === "image") createdBlobUrlsRef.current.delete(block.url);
-    });
+    // 否则 unmount cleanup 会把消息里仍在用的附件 url 撤销，导致显示空白。
+    // 图片现在走 data: URL 嵌入,不在 createdBlobUrlsRef 中,无需处理。
     fileAttachments.forEach((att) => createdBlobUrlsRef.current.delete(att.url));
     setPendingFileAttachments([]);
     // Reset draft (sets EMPTY_DOC in the store).

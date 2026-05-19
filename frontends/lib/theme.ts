@@ -38,3 +38,23 @@ export const FROSTED_GLASS_STYLE = {
   backdropFilter: "saturate(160%) blur(20px)",
   WebkitBackdropFilter: "saturate(160%) blur(20px)",
 } as const;
+
+// ─── 动效约定 ────────────────────────────────────────────────────────────
+//
+// 全局过渡时长约定。新加动效请优先复用这些常量,避免散落的 magic number
+// 造成时长不统一(用户感知"有的快有的慢")。
+//
+//   - quick(150ms):微交互(hover/active 按钮、checkbox)
+//   - normal(200ms):状态切换(loading↔data↔empty、面板出入场)
+//   - slow(300ms):页面级切换(Workbench section、Login↔Workbench)
+//
+// framer-motion 用 seconds,使用时除以 1000:`duration: TRANSITION_DURATIONS.normal / 1000`。
+
+export const TRANSITION_DURATIONS = {
+  quick: 256,
+  normal: 384,
+  slow: 512,
+} as const;
+
+/** framer-motion 用的"标准 easing"(ease-out 风格,出入场都收敛快)。 */
+export const TRANSITION_EASE = [0.2, 0.7, 0.2, 1] as const;

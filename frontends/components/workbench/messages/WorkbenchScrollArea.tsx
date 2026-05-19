@@ -359,6 +359,39 @@ function WorkbenchScrollbar({
     node.scrollTop = (targetThumbTop / m.maxThumbTop) * m.maxScrollTop;
   };
 
+  // Scrollbar track/thumb 与 viewport 是兄弟节点（同一父级下并排,非 DOM 嵌套）,
+  // 浏览器原生 wheel 处理沿 DOM 树寻找 overflow:auto 的祖先 → 找不到 viewport →
+  // 滚轮在 scrollbar 6px 宽度内直接空转。手工把 wheel delta 写回 viewport.scrollTop
+  // 修正:用 native addEventListener 而非 React onWheel，因为 React 在 root 委派
+  // wheel 时 passive:true,且在某些 webkit 版本下 e.preventDefault 不起作用会让浏览器
+  // 先执行默认行为(找祖先 overflow → 找不到 → 无效)再触发 React 同步,顺序错位。
+  // native 注册到 trackRef 上,passive:false 让我们能 preventDefault,确保浏览器
+  // 不会再额外尝试找祖先滚动。deltaMode=DOM_DELTA_LINE/PAGE 时换算成像素后再滚。
+  useLayoutEffect(() => {
+    const track = trackRef.current;
+    if (!track) return;
+    const onWheel = (event: WheelEvent) => {
+      const node = scrollRef.current;
+      if (!node) return;
+      const lineHeight = 16;
+      const pageHeight = node.clientHeight || 600;
+      let dy = event.deltaY;
+      let dx = event.deltaX;
+      if (event.deltaMode === 1) {
+        dy *= lineHeight;
+        dx *= lineHeight;
+      } else if (event.deltaMode === 2) {
+        dy *= pageHeight;
+        dx *= pageHeight;
+      }
+      node.scrollTop += dy;
+      if (dx !== 0) node.scrollLeft += dx;
+      event.preventDefault();
+    };
+    track.addEventListener("wheel", onWheel, { passive: false });
+    return () => track.removeEventListener("wheel", onWheel);
+  }, [scrollRef]);
+
   const handleThumbPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
     const node = scrollRef.current;
     if (!node) return;

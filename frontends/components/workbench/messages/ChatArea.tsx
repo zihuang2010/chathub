@@ -1,8 +1,10 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ArrowDown } from "lucide-react";
+import { AnimatePresence, motion } from "framer-motion";
 
 import { showToast } from "@/components/ui/toast";
 import type { Account } from "@/lib/types/account";
+import { TRANSITION_DURATIONS, TRANSITION_EASE } from "@/lib/theme";
 import { cn } from "@/lib/utils";
 
 import { ChatEmptyState, ChatErrorState, ChatLoadingState } from "./ChatStates";
@@ -151,8 +153,20 @@ export const ChatArea = memo(function ChatArea({
   // 不一致就 setState——React 会丢弃当前渲染并立即用新 state 重新渲染，
   // 不产生 stale 帧、也不会无限循环。
   // 参考 https://react.dev/reference/react/useState#storing-information-from-previous-renders
+  //
+  // 同时跟踪 conversation.id：用户切会话时 messages prop 通常先停留在旧值,
+  // useChatMessages 的 effect 才把它清空 → 拉新 → 三次渲染。
+  // 渲染 1 中如不主动过滤,localMessages 仍是旧会话的消息(同 reference,跳过 sync),
+  // 头部已变新会话 → "气泡是李四、标题是张三" 的闪一帧。
+  // 这里在 conversation.id 变更时，按 conversationId 过滤 prop messages,
+  // 不匹配的会话内容被立即丢弃,会显示 empty/loading 占位直到新数据到达。
   const [lastSyncedMessages, setLastSyncedMessages] = useState(messages);
-  if (lastSyncedMessages !== messages) {
+  const [syncedConversationId, setSyncedConversationId] = useState(conversation.id);
+  if (syncedConversationId !== conversation.id) {
+    setSyncedConversationId(conversation.id);
+    setLastSyncedMessages(messages);
+    setLocalMessages(messages.filter((m) => m.conversationId === conversation.id));
+  } else if (lastSyncedMessages !== messages) {
     setLastSyncedMessages(messages);
     setLocalMessages(messages);
   }
@@ -325,53 +339,79 @@ export const ChatArea = memo(function ChatArea({
         selectedAccount={selectedAccount}
         onAccountChange={onAccountChange}
       />
-      {loading ? (
-        <ChatLoadingState />
-      ) : error ? (
-        <ChatErrorState error={error} onRetry={onRetry ?? (() => undefined)} />
-      ) : localMessages.length === 0 ? (
-        <ChatEmptyState />
-      ) : (
-        <WorkbenchScrollArea
-          scrollRef={scrollRef}
-          onScrollMetrics={handleScrollMetrics}
-          className="flex-1 bg-workbench-surface"
-          viewportClassName="bg-workbench-surface px-4 py-5 pr-6"
-          contentClassName="flex w-full flex-col"
-        >
-          <div role="log" aria-live="polite" aria-atomic="false" className="flex flex-col">
-            {timelineItems.map((item, idx) => {
-              if (item.type === "date-divider") {
-                return (
-                  <div key={item.id} className={idx === 0 ? "" : "mt-7"}>
-                    <DateDivider label={item.label} />
-                  </div>
-                );
-              }
-              if (item.type === "unread-divider") {
-                return (
-                  <div key={item.id} className={idx === 0 ? "" : "mt-7"}>
-                    <UnreadDivider count={item.count} />
-                  </div>
-                );
-              }
-              const spacing = idx === 0 ? "" : item.isFirstInBurst ? "mt-7" : "mt-6";
-              return (
-                <div key={item.id} className={spacing}>
-                  <MessageBubble
-                    message={item.message}
-                    avatarName={conversation.name}
-                    avatarColor={conversation.avatarColor}
-                    account={conversation.account}
-                    replyTarget={item.replyTarget}
-                    onAction={handleAction}
-                  />
+      {/* 会话切换:crossfade(非 mode="wait")—— 两条会话同时 absolute 叠加,旧的
+          opacity:1→0、新的 opacity:0→1 同时跑,中间没有空白瞬间。key 只取
+          conversation.id —— 不复合 loading/error/empty/data,避免同一会话内
+          loading→data 的状态变化也跑动画(那才是之前"3 段闪"的根因)。
+          quick=256ms 让切换感觉明确但不拖沓。relative 父 + absolute 子让两块
+          stack 在同一矩形。
+          exit 时把 pointerEvents 切成 'none' —— 旧 motion.div 还在 fade-out 时
+          仍占满 inset-0、默认拦截 wheel/pointer 事件,导致用户切完会话立刻滚动
+          滑轮没反应(事件落到正在消失的旧层而非新 ScrollArea)。framer-motion 把
+          pointerEvents 当作非补间属性,在 exit 触发瞬间直接 snap 到 'none'。 */}
+      <div className="relative flex min-h-0 flex-1">
+        <AnimatePresence initial={false}>
+          <motion.div
+            key={conversation.id}
+            className="absolute inset-0 flex min-h-0 flex-col overflow-hidden"
+            initial={{ opacity: 0, pointerEvents: "none" }}
+            animate={{ opacity: 1, pointerEvents: "auto" }}
+            exit={{ opacity: 0, pointerEvents: "none" }}
+            transition={{
+              duration: TRANSITION_DURATIONS.quick / 1000,
+              ease: TRANSITION_EASE,
+            }}
+          >
+            {loading && localMessages.length === 0 ? (
+              <ChatLoadingState />
+            ) : error ? (
+              <ChatErrorState error={error} onRetry={onRetry ?? (() => undefined)} />
+            ) : localMessages.length === 0 ? (
+              <ChatEmptyState />
+            ) : (
+              <WorkbenchScrollArea
+                scrollRef={scrollRef}
+                onScrollMetrics={handleScrollMetrics}
+                className="flex-1 bg-workbench-surface"
+                viewportClassName="bg-workbench-surface px-4 py-5 pr-6"
+                contentClassName="flex w-full flex-col"
+              >
+                <div role="log" aria-live="polite" aria-atomic="false" className="flex flex-col">
+                  {timelineItems.map((item, idx) => {
+                    if (item.type === "date-divider") {
+                      return (
+                        <div key={item.id} className={idx === 0 ? "" : "mt-7"}>
+                          <DateDivider label={item.label} />
+                        </div>
+                      );
+                    }
+                    if (item.type === "unread-divider") {
+                      return (
+                        <div key={item.id} className={idx === 0 ? "" : "mt-7"}>
+                          <UnreadDivider count={item.count} />
+                        </div>
+                      );
+                    }
+                    const spacing = idx === 0 ? "" : item.isFirstInBurst ? "mt-7" : "mt-6";
+                    return (
+                      <div key={item.id} className={spacing}>
+                        <MessageBubble
+                          message={item.message}
+                          avatarName={conversation.name}
+                          avatarColor={conversation.avatarColor}
+                          account={conversation.account}
+                          replyTarget={item.replyTarget}
+                          onAction={handleAction}
+                        />
+                      </div>
+                    );
+                  })}
                 </div>
-              );
-            })}
-          </div>
-        </WorkbenchScrollArea>
-      )}
+              </WorkbenchScrollArea>
+            )}
+          </motion.div>
+        </AnimatePresence>
+      </div>
       {!loading && !error && localMessages.length > 0 && !atBottom && (
         <ScrollToBottomButton
           count={unreadBelow}
