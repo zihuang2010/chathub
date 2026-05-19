@@ -1,7 +1,8 @@
-import { memo, useMemo, useState } from "react";
+import { memo, useCallback, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { ChevronDown, Menu, Search } from "lucide-react";
 import * as ContextMenu from "@radix-ui/react-context-menu";
+import { useVirtualizer } from "@tanstack/react-virtual";
 
 import type { Account } from "@/lib/types/account";
 import { cn } from "@/lib/utils";
@@ -81,29 +82,107 @@ export const ConversationList = memo(function ConversationList({
         />
       </div>
 
-      <WorkbenchScrollArea className="flex-1" viewportClassName="pb-1.5 pt-0.5 pr-2">
-        {/* 账号筛选 / 状态 tab 切换 = React 自然 reconciliation,不再裹一层
-            AnimatePresence mode="wait" + 256ms crossfade —— 那个动画的中间空白
-            瞬间反而让用户感觉"列表闪了一下"。React 用 ConversationItem 的 key=c.id
-            去 diff 新旧列表,在大多数情况只是增删几个 item,视觉上即时切换更丝滑。 */}
-        {filteredConversations.length > 0 ? (
-          filteredConversations.map((c) => (
-            <ConversationItem
-              key={c.id}
-              conversation={c}
-              selected={c.id === selectedId}
-              onSelect={onSelect}
-              onTogglePin={onTogglePin}
-              onRemove={onRemove}
-            />
-          ))
-        ) : (
-          <div className="px-5 py-8 text-center text-wb-2xs text-workbench-text-muted">
-            {STRINGS.conversationList.noConversation}
-          </div>
-        )}
-      </WorkbenchScrollArea>
+      <VirtualizedList
+        items={filteredConversations}
+        selectedId={selectedId}
+        onSelect={onSelect}
+        onTogglePin={onTogglePin}
+        onRemove={onRemove}
+      />
     </div>
+  );
+});
+
+// ─── Virtualized list body ──────────────────────────────────────────────────
+// @tanstack/react-virtual 跑在 WorkbenchScrollArea 上层:接管"哪些 item 渲染 +
+// 总高度 spacer";仍由 WorkbenchScrollArea 的 viewport 提供 native scroll 行为
+// 与 ScrollMetrics 上报通道(后续若 ChatArea 模式的 anchor / unread divider
+// 需要接入,直接复用)。
+//
+// 高度策略:estimateSize=64(行 py-2 + 内容 ~48px 头像 ≈ 64px),measureElement
+// 自动测量真实高度修正 scrollbar 拇指。overscan=8(上下各预渲染 8 条,滚动时
+// 接 fill 充裕,避免边缘闪空白)。
+const ROW_ESTIMATE_PX = 64;
+
+const VirtualizedList = memo(function VirtualizedList({
+  items,
+  selectedId,
+  onSelect,
+  onTogglePin,
+  onRemove,
+}: {
+  items: Conversation[];
+  selectedId: string;
+  onSelect: (id: string) => void;
+  onTogglePin?: (id: string, next: boolean) => void | Promise<void>;
+  onRemove?: (id: string) => void;
+}) {
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const setScrollViewport = useCallback((node: HTMLDivElement | null) => {
+    if (node) scrollRef.current = node;
+  }, []);
+
+  const virtualizer = useVirtualizer({
+    count: items.length,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: () => ROW_ESTIMATE_PX,
+    overscan: 8,
+    // 用 conversation.id 作 stable key,切账号/搜索后顺序变化时 react-virtual
+    // 仍能正确按 index 复用已测尺寸。
+    getItemKey: (index) => items[index]?.id ?? index,
+  });
+
+  if (items.length === 0) {
+    return (
+      <WorkbenchScrollArea className="flex-1" viewportClassName="pb-1.5 pt-0.5 pr-2">
+        <div className="px-5 py-8 text-center text-wb-2xs text-workbench-text-muted">
+          {STRINGS.conversationList.noConversation}
+        </div>
+      </WorkbenchScrollArea>
+    );
+  }
+
+  return (
+    <WorkbenchScrollArea
+      className="flex-1"
+      viewportClassName="pb-1.5 pt-0.5 pr-2"
+      scrollRef={setScrollViewport}
+    >
+      <div
+        style={{
+          height: virtualizer.getTotalSize(),
+          position: "relative",
+          width: "100%",
+        }}
+      >
+        {virtualizer.getVirtualItems().map((virtualRow) => {
+          const c = items[virtualRow.index];
+          if (!c) return null;
+          return (
+            <div
+              key={c.id}
+              ref={virtualizer.measureElement}
+              data-index={virtualRow.index}
+              style={{
+                position: "absolute",
+                top: 0,
+                left: 0,
+                width: "100%",
+                transform: `translateY(${virtualRow.start}px)`,
+              }}
+            >
+              <ConversationItem
+                conversation={c}
+                selected={c.id === selectedId}
+                onSelect={onSelect}
+                onTogglePin={onTogglePin}
+                onRemove={onRemove}
+              />
+            </div>
+          );
+        })}
+      </div>
+    </WorkbenchScrollArea>
   );
 });
 
