@@ -1,10 +1,27 @@
+import { motion } from "framer-motion";
+
+import { TRANSITION_DURATIONS } from "@/lib/theme";
 import { cn } from "@/lib/utils";
 
 import { STRINGS } from "./strings";
 
+// A9: skeleton 入场 cascading —— 父级 staggerChildren=60ms,逐行淡入而非整块闪现,
+// 让"等待数据"的感知更柔和。整体仍保留 animate-pulse 表示"loading"。
+const SKELETON_CONTAINER_VARIANTS = {
+  hidden: {},
+  show: { transition: { staggerChildren: 0.06 } },
+};
+const SKELETON_ROW_VARIANTS = {
+  hidden: { opacity: 0, y: 4 },
+  show: { opacity: 1, y: 0, transition: { duration: TRANSITION_DURATIONS.normal / 1000 } },
+};
+
 export function ChatLoadingState() {
   return (
-    <div
+    <motion.div
+      initial="hidden"
+      animate="show"
+      variants={SKELETON_CONTAINER_VARIANTS}
       role="status"
       aria-busy="true"
       aria-label={STRINGS.empty.loading}
@@ -15,13 +32,16 @@ export function ChatLoadingState() {
       <SkeletonRow side="left" wide />
       <SkeletonRow side="right" />
       <span className="sr-only">{STRINGS.empty.loading}</span>
-    </div>
+    </motion.div>
   );
 }
 
 function SkeletonRow({ side, wide }: { side: "left" | "right"; wide?: boolean }) {
   return (
-    <div className={cn("flex items-center gap-2", side === "right" && "flex-row-reverse")}>
+    <motion.div
+      variants={SKELETON_ROW_VARIANTS}
+      className={cn("flex items-center gap-2", side === "right" && "flex-row-reverse")}
+    >
       <div className="size-9 shrink-0 animate-pulse rounded-xl bg-workbench-line-subtle" />
       <div
         className={cn(
@@ -29,7 +49,7 @@ function SkeletonRow({ side, wide }: { side: "left" | "right"; wide?: boolean })
           wide ? "w-[60%]" : "w-[40%]",
         )}
       />
-    </div>
+    </motion.div>
   );
 }
 

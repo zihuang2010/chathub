@@ -2,21 +2,23 @@ mod logging;
 
 use serde::Serialize;
 use std::sync::Arc;
-use tauri::{Emitter, Manager, State};
+use tauri::{Emitter, LogicalSize, Manager, State};
 use tracing::info;
 
 use chathub_net::{
-    friend_to_row, record_to_remote, AccountEventApplier, AuthApi, AuthError, AuthInterceptor,
+    record_to_remote, row_to_history, AccountEventApplier, AuthApi, AuthError, AuthInterceptor,
     BackoffConfig, ChangeNotice, ChangeScope, ChangeTopic, ConnectionManager, ConnectionState,
-    FetchMessageHistoryRequest, FetchMessageHistoryResp, FriendEventApplier, HubClient,
-    ListAccountsFilter, ListAccountsItem, ListRecentFriendsRequest, ListRecentFriendsResp,
-    LoggedOutReason, RecentSessionEventApplier, TokenStore,
+    FetchMessageHistoryRequest, FetchMessageHistoryResp, FriendEventApplier, HistoryMessage,
+    HubClient, ListAccountsFilter, ListAccountsItem, ListFriendsRequest, ListFriendsResp,
+    ListRecentFriendsRequest, ListRecentFriendsResp, LoggedOutReason, MarkReadRequest,
+    MessageEventApplier, MessageSync, RecentSessionEventApplier, SendMessageResp, TokenStore,
 };
 use chathub_proto::v1::UserProfile;
 use chathub_state::{
-    AccountCacheStore, FriendsStore, LocalTokenStore, NotifySeqStore, RecentSessionRow,
-    RecentSessionsStore, SessionStore, SqlitePool, WecomAccountRow, WecomFriendRow,
-    RECENT_SESSIONS_GLOBAL_LIMIT, RECENT_SESSIONS_PER_ACCOUNT_LIMIT,
+    AccountCacheStore, FriendsStore, LocalTokenStore, MessagesStore, NotifySeqStore,
+    RecentSessionRow, RecentSessionsStore, SessionStore, SqlitePool, WecomAccountRow,
+    MESSAGE_HOT_CONVERSATIONS_LIMIT, RECENT_SESSIONS_GLOBAL_LIMIT,
+    RECENT_SESSIONS_PER_ACCOUNT_LIMIT,
 };
 use std::time::{Duration, Instant};
 use tokio::sync::broadcast as tokio_broadcast;
@@ -255,71 +257,45 @@ fn filter_rows(rows: Vec<WecomAccountRow>, enabled: Option<bool>) -> Vec<ListAcc
         .collect()
 }
 
-/// 全量同步 TTL:10 分钟。事件 keep data fresh,TTL 只是兜底防"长时间无事件时数据陈旧"。
-const FRIENDS_FULL_SYNC_TTL_MS: i64 = 10 * 60 * 1000;
-
-/// 按多账号拉取好友(客户)列表 —— 返回**全量**(单账号 / 多账号合并)行,带 `wecomAccountId` 归属。
+/// 按多账号拉取好友(客户)列表 —— 纯 cursor 滚动透传业务后台 keyset 分页。
 ///
-/// 流程:
-///   1) 对每个账号判 `FriendsStore::is_fresh(FRIENDS_FULL_SYNC_TTL_MS)`,失效 / `force=true` 时
-///      调 `HubClient::list_all_friends_for_account` 循环拉所有页 → 转 row → `replace_all_for_account`
-///      → `mark_synced`。
-///   2) 从 SQLite 行存读所有选中账号的全量行(带 wecom_account_id 归属)。
+/// 退役全量镜像:不写本地行存,直接 forward。单 cursor 跨账号(`account_ids` 全集合一次提交),
+/// 业务后台做 `add_time DESC, id DESC` 全局 keyset,返回 `{records, hasMore, nextCursor}`。
+/// 每条 record 自带 `wecomAccountId` 归属(前端多账号合并 chip 数字/显示名直接用)。
 ///
-/// 入参不再有 `current / external_name / external_mobile / add_start_time / add_end_time / size` ——
-/// 这些都成为前端本地操作(`useCustomersFilters` 在内存里分页/筛选)。
+/// 入参:
+///   - `cursor` 缺省 / "" → 首页;续页传上次的 `nextCursor`
+///   - `size` 缺省 20,clamp 到 [1, 100]
+///   - `external_id` → 名称/手机号统一模糊匹配;空 → 不筛选
+///   - `add_start_time` / `add_end_time` → 添加时间范围;空 → 不限
+///
+/// 切换筛选条件 / 账号集时,前端丢弃旧 cursor 从首页(`cursor=""`)重拉。
 #[tauri::command]
 async fn list_friends(
     hub: State<'_, HubClient>,
-    store: State<'_, FriendsStore>,
-    auth_api: State<'_, Arc<AuthApi>>,
     account_ids: Vec<String>,
-    force: Option<bool>,
-) -> Result<Vec<WecomFriendRow>, AuthError> {
-    let force = force.unwrap_or(false);
-    let profile = auth_api
-        .current_session()
-        .await?
-        .ok_or(AuthError::Unauthenticated)?;
-    let employee_id = profile.user_id.as_str();
-
-    // 1) 按账号判 fresh,失效的远程拉全量并入库
-    for acct in &account_ids {
-        let fresh = store
-            .is_fresh(acct, FRIENDS_FULL_SYNC_TTL_MS)
-            .await
-            .map_err(|e| AuthError::Internal {
-                message: format!("friends is_fresh: {e}"),
-            })?;
-        if force || !fresh {
-            let friends = hub.list_all_friends_for_account(acct).await?;
-            let rows: Vec<WecomFriendRow> = friends
-                .into_iter()
-                .map(|f| friend_to_row(f, acct, employee_id))
-                .collect();
-            let total = rows.len() as u64;
-            store
-                .replace_all_for_account(employee_id, acct, &rows)
-                .await
-                .map_err(|e| AuthError::Internal {
-                    message: format!("friends replace_all: {e}"),
-                })?;
-            store
-                .mark_synced(acct, employee_id, total)
-                .await
-                .map_err(|e| AuthError::Internal {
-                    message: format!("friends mark_synced: {e}"),
-                })?;
-        }
+    cursor: Option<String>,
+    size: Option<u32>,
+    external_id: Option<String>,
+    add_start_time: Option<String>,
+    add_end_time: Option<String>,
+) -> Result<ListFriendsResp, AuthError> {
+    if account_ids.is_empty() {
+        return Ok(ListFriendsResp {
+            records: Vec::new(),
+            has_more: false,
+            next_cursor: String::new(),
+        });
     }
-
-    // 2) 从 SQLite 读所有选中账号的全量行(按当前 employee 过滤)
-    store
-        .read_for_account_ids(employee_id, &account_ids)
-        .await
-        .map_err(|e| AuthError::Internal {
-            message: format!("friends read: {e}"),
-        })
+    let req = ListFriendsRequest {
+        wecom_account_ids: account_ids,
+        size: size.unwrap_or(20).clamp(1, 100),
+        cursor: cursor.unwrap_or_default(),
+        external_id: external_id.filter(|s| !s.is_empty()),
+        add_start_time: add_start_time.filter(|s| !s.is_empty()),
+        add_end_time: add_end_time.filter(|s| !s.is_empty()),
+    };
+    hub.list_friends(req).await
 }
 
 // ============================== message/history 历史消息 ==============================
@@ -328,7 +304,7 @@ async fn list_friends(
 ///
 /// 透传到业务后台 `/wechat-business-app/wecom-cs/v1/wecomAggregate/message/history`。
 /// 不入库,不订阅事件 —— 消息历史是临时拉取,数据量大,客户端只缓存当前打开会话的几页。
-/// `req.cursor=""` 表示首页;后续传上一次的 `nextCursor`;`direction="before"` 往更早翻。
+/// `req.cursor=""` 表示首页;后续传上一次的 `nextCursor`。语义固定 earlier-only,服务端升序返回。
 #[tauri::command]
 async fn fetch_message_history(
     hub: State<'_, HubClient>,
@@ -337,10 +313,231 @@ async fn fetch_message_history(
     hub.fetch_message_history(req).await
 }
 
+// ============================== message 本地缓存(秒开 + 会话水位门)==============================
+
+/// 缓存优先的消息读取响应:升序 records(早→晚,前端直接渲染)+ 是否还有更老。
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CachedMessagesResp {
+    records: Vec<HistoryMessage>,
+    has_more_older: bool,
+}
+
+/// 缓存优先读一条会话首屏 + 会话水位门(决定是否后台重对齐)。
+///
+/// 流程:
+///   1. 解 employee_id(未登录返空,仿 `list_recent_friends`)。
+///   2. `touch_accessed` 标热 + `trim_conversations` 整会话 LRU(warn 忽略错)。
+///   3. `list_conversation_asc` 取整窗(升序);`get_window` 读水位。整窗返回保证显示尾恒等于
+///      window.oldest,`load_older` 翻页永远接得上(不跳段留洞)。`limit` 仅作 reconcile 页大小。
+///   4. **会话水位门**:`cache_newest_ms`(window.newest_message_time_ms)对比 recents 行
+///      `latest_sort_key_ms`。两者都有且 `cache >= recents > 0` → fresh(零网络);
+///      否则后台 spawn `reconcile_newest`(reconcile 完成经 ChangeNotice 通知前端重读)。
+///   5. 立即返回缓存升序 records + `has_more_older`(无 window → false)。
+#[tauri::command]
+async fn load_conversation_messages(
+    messages_store: State<'_, MessagesStore>,
+    recents_store: State<'_, RecentSessionsStore>,
+    message_sync: State<'_, MessageSync>,
+    auth_api: State<'_, Arc<AuthApi>>,
+    conversation_id: String,
+    wecom_account_id: String,
+    external_user_id: String,
+    limit: Option<u32>,
+) -> Result<CachedMessagesResp, AuthError> {
+    let employee_id = match auth_api.current_session().await? {
+        Some(p) => p.user_id,
+        None => {
+            return Ok(CachedMessagesResp {
+                records: Vec::new(),
+                has_more_older: false,
+            })
+        }
+    };
+    let limit = limit.unwrap_or(20).clamp(1, 200);
+
+    // 标热 + 整会话 LRU。冷开(无 window)时 touch 是 no-op,reconcile 会建窗。
+    if let Err(e) = messages_store
+        .touch_accessed(&employee_id, &conversation_id, now_unix_ms())
+        .await
+    {
+        tracing::warn!(target: "chathub::messages", ?e, "touch_accessed failed; ignoring");
+    }
+    if let Err(e) = messages_store
+        .trim_conversations(&employee_id, MESSAGE_HOT_CONVERSATIONS_LIMIT)
+        .await
+    {
+        tracing::warn!(target: "chathub::messages", ?e, "trim_conversations failed; ignoring");
+    }
+
+    let rows = messages_store
+        .list_conversation_asc(&employee_id, &conversation_id)
+        .await
+        .map_err(messages_err)?;
+    let mut records: Vec<HistoryMessage> = rows.iter().map(row_to_history).collect();
+
+    let window = messages_store
+        .get_window(&employee_id, &conversation_id)
+        .await
+        .map_err(messages_err)?;
+    let cache_newest_ms = window.as_ref().map(|w| w.newest_message_time_ms);
+    let mut has_more_older = window.as_ref().map(|w| w.has_more_older).unwrap_or(false);
+
+    let recents_latest_ms = recents_store
+        .latest_sort_key_ms(&employee_id, &conversation_id)
+        .await
+        .map_err(messages_err)?;
+
+    // 水位门:缓存覆盖到 recents 权威最新位置 → 零网络;否则对齐。
+    let fresh = matches!(
+        (cache_newest_ms, recents_latest_ms),
+        (Some(c), Some(r)) if r > 0 && c >= r
+    );
+    // 真冷(无任何缓存行 / 无窗口):同步等一次 reconcile 再返回,使首屏直接带回历史 ——
+    // 不依赖"后台 reconcile 完成后发 ChangeNotice → 前端重读"那条路径(该重读受 employeeId
+    // 异步解析竞态影响可能丢通知,表现为切会话空、需切走再切回/发送才出历史)。
+    // 温缓存(已有行)保持秒开 + 后台对齐(stale-while-revalidate),零延迟回归。
+    let is_cold = records.is_empty() || window.is_none();
+    if !fresh && is_cold {
+        // gRPC forward 隧道无 per-call deadline,必须超时包裹,避免远端慢/挂时卡死命令。
+        let outcome = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            message_sync.reconcile_newest(
+                &conversation_id,
+                &wecom_account_id,
+                &external_user_id,
+                &employee_id,
+                limit,
+            ),
+        )
+        .await;
+        match outcome {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => {
+                tracing::warn!(target: "chathub::messages", error = %e, "reconcile_newest failed (cold await)");
+            }
+            Err(_) => {
+                tracing::warn!(target: "chathub::messages", "reconcile_newest timed out (cold await)");
+            }
+        }
+        // 无论成功/失败/超时,都重读本地缓存:成功 → 带回历史;失败 → 退回原(可能仍空)缓存,
+        // 真空会话合法地显示空态。
+        let rows = messages_store
+            .list_conversation_asc(&employee_id, &conversation_id)
+            .await
+            .map_err(messages_err)?;
+        records = rows.iter().map(row_to_history).collect();
+        has_more_older = messages_store
+            .get_window(&employee_id, &conversation_id)
+            .await
+            .map_err(messages_err)?
+            .map(|w| w.has_more_older)
+            .unwrap_or(false);
+    } else if !fresh {
+        let sync = message_sync.inner().clone();
+        let conv = conversation_id.clone();
+        let wa = wecom_account_id.clone();
+        let ext = external_user_id.clone();
+        let emp = employee_id.clone();
+        tauri::async_runtime::spawn(async move {
+            if let Err(e) = sync.reconcile_newest(&conv, &wa, &ext, &emp, limit).await {
+                tracing::warn!(target: "chathub::messages", error = %e, "reconcile_newest failed");
+            }
+        });
+    }
+
+    Ok(CachedMessagesResp {
+        records,
+        has_more_older,
+    })
+}
+
+/// 往更老翻一页:走网络拉、落库、推进下界 + 游标,返回升序新页(前端 prepend)。
+/// 未登录 / 无 window / 无更老 → 空结果。
+#[tauri::command]
+async fn load_older_messages(
+    message_sync: State<'_, MessageSync>,
+    auth_api: State<'_, Arc<AuthApi>>,
+    conversation_id: String,
+    page_size: Option<u32>,
+) -> Result<CachedMessagesResp, AuthError> {
+    let employee_id = match auth_api.current_session().await? {
+        Some(p) => p.user_id,
+        None => {
+            return Ok(CachedMessagesResp {
+                records: Vec::new(),
+                has_more_older: false,
+            })
+        }
+    };
+    let page_size = page_size.unwrap_or(20).clamp(1, 200);
+    let result = message_sync
+        .load_older(&conversation_id, &employee_id, page_size)
+        .await?;
+    Ok(CachedMessagesResp {
+        records: result.records,
+        has_more_older: result.has_more_older,
+    })
+}
+
+/// 发送一条文本消息(`messageType=1`):网络发送 → 落库(出站气泡)→ 发 ConversationMessages
+/// ChangeNotice。打开着的会话经订阅重读缓存,新气泡随权威列表稳定追加(不再依赖乐观气泡)。
+#[tauri::command]
+async fn send_message(
+    message_sync: State<'_, MessageSync>,
+    auth_api: State<'_, Arc<AuthApi>>,
+    conversation_id: String,
+    wecom_account_id: String,
+    external_user_id: String,
+    content_text: String,
+) -> Result<SendMessageResp, AuthError> {
+    let employee_id = auth_api
+        .current_session()
+        .await?
+        .ok_or(AuthError::Unauthenticated)?
+        .user_id;
+    message_sync
+        .send_message(
+            &conversation_id,
+            &wecom_account_id,
+            &external_user_id,
+            &employee_id,
+            &content_text,
+        )
+        .await
+}
+
+fn messages_err(e: chathub_state::StateError) -> AuthError {
+    AuthError::Internal {
+        message: format!("messages store: {e}"),
+    }
+}
+
+fn now_unix_ms() -> i64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
 // ============================== session/recentFriends 接待好友列表 ==============================
 
 /// 头部缓存读取上限 —— UI 默认列表最多展示 200 条;尾部走远端 cursor 分页(不写库)。
 const RECENT_FRIENDS_LIST_LIMIT: usize = 200;
+
+/// 远端单页拉取的 size 硬顶 —— 纵深防御:前端固定发 20,但渲染进程若被篡改/出 bug
+/// 传入超大 size 会放大服务端与网络负载,这里在过线前钳到上限。
+const RECENT_FRIENDS_REMOTE_MAX_SIZE: u32 = 100;
+
+/// recents 命令内部错误收敛:底层细节(StateError / SQL)只写本地日志,返回渲染层的
+/// message 仅含我们掌控的静态操作名,避免内部实现细节经 IPC 泄露到前端。
+fn recents_internal_error(op: &'static str, e: impl std::fmt::Display) -> AuthError {
+    tracing::error!(target: "chathub::recents", op, error = %e, "recents command failed");
+    AuthError::Internal {
+        message: format!("接待列表操作失败: {op}"),
+    }
+}
 
 /// 仅从本地行存读"接待好友列表"。打开消息页时**优先**调它,秒开。
 ///
@@ -365,9 +562,7 @@ async fn list_recent_friends(
     store
         .list_top(&employee_id, filter, RECENT_FRIENDS_LIST_LIMIT)
         .await
-        .map_err(|e| AuthError::Internal {
-            message: format!("recents list_top: {e}"),
-        })
+        .map_err(|e| recents_internal_error("list_top", e))
 }
 
 /// 远端拉一页"接待好友列表"。
@@ -383,9 +578,11 @@ async fn list_recent_friends_remote_page(
     store: State<'_, RecentSessionsStore>,
     auth_api: State<'_, Arc<AuthApi>>,
     change_tx: State<'_, tokio_broadcast::Sender<ChangeNotice>>,
-    req: ListRecentFriendsRequest,
+    mut req: ListRecentFriendsRequest,
     persist: bool,
 ) -> Result<ListRecentFriendsResp, AuthError> {
+    // 纵深防御:钳制分页 size,挡住超大请求放大服务端/网络负载(前端固定 20)。
+    req.size = req.size.clamp(1, RECENT_FRIENDS_REMOTE_MAX_SIZE);
     let resp = hub.list_recent_friends(req).await?;
     if persist && !resp.records.is_empty() {
         let profile = auth_api
@@ -402,9 +599,7 @@ async fn list_recent_friends_remote_page(
         store
             .upsert_remote_many(&rows)
             .await
-            .map_err(|e| AuthError::Internal {
-                message: format!("recents upsert_remote_many: {e}"),
-            })?;
+            .map_err(|e| recents_internal_error("upsert_remote_many", e))?;
         if let Err(e) = store
             .trim(
                 employee_id,
@@ -446,9 +641,7 @@ async fn set_conversation_pinned(
     store
         .set_pinned(employee_id, &conversation_id, pinned)
         .await
-        .map_err(|e| AuthError::Internal {
-            message: format!("recents set_pinned: {e}"),
-        })?;
+        .map_err(|e| recents_internal_error("set_pinned", e))?;
     // C6 单发:ChangeNotice(LocalCommand);scope 带 conversation_id 让 ChangeBus 精准 match。
     let _ = change_tx.send(ChangeNotice::command_upsert(
         ChangeTopic::RecentSessions,
@@ -482,9 +675,7 @@ async fn set_conversation_removed(
     store
         .set_removed(employee_id, &conversation_id, removed)
         .await
-        .map_err(|e| AuthError::Internal {
-            message: format!("recents set_removed: {e}"),
-        })?;
+        .map_err(|e| recents_internal_error("set_removed", e))?;
     let _ = change_tx.send(ChangeNotice::command_upsert(
         ChangeTopic::RecentSessions,
         ChangeScope {
@@ -494,6 +685,76 @@ async fn set_conversation_removed(
         },
     ));
     let _ = app;
+    Ok(())
+}
+
+/// 消息免打扰 / 取消免打扰(V12)。只动本地列 muted/muted_at_ms。
+/// employee_id 由当前会话注入,跨员工 no-op。muted 不改排序/过滤,仅影响渲染。
+/// 成功后 emit `ChangeNotice`,让前端 refetch 默认列表拿到新 muted 态。
+#[tauri::command]
+async fn set_conversation_muted(
+    app: tauri::AppHandle,
+    store: State<'_, RecentSessionsStore>,
+    auth_api: State<'_, Arc<AuthApi>>,
+    change_tx: State<'_, tokio_broadcast::Sender<ChangeNotice>>,
+    conversation_id: String,
+    muted: bool,
+) -> Result<(), AuthError> {
+    let profile = auth_api
+        .current_session()
+        .await?
+        .ok_or(AuthError::Unauthenticated)?;
+    let employee_id = profile.user_id.as_str();
+    store
+        .set_muted(employee_id, &conversation_id, muted)
+        .await
+        .map_err(|e| recents_internal_error("set_muted", e))?;
+    let _ = change_tx.send(ChangeNotice::command_upsert(
+        ChangeTopic::RecentSessions,
+        ChangeScope {
+            employee_id: employee_id.to_string(),
+            conversation_id: Some(conversation_id),
+            ..Default::default()
+        },
+    ));
+    let _ = app;
+    Ok(())
+}
+
+/// 标记会话已读。用户主动点开有未读的会话时调用。
+/// 远端优先:先打业务后台 markRead(失败直接 propagate,前端 toast,红标不动可重试);
+/// 成功后本地乐观清零 unread + emit ChangeNotice,让 useResource refetch 后红标消失。
+/// `read_sort_key` 恒为 None(= 清零到摘要最后一条),客户端不持有完整复合 sortKey。
+#[tauri::command]
+async fn mark_conversation_read(
+    hub: State<'_, HubClient>,
+    store: State<'_, RecentSessionsStore>,
+    auth_api: State<'_, Arc<AuthApi>>,
+    change_tx: State<'_, tokio_broadcast::Sender<ChangeNotice>>,
+    conversation_id: String,
+) -> Result<(), AuthError> {
+    let profile = auth_api
+        .current_session()
+        .await?
+        .ok_or(AuthError::Unauthenticated)?;
+    let employee_id = profile.user_id.as_str();
+    hub.mark_read(MarkReadRequest {
+        conversation_id: conversation_id.clone(),
+        read_sort_key: None,
+    })
+    .await?;
+    store
+        .clear_unread(employee_id, &conversation_id)
+        .await
+        .map_err(|e| recents_internal_error("clear_unread", e))?;
+    let _ = change_tx.send(ChangeNotice::command_upsert(
+        ChangeTopic::RecentSessions,
+        ChangeScope {
+            employee_id: employee_id.to_string(),
+            conversation_id: Some(conversation_id),
+            ..Default::default()
+        },
+    ));
     Ok(())
 }
 
@@ -516,9 +777,7 @@ async fn set_conversation_draft(
     store
         .set_draft(employee_id, &conversation_id, &text)
         .await
-        .map_err(|e| AuthError::Internal {
-            message: format!("recents set_draft: {e}"),
-        })?;
+        .map_err(|e| recents_internal_error("set_draft", e))?;
     // C6 单发:ChangeNotice(LocalCommand)。
     let _ = change_tx.send(ChangeNotice::command_upsert(
         ChangeTopic::RecentSessions,
@@ -547,13 +806,29 @@ pub fn run() {
             app.manage(guard);
             info!(?log_dir, "tracing initialised");
 
+            // 按显示器分辨率自适应窗口:取屏幕逻辑尺寸 80%,clamp 到 [min, 上限],居中后再显示。
+            // config 里窗口设为 visible:false,在此调好尺寸再 show(),避免先弹出默认尺寸再缩放的闪烁。
+            if let Some(window) = app.get_webview_window("main") {
+                if let Ok(Some(monitor)) = window.current_monitor() {
+                    let scale = monitor.scale_factor();
+                    let screen = monitor.size(); // 物理像素
+                    let sw = screen.width as f64 / scale; // → 逻辑像素
+                    let sh = screen.height as f64 / scale;
+                    let w = (sw * 0.8).clamp(860.0, 1600.0);
+                    let h = (sh * 0.8).clamp(600.0, 1100.0);
+                    let _ = window.set_size(LogicalSize::new(w, h));
+                    let _ = window.center();
+                }
+                let _ = window.show();
+            }
+
             // ---- Plan 2:接入 chathub-net auth 链路 ----
             let app_data = app.path().app_data_dir()?;
             let app_handle = app.handle().clone();
 
             // tauri::async_runtime::block_on 在 setup 同步完成 SQLite 与 endpoint 初始化。
             // setup 闭包本身不在 async 上下文,block_on 安全可用。
-            let (auth_api, hub_client, conn_manager, account_cache, friends_store, recents_store, change_notice_tx) = tauri::async_runtime::block_on(async {
+            let (auth_api, hub_client, conn_manager, account_cache, recents_store, messages_store, message_sync, change_notice_tx) = tauri::async_runtime::block_on(async {
                 std::fs::create_dir_all(&app_data).ok();
                 let pool = SqlitePool::open(app_data.join("state.sqlite"))
                     .await.map_err(|e| e.to_string())?;
@@ -562,6 +837,7 @@ pub fn run() {
                 let account_cache = AccountCacheStore::new(pool.clone());
                 let friends_store = FriendsStore::new(pool.clone());
                 let recents_store = RecentSessionsStore::new(pool.clone());
+                let messages_store = MessagesStore::new(pool.clone());
                 let local_store = LocalTokenStore::new(pool);
                 // device_id 从本地 SQLite 取(首次启动生成),不再用 macOS 钥匙串。
                 let device_id = local_store.ensure_device_id()
@@ -575,22 +851,33 @@ pub fn run() {
                 // C1+C2 统一变更通知通道 —— 由 setup 阶段创建,在所有 applier 与 ConnectionManager
                 // 之间共享。256 buffer 同 hub.event_tx,够事件风暴使用。
                 let (change_notice_tx, _) = broadcast_channel::<ChangeNotice>(256);
+                // 消息页"缓存优先 + 后台重对齐"编排器(读 messages_store / 拉 hub / 发 ChangeNotice)。
+                let message_sync = MessageSync::new(
+                    messages_store.clone(),
+                    hub_client.clone(),
+                    change_notice_tx.clone(),
+                );
                 // 2026-05-17:Subscribe 流里 ACCOUNT_* 事件 → AccountCacheStore + broadcast。
                 let account_applier = Arc::new(AccountEventApplier::new(
                     account_cache.clone(),
                     hub_client.clone(),
                     change_notice_tx.clone(),
                 ));
-                // 阶段 2:Subscribe 流里 FRIEND_* 事件 → FriendsStore 行存 + broadcast。
+                // 阶段 2:Subscribe 流里 FRIEND_* 事件 → 推进 watermark + broadcast(无本地行存)。
                 let friend_applier = Arc::new(FriendEventApplier::new(
-                    friends_store.clone(),
-                    hub_client.clone(),
+                    friends_store,
                     change_notice_tx.clone(),
                 ));
                 // 阶段 3:Subscribe 流里 MESSAGE_UPSERT / SESSION_SUMMARY_UPSERT → RecentSessionsStore + broadcast。
                 let recent_applier = Arc::new(RecentSessionEventApplier::new(
                     recents_store.clone(),
                     hub_client.clone(),
+                    change_notice_tx.clone(),
+                ));
+                // 阶段 4:Subscribe 流里 MESSAGE_UPSERT → MessagesStore 气泡 + broadcast。
+                let message_applier = Arc::new(MessageEventApplier::new(
+                    messages_store.clone(),
+                    message_sync.clone(),
                     change_notice_tx.clone(),
                 ));
                 let conn_manager = Arc::new(ConnectionManager::new(
@@ -603,18 +890,20 @@ pub fn run() {
                     Some(account_applier),
                     Some(friend_applier),
                     Some(recent_applier),
+                    Some(message_applier),
                     change_notice_tx.clone(),
                 ));
                 let auth_api = AuthApi::new(token_store, session_store);
-                Ok::<_, String>((auth_api, hub_client, conn_manager, account_cache, friends_store, recents_store, change_notice_tx))
+                Ok::<_, String>((auth_api, hub_client, conn_manager, account_cache, recents_store, messages_store, message_sync, change_notice_tx))
             }).map_err(Box::<dyn std::error::Error>::from)?;
             let auth_api = Arc::new(auth_api);
             app.manage(Arc::clone(&auth_api));
             app.manage(hub_client);
             app.manage(Arc::clone(&conn_manager));
             app.manage(account_cache);
-            app.manage(friends_store);
             app.manage(recents_store);
+            app.manage(messages_store);
+            app.manage(message_sync);
             // change_notice_tx 也 manage 一份,Tauri 命令(pin/draft 等)用它直接发 LocalCommand 通知
             app.manage(change_notice_tx);
 
@@ -745,7 +1034,9 @@ pub fn run() {
             hub_forward, hub_ack, hub_state, list_accounts, list_friends,
             list_recent_friends, list_recent_friends_remote_page,
             set_conversation_pinned, set_conversation_draft, set_conversation_removed,
+            set_conversation_muted, mark_conversation_read,
             fetch_message_history,
+            load_conversation_messages, load_older_messages, send_message,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

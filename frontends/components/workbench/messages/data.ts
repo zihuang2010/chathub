@@ -19,6 +19,29 @@ export interface Conversation {
   online: boolean;
   /** Optional explicit link to the Customer record; falls back to id-based lookup. */
   customerId?: string;
+  /**
+   * 用户在该会话有未发送草稿时的预览文本(plain text,UI 截断到约 80 字符)。
+   * 非空时 preview 区显示 "[草稿] {draftText}",优先级高于 unread/preview。
+   */
+  draftText?: string;
+  /**
+   * 用户对该会话点了"置顶"。true 时头像右上角显示 pin 角标;排序已在
+   * useRecentFriends.multiKeySort 中按 pinned DESC → pinnedAtMs DESC 处理,
+   * UI 不再额外排序。pinned 状态仅本地维护(SQLite 列),远端事件不覆盖。
+   */
+  pinned?: boolean;
+  /**
+   * 用户对该会话点了"消息免打扰"。true 时未读"安静"展示:右下角红点替代数字徽标、
+   * preview 前缀显示 "[N 条]"、time 下方显示 🔕。muted 不改排序(与 pinned 正交),
+   * 仅本地维护(SQLite 列),远端事件不覆盖。
+   */
+  muted?: boolean;
+  /**
+   * markRead 远端往返进行中、未读数尚未被 refetch 清零的过渡态。true 时按 selected 一样
+   * 抑制红标,消除"切走会话时红点先现后灭"的闪烁。来源 useRecentFriends.readingIds,
+   * 非持久数据,仅渲染期透传。
+   */
+  readPending?: boolean;
 }
 
 export type MessageStatus = "sending" | "sent" | "failed";
@@ -86,17 +109,19 @@ export const MOCK_CONVERSATIONS: Conversation[] = [
     preview: "好的，我明白了",
     account: "杭州企微-小美",
     time: "11:24",
-    unread: 1,
+    unread: 0,
     online: true,
+    pinned: true,
+    draftText: "刚才那个方案我想再确认一下时间安排…",
   },
   {
     id: "c2",
     name: "李先生",
     avatarColor: "#DBEAFE",
-    preview: "产品价格是多少？",
+    preview: "我们大概 20 人团队使用",
     account: "广州企微-小贝",
     time: "11:01",
-    unread: 2,
+    unread: 5,
     online: false,
   },
   {
@@ -118,6 +143,7 @@ export const MOCK_CONVERSATIONS: Conversation[] = [
     time: "09:32",
     unread: 0,
     online: true,
+    pinned: true,
   },
   {
     id: "c5",
@@ -351,7 +377,6 @@ export const MOCK_MESSAGES_BY_CONVERSATION: Record<string, Message[]> = {
       direction: "in",
       text: "你们的产品价格是多少？",
       sentAt: "2026-05-01T10:55:00+08:00",
-      isUnread: true,
     },
     {
       id: "m2",
@@ -367,7 +392,6 @@ export const MOCK_MESSAGES_BY_CONVERSATION: Record<string, Message[]> = {
       direction: "in",
       text: "我们大概 20 人团队使用",
       sentAt: "2026-05-01T11:01:00+08:00",
-      isUnread: true,
     },
     {
       id: "m4",
@@ -376,6 +400,49 @@ export const MOCK_MESSAGES_BY_CONVERSATION: Record<string, Message[]> = {
       text: "20 人团队推荐用专业版，每月 ¥199/账号。",
       sentAt: "2026-05-01T11:02:00+08:00",
       status: "failed",
+    },
+    {
+      id: "m5",
+      conversationId: "c2",
+      direction: "in",
+      text: "刚才那条消息我这边没收到回复，方便重发一下吗？",
+      sentAt: "2026-05-01T11:08:00+08:00",
+    },
+    {
+      id: "m6",
+      conversationId: "c2",
+      direction: "out",
+      text: "抱歉刚才网络不稳定，这是详细的报价单：标准版 ¥99/账号、专业版 ¥199/账号、企业版面议。",
+      sentAt: "2026-05-01T11:09:00+08:00",
+      status: "sent",
+    },
+    {
+      id: "m7",
+      conversationId: "c2",
+      direction: "in",
+      text: "了解了，我们再讨论一下。",
+      sentAt: "2026-05-01T11:12:00+08:00",
+    },
+    {
+      id: "m8",
+      conversationId: "c2",
+      direction: "in",
+      text: "另外问一下，是否支持私有化部署？",
+      sentAt: "2026-05-01T11:15:00+08:00",
+    },
+    {
+      id: "m9",
+      conversationId: "c2",
+      direction: "in",
+      text: "如果支持的话，价格怎么算？",
+      sentAt: "2026-05-01T11:15:00+08:00",
+    },
+    {
+      id: "m10",
+      conversationId: "c2",
+      direction: "in",
+      text: "急，最好今天能回复一下，谢谢！",
+      sentAt: "2026-05-01T11:18:00+08:00",
     },
   ],
   c3: [

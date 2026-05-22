@@ -11,20 +11,30 @@
 
 pub mod account_event;
 pub mod auth;
+pub mod change_notice;
 pub mod channel;
 pub mod error;
 pub mod friend_event;
 pub mod hub;
 pub mod interceptor;
+pub mod message_event;
+pub mod message_sync;
+pub mod recent_session_event;
 pub mod token;
 
-pub use account_event::{AccountChanged, AccountEventApplier};
+pub use account_event::AccountEventApplier;
 pub use auth::{AuthApi, LoggedOutReason};
+pub use change_notice::{ChangeKind, ChangeNotice, ChangeScope, ChangeSource, ChangeTopic};
 pub use channel::build_endpoint;
 pub use error::AuthError;
-pub use friend_event::{friend_to_row, FriendChanged, FriendEventApplier};
+pub use friend_event::FriendEventApplier;
 pub use hub::*;
 pub use interceptor::AuthInterceptor;
+pub use message_event::MessageEventApplier;
+pub use message_sync::{
+    classify_reconcile, history_to_row, row_to_history, LoadOlderResult, MessageSync, ReconcileMode,
+};
+pub use recent_session_event::{record_to_remote, RecentSessionEventApplier};
 pub use token::{TokenState, TokenStore};
 
 /// 编译期由 build.rs 注入。无 env 时为占位 https://relay.example.com。

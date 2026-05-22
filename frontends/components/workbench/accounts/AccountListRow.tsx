@@ -55,7 +55,7 @@ export const AccountListRow = memo(function AccountListRow({
     >
       {/* 城市头像 */}
       <div
-        className="grid size-9 shrink-0 place-items-center rounded-md text-[12px] font-semibold text-workbench-text"
+        className="grid size-9 shrink-0 place-items-center rounded-lg text-[12px] font-semibold text-workbench-text"
         style={{ background: `hsl(var(--wb-avatar-${account.colorToken}))` }}
         aria-hidden
       >

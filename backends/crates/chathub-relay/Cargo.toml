@@ -20,6 +20,10 @@ path = "src/bin/test_subscribe.rs"
 name = "chathub-mock-downstream"
 path = "src/bin/mock_downstream.rs"
 
+[[bin]]
+name = "chathub-push-cli"
+path = "src/bin/push_cli.rs"
+
 [dependencies]
 # workspace 复用
 anyhow             = { workspace = true }

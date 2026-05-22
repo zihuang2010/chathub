@@ -158,6 +158,49 @@ export function formatRichText(text: string): RichSegment[] {
   return segments;
 }
 
+// ─── Reply preview ──────────────────────────────────────────────────────────
+//
+// 引用预览(composer 顶上的引用条 + 气泡内 ReplyBlock)优先展示文本;若文本
+// 为空(纯图片 / 纯文件 / 纯语音 / 纯视频消息),按内容类型回退为占位 "[图片]"
+// 等。否则引用块只剩 "senderName：" 一行,正文为空,视觉上 "引用内容消失"。
+//
+// 与 extractDraftPreview 的占位约定保持一致(草稿预览 / 引用预览同语义)。
+
+import type { Message, MessageAttachment, MessageBlock } from "./data";
+
+function attachmentTypePlaceholder(type: MessageAttachment["type"]): string {
+  switch (type) {
+    case "image":
+      return "[图片]";
+    case "file":
+      return "[文件]";
+    case "voice":
+      return "[语音]";
+    case "video":
+      return "[视频]";
+  }
+}
+
+function blockTypePlaceholder(type: MessageBlock["type"]): string | null {
+  // MessageBlock 当前只有 text / image;text 走不到这里(由调用方文本路径处理)。
+  return type === "image" ? "[图片]" : null;
+}
+
+export function messageReplyPreview(message: Message): string {
+  const trimmed = message.text.trim();
+  if (trimmed) return trimmed;
+  if (message.blocks) {
+    for (const b of message.blocks) {
+      const placeholder = blockTypePlaceholder(b.type);
+      if (placeholder) return placeholder;
+    }
+  }
+  if (message.attachments && message.attachments.length > 0) {
+    return attachmentTypePlaceholder(message.attachments[0].type);
+  }
+  return "";
+}
+
 // ─── Misc helpers ───────────────────────────────────────────────────────────
 
 export function isAtBottom(node: HTMLElement, threshold = 24): boolean {

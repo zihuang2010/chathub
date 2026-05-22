@@ -52,6 +52,9 @@ export interface RecentFriendItem {
   /** V11:软移除标记。true 时不会出现在 `fetchRecentFriendsCache` 结果里(后端已 WHERE 过滤)。 */
   removed: boolean;
   removedAtMs: number;
+  /** V12:消息免打扰标记。true 时未读"安静"展示(红点替代数字徽标 + 🔕)。不改排序/过滤。 */
+  muted: boolean;
+  mutedAtMs: number;
 }
 
 /**
@@ -158,4 +161,22 @@ export async function setConversationRemoved(
   removed: boolean,
 ): Promise<void> {
   await invoke<void>("set_conversation_removed", { conversationId, removed });
+}
+
+/**
+ * V12:消息免打扰 / 取消免打扰。
+ * 后端 UPDATE muted/muted_at_ms,emit ChangeNotice;前端通过 useResource 自动 refetch。
+ * muted 不改排序/过滤,仅影响渲染(红点替代数字徽标 + 🔕)。
+ */
+export async function muteConversation(conversationId: string, muted: boolean): Promise<void> {
+  await invoke<void>("set_conversation_muted", { conversationId, muted });
+}
+
+/**
+ * 标记会话已读。用户主动点开有未读的会话时调用。
+ * 后端远端 markRead 成功后清零本地 unread + emit ChangeNotice;前端通过 useResource 自动 refetch 清红标。
+ * readSortKey 由后端恒置 None(= 清零到摘要最后一条),前端不持有完整复合 sortKey。
+ */
+export async function markConversationRead(conversationId: string): Promise<void> {
+  await invoke<void>("mark_conversation_read", { conversationId });
 }

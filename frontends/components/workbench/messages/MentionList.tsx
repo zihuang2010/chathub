@@ -103,7 +103,7 @@ export const MentionList = forwardRef<MentionListHandle, MentionListProps>(funct
             >
               <span
                 aria-hidden
-                className="grid size-7 shrink-0 place-items-center rounded-full text-wb-2xs font-medium text-workbench-text"
+                className="grid size-7 shrink-0 place-items-center rounded-lg text-wb-2xs font-medium text-workbench-text"
                 style={{ background: pickAvatarColor(c.id) }}
               >
                 {c.name.slice(0, 1)}

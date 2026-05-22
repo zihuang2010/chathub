@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { cleanup, render } from "@testing-library/react";
+import { act, cleanup, fireEvent, render } from "@testing-library/react";
 
 import type { MessageAttachment, MessageBlock } from "./data";
 import { MessageContent } from "./MessageContent";
@@ -139,5 +139,73 @@ describe("MessageContent blocks path", () => {
     // mention span: formatRichText emits a span with workbench-accent text class
     const mention = container.querySelector("span.font-medium.text-workbench-accent");
     expect(mention?.textContent).toContain("张三");
+  });
+});
+
+describe("MessageImage layout-shift + error fallback", () => {
+  it("renders a min-sized container + opacity-0 img + skeleton in loading state", () => {
+    const { container } = renderContent({
+      blocks: [{ type: "image", url: "https://e.example/img.png" }],
+    });
+    const img = container.querySelector("img");
+    expect(img).not.toBeNull();
+    // img stays opacity-0 until onLoad fires — 杜绝 broken-icon 闪现。
+    expect(img?.className).toContain("opacity-0");
+    // min-h-32 / min-w-32 锁住容器尺寸,避免加载完成时的 layout shift。
+    const sizedContainer = container.querySelector("span.min-h-32.min-w-32");
+    expect(sizedContainer).not.toBeNull();
+    // 骨架 overlay 存在。
+    const skeleton = container.querySelector("span.animate-pulse");
+    expect(skeleton).not.toBeNull();
+  });
+
+  it("reveals img and drops skeleton after onLoad", () => {
+    const { container } = renderContent({
+      attachments: [{ type: "image", url: "https://e.example/ok.png", name: "ok.png" }],
+    });
+    const img = container.querySelector("img");
+    expect(img).not.toBeNull();
+    act(() => {
+      fireEvent.load(img!);
+    });
+    expect(img?.className).not.toContain("opacity-0");
+    expect(container.querySelector("span.animate-pulse")).toBeNull();
+  });
+
+  it("swaps to error placeholder (no img element) when onError fires", () => {
+    const { container, queryByLabelText } = renderContent({
+      attachments: [{ type: "image", url: "mediaproxy://abc", name: "x.png" }],
+    });
+    const img = container.querySelector("img");
+    expect(img).not.toBeNull();
+    act(() => {
+      fireEvent.error(img!);
+    });
+    // 失败后 img 卸载,杜绝浏览器 broken-icon 兜底。
+    expect(container.querySelector("img")).toBeNull();
+    // 稳定的中文占位代替 broken-icon。
+    expect(queryByLabelText("图片加载失败")).not.toBeNull();
+  });
+
+  it("resets state to loading when src changes", () => {
+    const { container, rerender } = render(
+      <article>
+        <MessageContent text="" attachments={[{ type: "image", url: "https://e.example/a.png" }]} />
+      </article>,
+    );
+    const firstImg = container.querySelector("img")!;
+    act(() => {
+      fireEvent.load(firstImg);
+    });
+    expect(firstImg.className).not.toContain("opacity-0");
+
+    rerender(
+      <article>
+        <MessageContent text="" attachments={[{ type: "image", url: "https://e.example/b.png" }]} />
+      </article>,
+    );
+    const secondImg = container.querySelector("img")!;
+    expect(secondImg.getAttribute("src")).toBe("https://e.example/b.png");
+    expect(secondImg.className).toContain("opacity-0");
   });
 });

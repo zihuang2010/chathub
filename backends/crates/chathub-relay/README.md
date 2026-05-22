@@ -6,7 +6,7 @@ Rust gRPC + HTTP gateway。Plan 6 起从"有状态认证服务器"重构为**无
 ## 角色
 
 - **上行平面**:Tauri 客户端 → relay gRPC → relay 透传到业务后台 HTTP
-- **下行平面**:业务后台 HTTP `POST /internal/push/v2` → relay → 实时 fanout 到客户端 gRPC stream
+- **下行平面**:业务后台 HTTP `POST /rpc/v1/wecomAggregate/notify/push` → relay → 实时 fanout 到客户端 gRPC stream
 - **持久化**:本地 SQLite(WAL),只存事件日志和序号,不存身份/token
 
 详细设计见 `/Users/pis0sion/.claude/plans/relay-soft-glade.md` 和
@@ -16,10 +16,10 @@ Rust gRPC + HTTP gateway。Plan 6 起从"有状态认证服务器"重构为**无
 
 ### 必填(无默认)
 
-| Env                    | 含义                                                      |
-| ---------------------- | --------------------------------------------------------- |
-| `RELAY_DOWNSTREAM_URL` | 业务后台 base URL,如 `http://erp.local`                   |
-| `RELAY_PUSH_SECRET`    | 业务后台 → relay 推送 (`/internal/push`) 的 Bearer secret |
+| Env                    | 含义                                                                          |
+| ---------------------- | ----------------------------------------------------------------------------- |
+| `RELAY_DOWNSTREAM_URL` | 业务后台 base URL,如 `http://erp.local`                                       |
+| `RELAY_PUSH_SECRET`    | 业务后台 → relay 推送 (`/rpc/v1/wecomAggregate/notify/push`) 的 Bearer secret |
 
 > 2026-05-16 OAuth2 重构后,`RELAY_DOWNSTREAM_SECRET` **已下线**。所有 relay → 业务后台的请求一律用**客户端原 Bearer token**透传(login 例外,走 OAuth2 Basic client auth)。
 
@@ -28,7 +28,7 @@ Rust gRPC + HTTP gateway。Plan 6 起从"有状态认证服务器"重构为**无
 | Env                          | Default                                                                | 含义                                              |
 | ---------------------------- | ---------------------------------------------------------------------- | ------------------------------------------------- |
 | `RELAY_GRPC_ADDR`            | `127.0.0.1:50051`                                                      | gRPC 监听地址                                     |
-| `RELAY_PUSH_ADDR`            | `127.0.0.1:50052`                                                      | HTTP /internal/push 监听地址                      |
+| `RELAY_PUSH_ADDR`            | `127.0.0.1:50052`                                                      | HTTP /rpc/v1/wecomAggregate/notify/push 监听地址  |
 | `RELAY_DB_PATH`              | `./relay.db`                                                           | SQLite 文件路径                                   |
 | `RELAY_LOG_DIR`              | `./logs`                                                               | 日志文件目录(按日轮转 JSON)                       |
 | `RELAY_LOG_FILE_PREFIX`      | `relay`                                                                | 日志文件前缀,生成 `<prefix>.YYYY-MM-DD`           |
@@ -129,12 +129,12 @@ GET 方法(`RELAY_PATH_X=GET:/...`,如 `list_accounts`):relay 用 GET 转发,bod
   - 5xx → `Status::Internal`(transport-level)
   - 网络/超时 → `Status::Unavailable`
 
-## 业务后台 → relay push (`POST /internal/push`)
+## 业务后台 → relay push (`POST /rpc/v1/wecomAggregate/notify/push`)
 
 字段对应 `docs/工具网关通知事件与字段规范.md` §3:
 
 ```sh
-curl -X POST http://127.0.0.1:50052/internal/push \
+curl -X POST http://127.0.0.1:50052/rpc/v1/wecomAggregate/notify/push \
   -H "Authorization: Bearer $RELAY_PUSH_SECRET" \
   -H "Content-Type: application/json" \
   -d '{
@@ -162,8 +162,6 @@ curl -X POST http://127.0.0.1:50052/internal/push \
 - **Bearer 校验**:常数时间比较(P0-2),防时序攻击
 - **事件分类**:5 种业务事件入事件日志(`MESSAGE_UPSERT` / `SESSION_SUMMARY_UPSERT` / `FRIEND_UPSERT` / `ACCOUNT_BINDING_CHANGE` / `ACCOUNT_STATUS_CHANGE`),`CONNECTION_FORCE_CLOSE` 仅作控制信号不入库,未知 eventType 默认入库(向前兼容)
 - **离线员工**:事件入库但 fanout 0 投递,客户端下次 Subscribe v2 用 `since_notify_seq` 续点拉
-
-旧 `/internal/push` endpoint 兼容期保留(对应 legacy account-scope ServerEvent oneof 变体)。
 
 ## 运维注意
 

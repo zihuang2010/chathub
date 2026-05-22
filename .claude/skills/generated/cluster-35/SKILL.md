@@ -1,0 +1,79 @@
+---
+name: cluster-35
+description: "Skill for the Cluster_35 area of chathub. 13 symbols across 2 files."
+---
+
+# Cluster_35
+
+13 symbols | 2 files | Cohesion: 75%
+
+## When to Use
+
+- Working with code in `backends/`
+- Understanding how new, apply_push_batch, upsert_window work
+- Modifying cluster_35-related functionality
+
+## Key Files
+
+| File                                               | Symbols                                                                                       |
+| -------------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| `backends/crates/chathub-net/src/message_event.rs` | new, apply_push_batch, applier_with_store, batch, seed_window (+4)                            |
+| `backends/crates/chathub-state/src/messages.rs`    | upsert_window, get_window, window_upsert_get_round_trip, touch_accessed_updates_only_existing |
+
+## Entry Points
+
+Start here when exploring this area:
+
+- **`new`** (Function) — `backends/crates/chathub-net/src/message_event.rs:107`
+- **`apply_push_batch`** (Function) — `backends/crates/chathub-net/src/message_event.rs:122`
+- **`upsert_window`** (Function) — `backends/crates/chathub-state/src/messages.rs:181`
+- **`get_window`** (Function) — `backends/crates/chathub-state/src/messages.rs:224`
+
+## Key Symbols
+
+| Symbol                                             | Type     | File                                               | Line |
+| -------------------------------------------------- | -------- | -------------------------------------------------- | ---- |
+| `new`                                              | Function | `backends/crates/chathub-net/src/message_event.rs` | 107  |
+| `apply_push_batch`                                 | Function | `backends/crates/chathub-net/src/message_event.rs` | 122  |
+| `upsert_window`                                    | Function | `backends/crates/chathub-state/src/messages.rs`    | 181  |
+| `get_window`                                       | Function | `backends/crates/chathub-state/src/messages.rs`    | 224  |
+| `applier_with_store`                               | Function | `backends/crates/chathub-net/src/message_event.rs` | 347  |
+| `batch`                                            | Function | `backends/crates/chathub-net/src/message_event.rs` | 365  |
+| `seed_window`                                      | Function | `backends/crates/chathub-net/src/message_event.rs` | 377  |
+| `hot_conversation_inserts_bubble_and_emits_notice` | Function | `backends/crates/chathub-net/src/message_event.rs` | 395  |
+| `cold_conversation_skips_no_orphan`                | Function | `backends/crates/chathub-net/src/message_event.rs` | 419  |
+| `send_confirmed_updates_same_bubble_not_duplicate` | Function | `backends/crates/chathub-net/src/message_event.rs` | 431  |
+| `non_message_event_is_noop`                        | Function | `backends/crates/chathub-net/src/message_event.rs` | 451  |
+| `window_upsert_get_round_trip`                     | Function | `backends/crates/chathub-state/src/messages.rs`    | 508  |
+| `touch_accessed_updates_only_existing`             | Function | `backends/crates/chathub-state/src/messages.rs`    | 522  |
+
+## Execution Flows
+
+| Flow                                                                | Type            | Steps |
+| ------------------------------------------------------------------- | --------------- | ----- |
+| `Hot_conversation_inserts_bubble_and_emits_notice → In_memory`      | cross_community | 3     |
+| `Hot_conversation_inserts_bubble_and_emits_notice → Build_endpoint` | cross_community | 3     |
+| `Hot_conversation_inserts_bubble_and_emits_notice → New`            | intra_community | 3     |
+| `Hot_conversation_inserts_bubble_and_emits_notice → MessageWindow`  | intra_community | 3     |
+| `Send_confirmed_updates_same_bubble_not_duplicate → In_memory`      | cross_community | 3     |
+| `Send_confirmed_updates_same_bubble_not_duplicate → Build_endpoint` | cross_community | 3     |
+| `Send_confirmed_updates_same_bubble_not_duplicate → New`            | intra_community | 3     |
+| `Send_confirmed_updates_same_bubble_not_duplicate → MessageWindow`  | intra_community | 3     |
+| `Non_message_event_is_noop → In_memory`                             | cross_community | 3     |
+| `Non_message_event_is_noop → Build_endpoint`                        | cross_community | 3     |
+
+## Connected Areas
+
+| Area        | Connections |
+| ----------- | ----------- |
+| Cluster_108 | 6 calls     |
+| Cluster_6   | 3 calls     |
+| Build\_     | 1 calls     |
+| Cluster_33  | 1 calls     |
+| Cluster_43  | 1 calls     |
+
+## How to Explore
+
+1. `gitnexus_context({name: "new"})` — see callers and callees
+2. `gitnexus_query({query: "cluster_35"})` — find related execution flows
+3. Read key files listed above for implementation details

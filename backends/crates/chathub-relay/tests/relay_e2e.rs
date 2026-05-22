@@ -42,7 +42,7 @@ fn hub_client(
 
 async fn do_push(push_url: &str, secret: &str, body: &serde_json::Value) -> reqwest::Response {
     reqwest::Client::new()
-        .post(format!("{push_url}/internal/push"))
+        .post(format!("{push_url}/rpc/v1/wecomAggregate/notify/push"))
         .bearer_auth(secret)
         .json(body)
         .send()
@@ -194,7 +194,7 @@ async fn login_oauth2_malformed_response_maps_internal() {
     assert_eq!(err.code(), tonic::Code::Internal);
 }
 
-// ─── /internal/push ──────────────────────────────────────────────────────
+// ─── /rpc/v1/wecomAggregate/notify/push ───────────────────────────────────
 
 #[tokio::test(flavor = "multi_thread")]
 async fn push_persists_event_and_returns_ack() {
@@ -257,7 +257,7 @@ async fn push_with_invalid_secret_returns_401() {
         serde_json::json!([{ "eventType": "MESSAGE_UPSERT" }]),
     );
     let resp = reqwest::Client::new()
-        .post(format!("{}/internal/push", h.push_url))
+        .post(format!("{}/rpc/v1/wecomAggregate/notify/push", h.push_url))
         .bearer_auth("WRONG")
         .json(&body)
         .send()

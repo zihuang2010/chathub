@@ -40,3 +40,6 @@ Thumbs.db
 .env
 .env.*
 !.env.example
+
+# Local push-message.sh runtime state (notifySeq / per-conversation unread counters)
+scripts/.push-*

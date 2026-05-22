@@ -5,26 +5,28 @@ import type { Customer } from "@/lib/types/customer";
 
 import { BulkActionsBar } from "./BulkActionsBar";
 import { WorkbenchScrollArea } from "../messages/WorkbenchScrollArea";
-import type { CustomerTab } from "./constants";
 import { CustomerListHeader } from "./CustomerListHeader";
 import { CustomerListRow } from "./CustomerListRow";
 import { CustomersPagination } from "./CustomersPagination";
 import { STRINGS } from "./strings";
 
 interface CustomerListProps {
-  /** 当前页可见行（已分页切片）。 */
-  paginatedCustomers: readonly Customer[];
-  /** 所有过滤后的总数（跨页），用于 master checkbox 的「全选可见」语义。 */
-  filteredTotal: number;
+  /** 当前页的行(cursor keyset 分页,单页展示)。 */
+  customers: readonly Customer[];
+  /** 当前页行数;master checkbox「全选可见」语义 + 列头计数。 */
+  loadedCount: number;
+  /** 首页或翻页加载中。 */
+  loading: boolean;
   accounts: readonly Account[];
-  activeTab: CustomerTab;
   activeCustomerId: string | null;
 
-  // pagination
+  // pagination (cursor keyset)
   page: number;
-  pageCount: number;
   pageSize: number;
-  onPageChange: (page: number) => void;
+  canPrev: boolean;
+  canNext: boolean;
+  onPrevPage: () => void;
+  onNextPage: () => void;
   onPageSizeChange: (size: number) => void;
 
   // multi-select
@@ -50,24 +52,24 @@ interface CustomerListProps {
   onEditCustomer: (id: string) => void;
   onMoreRowAction: (id: string) => void;
 
-  /** 标签筛选已知列表，BulkActionsBar 内的标签 popover 用。 */
-  knownTags: readonly string[];
-  /** 是否存在任意非 Tab 过滤。空列表时区分"无数据" vs "过滤无结果"。 */
+  /** 是否存在任意筛选(搜索 / 账号)。空列表时区分"无数据" vs "筛选无结果"。 */
   hasActiveFilters: boolean;
   /** "清除筛选" CTA 的回调。 */
   onClearFilters: () => void;
 }
 
 export const CustomerList = memo(function CustomerList({
-  paginatedCustomers,
-  filteredTotal,
+  customers,
+  loadedCount,
+  loading,
   accounts,
-  activeTab,
   activeCustomerId,
   page,
-  pageCount,
   pageSize,
-  onPageChange,
+  canPrev,
+  canNext,
+  onPrevPage,
+  onNextPage,
   onPageSizeChange,
   multiSelectActive,
   selectedIds,
@@ -86,7 +88,6 @@ export const CustomerList = memo(function CustomerList({
   onOpenChat,
   onEditCustomer,
   onMoreRowAction,
-  knownTags,
   hasActiveFilters,
   onClearFilters,
 }: CustomerListProps) {
@@ -96,17 +97,13 @@ export const CustomerList = memo(function CustomerList({
     return map;
   }, [accounts]);
 
-  // v3：分页器始终常驻底部（即使只有 1 页），与参考稿一致；提供稳定的"共 N 条 + 页大小"
-  // 视觉锚点。空列表时仍跳过（由上面的 EmptyList / FilteredEmpty 占位）。
-  const showPagination = filteredTotal > 0;
-
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       {multiSelectActive && (
         <BulkActionsBar
           selectedCount={selectedCount}
           allStarred={allSelectedStarred}
-          knownTags={knownTags}
+          knownTags={[]}
           onApplyTagDiff={onApplyTagDiff}
           onReassign={onReassign}
           onToggleStar={onBulkToggleStar}
@@ -115,11 +112,13 @@ export const CustomerList = memo(function CustomerList({
         />
       )}
 
-      {filteredTotal === 0 ? (
-        hasActiveFilters ? (
+      {loadedCount === 0 ? (
+        loading ? (
+          <ListStatus text="加载中…" />
+        ) : hasActiveFilters ? (
           <FilteredEmpty onClearFilters={onClearFilters} />
         ) : (
-          <EmptyList tab={activeTab} />
+          <EmptyList />
         )
       ) : (
         <>
@@ -129,7 +128,7 @@ export const CustomerList = memo(function CustomerList({
             contentClassName="flex flex-col"
           >
             <CustomerListHeader
-              totalVisible={filteredTotal}
+              totalVisible={loadedCount}
               selectedCount={selectedCount}
               allSelectedInView={allSelectedInView}
               onToggleSelectAll={
@@ -137,7 +136,7 @@ export const CustomerList = memo(function CustomerList({
               }
             />
             <ul role="listbox" aria-label="客户列表" className="flex flex-col">
-              {paginatedCustomers.map((customer) => {
+              {customers.map((customer) => {
                 const account = customer.accountId ? accountMap.get(customer.accountId) : undefined;
                 return (
                   <li
@@ -162,32 +161,33 @@ export const CustomerList = memo(function CustomerList({
               })}
             </ul>
           </WorkbenchScrollArea>
-          {showPagination && (
-            <CustomersPagination
-              page={page}
-              pageCount={pageCount}
-              pageSize={pageSize}
-              totalCount={filteredTotal}
-              onPageChange={onPageChange}
-              onPageSizeChange={onPageSizeChange}
-            />
-          )}
+          <CustomersPagination
+            page={page}
+            pageSize={pageSize}
+            canPrev={canPrev}
+            canNext={canNext}
+            loading={loading}
+            onPrev={onPrevPage}
+            onNext={onNextPage}
+            onPageSizeChange={onPageSizeChange}
+          />
         </>
       )}
     </div>
   );
 });
 
-function EmptyList({ tab }: { tab: CustomerTab }) {
-  const map: Record<CustomerTab, { title: string; hint: string }> = {
-    all: STRINGS.emptyStates.all,
-    key: STRINGS.emptyStates.key,
-    "today-new": STRINGS.emptyStates.todayNew,
-    "stale-30d": STRINGS.emptyStates.stale30d,
-    "pending-sign": STRINGS.emptyStates.pendingSign,
-    lost: STRINGS.emptyStates.lost,
-  };
-  const empty = map[tab];
+function ListStatus({ text }: { text: string }) {
+  if (!text) return <div className="h-6" aria-hidden />;
+  return (
+    <div className="flex h-10 items-center justify-center text-[12px] text-workbench-text-muted">
+      {text}
+    </div>
+  );
+}
+
+function EmptyList() {
+  const empty = STRINGS.emptyStates.all;
   return (
     <div className="flex flex-1 flex-col items-center justify-center gap-2 px-6 py-16 text-center">
       <p className="text-[14px] font-medium text-workbench-text">{empty.title}</p>
@@ -201,7 +201,7 @@ function FilteredEmpty({ onClearFilters }: { onClearFilters: () => void }) {
     <div className="flex flex-1 flex-col items-center justify-center gap-3 px-6 py-16 text-center">
       <p className="text-[14px] font-medium text-workbench-text">没有匹配的客户</p>
       <p className="max-w-[280px] text-[12px] text-workbench-text-muted">
-        当前的搜索 / 账号 / 标签 / 阶段 / 跟进状态筛选条件下没有结果。
+        当前的搜索 / 账号筛选条件下没有结果。
       </p>
       <button
         type="button"

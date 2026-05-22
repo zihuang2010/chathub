@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent, PointerEvent as ReactPointerEvent } from "react";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { ToastViewport } from "@/components/ui/toast";
 import { WorkbenchPanel } from "@/components/workbench/WorkbenchPanel";
 import type { Account } from "@/lib/types/account";
 import { useRecentFriends, type RecentFriendListEntry } from "@/lib/api/useRecentFriends";
+import { sendMessage } from "@/lib/api/messageHistory";
 import { appReady } from "@/lib/data/appReady";
 import { cn } from "@/lib/utils";
 
@@ -41,7 +43,7 @@ const EMPTY_MENTION_CANDIDATES: Conversation[] = [];
  *   - id / name / preview / unread:直映
  *   - account:用 wecomAlias 作显示名(跟 AccountDropdown 列表里的 `account.name` 对齐契机);
  *     缺失时 fallback wecomName。
- *   - time:lastMessageTimeMs → 相对时间字符串("HH:mm" / "昨天" / "周二" / "M/d")
+ *   - time:lastMessageTimeMs → 相对时间字符串("HH:mm" / "昨天" / "周二" / "MM-dd")
  *   - online / avatarColor:接口未下发,留空(列表渲染按 name hash 上色)
  */
 function formatRelativeTime(ms: number): string {
@@ -69,7 +71,14 @@ function formatRelativeTime(ms: number): string {
     const weekdays = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
     return weekdays[date.getDay()];
   }
-  return `${date.getMonth() + 1}/${date.getDate()}`;
+  return `${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
+// 远端字段(客户可控:昵称 / 消息摘要)进渲染模型前的长度硬顶。行内 CSS truncate
+// 只裁"显示",底层字符串原样驻留;一条被构造的超长摘要会按行占内存,这里在源头截断。
+const MAX_FIELD_LEN = 256;
+function clampField(value: string): string {
+  return value.length > MAX_FIELD_LEN ? value.slice(0, MAX_FIELD_LEN) : value;
 }
 
 function adaptEntryToConversation(entry: RecentFriendListEntry): Conversation {
@@ -81,14 +90,15 @@ function adaptEntryToConversation(entry: RecentFriendListEntry): Conversation {
   const effectiveTimeMs = Math.max(entry.lastMessageTimeMs, entry.localDraftAtMs);
   return {
     id: entry.conversationId,
-    name: entry.externalName || "(未命名)",
-    preview: entry.lastMessageSummary,
-    account: entry.wecomAlias || entry.wecomName,
+    name: clampField(entry.externalName) || "(未命名)",
+    preview: clampField(entry.lastMessageSummary),
+    account: clampField(entry.wecomAlias || entry.wecomName),
     time: formatRelativeTime(effectiveTimeMs),
     unread: entry.unreadCount,
     online: false,
     draftText: draftText || undefined,
     pinned: entry.pinned,
+    muted: entry.muted,
   };
 }
 
@@ -96,16 +106,27 @@ function adaptEntryToConversation(entry: RecentFriendListEntry): Conversation {
  * 把 SQLite 存的 TipTap JSON 字符串解析为 plain text 预览。
  * useDraftStore 双写时存的是 JSON.stringify(JSONContent) — 直接展示会显示 JSON 源码。
  * 解析失败时(非 JSON / 文档损坏) fallback 当 raw text 截断。
+ *
+ * 按 stored 原文做有界内容缓存:每个 hub 事件都会让 useRecentFriends 重读缓存 + 整表
+ * 重新 adapt,草稿未变的行不必反复 JSON.parse。键用 stored 原文(内容键),跨 refetch
+ * 的对象重建仍命中。超过上限直接清空(简单兜底,避免无界增长)。
  */
+const DRAFT_PREVIEW_CACHE_MAX = 200;
+const draftPreviewCache = new Map<string, string>();
 function extractDraftPreview(stored: string): string {
   if (!stored) return "";
-  let doc: unknown;
+  const cached = draftPreviewCache.get(stored);
+  if (cached !== undefined) return cached;
+  let result: string;
   try {
-    doc = JSON.parse(stored);
+    const doc = JSON.parse(stored);
+    result = extractTextFromNode(doc).replace(/\s+/g, " ").trim().slice(0, 80);
   } catch {
-    return stored.slice(0, 80);
+    result = stored.slice(0, 80);
   }
-  return extractTextFromNode(doc).replace(/\s+/g, " ").trim().slice(0, 80);
+  if (draftPreviewCache.size >= DRAFT_PREVIEW_CACHE_MAX) draftPreviewCache.clear();
+  draftPreviewCache.set(stored, result);
+  return result;
 }
 
 function extractTextFromNode(node: unknown): string {
@@ -139,7 +160,7 @@ export function MessagesPage({ accounts }: MessagesPageProps) {
   const chatAreaRef = useRef<HTMLDivElement | null>(null);
   const dragStartRef = useRef({ x: 0, width: CONVERSATION_LIST_DEFAULT_WIDTH });
 
-  const { detailsOpen, chatWidthLock, toggleDetails, markManualResizeIfNeeded } = useDetailsWindow({
+  const { detailsOpen, chatWidthLock, toggleDetails } = useDetailsWindow({
     chatAreaRef,
   });
 
@@ -156,9 +177,19 @@ export function MessagesPage({ accounts }: MessagesPageProps) {
   // useHubSyncStatus 单独管,不再从这里透传。
   const {
     items: recentEntries,
+    filtered,
     initialFetched,
     pin: pinRecent,
     remove: removeRecent,
+    mute: muteRecent,
+    markRead: markReadRecent,
+    readingIds,
+    loadMore,
+    loadMoreFiltered,
+    defaultLoading,
+    filteredLoading,
+    searchRemote,
+    exitFilter,
   } = useRecentFriends({
     accountFilter: selectedAccountId,
   });
@@ -167,8 +198,69 @@ export function MessagesPage({ accounts }: MessagesPageProps) {
   // 后端 list_top WHERE removed=0 已经把隐藏行过滤掉,前端不再二次过滤。
   // 自动恢复:远端事件 last_message_time_ms > removed_at_ms 时,UPSERT ON CONFLICT 自动清零。
 
-  // 适配成 ConversationList 现有 `Conversation` 形态;一次性 useMemo,源是稳定引用。
-  const conversations = useMemo(() => recentEntries.map(adaptEntryToConversation), [recentEntries]);
+  // 搜索激活时(filtered 非 null)渲染远端筛选结果,把"已加载窗口之外"的匹配也纳入;
+  // 否则渲染默认列表。两者都是 RecentFriendListEntry[],经同一 adapter。
+  const displayEntries = filtered ?? recentEntries;
+
+  // 适配成 ConversationList 现有 `Conversation` 形态;源是稳定引用,按 displayEntries 记忆化。
+  // readPending 由 useRecentFriends.readingIds 注入:markRead 远端往返期间抑制该行红标。
+  const conversations = useMemo(
+    () =>
+      displayEntries.map((entry) => ({
+        ...adaptEntryToConversation(entry),
+        readPending: readingIds.has(entry.conversationId),
+      })),
+    [displayEntries, readingIds],
+  );
+
+  // 用户主动点开会话:置选中 + 仅当该会话有未读时调 markRead 清红标。
+  // 启动时自动选中第一条走下方 effect(不经此 handler),天然不触发标已读 —— 保留红标供坐席自决是否接待。
+  const handleSelectConversation = useCallback(
+    (id: string) => {
+      setSelectedId(id);
+      const entry = displayEntries.find((e) => e.conversationId === id);
+      if (entry && (entry.hasUnread || entry.unreadCount > 0)) void markReadRecent(id);
+    },
+    [displayEntries, markReadRecent],
+  );
+
+  // 关窗(点 X / Cmd-Q,优雅退出)不跑 React cleanup,故显式监听 onCloseRequested:
+  // 关窗前对"当前打开且有未读"的会话补一次 markRead,让服务端收敛已读 ——
+  // 覆盖"开着会话直接关闭、期间消息下次重现未读"的场景(闪退/强杀仍兜不住,接受现状)。
+  // 闭包用 ref 读实时活动会话,避免 stale。
+  const activeRef = useRef<{ id: string; unread: number }>({ id: "", unread: 0 });
+  const activeEntryForClose = displayEntries.find((e) => e.conversationId === selectedId);
+  const activeUnreadForClose =
+    activeEntryForClose && (activeEntryForClose.hasUnread || activeEntryForClose.unreadCount > 0)
+      ? Math.max(activeEntryForClose.unreadCount, 1)
+      : 0;
+  useEffect(() => {
+    activeRef.current = { id: selectedId, unread: activeUnreadForClose };
+  }, [selectedId, activeUnreadForClose]);
+  useEffect(() => {
+    const win = getCurrentWindow();
+    let unlisten: (() => void) | undefined;
+    let disposed = false;
+    void win
+      .onCloseRequested(async (event) => {
+        const { id, unread } = activeRef.current;
+        if (!id || unread <= 0) return; // 无未读直接放行默认关闭
+        event.preventDefault();
+        // markRead 失败/超时也无妨:关窗 best-effort,不让网络问题卡死关闭
+        const synced = markReadRecent(id).catch(() => undefined);
+        const timed = new Promise<void>((resolve) => setTimeout(resolve, 1500));
+        await Promise.race([synced, timed]);
+        await win.destroy();
+      })
+      .then((u) => {
+        if (disposed) u();
+        else unlisten = u;
+      });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [markReadRecent]);
 
   // 首次本地 cache 读出后通知 App 的 splash gate;splash 退场前数据已就绪,常规场景
   // 不再出现"splash → Skeleton → 真组件"的二次闪。极慢路径仍由 MessagesSkeleton 兜底。
@@ -194,10 +286,12 @@ export function MessagesPage({ accounts }: MessagesPageProps) {
   );
   // 当前选中会话归属的真实 (wecomAccountId, externalUserId);conversation 不存在时为 undefined,
   // useChatMessages 内部走 mock 空数组 fallback(由顶层守卫保证不会进入渲染)。
+  // 选中会话归属在 displayEntries 里查:搜索态下用户可能点中"默认缓存之外"的远端结果,
+  // 必须用 filtered 那份才能解析出 wecomAccountId / externalUserId 给 useChatMessages。
   const selectedEntry = useMemo(
     () =>
-      conversation ? recentEntries.find((e) => e.conversationId === conversation.id) : undefined,
-    [recentEntries, conversation],
+      conversation ? displayEntries.find((e) => e.conversationId === conversation.id) : undefined,
+    [displayEntries, conversation],
   );
   const {
     messages,
@@ -214,6 +308,21 @@ export function MessagesPage({ accounts }: MessagesPageProps) {
   // 客户详情真实接口(useCustomer)未落地;暂传 null,由 CustomerDetails 渲染空态。
   // TODO(customer-details API): 接通后改成 useCustomer(conversationId)。
   const customer = null;
+
+  // 真发送(text-only):后端落库出站气泡 + 发 conversation-messages ChangeNotice,
+  // useChatMessages 重读缓存把这条消息收敛进权威列表。缺会话归属(account/user)时静默忽略。
+  const handleSendMessage = useCallback(
+    async (text: string) => {
+      if (!conversation || !selectedEntry?.wecomAccountId || !selectedEntry?.externalUserId) return;
+      await sendMessage({
+        conversationId: conversation.id,
+        wecomAccountId: selectedEntry.wecomAccountId,
+        externalUserId: selectedEntry.externalUserId,
+        contentText: text,
+      });
+    },
+    [conversation, selectedEntry],
+  );
 
   const clampConversationListWidth = useCallback(
     (nextWidth: number) => {
@@ -238,14 +347,13 @@ export function MessagesPage({ accounts }: MessagesPageProps) {
   // `handleWindowResize()` call below.
   useEffect(() => {
     const handleWindowResize = () => {
-      if (detailsOpen) markManualResizeIfNeeded();
       setConversationListWidth((width) => clampConversationListWidth(width));
     };
 
     handleWindowResize();
     window.addEventListener("resize", handleWindowResize);
     return () => window.removeEventListener("resize", handleWindowResize);
-  }, [clampConversationListWidth, detailsOpen, markManualResizeIfNeeded]);
+  }, [clampConversationListWidth]);
 
   useEffect(() => {
     if (!isResizing) return;
@@ -310,6 +418,42 @@ export function MessagesPage({ accounts }: MessagesPageProps) {
     [conversation?.account, conversations],
   );
 
+  // ─── 远端搜索接线 ───────────────────────────────────────────────────────
+  // ConversationList 即时上报搜索条件 → 这里防抖 300ms 后调 searchRemote(把已加载窗口
+  // 之外的匹配补进来);清空关键词回默认列表(exitFilter)。searchActiveRef 防 mount /
+  // 切 tab 时的空关键词误触发 exitFilter(exitFilter 会 force 远端刷新)。
+  const searchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const searchActiveRef = useRef(false);
+  const handleSearchChange = useCallback(
+    (query: string, onlyUnread: boolean) => {
+      if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
+      searchDebounceRef.current = setTimeout(() => {
+        if (query) {
+          searchActiveRef.current = true;
+          void searchRemote({ externalName: query, onlyUnread });
+        } else if (searchActiveRef.current) {
+          searchActiveRef.current = false;
+          void exitFilter();
+        }
+      }, 300);
+    },
+    [searchRemote, exitFilter],
+  );
+  useEffect(
+    () => () => {
+      if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
+    },
+    [],
+  );
+
+  // 滚动到底分派:筛选态翻 filtered 续页,否则翻默认列表续页。loading 同源切换防重入;
+  // 是否到底由 hook 内部 cursor/hasMore 自守(loadMore/loadMoreFiltered 到底即 no-op)。
+  const listLoading = filtered ? filteredLoading : defaultLoading;
+  const handleLoadMore = useCallback(() => {
+    if (filtered) void loadMoreFiltered();
+    else void loadMore();
+  }, [filtered, loadMore, loadMoreFiltered]);
+
   const errorBoundaryProps = {
     title: STRINGS.errors.pageUnavailable,
     retryLabel: STRINGS.errors.retry,
@@ -327,13 +471,17 @@ export function MessagesPage({ accounts }: MessagesPageProps) {
         <ConversationList
           conversations={conversations}
           selectedId={selectedId}
-          onSelect={setSelectedId}
+          onSelect={handleSelectConversation}
           onTogglePin={pinRecent}
+          onToggleMute={muteRecent}
           onRemove={removeRecent}
           width={conversationListWidth}
           accounts={accounts}
           selectedAccount={selectedAccount}
           onAccountChange={handleAccountChange}
+          onSearchChange={handleSearchChange}
+          onLoadMore={handleLoadMore}
+          loading={listLoading}
         />
       </ErrorBoundary>
       <div
@@ -366,7 +514,17 @@ export function MessagesPage({ accounts }: MessagesPageProps) {
       <div
         ref={chatAreaRef}
         className="flex h-full min-w-0 flex-1"
-        style={chatWidthLock ? { flex: `0 0 ${chatWidthLock}px`, width: chatWidthLock } : undefined}
+        // 聊天区最小宽护栏:窗口装不下更宽尺寸(squeeze)时,聊天列只缩到此宽度,
+        // 再不够由最右内容裁切,而非把聊天压塌成不可用窄条。
+        style={
+          chatWidthLock
+            ? {
+                flex: `0 0 ${chatWidthLock}px`,
+                width: chatWidthLock,
+                minWidth: CHAT_AREA_MIN_WIDTH,
+              }
+            : { minWidth: CHAT_AREA_MIN_WIDTH }
+        }
       >
         {conversation ? (
           <ErrorBoundary {...errorBoundaryProps}>
@@ -383,6 +541,8 @@ export function MessagesPage({ accounts }: MessagesPageProps) {
               onRetry={retryMessages}
               hasMoreHistory={hasMoreMessages}
               onLoadMoreHistory={loadMoreMessages}
+              onSendMessage={handleSendMessage}
+              onLeaveMarkRead={markReadRecent}
               // TODO(quick-replies API): 接通 useQuickReplies(employeeId) 后透传;暂空
               quickReplies={EMPTY_QUICK_REPLIES}
               // TODO(@mention API): 接通 useMentionCandidates(conversationId) 后透传
@@ -395,7 +555,10 @@ export function MessagesPage({ accounts }: MessagesPageProps) {
           </div>
         )}
       </div>
-      {detailsOpen && conversation && (
+      {detailsOpen && (
+        // 面板挂载只看 detailsOpen,不再 && conversation:无选中会话也能展开
+        // (CustomerDetails 对 customer=null 渲染空态),避免"会话恰好为空 →
+        // 面板挂不上 → React 状态与窗口尺寸不同步"。
         <ErrorBoundary {...errorBoundaryProps}>
           <CustomerDetails customer={customer} quickReplies={EMPTY_QUICK_REPLIES} />
         </ErrorBoundary>

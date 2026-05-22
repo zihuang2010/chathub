@@ -1,4 +1,9 @@
-import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
+import {
+  useEffect,
+  useRef,
+  type CSSProperties,
+  type PointerEvent as ReactPointerEvent,
+} from "react";
 import { getCurrentWindow, LogicalPosition, LogicalSize } from "@tauri-apps/api/window";
 
 import { isMac } from "@/lib/platform";
@@ -44,6 +49,7 @@ const CORNER_SIZE = 16;
 // 否则 setSize 之后位置算在原大小上、再被 OS 推回 min，会跳。
 const MIN_LOGICAL_WIDTH = 860;
 const MIN_LOGICAL_HEIGHT = 600;
+const WHEEL_LINE_HEIGHT = 16;
 
 interface HandleSpec {
   dir: ResizeDirection;
@@ -180,6 +186,51 @@ async function startManualResize(
   window.addEventListener("pointercancel", onUp);
 }
 
+function findScrollableAncestor(element: Element | null): HTMLElement | null {
+  let current: Element | null = element;
+  while (current && current !== document.body) {
+    if (current instanceof HTMLElement) {
+      const overflowY = window.getComputedStyle(current).overflowY;
+      const canScrollY =
+        (overflowY === "auto" || overflowY === "scroll" || overflowY === "overlay") &&
+        current.scrollHeight > current.clientHeight;
+      if (canScrollY) return current;
+    }
+    current = current.parentElement;
+  }
+  return null;
+}
+
+function getWheelPixels(event: WheelEvent, pageHeight: number) {
+  let deltaY = event.deltaY;
+  let deltaX = event.deltaX;
+  if (event.deltaMode === WheelEvent.DOM_DELTA_LINE) {
+    deltaY *= WHEEL_LINE_HEIGHT;
+    deltaX *= WHEEL_LINE_HEIGHT;
+  } else if (event.deltaMode === WheelEvent.DOM_DELTA_PAGE) {
+    deltaY *= pageHeight;
+    deltaX *= pageHeight;
+  }
+  return { deltaX, deltaY };
+}
+
+function forwardWheelToUnderlyingScroller(event: WheelEvent) {
+  const handle = event.currentTarget;
+  if (!(handle instanceof HTMLElement)) return;
+  const previousPointerEvents = handle.style.pointerEvents;
+  handle.style.pointerEvents = "none";
+  const targetBelow = document.elementFromPoint(event.clientX, event.clientY);
+  handle.style.pointerEvents = previousPointerEvents;
+
+  const scroller = findScrollableAncestor(targetBelow);
+  if (!scroller) return;
+
+  const { deltaX, deltaY } = getWheelPixels(event, scroller.clientHeight || window.innerHeight);
+  scroller.scrollTop += deltaY;
+  if (deltaX !== 0) scroller.scrollLeft += deltaX;
+  event.preventDefault();
+}
+
 export function WindowResizeEdges() {
   if (!isMac) return null;
 
@@ -207,12 +258,34 @@ export function WindowResizeEdges() {
   return (
     <div aria-hidden style={{ position: "fixed", inset: 0, pointerEvents: "none", zIndex: 200 }}>
       {HANDLES.map(({ dir, cursor, style }) => (
-        <div
+        <ResizeHandle
           key={dir}
+          dir={dir}
           style={{ position: "absolute", pointerEvents: "auto", cursor, ...style }}
           onPointerDown={handlePointerDown(dir)}
         />
       ))}
     </div>
   );
+}
+
+function ResizeHandle({
+  dir,
+  style,
+  onPointerDown,
+}: {
+  dir: ResizeDirection;
+  style: CSSProperties;
+  onPointerDown: (event: ReactPointerEvent<HTMLDivElement>) => void;
+}) {
+  const ref = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    const node = ref.current;
+    if (!node) return;
+    node.addEventListener("wheel", forwardWheelToUnderlyingScroller, { passive: false });
+    return () => node.removeEventListener("wheel", forwardWheelToUnderlyingScroller);
+  }, []);
+
+  return <div ref={ref} data-resize-dir={dir} style={style} onPointerDown={onPointerDown} />;
 }

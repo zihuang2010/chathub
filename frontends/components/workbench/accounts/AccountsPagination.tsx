@@ -28,7 +28,7 @@ export const AccountsPagination = memo(function AccountsPagination({
   onPageSizeChange,
 }: AccountsPaginationProps) {
   return (
-    <div className="flex flex-wrap items-center justify-center gap-3 px-4 py-4 text-[12px] text-workbench-text-muted">
+    <div className="flex flex-nowrap items-center justify-center gap-3 overflow-x-auto px-4 py-4 text-[12px] text-workbench-text-muted [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
       <span className="wb-num tabular-nums">共 {totalCount} 条</span>
 
       <PageSizeSelector value={pageSize} onChange={onPageSizeChange} />

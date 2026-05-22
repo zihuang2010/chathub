@@ -148,7 +148,10 @@ export function Splash({ onReady, durationMs = 6500 }: SplashProps) {
 
   return (
     <div
-      className="absolute inset-0 select-none overflow-hidden bg-white"
+      // 跟 Workbench outer 的 bg-[#F1F5F9] 一致 —— Splash 700ms fade 过程中,
+      // 底层 Workbench 灰色透出不会形成色调切换,体感"无缝"。
+      // 改前为 bg-white,Splash 淡出时白→灰过渡明显,体验差。
+      className="absolute inset-0 select-none overflow-hidden bg-[#F1F5F9]"
       style={{ fontFamily: FONT_BODY }}
     >
       <VersionBadge />

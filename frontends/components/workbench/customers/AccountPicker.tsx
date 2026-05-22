@@ -106,7 +106,7 @@ export function AccountPicker({
             ) : (
               <span
                 aria-hidden
-                className="grid size-6 place-items-center rounded-full bg-workbench-surface-active text-[10px] font-medium text-workbench-accent"
+                className="grid size-6 place-items-center rounded-md bg-workbench-surface-active text-[10px] font-medium text-workbench-accent"
               >
                 全
               </span>
@@ -320,7 +320,7 @@ function Avatar({ account }: { account: Account }) {
   return (
     <span
       aria-hidden
-      className="grid size-6 shrink-0 place-items-center rounded-full text-[10.5px] font-medium text-workbench-text"
+      className="grid size-6 shrink-0 place-items-center rounded-md text-[10.5px] font-medium text-workbench-text"
       style={{ background: `hsl(var(--wb-avatar-${account.colorToken}))` }}
     >
       {account.name.slice(0, 1)}

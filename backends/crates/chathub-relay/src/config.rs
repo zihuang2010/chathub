@@ -5,7 +5,7 @@
 //!   - relay → 业务后台所有业务请求,用客户端 raw Bearer token(透传)
 //!   - 唯一例外:Auth.Login 走 OAuth2,用 Basic client_id:client_secret
 //!   - RELAY_DOWNSTREAM_SECRET 已下线(relay 不再持有出站 shared secret)
-//!   - RELAY_PUSH_SECRET 仍保留(业务后台 → relay /internal/push 方向)
+//!   - RELAY_PUSH_SECRET 仍保留(业务后台 → relay /rpc/v1/wecomAggregate/notify/push 方向)
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -109,10 +109,16 @@ const DEFAULT_ROUTES: &[(&str, HttpMethod, &str, &str)] = &[
         "RELAY_PATH_ACK_READ",
     ),
     (
-        "fetch_history",
+        "fetch_message_history",
         HttpMethod::Post,
-        "/v1/fetch_history",
-        "RELAY_PATH_FETCH_HISTORY",
+        "/wechat-business-app/wecom-cs/v1/wecomAggregate/message/history",
+        "RELAY_PATH_FETCH_MESSAGE_HISTORY",
+    ),
+    (
+        "send_message",
+        HttpMethod::Post,
+        "/wechat-business-app/wecom-cs/v1/wecomAggregate/message/send",
+        "RELAY_PATH_SEND_MESSAGE",
     ),
     (
         "list_accounts",
@@ -125,6 +131,18 @@ const DEFAULT_ROUTES: &[(&str, HttpMethod, &str, &str)] = &[
         HttpMethod::Post,
         "/wechat-business-app/wecom-cs/v1/wecomAggregate/account/listFriends",
         "RELAY_PATH_LIST_FRIENDS",
+    ),
+    (
+        "list_recent_friends",
+        HttpMethod::Post,
+        "/wechat-business-app/wecom-cs/v1/wecomAggregate/session/recentFriends",
+        "RELAY_PATH_LIST_RECENT_FRIENDS",
+    ),
+    (
+        "mark_read",
+        HttpMethod::Post,
+        "/wechat-business-app/wecom-cs/v1/wecomAggregate/session/markRead",
+        "RELAY_PATH_MARK_READ",
     ),
     // verify_token / login / logout 由 relay 自己直接调,不经 Forward 通道。
 ];
@@ -514,8 +532,10 @@ mod tests {
             "RELAY_PATH_RECALL",
             "RELAY_PATH_ACK_READ",
             "RELAY_PATH_FETCH_HISTORY",
+            "RELAY_PATH_SEND_MESSAGE",
             "RELAY_PATH_LIST_ACCOUNTS",
             "RELAY_PATH_LIST_FRIENDS",
+            "RELAY_PATH_LIST_RECENT_FRIENDS",
             "RELAY_PATH_LOGIN",
             "RELAY_PATH_VERIFY_TOKEN",
             "RELAY_PATH_LOGOUT",

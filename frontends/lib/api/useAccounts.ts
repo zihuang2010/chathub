@@ -1,13 +1,17 @@
-// 账号列表的"应用级单一数据源"。挂在 Workbench 一份,Accounts/Customers 等所有用到
-// account 数组的子页面都从同一份 state 读 —— 避免每个页面各自 fetch 造成的不一致。
+// 账号列表的"应用级单一数据源"(C5 迁移到 useResource)。
 //
-// 2026-05-17:Tauri 端 cache-first + Subscribe 流推 ACCOUNT_* 事件后 emit
-// `accounts_changed`,这里 listen 后 refetch(无 force)即读本地 cache;手动刷新按钮
-// 走 refetch(force=true)透传 listMine 全量重拉。
+// 数据流:
+//   - mount 时拉一次(cache-first,走 Tauri 本地缓存)
+//   - 订阅 ChangeBus topic="accounts" + scope={employeeId} → 自动 refetch
+//   - refetch({force:true}) 一次性透传 listMine 全量(覆盖 cache)
+//
+// C5 前是自己 listen("accounts_changed") + 自管 loading/error;
+// C5 后这些都由 useResource 集中处理,本 hook 只负责"绑 employeeId + queryFn + 兼容旧 API"。
 
-import { useCallback, useEffect, useState } from "react";
-import { listen } from "@tauri-apps/api/event";
+import { useCallback, useMemo, useRef } from "react";
 
+import { useCurrentEmployeeId } from "@/lib/data/useCurrentEmployeeId";
+import { useResource } from "@/lib/data/useResource";
 import type { Account } from "@/lib/types/account";
 
 import { fetchAccounts } from "./accounts";
@@ -15,53 +19,46 @@ import { fetchAccounts } from "./accounts";
 export interface UseAccountsResult {
   accounts: Account[];
   loading: boolean;
-  /** 失败时的人读字符串;成功为 null。 */
   error: string | null;
-  /** 手动刷新(账号页"刷新"按钮接通这里);默认透传 listMine 全量重拉。 */
+  /** force=true 时绕 cache 透传 listMine。其他场景 cache-first。 */
   refetch: (opts?: { force?: boolean }) => Promise<void>;
 }
 
 export function useAccounts(): UseAccountsResult {
-  const [accounts, setAccounts] = useState<Account[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const employeeId = useCurrentEmployeeId();
+  // force=true 的"一次性绕 cache"语义:用 ref 跨 queryFn 调用传递,避免改 useResource API
+  const forceNextRef = useRef(false);
 
-  const refetch = useCallback(async (opts?: { force?: boolean }) => {
-    setLoading(true);
-    setError(null);
-    try {
-      const list = await fetchAccounts({ force: opts?.force });
-      setAccounts(list);
-    } catch (e) {
-      const message =
-        e && typeof e === "object" && "message" in e
-          ? String((e as { message: unknown }).message)
-          : String(e);
-      setError(message);
-      setAccounts([]);
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+  const result = useResource<Account[]>({
+    topic: "accounts",
+    scope: { employeeId: employeeId ?? "" },
+    queryFn: async () => {
+      const force = forceNextRef.current;
+      forceNextRef.current = false;
+      return fetchAccounts({ force });
+    },
+    enabled: !!employeeId,
+  });
 
-  useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    void refetch();
-  }, [refetch]);
+  // refresh 是 useResource 内部 useCallback,引用稳定。但 result 对象每次 render 新,
+  // 所以 useCallback 用 result.refresh 而不是 result 作 dep,避免下游闭包/effect 不稳。
+  const refresh = result.refresh;
+  const refetch = useCallback(
+    async (opts?: { force?: boolean }) => {
+      if (opts?.force) forceNextRef.current = true;
+      await refresh();
+    },
+    [refresh],
+  );
 
-  // Subscribe 流推 ACCOUNT_* 事件后 Tauri 端写完 cache → emit("accounts_changed") →
-  // 这里 refetch 读 cache(不带 force,本地读不走远程)。
-  useEffect(() => {
-    let unlisten: (() => void) | undefined;
-    void (async () => {
-      unlisten = await listen("accounts_changed", () => {
-        void refetch();
-      });
-    })();
-    return () => {
-      unlisten?.();
-    };
-  }, [refetch]);
+  // 关键:`result.data ?? []` 每次 render 创建新 [],下游 useMemo([accounts]) 会失效引发
+  // 死循环("Too many re-renders")。用 useMemo 锁住引用。
+  const accounts = useMemo(() => result.data ?? [], [result.data]);
 
-  return { accounts, loading, error, refetch };
+  return {
+    accounts,
+    loading: result.loading,
+    error: result.error,
+    refetch,
+  };
 }

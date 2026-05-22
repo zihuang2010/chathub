@@ -126,7 +126,7 @@ function CityAvatar({ account }: { account: Account }) {
   const label = getCityLabel(account);
   return (
     <div
-      className="grid size-10 shrink-0 place-items-center rounded-md text-[13px] font-semibold text-workbench-text"
+      className="grid size-10 shrink-0 place-items-center rounded-xl text-[13px] font-semibold text-workbench-text"
       style={{ background: `hsl(var(--wb-avatar-${account.colorToken}))` }}
       aria-hidden
     >

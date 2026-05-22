@@ -29,7 +29,9 @@ const ICONS: Record<(typeof KPI_CONFIG)[number]["iconName"], LucideIcon> = {
 
 export const AccountsKpiStrip = memo(function AccountsKpiStrip({ kpis }: AccountsKpiStripProps) {
   return (
-    <div className="grid grid-cols-2 gap-3 px-4 py-4 md:grid-cols-3 xl:grid-cols-5">
+    // 5 卡片始终一行,不随窗口宽度换行(用户需求)。卡片内部都有 min-w-0 + truncate
+    // 兜底,窄屏下数字会按 tabular-nums 等比例收缩,文字 truncate。
+    <div className="grid grid-cols-5 gap-3 px-4 py-4">
       {KPI_CONFIG.map((cfg) => {
         const Icon = ICONS[cfg.iconName];
         const value = getKpiValue(kpis, cfg.key);

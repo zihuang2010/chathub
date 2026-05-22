@@ -61,6 +61,7 @@ export const STRINGS = {
   pagination: {
     total: (n: number) => `共 ${n} 条`,
     pageSize: (n: number) => `${n} 条/页`,
+    pageIndicator: (n: number) => `第 ${n} 页`,
     prev: "上一页",
     next: "下一页",
     jumpPrefix: "前往",

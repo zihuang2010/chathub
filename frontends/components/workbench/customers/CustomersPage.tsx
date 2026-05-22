@@ -7,15 +7,15 @@ import { adaptFriendToCustomer } from "@/lib/api/customers";
 import { useFriends } from "@/lib/api/useFriends";
 import type { Account } from "@/lib/types/account";
 
+import { DEFAULT_PAGE_SIZE } from "./constants";
 import { CustomerDetailPanel } from "./CustomerDetailPanel";
 import { CustomerList } from "./CustomerList";
 import { CustomersHeader } from "./CustomersHeader";
 import { MOCK_RECENT_MESSAGES } from "./data";
-import { STRINGS } from "./strings";
 import { downloadCsv, toCsv } from "./utils";
 import { useCustomerSelection } from "./useCustomerSelection";
-import { useCustomersFilters } from "./useCustomersFilters";
 import { useCustomerStore } from "./useCustomerStore";
+import { STRINGS } from "./strings";
 
 interface CustomersPageProps {
   /** 由 Workbench 提供的账号列表(来自 list_accounts);为空数组时筛选下拉空,UI 仍可用。 */
@@ -30,14 +30,14 @@ interface CustomersPageProps {
 }
 
 const EMPTY_ACCOUNTS_SET: ReadonlySet<string> = new Set();
+const SEARCH_DEBOUNCE_MS = 350;
 
 export function CustomersPage({
   accounts,
   pendingAccountFilter,
   onConsumePendingFilter,
 }: CustomersPageProps) {
-  // 受控的账号筛选 state:由 CustomersPage 持有,同时驱动 API 入参 + 本地 filter,
-  // 避免 selectedAccountIds 被 filter 内部持有导致的循环依赖。
+  // 受控的账号筛选 state:同时驱动 API 入参(列表请求)与详情归属解析。
   const [selectedAccountIds, setSelectedAccountIds] =
     useState<ReadonlySet<string>>(EMPTY_ACCOUNTS_SET);
 
@@ -49,8 +49,18 @@ export function CustomersPage({
     return accounts.map((a) => a.id);
   }, [selectedAccountIds, accounts]);
 
-  // 阶段 2:Tauri `list_friends` 返全量(行存)。分页 / 筛选 / 排序均本地完成。
-  const { friends, error, refetch } = useFriends(apiAccountIds);
+  // 搜索:输入即时回显,防抖 350ms 后下推服务端 externalId(名称/手机号统一模糊匹配)。
+  const [searchInput, setSearchInput] = useState("");
+  const [externalId, setExternalId] = useState("");
+  useEffect(() => {
+    const t = setTimeout(() => setExternalId(searchInput.trim()), SEARCH_DEBOUNCE_MS);
+    return () => clearTimeout(t);
+  }, [searchInput]);
+
+  // cursor keyset 分页 + 前端页缓存。账号集 / externalId / pageSize 变化 → 重置 cursor 从首页重拉。
+  const [pageSize, setPageSize] = useState<number>(DEFAULT_PAGE_SIZE);
+  const { friends, loading, error, page, canPrev, canNext, prevPage, nextPage, refresh } =
+    useFriends(apiAccountIds, { externalId }, pageSize);
 
   useEffect(() => {
     if (error) showToast(`加载客户列表失败: ${error}`, { type: "error" });
@@ -71,33 +81,22 @@ export function CustomersPage({
     );
   }, [friends, accountNameById]);
 
+  // 本地态(星标 / 标签)叠加层。loadMore / refresh 重拉时按 React 官方 prop-reset
+  // 模式重置 —— 真接口暂无 patch API,本地编辑会被下一次重拉覆盖,属预期行为。
   const store = useCustomerStore(adapted);
-  const filters = useCustomersFilters({
-    source: store.customers,
-    selectedAccountIdsValue: selectedAccountIds,
-    onSelectedAccountIdsChange: setSelectedAccountIds,
-  });
+  const visibleCustomers = store.customers;
   const selection = useCustomerSelection();
 
   const [requestedCustomerId, setRequestedCustomerId] = useState<string | null>(null);
 
   // 渲染期派生有效的激活客户:若用户选中的客户被过滤掉,则回退到第一条;空列表为 null。
   const activeCustomerId = useMemo(() => {
-    if (filters.filteredCustomers.length === 0) return null;
-    if (
-      requestedCustomerId &&
-      filters.filteredCustomers.some((c) => c.id === requestedCustomerId)
-    ) {
+    if (visibleCustomers.length === 0) return null;
+    if (requestedCustomerId && visibleCustomers.some((c) => c.id === requestedCustomerId)) {
       return requestedCustomerId;
     }
-    return filters.filteredCustomers[0].id;
-  }, [requestedCustomerId, filters.filteredCustomers]);
-
-  // 切 Tab 时退出多选模式。
-  const exitSelection = selection.exit;
-  useEffect(() => {
-    exitSelection();
-  }, [exitSelection, filters.activeTab]);
+    return visibleCustomers[0].id;
+  }, [requestedCustomerId, visibleCustomers]);
 
   // 一次性消费"账号页跳过来的锁定意图":在 render 阶段对比 lastConsumedPending 做 set,
   // 再用 useEffect 触发 toast + 通知父级,避开 react-hooks/set-state-in-effect。
@@ -116,16 +115,16 @@ export function CustomersPage({
     onConsumePendingFilter?.();
   }, [isNewPending, pendingAccountFilter, accounts, onConsumePendingFilter]);
 
-  // 任意筛选变化(账号/标签/搜索/Tab)会改变可见集,把当前选中收敛到交集。
+  // 可见集变化(账号/搜索/翻页)把当前多选收敛到交集。
   const pruneSelection = selection.pruneTo;
   useEffect(() => {
-    const visibleIds = new Set(filters.filteredCustomers.map((c) => c.id));
+    const visibleIds = new Set(visibleCustomers.map((c) => c.id));
     pruneSelection(visibleIds);
-  }, [filters.filteredCustomers, pruneSelection]);
+  }, [visibleCustomers, pruneSelection]);
 
   const activeCustomer = useMemo(
-    () => store.customers.find((c) => c.id === activeCustomerId) ?? null,
-    [activeCustomerId, store.customers],
+    () => visibleCustomers.find((c) => c.id === activeCustomerId) ?? null,
+    [activeCustomerId, visibleCustomers],
   );
 
   const activeAccount = activeCustomer?.accountId
@@ -137,6 +136,18 @@ export function CustomersPage({
     return MOCK_RECENT_MESSAGES.filter((m) => m.customerId === activeCustomer.id);
   }, [activeCustomer]);
 
+  // ── 账号筛选 ─────────────────────────────────────────────────────────────
+  const toggleAccount = useCallback((id: string) => {
+    setSelectedAccountIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+
+  const clearAccounts = useCallback(() => setSelectedAccountIds(EMPTY_ACCOUNTS_SET), []);
+
   // ── 选中相关 ─────────────────────────────────────────────────────────────
   const selectExactly = selection.selectExactly;
   const isMultiSelectActive = selection.isMultiSelectActive;
@@ -146,13 +157,13 @@ export function CustomersPage({
     if (!isMultiSelectActive) {
       toggleSelectionMode();
     }
-    selectExactly(filters.filteredCustomers.map((c) => c.id));
-  }, [filters.filteredCustomers, isMultiSelectActive, selectExactly, toggleSelectionMode]);
+    selectExactly(visibleCustomers.map((c) => c.id));
+  }, [visibleCustomers, isMultiSelectActive, selectExactly, toggleSelectionMode]);
 
   const allSelectedInView = useMemo(() => {
-    if (filters.filteredCustomers.length === 0) return false;
-    return filters.filteredCustomers.every((c) => selection.selectedIds.has(c.id));
-  }, [filters.filteredCustomers, selection.selectedIds]);
+    if (visibleCustomers.length === 0) return false;
+    return visibleCustomers.every((c) => selection.selectedIds.has(c.id));
+  }, [visibleCustomers, selection.selectedIds]);
 
   const toggleSelection = selection.toggle;
   const handleSelectCustomer = useCallback(
@@ -258,31 +269,20 @@ export function CustomersPage({
     showToast(STRINGS.toasts.exported(rows.length));
   }, [selectedIdsArray, store.customers]);
 
-  const hasActiveFilters =
-    filters.searchTerm.trim().length > 0 ||
-    filters.selectedAccountIds.size > 0 ||
-    filters.tagFilters.length > 0 ||
-    filters.stageFilter.size > 0 ||
-    filters.followUpFilter.size > 0;
+  const hasActiveFilters = searchInput.trim().length > 0 || selectedAccountIds.size > 0;
 
   const handleClearFilters = useCallback(() => {
-    filters.setSearchTerm("");
-    filters.clearAccounts();
-    filters.clearTags();
-    filters.clearStages();
-    filters.clearFollowUps();
-  }, [filters]);
-
-  const handleCreateCustomer = useCallback(() => {
-    showToast(STRINGS.toasts.newCustomerStub, { type: "info" });
+    setSearchInput("");
+    setSelectedAccountIds(EMPTY_ACCOUNTS_SET);
   }, []);
+
   const handleToggleView = useCallback(() => {
     showToast(STRINGS.toasts.viewToggleStub, { type: "info" });
   }, []);
-  const handleStubExport = useCallback(() => {
-    void refetch({ force: true });
-    showToast("已强制刷新客户列表", { type: "info" });
-  }, [refetch]);
+  const handleRefresh = useCallback(() => {
+    void refresh();
+    showToast("已刷新客户列表", { type: "info" });
+  }, [refresh]);
 
   const handleEditCustomer = useCallback((id: string) => {
     showToast(`将打开客户编辑面板(${id})`, { type: "info" });
@@ -296,47 +296,32 @@ export function CustomersPage({
       <WorkbenchPanel>
         <div className="flex h-full min-w-0 flex-1 flex-col overflow-hidden">
           <CustomersHeader
-            activeTab={filters.activeTab}
-            onTabChange={filters.setActiveTab}
-            tabCounts={filters.tabCounts}
-            searchTerm={filters.searchTerm}
-            onSearchChange={filters.setSearchTerm}
+            searchTerm={searchInput}
+            onSearchChange={setSearchInput}
             accounts={accounts}
-            selectedAccountIds={filters.selectedAccountIds}
-            accountCounts={filters.accountCounts}
-            onToggleAccount={filters.toggleAccountId}
-            onClearAccounts={filters.clearAccounts}
-            stageFilter={filters.stageFilter}
-            onToggleStage={filters.toggleStage}
-            onClearStages={filters.clearStages}
-            knownTags={filters.knownTags}
-            tagFilters={filters.tagFilters}
-            onToggleTag={filters.toggleTag}
-            onClearTags={filters.clearTags}
-            followUpFilter={filters.followUpFilter}
-            onToggleFollowUp={filters.toggleFollowUp}
-            onClearFollowUps={filters.clearFollowUps}
-            sortKey={filters.sortKey}
-            onSortChange={filters.setSortKey}
+            selectedAccountIds={selectedAccountIds}
+            onToggleAccount={toggleAccount}
+            onClearAccounts={clearAccounts}
             onReset={handleClearFilters}
-            onCreateCustomer={handleCreateCustomer}
             onToggleView={handleToggleView}
-            onExport={handleStubExport}
+            onExport={handleRefresh}
           />
 
           <div className="flex min-h-0 flex-1 gap-2 overflow-hidden bg-workbench-surface-subtle p-2">
             <div className="flex min-w-0 flex-1 flex-col overflow-hidden rounded-lg border border-workbench-line bg-workbench-surface shadow-wb-card">
               <CustomerList
-                paginatedCustomers={filters.paginatedCustomers}
-                filteredTotal={filters.filteredCustomers.length}
+                customers={visibleCustomers}
+                loadedCount={visibleCustomers.length}
+                loading={loading}
                 accounts={accounts}
-                activeTab={filters.activeTab}
                 activeCustomerId={activeCustomerId}
-                page={filters.page}
-                pageCount={filters.pageCount}
-                pageSize={filters.pageSize}
-                onPageChange={filters.setPage}
-                onPageSizeChange={filters.setPageSize}
+                page={page}
+                pageSize={pageSize}
+                canPrev={canPrev}
+                canNext={canNext}
+                onPrevPage={prevPage}
+                onNextPage={nextPage}
+                onPageSizeChange={setPageSize}
                 multiSelectActive={selection.isMultiSelectActive}
                 selectedIds={selection.selectedIds}
                 allSelectedInView={allSelectedInView}
@@ -354,7 +339,6 @@ export function CustomersPage({
                 onOpenChat={handleOpenChat}
                 onEditCustomer={handleEditCustomer}
                 onMoreRowAction={handleRowMore}
-                knownTags={filters.knownTags}
                 hasActiveFilters={hasActiveFilters}
                 onClearFilters={handleClearFilters}
               />

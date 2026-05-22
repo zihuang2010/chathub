@@ -1,0 +1,1621 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>置顶样式 Mockup — B 方案（区段分组）</title>
+    <style>
+      :root {
+        --wb-accent: hsl(215 85% 50%);
+        --wb-text: hsl(222 18% 18%);
+        --wb-text-secondary: hsl(218 12% 42%);
+        --wb-text-muted: hsl(218 10% 56%);
+        --wb-text-disabled: hsl(218 10% 70%);
+        --wb-surface: hsl(220 20% 99%);
+        --wb-surface-subtle: hsl(220 22% 97%);
+        --wb-surface-active: hsl(216 80% 94%);
+        --wb-line: hsl(220 18% 90%);
+        --wb-line-subtle: hsl(220 18% 94%);
+        --wb-online: hsl(161 84% 35%);
+        --wb-unread: hsl(6 75% 56%);
+        --wb-wechat: hsl(153 93% 39%);
+        --wb-wechat-bg: hsl(150 54% 96%);
+        --wb-avatar-1: hsl(38 95% 85%);
+        --wb-avatar-2: hsl(217 92% 92%);
+        --wb-avatar-3: hsl(0 90% 88%);
+        --wb-avatar-4: hsl(138 76% 92%);
+        --wb-avatar-5: hsl(270 100% 92%);
+        --wb-avatar-6: hsl(25 95% 83%);
+        --wb-avatar-7: hsl(199 95% 86%);
+        --wb-avatar-8: hsl(327 73% 88%);
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        font-family:
+          -apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue", Arial, sans-serif;
+        color: var(--wb-text);
+        background: #f3f5f8;
+        font-size: 14px;
+        -webkit-font-smoothing: antialiased;
+      }
+      .page {
+        max-width: 1200px;
+        margin: 0 auto;
+        padding: 32px 24px 64px;
+      }
+      .page-title {
+        font-size: 18px;
+        font-weight: 600;
+        margin: 0 0 4px;
+      }
+      .page-sub {
+        color: var(--wb-text-muted);
+        font-size: 13px;
+        margin: 0 0 24px;
+      }
+      .compare {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 32px;
+      }
+      .col-header {
+        display: flex;
+        align-items: baseline;
+        gap: 8px;
+        margin: 0 0 8px;
+      }
+      .col-title {
+        font-size: 13px;
+        font-weight: 600;
+        color: var(--wb-text);
+      }
+      .col-tag {
+        font-size: 11px;
+        color: var(--wb-text-muted);
+        padding: 1px 6px;
+        border-radius: 4px;
+        background: hsl(220 22% 94%);
+      }
+      .col-tag.proposed {
+        background: hsl(215 85% 96%);
+        color: var(--wb-accent);
+      }
+
+      /* ── conversation list shell ──────────────────────────── */
+      .list {
+        width: 320px;
+        background: var(--wb-surface);
+        border: 1px solid var(--wb-line);
+        border-radius: 12px;
+        overflow: hidden;
+        box-shadow: 0 1px 3px rgba(15, 23, 42, 0.045);
+      }
+      .list-toolbar {
+        height: 44px;
+        border-bottom: 1px solid var(--wb-line-subtle);
+        display: flex;
+        align-items: center;
+        padding: 0 12px;
+        gap: 8px;
+        font-size: 12px;
+        color: var(--wb-text-muted);
+      }
+      .list-toolbar .search {
+        flex: 1;
+        height: 28px;
+        background: var(--wb-surface-subtle);
+        border-radius: 6px;
+        display: flex;
+        align-items: center;
+        padding: 0 8px;
+        gap: 6px;
+        color: var(--wb-text-disabled);
+      }
+      .list-body {
+        padding: 6px 0 8px;
+      }
+
+      /* ── section header (B 方案核心) ──────────────────────── */
+      .section-head {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 12px 16px 4px;
+        font-size: 11px;
+        letter-spacing: 0.04em;
+        color: var(--wb-text-muted);
+        font-weight: 500;
+      }
+      .section-head .pin-glyph {
+        width: 10px;
+        height: 10px;
+        color: var(--wb-text-muted);
+      }
+      .section-head .count {
+        color: var(--wb-text-disabled);
+        font-variant-numeric: tabular-nums;
+      }
+      .section-divider {
+        height: 1px;
+        margin: 4px 12px 4px;
+        background: var(--wb-line-subtle);
+      }
+      /* "普通会话"那一档,把它和置顶区段分开 */
+      .section-gap {
+        height: 6px;
+      }
+
+      /* ── single row ───────────────────────────────────────── */
+      .row {
+        position: relative;
+        display: grid;
+        grid-template-columns: 44px 1fr;
+        gap: 12px;
+        margin: 0 8px;
+        padding: 8px 12px;
+        border-radius: 12px;
+        cursor: pointer;
+        transition: background-color 0.12s ease;
+      }
+      .row:hover {
+        background: var(--wb-surface-subtle);
+      }
+      .row.selected {
+        background: var(--wb-surface-active);
+      }
+
+      .avatar-wrap {
+        position: relative;
+        width: 44px;
+        height: 44px;
+        margin-top: 2px;
+      }
+      .avatar {
+        width: 44px;
+        height: 44px;
+        border-radius: 12px;
+        box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.45);
+        display: grid;
+        place-items: center;
+        color: var(--wb-text-secondary);
+        font-weight: 600;
+        font-size: 14px;
+        user-select: none;
+      }
+      .online-dot {
+        position: absolute;
+        right: -1px;
+        bottom: -1px;
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        background: var(--wb-online);
+        border: 2px solid var(--wb-surface);
+      }
+      /* current 方案的左上 pin chip(仅在左侧"当前"列展示) */
+      .pin-chip {
+        position: absolute;
+        left: -2px;
+        top: -2px;
+        width: 14px;
+        height: 14px;
+        border-radius: 50%;
+        background: var(--wb-accent);
+        display: grid;
+        place-items: center;
+        box-shadow: 0 0 0 1.5px white;
+      }
+      .pin-chip svg {
+        width: 8px;
+        height: 8px;
+        color: #fff;
+        transform: rotate(-45deg);
+      }
+
+      .body {
+        min-width: 0;
+        padding-right: 44px;
+        padding-top: 1px;
+      }
+      .name-row {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        min-width: 0;
+      }
+      .name {
+        font-size: 13px;
+        font-weight: 500;
+        color: var(--wb-text);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .wechat-tag {
+        flex-shrink: 0;
+        font-size: 10px;
+        color: var(--wb-wechat);
+        background: var(--wb-wechat-bg);
+        padding: 1px 5px;
+        border-radius: 4px;
+        font-weight: 500;
+      }
+      .preview {
+        margin-top: 2px;
+        font-size: 12px;
+        color: var(--wb-text-muted);
+        font-weight: 500;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .unread-prefix {
+        color: var(--wb-text-muted);
+        font-weight: 500;
+        margin-right: 4px;
+      }
+      .draft-prefix {
+        color: var(--wb-unread);
+        font-weight: 500;
+        margin-right: 4px;
+      }
+      .from-row {
+        margin-top: 2px;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 11px;
+        color: var(--wb-text-muted);
+        font-weight: 500;
+      }
+      .from-row .account {
+        color: var(--wb-text-secondary);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        min-width: 0;
+      }
+      .time {
+        position: absolute;
+        right: 16px;
+        top: 10px;
+        font-size: 11px;
+        color: var(--wb-text-muted);
+        font-variant-numeric: tabular-nums;
+      }
+      .unread-badge {
+        position: absolute;
+        right: 16px;
+        bottom: 20px;
+        height: 14px;
+        min-width: 14px;
+        padding: 0 4px;
+        border-radius: 999px;
+        background: var(--wb-unread);
+        color: white;
+        font-size: 9px;
+        font-weight: 600;
+        display: grid;
+        place-items: center;
+        line-height: 1;
+        font-variant-numeric: tabular-nums;
+      }
+
+      /* ── color variants for avatars ───────────────────────── */
+      .av-1 {
+        background: var(--wb-avatar-1);
+      }
+      .av-2 {
+        background: var(--wb-avatar-2);
+      }
+      .av-3 {
+        background: var(--wb-avatar-3);
+      }
+      .av-4 {
+        background: var(--wb-avatar-4);
+      }
+      .av-5 {
+        background: var(--wb-avatar-5);
+      }
+      .av-6 {
+        background: var(--wb-avatar-6);
+      }
+      .av-7 {
+        background: var(--wb-avatar-7);
+      }
+      .av-8 {
+        background: var(--wb-avatar-8);
+      }
+
+      .notes {
+        margin-top: 24px;
+        padding: 16px 20px;
+        background: white;
+        border: 1px solid var(--wb-line-subtle);
+        border-radius: 12px;
+        font-size: 13px;
+        line-height: 1.65;
+        color: var(--wb-text-secondary);
+      }
+      .notes h3 {
+        margin: 0 0 8px;
+        font-size: 13px;
+        color: var(--wb-text);
+      }
+      .notes ul {
+        margin: 0;
+        padding-left: 20px;
+      }
+      .notes code {
+        background: hsl(220 22% 94%);
+        padding: 1px 6px;
+        border-radius: 4px;
+        font-size: 12px;
+        font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+      }
+
+      /* 三种区段头变体 */
+      .variants {
+        margin-top: 32px;
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 16px;
+      }
+      .variant-card {
+        background: var(--wb-surface);
+        border: 1px solid var(--wb-line);
+        border-radius: 12px;
+        overflow: hidden;
+      }
+      .variant-card .label {
+        padding: 10px 14px;
+        font-size: 12px;
+        font-weight: 600;
+        color: var(--wb-text);
+        border-bottom: 1px solid var(--wb-line-subtle);
+        background: var(--wb-surface-subtle);
+      }
+      .variant-card .label small {
+        color: var(--wb-text-muted);
+        font-weight: 400;
+        margin-left: 6px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="page">
+      <h1 class="page-title">置顶样式对比 — B 方案：区段分组</h1>
+      <p class="page-sub">
+        左：当前（头像左上 pin 徽标） &nbsp;·&nbsp; 右：B 方案（区段头分组，行内零装饰）
+      </p>
+
+      <div class="compare">
+        <!-- ── 左:当前方案 ────────────────────────────────────── -->
+        <div>
+          <div class="col-header">
+            <span class="col-title">当前 — 头像角标</span>
+            <span class="col-tag">production</span>
+          </div>
+          <div class="list">
+            <div class="list-toolbar"><div class="search">搜索客户、消息</div></div>
+            <div class="list-body">
+              <!-- 置顶 + 普通 混排,靠角标区分 -->
+              <div class="row">
+                <div class="avatar-wrap">
+                  <div class="avatar av-2">王</div>
+                  <span class="pin-chip"
+                    ><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                      <path d="M12 17v5M5 9l7 7 7-7M5 9c0-2 1-4 3-4h8c2 0 3 2 3 4" /></svg
+                  ></span>
+                  <span class="online-dot"></span>
+                </div>
+                <div class="body">
+                  <div class="name-row">
+                    <span class="name">王嘉怡</span><span class="wechat-tag">微信</span>
+                  </div>
+                  <div class="preview">
+                    <span class="unread-prefix">[未读]</span>明天上午 10 点确认一下方案细节
+                  </div>
+                  <div class="from-row">来自 <span class="account">售前-张三 / WeCom 01</span></div>
+                </div>
+                <div class="time">09:42</div>
+                <div class="unread-badge">3</div>
+              </div>
+
+              <div class="row">
+                <div class="avatar-wrap">
+                  <div class="avatar av-4">陈</div>
+                  <span class="pin-chip"
+                    ><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                      <path d="M12 17v5M5 9l7 7 7-7M5 9c0-2 1-4 3-4h8c2 0 3 2 3 4" /></svg
+                  ></span>
+                </div>
+                <div class="body">
+                  <div class="name-row">
+                    <span class="name">陈思远（重点客户）</span><span class="wechat-tag">微信</span>
+                  </div>
+                  <div class="preview">
+                    <span class="draft-prefix">[草稿]</span>已经帮您留意了,稍等
+                  </div>
+                  <div class="from-row">来自 <span class="account">客户成功-李四</span></div>
+                </div>
+                <div class="time">09:15</div>
+              </div>
+
+              <div class="row">
+                <div class="avatar-wrap">
+                  <div class="avatar av-6">林</div>
+                  <span class="pin-chip"
+                    ><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                      <path d="M12 17v5M5 9l7 7 7-7M5 9c0-2 1-4 3-4h8c2 0 3 2 3 4" /></svg
+                  ></span>
+                  <span class="online-dot"></span>
+                </div>
+                <div class="body">
+                  <div class="name-row">
+                    <span class="name">林女士 — 长期复购</span><span class="wechat-tag">微信</span>
+                  </div>
+                  <div class="preview">那我们就按上次的版本来</div>
+                  <div class="from-row">来自 <span class="account">售后-王五 / WeCom 02</span></div>
+                </div>
+                <div class="time">昨天</div>
+              </div>
+
+              <div class="row selected">
+                <div class="avatar-wrap">
+                  <div class="avatar av-1">赵</div>
+                  <span class="online-dot"></span>
+                </div>
+                <div class="body">
+                  <div class="name-row">
+                    <span class="name">赵晓敏</span><span class="wechat-tag">微信</span>
+                  </div>
+                  <div class="preview">
+                    <span class="unread-prefix">[未读]</span>好的好的,我等等再发链接给您
+                  </div>
+                  <div class="from-row">来自 <span class="account">售前-张三</span></div>
+                </div>
+                <div class="time">08:51</div>
+                <div class="unread-badge">12</div>
+              </div>
+
+              <div class="row">
+                <div class="avatar-wrap">
+                  <div class="avatar av-3">孙</div>
+                </div>
+                <div class="body">
+                  <div class="name-row">
+                    <span class="name">孙浩然</span><span class="wechat-tag">微信</span>
+                  </div>
+                  <div class="preview">好的明白,我这边再核对一下数据</div>
+                  <div class="from-row">来自 <span class="account">客户成功-李四</span></div>
+                </div>
+                <div class="time">08:30</div>
+              </div>
+
+              <div class="row">
+                <div class="avatar-wrap">
+                  <div class="avatar av-5">周</div>
+                </div>
+                <div class="body">
+                  <div class="name-row">
+                    <span class="name">周倩</span><span class="wechat-tag">微信</span>
+                  </div>
+                  <div class="preview">已收到,谢谢</div>
+                  <div class="from-row">来自 <span class="account">售后-王五</span></div>
+                </div>
+                <div class="time">昨天</div>
+              </div>
+
+              <div class="row">
+                <div class="avatar-wrap">
+                  <div class="avatar av-7">吴</div>
+                  <span class="online-dot"></span>
+                </div>
+                <div class="body">
+                  <div class="name-row">
+                    <span class="name">吴磊</span><span class="wechat-tag">微信</span>
+                  </div>
+                  <div class="preview">下周三我有空,具体时间我们再约</div>
+                  <div class="from-row">来自 <span class="account">售前-张三 / WeCom 03</span></div>
+                </div>
+                <div class="time">周一</div>
+                <div class="unread-badge">99+</div>
+              </div>
+
+              <div class="row">
+                <div class="avatar-wrap">
+                  <div class="avatar av-8">刘</div>
+                </div>
+                <div class="body">
+                  <div class="name-row">
+                    <span class="name">刘思琪</span><span class="wechat-tag">微信</span>
+                  </div>
+                  <div class="preview">收到啦~</div>
+                  <div class="from-row">来自 <span class="account">客户成功-李四</span></div>
+                </div>
+                <div class="time">3月12日</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ── 右:B 方案 区段分组 ─────────────────────────────── -->
+        <div>
+          <div class="col-header">
+            <span class="col-title">B 方案 — 区段分组</span>
+            <span class="col-tag proposed">proposed</span>
+          </div>
+          <div class="list">
+            <div class="list-toolbar"><div class="search">搜索客户、消息</div></div>
+            <div class="list-body">
+              <!-- 置顶区段头 -->
+              <div class="section-head">
+                <svg
+                  class="pin-glyph"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                >
+                  <path d="M12 17v5M5 9l7 7 7-7M5 9c0-2 1-4 3-4h8c2 0 3 2 3 4" />
+                </svg>
+                <span>置顶</span>
+                <span class="count">· 3</span>
+              </div>
+
+              <div class="row">
+                <div class="avatar-wrap">
+                  <div class="avatar av-2">王</div>
+                  <span class="online-dot"></span>
+                </div>
+                <div class="body">
+                  <div class="name-row">
+                    <span class="name">王嘉怡</span><span class="wechat-tag">微信</span>
+                  </div>
+                  <div class="preview">
+                    <span class="unread-prefix">[未读]</span>明天上午 10 点确认一下方案细节
+                  </div>
+                  <div class="from-row">来自 <span class="account">售前-张三 / WeCom 01</span></div>
+                </div>
+                <div class="time">09:42</div>
+                <div class="unread-badge">3</div>
+              </div>
+
+              <div class="row">
+                <div class="avatar-wrap">
+                  <div class="avatar av-4">陈</div>
+                </div>
+                <div class="body">
+                  <div class="name-row">
+                    <span class="name">陈思远（重点客户）</span><span class="wechat-tag">微信</span>
+                  </div>
+                  <div class="preview">
+                    <span class="draft-prefix">[草稿]</span>已经帮您留意了,稍等
+                  </div>
+                  <div class="from-row">来自 <span class="account">客户成功-李四</span></div>
+                </div>
+                <div class="time">09:15</div>
+              </div>
+
+              <div class="row">
+                <div class="avatar-wrap">
+                  <div class="avatar av-6">林</div>
+                  <span class="online-dot"></span>
+                </div>
+                <div class="body">
+                  <div class="name-row">
+                    <span class="name">林女士 — 长期复购</span><span class="wechat-tag">微信</span>
+                  </div>
+                  <div class="preview">那我们就按上次的版本来</div>
+                  <div class="from-row">来自 <span class="account">售后-王五 / WeCom 02</span></div>
+                </div>
+                <div class="time">昨天</div>
+              </div>
+
+              <!-- 区段间留白(无 divider,纯靠间距) -->
+              <div class="section-gap"></div>
+
+              <!-- 普通会话:没有 header,直接接续 -->
+              <div class="row selected">
+                <div class="avatar-wrap">
+                  <div class="avatar av-1">赵</div>
+                  <span class="online-dot"></span>
+                </div>
+                <div class="body">
+                  <div class="name-row">
+                    <span class="name">赵晓敏</span><span class="wechat-tag">微信</span>
+                  </div>
+                  <div class="preview">
+                    <span class="unread-prefix">[未读]</span>好的好的,我等等再发链接给您
+                  </div>
+                  <div class="from-row">来自 <span class="account">售前-张三</span></div>
+                </div>
+                <div class="time">08:51</div>
+                <div class="unread-badge">12</div>
+              </div>
+
+              <div class="row">
+                <div class="avatar-wrap">
+                  <div class="avatar av-3">孙</div>
+                </div>
+                <div class="body">
+                  <div class="name-row">
+                    <span class="name">孙浩然</span><span class="wechat-tag">微信</span>
+                  </div>
+                  <div class="preview">好的明白,我这边再核对一下数据</div>
+                  <div class="from-row">来自 <span class="account">客户成功-李四</span></div>
+                </div>
+                <div class="time">08:30</div>
+              </div>
+
+              <div class="row">
+                <div class="avatar-wrap">
+                  <div class="avatar av-5">周</div>
+                </div>
+                <div class="body">
+                  <div class="name-row">
+                    <span class="name">周倩</span><span class="wechat-tag">微信</span>
+                  </div>
+                  <div class="preview">已收到,谢谢</div>
+                  <div class="from-row">来自 <span class="account">售后-王五</span></div>
+                </div>
+                <div class="time">昨天</div>
+              </div>
+
+              <div class="row">
+                <div class="avatar-wrap">
+                  <div class="avatar av-7">吴</div>
+                  <span class="online-dot"></span>
+                </div>
+                <div class="body">
+                  <div class="name-row">
+                    <span class="name">吴磊</span><span class="wechat-tag">微信</span>
+                  </div>
+                  <div class="preview">下周三我有空,具体时间我们再约</div>
+                  <div class="from-row">来自 <span class="account">售前-张三 / WeCom 03</span></div>
+                </div>
+                <div class="time">周一</div>
+                <div class="unread-badge">99+</div>
+              </div>
+
+              <div class="row">
+                <div class="avatar-wrap">
+                  <div class="avatar av-8">刘</div>
+                </div>
+                <div class="body">
+                  <div class="name-row">
+                    <span class="name">刘思琪</span><span class="wechat-tag">微信</span>
+                  </div>
+                  <div class="preview">收到啦~</div>
+                  <div class="from-row">来自 <span class="account">客户成功-李四</span></div>
+                </div>
+                <div class="time">3月12日</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── 用户反馈后的新候选 ──────────────────────────────── -->
+      <h2 style="font-size: 14px; font-weight: 600; margin: 40px 0 4px">
+        v2 — 去掉"置顶"汉字后的候选
+      </h2>
+      <p class="page-sub" style="margin: 0 0 16px">
+        用户反馈：1) 不要"置顶"二字 2) 字体不搭。下面三个方案都<strong
+          >完全删掉 section header</strong
+        >，让区段感由其它视觉手段承担。
+      </p>
+
+      <style>
+        .v2-grid {
+          display: grid;
+          grid-template-columns: repeat(3, 1fr);
+          gap: 20px;
+          margin-bottom: 32px;
+        }
+        .v2-card {
+          background: var(--wb-surface);
+          border: 1px solid var(--wb-line);
+          border-radius: 12px;
+          overflow: hidden;
+        }
+        .v2-card .v2-label {
+          padding: 10px 14px;
+          font-size: 12px;
+          font-weight: 600;
+          color: var(--wb-text);
+          border-bottom: 1px solid var(--wb-line-subtle);
+          background: var(--wb-surface-subtle);
+        }
+        .v2-card .v2-label small {
+          color: var(--wb-text-muted);
+          font-weight: 400;
+          margin-left: 6px;
+        }
+        .v2-card .v2-body {
+          padding: 6px 0 8px;
+        }
+        .v2-card .v2-tradeoff {
+          padding: 10px 14px;
+          font-size: 11px;
+          color: var(--wb-text-muted);
+          border-top: 1px solid var(--wb-line-subtle);
+          line-height: 1.55;
+        }
+        /* D 变体:行内右侧 Pin 图标 */
+        .row .pin-inline {
+          position: absolute;
+          right: 56px;
+          top: 11px;
+          color: var(--wb-text-muted);
+          display: inline-flex;
+        }
+        .row .pin-inline svg {
+          width: 10px;
+          height: 10px;
+          transform: rotate(-45deg);
+        }
+        /* E 变体:hairline 分隔线 */
+        .group-divider {
+          height: 1px;
+          background: var(--wb-line-subtle);
+          margin: 6px 16px 6px;
+        }
+        /* F 变体:头像左上微型小圆点 */
+        .micro-dot {
+          position: absolute;
+          left: -1px;
+          top: -1px;
+          width: 7px;
+          height: 7px;
+          border-radius: 50%;
+          background: var(--wb-accent);
+          box-shadow: 0 0 0 1.5px var(--wb-surface);
+          pointer-events: none;
+        }
+      </style>
+
+      <div class="v2-grid">
+        <!-- ── D:行内 Pin 图标(time 左侧) ──────────────────────── -->
+        <div class="v2-card">
+          <div class="v2-label">D · 行内 Pin 图标 <small>推荐 · WeChat 风</small></div>
+          <div class="v2-body">
+            <!-- pinned 1 -->
+            <div class="row">
+              <div class="avatar-wrap">
+                <div class="avatar av-2">王</div>
+                <span class="online-dot"></span>
+              </div>
+              <div class="body">
+                <div class="name-row">
+                  <span class="name">王嘉怡</span><span class="wechat-tag">微信</span>
+                </div>
+                <div class="preview">
+                  <span class="unread-prefix">[未读]</span>明天 10 点确认方案
+                </div>
+                <div class="from-row">来自 <span class="account">售前-张三</span></div>
+              </div>
+              <span class="pin-inline"
+                ><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M12 17v5M5 9l7 7 7-7M5 9c0-2 1-4 3-4h8c2 0 3 2 3 4" /></svg
+              ></span>
+              <div class="time">09:42</div>
+              <div class="unread-badge">3</div>
+            </div>
+            <!-- pinned 2 -->
+            <div class="row">
+              <div class="avatar-wrap">
+                <div class="avatar av-4">陈</div>
+              </div>
+              <div class="body">
+                <div class="name-row">
+                  <span class="name">陈思远</span><span class="wechat-tag">微信</span>
+                </div>
+                <div class="preview"><span class="draft-prefix">[草稿]</span>已经留意</div>
+                <div class="from-row">来自 <span class="account">客户成功-李四</span></div>
+              </div>
+              <span class="pin-inline"
+                ><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M12 17v5M5 9l7 7 7-7M5 9c0-2 1-4 3-4h8c2 0 3 2 3 4" /></svg
+              ></span>
+              <div class="time">09:15</div>
+            </div>
+            <!-- normal -->
+            <div class="row selected">
+              <div class="avatar-wrap">
+                <div class="avatar av-1">赵</div>
+                <span class="online-dot"></span>
+              </div>
+              <div class="body">
+                <div class="name-row">
+                  <span class="name">赵晓敏</span><span class="wechat-tag">微信</span>
+                </div>
+                <div class="preview">好的好的</div>
+                <div class="from-row">来自 <span class="account">售前-张三</span></div>
+              </div>
+              <div class="time">08:51</div>
+              <div class="unread-badge">12</div>
+            </div>
+            <div class="row">
+              <div class="avatar-wrap"><div class="avatar av-3">孙</div></div>
+              <div class="body">
+                <div class="name-row">
+                  <span class="name">孙浩然</span><span class="wechat-tag">微信</span>
+                </div>
+                <div class="preview">我再核对一下数据</div>
+                <div class="from-row">来自 <span class="account">客户成功-李四</span></div>
+              </div>
+              <div class="time">08:30</div>
+            </div>
+          </div>
+          <div class="v2-tradeoff">
+            <strong>D · 行内 Pin 图标</strong><br />
+            在 time 左侧加一个 10px muted Pin 图标。每行自带"我是置顶"信号，零 header chrome。<br />
+            <strong>+</strong> 不抢字体，融在 muted 灰里 &nbsp;<strong>+</strong>
+            WeChat/钉钉成熟模式<br />
+            <strong>−</strong> 右侧文本宽度被压缩 ~16px
+          </div>
+        </div>
+
+        <!-- ── E:仅 hairline 分隔线 ─────────────────────────────── -->
+        <div class="v2-card">
+          <div class="v2-label">E · 仅 hairline 分隔线</div>
+          <div class="v2-body">
+            <div class="row">
+              <div class="avatar-wrap">
+                <div class="avatar av-2">王</div>
+                <span class="online-dot"></span>
+              </div>
+              <div class="body">
+                <div class="name-row">
+                  <span class="name">王嘉怡</span><span class="wechat-tag">微信</span>
+                </div>
+                <div class="preview">
+                  <span class="unread-prefix">[未读]</span>明天 10 点确认方案
+                </div>
+                <div class="from-row">来自 <span class="account">售前-张三</span></div>
+              </div>
+              <div class="time">09:42</div>
+              <div class="unread-badge">3</div>
+            </div>
+            <div class="row">
+              <div class="avatar-wrap"><div class="avatar av-4">陈</div></div>
+              <div class="body">
+                <div class="name-row">
+                  <span class="name">陈思远</span><span class="wechat-tag">微信</span>
+                </div>
+                <div class="preview"><span class="draft-prefix">[草稿]</span>已经留意</div>
+                <div class="from-row">来自 <span class="account">客户成功-李四</span></div>
+              </div>
+              <div class="time">09:15</div>
+            </div>
+            <!-- 关键:分隔线 -->
+            <div class="group-divider"></div>
+            <div class="row selected">
+              <div class="avatar-wrap">
+                <div class="avatar av-1">赵</div>
+                <span class="online-dot"></span>
+              </div>
+              <div class="body">
+                <div class="name-row">
+                  <span class="name">赵晓敏</span><span class="wechat-tag">微信</span>
+                </div>
+                <div class="preview">好的好的</div>
+                <div class="from-row">来自 <span class="account">售前-张三</span></div>
+              </div>
+              <div class="time">08:51</div>
+              <div class="unread-badge">12</div>
+            </div>
+            <div class="row">
+              <div class="avatar-wrap"><div class="avatar av-3">孙</div></div>
+              <div class="body">
+                <div class="name-row">
+                  <span class="name">孙浩然</span><span class="wechat-tag">微信</span>
+                </div>
+                <div class="preview">我再核对一下数据</div>
+                <div class="from-row">来自 <span class="account">客户成功-李四</span></div>
+              </div>
+              <div class="time">08:30</div>
+            </div>
+          </div>
+          <div class="v2-tradeoff">
+            <strong>E · 仅 hairline 分隔线</strong><br />
+            在 pinned 和普通之间放一根 1px hairline（mx-4）。完全没有任何文字/图标。<br />
+            <strong>+</strong> 极致克制，零字体冲突<br />
+            <strong>−</strong> 单条置顶时 hairline 紧贴第一条普通项，语义弱（不知道"为什么有横线"）
+          </div>
+        </div>
+
+        <!-- ── F:头像左上微型圆点 ─────────────────────────────── -->
+        <div class="v2-card">
+          <div class="v2-label">F · 头像左上微型圆点</div>
+          <div class="v2-body">
+            <div class="row">
+              <div class="avatar-wrap">
+                <div class="avatar av-2">王</div>
+                <span class="micro-dot"></span>
+                <span class="online-dot"></span>
+              </div>
+              <div class="body">
+                <div class="name-row">
+                  <span class="name">王嘉怡</span><span class="wechat-tag">微信</span>
+                </div>
+                <div class="preview">
+                  <span class="unread-prefix">[未读]</span>明天 10 点确认方案
+                </div>
+                <div class="from-row">来自 <span class="account">售前-张三</span></div>
+              </div>
+              <div class="time">09:42</div>
+              <div class="unread-badge">3</div>
+            </div>
+            <div class="row">
+              <div class="avatar-wrap">
+                <div class="avatar av-4">陈</div>
+                <span class="micro-dot"></span>
+              </div>
+              <div class="body">
+                <div class="name-row">
+                  <span class="name">陈思远</span><span class="wechat-tag">微信</span>
+                </div>
+                <div class="preview"><span class="draft-prefix">[草稿]</span>已经留意</div>
+                <div class="from-row">来自 <span class="account">客户成功-李四</span></div>
+              </div>
+              <div class="time">09:15</div>
+            </div>
+            <div class="row selected">
+              <div class="avatar-wrap">
+                <div class="avatar av-1">赵</div>
+                <span class="online-dot"></span>
+              </div>
+              <div class="body">
+                <div class="name-row">
+                  <span class="name">赵晓敏</span><span class="wechat-tag">微信</span>
+                </div>
+                <div class="preview">好的好的</div>
+                <div class="from-row">来自 <span class="account">售前-张三</span></div>
+              </div>
+              <div class="time">08:51</div>
+              <div class="unread-badge">12</div>
+            </div>
+            <div class="row">
+              <div class="avatar-wrap"><div class="avatar av-3">孙</div></div>
+              <div class="body">
+                <div class="name-row">
+                  <span class="name">孙浩然</span><span class="wechat-tag">微信</span>
+                </div>
+                <div class="preview">我再核对一下数据</div>
+                <div class="from-row">来自 <span class="account">客户成功-李四</span></div>
+              </div>
+              <div class="time">08:30</div>
+            </div>
+          </div>
+          <div class="v2-tradeoff">
+            <strong>F · 头像左上微型圆点</strong><br />
+            头像左上 7px accent 实心小圆点（无图标、无 chip 外圈），加 1.5px surface 描边防贴边。<br />
+            <strong>+</strong> 比之前 14px chip 小一半，从"角标"退化成"信号点"<br />
+            <strong>−</strong> 仍在头像四角，与右下 online dot 视觉上还是同区域
+          </div>
+        </div>
+      </div>
+
+      <!-- ── v3:角标候选(2026-05-20 用户反馈后) ─────────────── -->
+      <h2 style="font-size: 14px; font-weight: 600; margin: 40px 0 4px">v3 — 颜色很轻的角标候选</h2>
+      <p class="page-sub" style="margin: 0 0 16px">
+        用户反馈：D 方案(行内 Pin 图标)"还是看着太别扭"，希望换成<strong>颜色很轻的角标</strong>。
+        下面三个候选都不再用 Pin 图标本体，让置顶感由色块/几何形状承担。所有色都用 accent
+        的低饱和淡化版，避免抢眼。
+      </p>
+
+      <style>
+        /* G:右上角折角(corner-fold) ── "页角被折下" 隐喻。
+       关键修复(2026-05-20):去掉 corner-fold 自身 border-radius,
+       让两条直边保持锐利;由父行 overflow:hidden 让外角顺着 row 12px 圆角微 clip
+       而不是 badge 自身画圆。这样 hypotenuse 干净,外角不会"鼓"。 */
+        .row.row-pinned-corner {
+          overflow: hidden;
+        }
+        .row .corner-fold {
+          position: absolute;
+          top: 0;
+          right: 0;
+          width: 18px;
+          height: 18px;
+          pointer-events: none;
+          clip-path: polygon(100% 0, 100% 100%, 0 0);
+          background: hsl(215 85% 86%);
+        }
+        .row .corner-fold::after {
+          /* 折痕高光:沿斜边一条 1px 高光,做"翻折厚度"。 */
+          content: "";
+          position: absolute;
+          inset: 0;
+          background: linear-gradient(
+            225deg,
+            transparent 49.5%,
+            hsl(215 85% 74%) 50%,
+            transparent 50.5%
+          );
+        }
+        /* H:右上角小三角(纯色,贴边,无折痕) ── 比 G 更克制 */
+        .row .corner-tri {
+          position: absolute;
+          top: 0;
+          right: 0;
+          width: 10px;
+          height: 10px;
+          background: hsl(215 85% 90%);
+          clip-path: polygon(100% 0, 100% 100%, 0 0);
+          border-top-right-radius: 10px;
+          pointer-events: none;
+        }
+        /* I:左侧 2px 竖条 ── 与右侧时间/未读完全错开,语义"列表书签" */
+        .row .left-bar {
+          position: absolute;
+          left: 4px;
+          top: 14px;
+          bottom: 14px;
+          width: 2px;
+          border-radius: 1px;
+          background: hsl(215 85% 80%);
+          pointer-events: none;
+        }
+      </style>
+
+      <div class="v2-grid">
+        <!-- ── G:右上角折角(corner-fold) ──────────────────────── -->
+        <div class="v2-card">
+          <div class="v2-label">G · 右上角折角 <small>推荐 · 隐喻"被标记"</small></div>
+          <div class="v2-body">
+            <!-- pinned 1 -->
+            <div class="row row-pinned-corner">
+              <div class="avatar-wrap">
+                <div class="avatar av-2">王</div>
+                <span class="online-dot"></span>
+              </div>
+              <div class="body">
+                <div class="name-row">
+                  <span class="name">王嘉怡</span><span class="wechat-tag">微信</span>
+                </div>
+                <div class="preview">
+                  <span class="unread-prefix">[未读]</span>明天 10 点确认方案
+                </div>
+                <div class="from-row">来自 <span class="account">售前-张三</span></div>
+              </div>
+              <span class="corner-fold"></span>
+              <div class="time">09:42</div>
+              <div class="unread-badge">3</div>
+            </div>
+            <!-- pinned 2 -->
+            <div class="row row-pinned-corner">
+              <div class="avatar-wrap">
+                <div class="avatar av-4">陈</div>
+              </div>
+              <div class="body">
+                <div class="name-row">
+                  <span class="name">陈思远</span><span class="wechat-tag">微信</span>
+                </div>
+                <div class="preview"><span class="draft-prefix">[草稿]</span>已经留意</div>
+                <div class="from-row">来自 <span class="account">客户成功-李四</span></div>
+              </div>
+              <span class="corner-fold"></span>
+              <div class="time">09:15</div>
+            </div>
+            <!-- normal -->
+            <div class="row selected">
+              <div class="avatar-wrap">
+                <div class="avatar av-1">赵</div>
+                <span class="online-dot"></span>
+              </div>
+              <div class="body">
+                <div class="name-row">
+                  <span class="name">赵晓敏</span><span class="wechat-tag">微信</span>
+                </div>
+                <div class="preview">好的好的</div>
+                <div class="from-row">来自 <span class="account">售前-张三</span></div>
+              </div>
+              <div class="time">08:51</div>
+              <div class="unread-badge">12</div>
+            </div>
+            <div class="row">
+              <div class="avatar-wrap"><div class="avatar av-3">孙</div></div>
+              <div class="body">
+                <div class="name-row">
+                  <span class="name">孙浩然</span><span class="wechat-tag">微信</span>
+                </div>
+                <div class="preview">我再核对一下数据</div>
+                <div class="from-row">来自 <span class="account">客户成功-李四</span></div>
+              </div>
+              <div class="time">08:30</div>
+            </div>
+          </div>
+          <div class="v2-tradeoff">
+            <strong>G · 右上角折角</strong>(2026-05-20 修)<br />
+            18×18 锐边三角(hsl 215 85% 86% 底 + hsl 215 85% 74% 1px 折痕高光)，两条直边 无
+            border-radius；外角由 row <code>overflow:hidden</code> 顺着 12px 圆角微 clip，避免 badge
+            自身画弧。<br />
+            <strong>+</strong> 隐喻成熟(纸张"折角=被标记") &nbsp;<strong>+</strong> 不占布局<br />
+            <strong>−</strong> selected 态时折角与 active 蓝背景饱和接近，可能略弱化(可改 white/40 +
+            accent/15 双色)
+          </div>
+        </div>
+
+        <!-- ── H:右上角小三角(纯色) ──────────────────────────── -->
+        <div class="v2-card">
+          <div class="v2-label">H · 右上角小三角 <small>更克制</small></div>
+          <div class="v2-body">
+            <div class="row">
+              <div class="avatar-wrap">
+                <div class="avatar av-2">王</div>
+                <span class="online-dot"></span>
+              </div>
+              <div class="body">
+                <div class="name-row">
+                  <span class="name">王嘉怡</span><span class="wechat-tag">微信</span>
+                </div>
+                <div class="preview">
+                  <span class="unread-prefix">[未读]</span>明天 10 点确认方案
+                </div>
+                <div class="from-row">来自 <span class="account">售前-张三</span></div>
+              </div>
+              <span class="corner-tri"></span>
+              <div class="time">09:42</div>
+              <div class="unread-badge">3</div>
+            </div>
+            <div class="row">
+              <div class="avatar-wrap"><div class="avatar av-4">陈</div></div>
+              <div class="body">
+                <div class="name-row">
+                  <span class="name">陈思远</span><span class="wechat-tag">微信</span>
+                </div>
+                <div class="preview"><span class="draft-prefix">[草稿]</span>已经留意</div>
+                <div class="from-row">来自 <span class="account">客户成功-李四</span></div>
+              </div>
+              <span class="corner-tri"></span>
+              <div class="time">09:15</div>
+            </div>
+            <div class="row selected">
+              <div class="avatar-wrap">
+                <div class="avatar av-1">赵</div>
+                <span class="online-dot"></span>
+              </div>
+              <div class="body">
+                <div class="name-row">
+                  <span class="name">赵晓敏</span><span class="wechat-tag">微信</span>
+                </div>
+                <div class="preview">好的好的</div>
+                <div class="from-row">来自 <span class="account">售前-张三</span></div>
+              </div>
+              <div class="time">08:51</div>
+              <div class="unread-badge">12</div>
+            </div>
+            <div class="row">
+              <div class="avatar-wrap"><div class="avatar av-3">孙</div></div>
+              <div class="body">
+                <div class="name-row">
+                  <span class="name">孙浩然</span><span class="wechat-tag">微信</span>
+                </div>
+                <div class="preview">我再核对一下数据</div>
+                <div class="from-row">来自 <span class="account">客户成功-李四</span></div>
+              </div>
+              <div class="time">08:30</div>
+            </div>
+          </div>
+          <div class="v2-tradeoff">
+            <strong>H · 右上角小三角</strong><br />
+            10×10 单色三角，无折痕高光，比 G 更轻量。色用 accent/8 (hsl 215 85% 90%)。<br />
+            <strong>+</strong> 最简单可实现 &nbsp;<strong>+</strong> 几乎不抢眼<br />
+            <strong>−</strong> 缺少"折角"的语义提示，可能被当成 UI 残影
+          </div>
+        </div>
+
+        <!-- ── I:左侧 2px 竖条 ────────────────────────────────── -->
+        <div class="v2-card">
+          <div class="v2-label">I · 左侧 2px 竖条</div>
+          <div class="v2-body">
+            <div class="row">
+              <span class="left-bar"></span>
+              <div class="avatar-wrap">
+                <div class="avatar av-2">王</div>
+                <span class="online-dot"></span>
+              </div>
+              <div class="body">
+                <div class="name-row">
+                  <span class="name">王嘉怡</span><span class="wechat-tag">微信</span>
+                </div>
+                <div class="preview">
+                  <span class="unread-prefix">[未读]</span>明天 10 点确认方案
+                </div>
+                <div class="from-row">来自 <span class="account">售前-张三</span></div>
+              </div>
+              <div class="time">09:42</div>
+              <div class="unread-badge">3</div>
+            </div>
+            <div class="row">
+              <span class="left-bar"></span>
+              <div class="avatar-wrap"><div class="avatar av-4">陈</div></div>
+              <div class="body">
+                <div class="name-row">
+                  <span class="name">陈思远</span><span class="wechat-tag">微信</span>
+                </div>
+                <div class="preview"><span class="draft-prefix">[草稿]</span>已经留意</div>
+                <div class="from-row">来自 <span class="account">客户成功-李四</span></div>
+              </div>
+              <div class="time">09:15</div>
+            </div>
+            <div class="row selected">
+              <div class="avatar-wrap">
+                <div class="avatar av-1">赵</div>
+                <span class="online-dot"></span>
+              </div>
+              <div class="body">
+                <div class="name-row">
+                  <span class="name">赵晓敏</span><span class="wechat-tag">微信</span>
+                </div>
+                <div class="preview">好的好的</div>
+                <div class="from-row">来自 <span class="account">售前-张三</span></div>
+              </div>
+              <div class="time">08:51</div>
+              <div class="unread-badge">12</div>
+            </div>
+            <div class="row">
+              <div class="avatar-wrap"><div class="avatar av-3">孙</div></div>
+              <div class="body">
+                <div class="name-row">
+                  <span class="name">孙浩然</span><span class="wechat-tag">微信</span>
+                </div>
+                <div class="preview">我再核对一下数据</div>
+                <div class="from-row">来自 <span class="account">客户成功-李四</span></div>
+              </div>
+              <div class="time">08:30</div>
+            </div>
+          </div>
+          <div class="v2-tradeoff">
+            <strong>I · 左侧 2px 竖条</strong><br />
+            贴 row 左 4px 处放一根 2px 竖条 (accent/30)，高度收在 14px~14px 之间不顶头不贴底。<br />
+            <strong>+</strong> "书签条"语义清晰 &nbsp;<strong>+</strong> 与右侧 time/unread
+            完全错开<br />
+            <strong>−</strong> 与 selected 态左侧没拉开，selected 时 bar 被吃掉
+          </div>
+        </div>
+      </div>
+
+      <!-- ── v4:消息免打扰行为(2026-05-20 用户 Image #2 spec) ──── -->
+      <h2 style="font-size: 14px; font-weight: 600; margin: 40px 0 4px">
+        v4 — 消息免打扰(WeChat 行为)
+      </h2>
+      <p class="page-sub" style="margin: 0 0 16px">
+        用户 spec(参考 WeChat):会话被设为免打扰后 —— ① 右下角<strong>红色数字徽标 → 红点</strong
+        >(只表示"有未读"不表示量级)； ② 未读条数<strong
+          >移到 preview 前缀 <code>[N 条]</code></strong
+        >(替代 <code>[未读]</code>)； ③ time 下方加 <strong>BellOff 图标 + 红点</strong>水平相邻。
+        下面对比"普通未读" vs "免打扰未读",以及"免打扰 + 置顶"共存。
+      </p>
+
+      <style>
+        /* mute:time 下方的 bell + dot 水平簇 */
+        .row .mute-cluster {
+          position: absolute;
+          right: 16px;
+          bottom: 18px;
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          pointer-events: none;
+        }
+        .row .mute-cluster .bell {
+          width: 12px;
+          height: 12px;
+          color: var(--wb-text-muted);
+          display: inline-flex;
+        }
+        .row .mute-cluster .bell svg {
+          width: 12px;
+          height: 12px;
+        }
+        .row .mute-cluster .dot {
+          width: 8px;
+          height: 8px;
+          border-radius: 50%;
+          background: var(--wb-unread);
+        }
+        /* 免打扰前缀:与 [未读] 同 muted 灰,只是文案带条数 */
+        .mute-prefix {
+          color: var(--wb-text-muted);
+          font-weight: 500;
+          margin-right: 4px;
+        }
+      </style>
+
+      <div class="v2-grid">
+        <!-- ── 普通未读(对照) ──────────────────────────────────── -->
+        <div class="v2-card">
+          <div class="v2-label">普通未读 <small>对照 · 现状</small></div>
+          <div class="v2-body">
+            <div class="row">
+              <div class="avatar-wrap">
+                <div class="avatar av-2">王</div>
+                <span class="online-dot"></span>
+              </div>
+              <div class="body">
+                <div class="name-row">
+                  <span class="name">王嘉怡</span><span class="wechat-tag">微信</span>
+                </div>
+                <div class="preview">
+                  <span class="unread-prefix">[未读]</span>明天 10 点确认方案
+                </div>
+                <div class="from-row">来自 <span class="account">售前-张三</span></div>
+              </div>
+              <div class="time">09:42</div>
+              <div class="unread-badge">3</div>
+            </div>
+            <div class="row">
+              <div class="avatar-wrap"><div class="avatar av-3">孙</div></div>
+              <div class="body">
+                <div class="name-row">
+                  <span class="name">孙浩然</span><span class="wechat-tag">微信</span>
+                </div>
+                <div class="preview">我再核对一下数据</div>
+                <div class="from-row">来自 <span class="account">客户成功-李四</span></div>
+              </div>
+              <div class="time">08:30</div>
+            </div>
+          </div>
+          <div class="v2-tradeoff">
+            <strong>普通未读</strong><br />
+            右下红色数字徽标(N / 99+)，preview 前缀 <code>[未读]</code>。"喊"出未读量级。
+          </div>
+        </div>
+
+        <!-- ── 免打扰未读 ───────────────────────────────────────── -->
+        <div class="v2-card">
+          <div class="v2-label">免打扰未读 <small>推荐</small></div>
+          <div class="v2-body">
+            <div class="row">
+              <div class="avatar-wrap">
+                <div class="avatar av-2">王</div>
+                <span class="online-dot"></span>
+              </div>
+              <div class="body">
+                <div class="name-row">
+                  <span class="name">王嘉怡</span><span class="wechat-tag">微信</span>
+                </div>
+                <div class="preview"><span class="mute-prefix">[3 条]</span>明天 10 点确认方案</div>
+                <div class="from-row">来自 <span class="account">售前-张三</span></div>
+              </div>
+              <div class="time">09:42</div>
+              <span class="mute-cluster">
+                <span class="bell"
+                  ><svg
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                  >
+                    <path d="M13.73 21a2 2 0 0 1-3.46 0" />
+                    <path d="M18.63 13A17.89 17.89 0 0 1 18 8" />
+                    <path d="M6.26 6.26A5.86 5.86 0 0 0 6 8c0 7-3 9-3 9h14" />
+                    <path d="M18 8a6 6 0 0 0-9.33-5" />
+                    <line x1="1" y1="1" x2="23" y2="23" /></svg
+                ></span>
+                <span class="dot"></span>
+              </span>
+            </div>
+            <!-- 免打扰但无未读:只有 bell,无红点 -->
+            <div class="row">
+              <div class="avatar-wrap"><div class="avatar av-3">孙</div></div>
+              <div class="body">
+                <div class="name-row">
+                  <span class="name">孙浩然</span><span class="wechat-tag">微信</span>
+                </div>
+                <div class="preview">我再核对一下数据</div>
+                <div class="from-row">来自 <span class="account">客户成功-李四</span></div>
+              </div>
+              <div class="time">08:30</div>
+              <span class="mute-cluster">
+                <span class="bell"
+                  ><svg
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                  >
+                    <path d="M13.73 21a2 2 0 0 1-3.46 0" />
+                    <path d="M18.63 13A17.89 17.89 0 0 1 18 8" />
+                    <path d="M6.26 6.26A5.86 5.86 0 0 0 6 8c0 7-3 9-3 9h14" />
+                    <path d="M18 8a6 6 0 0 0-9.33-5" />
+                    <line x1="1" y1="1" x2="23" y2="23" /></svg
+                ></span>
+              </span>
+            </div>
+          </div>
+          <div class="v2-tradeoff">
+            <strong>免打扰未读</strong><br />
+            数字徽标 → 8px 红点；条数移到 preview 前缀 <code>[N 条]</code>；time 下 BellOff +
+            红点。<br />
+            <strong>+</strong> "不打扰"但不丢未读信息(条数仍可见) &nbsp;<strong>+</strong> WeChat
+            心智<br />
+            无未读时:只剩 BellOff，无红点。
+          </div>
+        </div>
+
+        <!-- ── 免打扰 + 置顶 共存 ───────────────────────────────── -->
+        <div class="v2-card">
+          <div class="v2-label">免打扰 + 置顶 <small>共存验证</small></div>
+          <div class="v2-body">
+            <div class="row row-pinned-corner">
+              <div class="avatar-wrap">
+                <div class="avatar av-2">王</div>
+                <span class="online-dot"></span>
+              </div>
+              <div class="body">
+                <div class="name-row">
+                  <span class="name">王嘉怡</span><span class="wechat-tag">微信</span>
+                </div>
+                <div class="preview"><span class="mute-prefix">[3 条]</span>明天 10 点确认方案</div>
+                <div class="from-row">来自 <span class="account">售前-张三</span></div>
+              </div>
+              <span class="corner-fold"></span>
+              <div class="time">09:42</div>
+              <span class="mute-cluster">
+                <span class="bell"
+                  ><svg
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                  >
+                    <path d="M13.73 21a2 2 0 0 1-3.46 0" />
+                    <path d="M18.63 13A17.89 17.89 0 0 1 18 8" />
+                    <path d="M6.26 6.26A5.86 5.86 0 0 0 6 8c0 7-3 9-3 9h14" />
+                    <path d="M18 8a6 6 0 0 0-9.33-5" />
+                    <line x1="1" y1="1" x2="23" y2="23" /></svg
+                ></span>
+                <span class="dot"></span>
+              </span>
+            </div>
+            <!-- 置顶但不免打扰:折角 + 红色数字 -->
+            <div class="row row-pinned-corner">
+              <div class="avatar-wrap"><div class="avatar av-4">陈</div></div>
+              <div class="body">
+                <div class="name-row">
+                  <span class="name">陈思远</span><span class="wechat-tag">微信</span>
+                </div>
+                <div class="preview"><span class="unread-prefix">[未读]</span>已经留意</div>
+                <div class="from-row">来自 <span class="account">客户成功-李四</span></div>
+              </div>
+              <span class="corner-fold"></span>
+              <div class="time">09:15</div>
+              <div class="unread-badge">5</div>
+            </div>
+          </div>
+          <div class="v2-tradeoff">
+            <strong>免打扰 + 置顶</strong><br />
+            折角(右上角 top:0)与 mute-cluster(time 下 bottom:18)垂直错开，不撞。<br />
+            第 1 行 = 置顶+免打扰+有未读；第 2 行 = 置顶+正常未读(红数字)。<br />
+            <strong>+</strong> 两个状态正交，可任意组合
+          </div>
+        </div>
+      </div>
+
+      <!-- ── 旧的 V1/V2/V3(保留作为档案) ──────────────────────── -->
+      <h2
+        style="font-size: 14px; font-weight: 600; margin: 40px 0 12px; color: var(--wb-text-muted)"
+      >
+        v1 — 早期方案（已弃用）
+      </h2>
+      <div class="variants">
+        <!-- V1: 图标 + 文字 + 计数 -->
+        <div class="variant-card">
+          <div class="label">V1 · 图标 + 文字 + 计数 <small>当前选用</small></div>
+          <div class="section-head" style="padding: 14px 16px 6px">
+            <svg
+              class="pin-glyph"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+            >
+              <path d="M12 17v5M5 9l7 7 7-7M5 9c0-2 1-4 3-4h8c2 0 3 2 3 4" />
+            </svg>
+            <span>置顶</span>
+            <span class="count">· 3</span>
+          </div>
+          <div class="section-divider"></div>
+          <div style="padding: 0 16px 16px; color: var(--wb-text-muted); font-size: 11px">
+            语义最完整，计数对管理者有用
+          </div>
+        </div>
+
+        <!-- V2: 纯文字大写 -->
+        <div class="variant-card">
+          <div class="label">V2 · 纯文字（无图标）</div>
+          <div
+            style="
+              padding: 14px 16px 6px;
+              font-size: 11px;
+              color: var(--wb-text-muted);
+              font-weight: 500;
+              letter-spacing: 0.06em;
+            "
+          >
+            置顶
+          </div>
+          <div class="section-divider"></div>
+          <div style="padding: 0 16px 16px; color: var(--wb-text-muted); font-size: 11px">
+            最极致克制，靠纯文字标签
+          </div>
+        </div>
+
+        <!-- V3: 文字 + 一根 hairline 分隔 -->
+        <div class="variant-card">
+          <div class="label">V3 · 带 hairline 分隔线</div>
+          <div class="section-head" style="padding: 14px 16px 6px">
+            <span>置顶</span>
+            <span class="count">3</span>
+          </div>
+          <div style="height: 1px; margin: 0 16px; background: var(--wb-line)"></div>
+          <div style="padding: 8px 16px 16px; color: var(--wb-text-muted); font-size: 11px">
+            区段边界最明显，但增加了横线视觉噪音
+          </div>
+        </div>
+      </div>
+
+      <!-- ── 设计要点 ───────────────────────────────────────── -->
+      <div class="notes">
+        <h3>设计要点</h3>
+        <ul>
+          <li>
+            <strong>行本体零装饰</strong>：置顶行不画 pin 角标，不变色，不加
+            border。视觉负担一次性收在区段头里。
+          </li>
+          <li>
+            <strong>区段头规格</strong>：11px / muted 色 / weight 500 / letter-spacing 0.04em /
+            padding 12-14px 顶部、4-6px 底部、16px 左右。
+          </li>
+          <li>
+            <strong>区段间留白</strong>：6-8px 的空间隔代替分隔线。普通会话区不需要
+            header（"非置顶"是默认态，无需命名）。
+          </li>
+          <li>
+            <strong>排序稳定性</strong>：置顶区段内部按 <code>updatedAt</code> 倒序；普通区段同样按
+            <code>updatedAt</code> 倒序。已经在 <code>data.ts</code> 里做了的话，渲染层只需要
+            <code>partition()</code> 一次。
+          </li>
+          <li><strong>空状态处理</strong>：置顶数为 0 时整个区段头隐藏，列表退化为纯线性。</li>
+          <li>
+            <strong>头像角标卸载</strong>：<code>ConversationAvatar</code> 的
+            <code>pinned</code> prop 仍保留（搜索结果命中置顶项时还有用），但默认列表里不传。
+          </li>
+        </ul>
+        <h3 style="margin-top: 16px">已知改动量</h3>
+        <ul>
+          <li>
+            <code>ConversationList.tsx</code>：把 <code>conversations.map(...)</code> 改成
+            partition→渲染 2 个区段；区段头是一个新组件。
+          </li>
+          <li>
+            <strong>虚拟化兼容</strong>：Wave 6 用的虚拟化方案需要支持"非等高 item"——区段头作为一个
+            30px 左右的特殊 item 插进 itemSize 函数即可。如果用的是
+            <code>@tanstack/react-virtual</code>，<code>estimateSize</code> 直接按 index 分流。
+          </li>
+          <li>
+            <strong>无样式新增</strong>：区段头颜色 / 字号 / spacing 都复用现成 token，不引入新 CSS
+            变量。
+          </li>
+        </ul>
+      </div>
+    </div>
+  </body>
+</html>

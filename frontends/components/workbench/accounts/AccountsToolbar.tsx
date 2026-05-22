@@ -74,7 +74,8 @@ export const AccountsToolbar = memo(function AccountsToolbar({
   onExport,
 }: AccountsToolbarProps) {
   return (
-    <div className="flex flex-wrap items-center gap-2 px-4 py-3">
+    // 工具栏强制不换行 — 内容超容器时横向滚动(滚动条隐藏,Firefox/Webkit 都兼容)。
+    <div className="flex flex-nowrap items-center gap-2 overflow-x-auto px-4 py-3 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
       <SearchInput value={searchTerm} onChange={onSearchChange} />
 
       <MultiSelectFilter<AccountStatus>

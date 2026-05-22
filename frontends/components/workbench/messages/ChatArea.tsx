@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { ArrowDown, ArrowUp } from "lucide-react";
+import { ArrowDown, ArrowUp, Loader2 } from "lucide-react";
 import { AnimatePresence, motion } from "framer-motion";
 
 import { showToast } from "@/components/ui/toast";
@@ -46,6 +46,13 @@ interface ChatAreaProps {
   quickReplies?: QuickReply[];
   /** Conversations available as @mention candidates in the composer. */
   mentionCandidates?: Conversation[];
+  /**
+   * 真发送回调(text-only)。成功后后端落库 + 发 conversation-messages ChangeNotice,
+   * 整窗 REPLACE 把这条收敛进权威列表(乐观气泡随之被替换)。失败则把该气泡标 failed。
+   */
+  onSendMessage?: (text: string) => Promise<void>;
+  /** 切走/卸载该会话时回调,补一次 markRead(只在 leave 同步服务端,不按消息打)。 */
+  onLeaveMarkRead?: (conversationId: string) => void | Promise<void>;
 }
 
 type TimelineItem =
@@ -61,8 +68,9 @@ type TimelineItem =
       isFirstInBurst: boolean;
     };
 
-const MOCK_SEND_LATENCY_MS = 800;
-const HISTORY_TOP_LOAD_THRESHOLD = 80;
+// 距顶 600px 即触发加载更早消息(而非贴顶 80px 才发):用户还在向上滑、上方仍有
+// 缓冲内容时数据已在路上,新内容 prepend 后由 anchor-restore 校正,消除"滑到顶卡一下"。
+const HISTORY_TOP_LOAD_THRESHOLD = 600;
 
 interface PrependAnchor {
   conversationId: string;
@@ -151,6 +159,8 @@ export const ChatArea = memo(function ChatArea({
   onLoadMoreHistory,
   quickReplies,
   mentionCandidates,
+  onSendMessage,
+  onLeaveMarkRead,
 }: ChatAreaProps) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   // 切会话时 AnimatePresence 的 crossfade 让旧/新两个 motion.div 暂时并存,
@@ -163,7 +173,6 @@ export const ChatArea = memo(function ChatArea({
   }, []);
   const wasAtBottomRef = useRef(true);
   const metricsFromUserScrollRef = useRef(false);
-  const sendTimersRef = useRef<Map<string, number>>(new Map());
   const previousMessageCountRef = useRef(messages.length);
   const pendingInitialScrollToLatestRef = useRef(true);
   const prependAnchorRef = useRef<PrependAnchor | null>(null);
@@ -229,22 +238,22 @@ export const ChatArea = memo(function ChatArea({
     setLocalMessages(messages);
   }
 
-  // Clean up pending mock send timers on unmount.
-  useEffect(() => {
-    const timers = sendTimersRef.current;
-    return () => {
-      timers.forEach((id) => window.clearTimeout(id));
-      timers.clear();
-    };
-  }, []);
+  // 打开会话(conversation.id 变化)时快照一次 unread。标已读会把 live conversation.unread 归零,
+  // 分隔条改用快照值渲染 —— 坐席阅读期间分隔条不随红标被清而消失。点击触发的 markRead 是异步的,
+  // 首帧渲染仍是 live unread,快照能捕获到打开时的真实值(无竞态)。
+  const unreadSnapshotRef = useRef<{ id: string; unread: number }>({ id: "", unread: 0 });
+  if (unreadSnapshotRef.current.id !== conversation.id) {
+    unreadSnapshotRef.current = { id: conversation.id, unread: conversation.unread ?? 0 };
+  }
+  const unreadSnapshot = unreadSnapshotRef.current.unread;
 
   // 真实后端的 Message.isUnread 字段没有被 historyToMessage 填充(后端 records
   // 没逐条 read 状态),所以 buildTimelineItems 的 UnreadDivider 在生产环境永远
-  // 不渲染。这里按 conversation.unread (unreadCount) 从尾部反向数 N 条 in 方向
+  // 不渲染。这里按打开时快照的 unread 从尾部反向数 N 条 in 方向
   // 消息标 isUnread=true,让分隔条能正确出现。
   // mock 数据已经手标 isUnread 的不重复标(localMessages.some(...) 短路)。
   const messagesWithUnread = useMemo(() => {
-    const n = conversation.unread ?? 0;
+    const n = unreadSnapshot;
     if (n <= 0) return localMessages;
     if (localMessages.some((m) => m.isUnread)) return localMessages;
     const unreadIds = new Set<string>();
@@ -258,7 +267,7 @@ export const ChatArea = memo(function ChatArea({
     }
     if (unreadIds.size === 0) return localMessages;
     return localMessages.map((m) => (unreadIds.has(m.id) ? { ...m, isUnread: true } : m));
-  }, [localMessages, conversation.unread]);
+  }, [localMessages, unreadSnapshot]);
 
   const timelineItems = useMemo(
     () => buildTimelineItems(messagesWithUnread, conversation),
@@ -377,6 +386,21 @@ export const ChatArea = memo(function ChatArea({
     setUnreadBelow(0);
   }, []);
 
+  // 切走/卸载该会话时补一次 markRead:打开期间客户消息已读靠列表红标抑制(view-only),
+  // 服务端只在离开时同步一次。用 ref 读实时 unread,不入 deps,避免每来一条消息就重跑 cleanup。
+  const leaveUnreadRef = useRef(0);
+  useEffect(() => {
+    leaveUnreadRef.current = conversation.unread ?? 0;
+  }, [conversation.unread]);
+  useEffect(() => {
+    const leavingId = conversation.id;
+    return () => {
+      if (leavingId && leaveUnreadRef.current > 0) void onLeaveMarkRead?.(leavingId);
+    };
+    // 仅在会话切换/卸载触发;实时 unread 走 ref,故意不入 deps。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [conversation.id]);
+
   // Switching conversations should eventually land on the latest message, but
   // real history arrives asynchronously. Mark the intent here and let the
   // message/layout effect below perform the actual snap once the viewport and
@@ -485,23 +509,23 @@ export const ChatArea = memo(function ChatArea({
     }
   }, [localMessages]);
 
-  const completeMockSend = useCallback(
-    (messageId: string) => {
-      // 把发送时所属会话 id 闭包进 timer，触发时与 ref 中的"当前活跃会话"比对。
-      // 若 800ms 内用户切到其他会话，跳过 setState——localMessages 已被 sync 覆盖，
-      // 误更新会污染当前会话状态。接入真后端后该判断同样适用（请求 settle
-      // 必须按 conversationId 路由，避免响应回到错误会话）。
+  // 真发送一条出站消息:把发送时所属会话 id 闭包进来,settle 时与 ref 中的
+  // "当前活跃会话"比对。成功路径不在这里改 localMessages —— 后端落库 + 发
+  // conversation-messages ChangeNotice,整窗 REPLACE 把权威气泡收敛进来。失败时
+  // 若用户仍在该会话,把这条乐观气泡标 failed(供 context menu resend)。
+  const deliverMessage = useCallback(
+    async (messageId: string, text: string) => {
       const owningConversationId = conversation.id;
-      const timer = window.setTimeout(() => {
-        sendTimersRef.current.delete(messageId);
+      try {
+        await onSendMessage?.(text);
+      } catch {
         if (owningConversationId !== activeConversationIdRef.current) return;
         setLocalMessages((current) =>
-          current.map((m) => (m.id === messageId ? { ...m, status: "sent" } : m)),
+          current.map((m) => (m.id === messageId ? { ...m, status: "failed" } : m)),
         );
-      }, MOCK_SEND_LATENCY_MS);
-      sendTimersRef.current.set(messageId, timer);
+      }
     },
-    [conversation.id],
+    [conversation.id, onSendMessage],
   );
 
   const handleSend = useCallback(
@@ -526,9 +550,9 @@ export const ChatArea = memo(function ChatArea({
       setLocalMessages((current) => [...current, newMessage]);
       wasAtBottomRef.current = true;
       setReplyDraft(null);
-      completeMockSend(id);
+      void deliverMessage(id, text);
     },
-    [conversation.id, completeMockSend],
+    [conversation.id, deliverMessage],
   );
 
   const handleAction = useCallback(
@@ -538,7 +562,7 @@ export const ChatArea = memo(function ChatArea({
           setLocalMessages((current) =>
             current.map((m) => (m.id === message.id ? { ...m, status: "sending" } : m)),
           );
-          completeMockSend(message.id);
+          void deliverMessage(message.id, message.text);
           break;
         case "delete":
           setLocalMessages((current) => current.filter((m) => m.id !== message.id));
@@ -573,7 +597,7 @@ export const ChatArea = memo(function ChatArea({
           break;
       }
     },
-    [completeMockSend, conversation.id, conversation.name],
+    [deliverMessage, conversation.id, conversation.name],
   );
 
   // 会话切换时 ChatHeader 和消息区必须同步 crossfade,不然标题(头像/名字/账号)
@@ -632,7 +656,7 @@ export const ChatArea = memo(function ChatArea({
                 onScrollMetrics={handleScrollMetrics}
                 onUserScroll={handleUserScroll}
                 className="flex-1 bg-workbench-surface"
-                viewportClassName="bg-workbench-surface px-4 py-5 pr-6"
+                viewportClassName="overscroll-contain bg-workbench-surface px-4 pt-5 pb-10 pr-6"
                 contentClassName="flex w-full flex-col"
               >
                 <div role="log" aria-live="polite" aria-atomic="false" className="flex flex-col">
@@ -675,6 +699,9 @@ export const ChatArea = memo(function ChatArea({
           </motion.div>
         </AnimatePresence>
       </div>
+      {/* 翻历史 spinner:length>0 时的 loading 必是翻页加载(初次加载 length===0 走
+          ChatLoadingState 分支)。绝对定位顶部居中,不挤压消息流、不引发回弹位移。 */}
+      {!error && localMessages.length > 0 && loading && hasMoreHistory && <HistoryLoadingPill />}
       {!loading && !error && localMessages.length > 0 && !atBottom && (
         <ScrollToBottomButton
           count={unreadBelow}
@@ -769,5 +796,24 @@ const UnreadAbovePill = memo(function UnreadAbovePill({
       <span className="wb-num font-medium text-workbench-accent">{count > 99 ? "99+" : count}</span>
       <span>{STRINGS.status.unreadAbove(count).replace(/^↑\s*\d+\+?\s*/, "")}</span>
     </button>
+  );
+});
+
+// ─── Floating history-loading pill ──────────────────────────────────────────
+// 顶部居中的"加载更早消息"指示。非交互(role=status),只在向上翻页拉取时出现。
+// 绝对定位 + translate 居中,不参与消息流布局,避免 prepend 时与内容互相挤压。
+const HistoryLoadingPill = memo(function HistoryLoadingPill() {
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      className={cn(
+        "pointer-events-none absolute left-1/2 top-3 z-20 inline-flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-workbench-line bg-workbench-surface px-2.5 py-1 text-wb-2xs font-medium text-workbench-text-secondary shadow-wb-popover",
+        "animate-in fade-in slide-in-from-top-2",
+      )}
+    >
+      <Loader2 size={13} className="shrink-0 animate-spin motion-reduce:animate-none" aria-hidden />
+      <span>{STRINGS.status.loadingHistory}</span>
+    </div>
   );
 });

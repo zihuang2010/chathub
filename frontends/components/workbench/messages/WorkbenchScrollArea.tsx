@@ -1,23 +1,8 @@
-import {
-  type PointerEvent as ReactPointerEvent,
-  type ReactNode,
-  type RefObject,
-  useCallback,
-  useEffect,
-  useLayoutEffect,
-  useRef,
-  useState,
-} from "react";
+import { type ReactNode, useCallback, useEffect, useRef } from "react";
 
 import { cn } from "@/lib/utils";
 
-import {
-  AT_BOTTOM_THRESHOLD,
-  SCROLLBAR_IDLE_HIDE_MS,
-  SCROLLBAR_MAX_THUMB_HEIGHT,
-  SCROLLBAR_MIN_THUMB_HEIGHT,
-  SCROLLBAR_OVERFLOW_THRESHOLD,
-} from "./constants";
+import { AT_BOTTOM_THRESHOLD } from "./constants";
 
 export interface ScrollMetrics {
   scrollTop: number;
@@ -31,14 +16,25 @@ interface WorkbenchScrollAreaProps {
   className?: string;
   viewportClassName?: string;
   contentClassName?: string;
-  scrollRef?: RefObject<HTMLDivElement | null>;
+  /** 接受 RefCallback。父组件用 callback ref 可以选择忽略 null 调用,
+   *  避免 motion.div crossfade 期间旧实例 unmount 把共享 ref 清空。 */
+  scrollRef?: (node: HTMLDivElement | null) => void;
   onScrollMetrics?: (metrics: ScrollMetrics) => void;
+  /** 仅由 viewport 上的 native scroll event 触发 —— 用于区分"用户主动滚动"
+   *  与"系统重排"(mount、window resize、ResizeObserver、MutationObserver)。
+   *  ChatArea 用它来决定是否点亮顶部"↑ N 条未读" pill: 切会话/resize 引起的
+   *  emit 不能触发 pill,只有用户主动滚动才可以。 */
+  onUserScroll?: (metrics: ScrollMetrics) => void;
 }
 
-function clampNumber(value: number, min: number, max: number) {
-  return Math.min(Math.max(value, min), max);
-}
-
+// 早先版本把 scrollbar 当作 viewport 的"兄弟节点"(custom WorkbenchScrollbar 渲染
+// 在 viewport 之外的 absolute 层),wheel 落在兄弟上时浏览器沿 DOM 树找不到
+// overflow:auto 祖先 → 滚轮直接空转。前后修了三次都没根治,因此整体推倒重做:
+//   - viewport 直接 overflow-y:auto,wheel/touch/keyboard/drag 全交给 native;
+//   - scrollbar 视觉用 index.css 里全局 *::-webkit-scrollbar 的 6px wb-thumb 样式;
+//   - 仅保留 ScrollMetrics 上报通道,让 ChatArea 的 atBottom / unread pill 继续工作。
+// 不再有 custom scrollbar 组件,事件路径回归浏览器默认,不存在"hover scrollbar
+// wheel 失效"这类副作用。需要 thumb 拖动时由 native 提供,与 macOS 一致。
 export function WorkbenchScrollArea({
   children,
   className,
@@ -46,394 +42,96 @@ export function WorkbenchScrollArea({
   contentClassName,
   scrollRef,
   onScrollMetrics,
+  onUserScroll,
 }: WorkbenchScrollAreaProps) {
-  const internalScrollRef = useRef<HTMLDivElement | null>(null);
-  const viewportRef = scrollRef ?? internalScrollRef;
-  // Hover lives at the area level (not inside the scrollbar) so the thumb
-  // stays visible when the cursor is over the content, not just the 6px-wide
-  // track. Matches macOS overlay-scrollbar feel.
-  const [isHovering, setIsHovering] = useState(false);
+  // 内部 ref 始终持有真实 DOM,所有 effect/listener 都通过 internalRef.current 读取,
+  // 不依赖父传 ref 的引用一致性。父传的 scrollRef 由 setViewportRef 桥接转发。
+  const internalRef = useRef<HTMLDivElement | null>(null);
 
-  return (
-    <div
-      className={cn("relative min-h-0", className)}
-      onPointerEnter={() => setIsHovering(true)}
-      onPointerLeave={() => setIsHovering(false)}
-    >
-      <div
-        ref={viewportRef}
-        className={cn(
-          "h-full overflow-y-auto [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden",
-          viewportClassName,
-        )}
-      >
-        <div className={contentClassName}>{children}</div>
-      </div>
-      <WorkbenchScrollbar
-        scrollRef={viewportRef}
-        onScrollMetrics={onScrollMetrics}
-        isHovering={isHovering}
-      />
-    </div>
+  const setViewportRef = useCallback(
+    (node: HTMLDivElement | null) => {
+      internalRef.current = node;
+      scrollRef?.(node);
+    },
+    [scrollRef],
   );
-}
 
-interface ScrollbarMetricsRef {
-  visible: boolean;
-  thumbHeight: number;
-  trackHeight: number;
-  maxThumbTop: number;
-  maxScrollTop: number;
-}
-
-interface DragStateRef {
-  active: boolean;
-  startY: number;
-  startScrollTop: number;
-  maxScrollTop: number;
-  maxThumbTop: number;
-  targetScrollTop: number;
-}
-
-function WorkbenchScrollbar({
-  scrollRef,
-  onScrollMetrics,
-  isHovering,
-}: {
-  scrollRef: RefObject<HTMLDivElement | null>;
-  onScrollMetrics?: (metrics: ScrollMetrics) => void;
-  isHovering: boolean;
-}) {
-  const trackRef = useRef<HTMLDivElement | null>(null);
-  const thumbRef = useRef<HTMLDivElement | null>(null);
-  const dragRafRef = useRef<number | null>(null);
-  const dragRef = useRef<DragStateRef>({
-    active: false,
-    startY: 0,
-    startScrollTop: 0,
-    maxScrollTop: 0,
-    maxThumbTop: 0,
-    targetScrollTop: 0,
-  });
-  const metricsRef = useRef<ScrollbarMetricsRef>({
-    visible: false,
-    thumbHeight: SCROLLBAR_MIN_THUMB_HEIGHT,
-    trackHeight: 0,
-    maxThumbTop: 0,
-    maxScrollTop: 0,
-  });
-  // Stash the latest callback in a ref so the listener-installing effect
-  // doesn't need to re-run every time the parent re-renders.
+  // 用 ref 镜像最新的 onScrollMetrics 回调,避免每次父组件 re-render 都重绑 listener。
   const onScrollMetricsRef = useRef(onScrollMetrics);
   useEffect(() => {
     onScrollMetricsRef.current = onScrollMetrics;
   }, [onScrollMetrics]);
-
-  const [isDragging, setIsDragging] = useState(false);
-  // `recentlyScrolled` flips true on each scroll event and back to false
-  // SCROLLBAR_IDLE_HIDE_MS after the last one. Combined with isHovering /
-  // isDragging this drives the auto-hide opacity.
-  const [recentlyScrolled, setRecentlyScrolled] = useState(false);
-  const idleTimerRef = useRef<number | null>(null);
-  // Only re-render when these visual props change. Thumb position is updated
-  // imperatively via `transform` to keep scroll-driven updates off the React tree.
-  const [visualState, setVisualState] = useState<{ visible: boolean; thumbHeight: number }>({
-    visible: false,
-    thumbHeight: SCROLLBAR_MIN_THUMB_HEIGHT,
-  });
-
-  const markActive = useCallback(() => {
-    setRecentlyScrolled((prev) => (prev ? prev : true));
-    if (idleTimerRef.current !== null) window.clearTimeout(idleTimerRef.current);
-    idleTimerRef.current = window.setTimeout(() => {
-      setRecentlyScrolled(false);
-      idleTimerRef.current = null;
-    }, SCROLLBAR_IDLE_HIDE_MS);
-  }, []);
+  const onUserScrollRef = useRef(onUserScroll);
+  useEffect(() => {
+    onUserScrollRef.current = onUserScroll;
+  }, [onUserScroll]);
 
   useEffect(() => {
-    return () => {
-      if (idleTimerRef.current !== null) {
-        window.clearTimeout(idleTimerRef.current);
-        idleTimerRef.current = null;
-      }
-    };
-  }, []);
+    const node = internalRef.current;
+    if (!node) return;
 
-  const writeThumbTransform = useCallback((thumbTop: number) => {
-    const thumb = thumbRef.current;
-    if (!thumb) return;
-    thumb.style.transform = `translate3d(0, ${thumbTop}px, 0)`;
-  }, []);
-
-  const emitMetrics = useCallback(
-    (scrollTop: number, scrollHeight: number, clientHeight: number) => {
-      const cb = onScrollMetricsRef.current;
-      if (!cb) return;
-      cb({
+    const computeMetrics = (): ScrollMetrics => {
+      const { scrollTop, scrollHeight, clientHeight } = node;
+      return {
         scrollTop,
         scrollHeight,
         clientHeight,
         atBottom: scrollHeight - scrollTop - clientHeight < AT_BOTTOM_THRESHOLD,
-      });
-    },
-    [],
-  );
+      };
+    };
+    const emit = () => {
+      const cb = onScrollMetricsRef.current;
+      if (!cb) return;
+      cb(computeMetrics());
+    };
+    const onScrollEvent = () => {
+      const m = computeMetrics();
+      // user-scroll callback 先于 metrics callback —— ChatArea 的 handleUserScroll
+      // 读到的 ref 状态(wasAtBottomRef 等)还是 handleScrollMetrics 更新之前的旧值,
+      // 避免顺序耦合(尽管当前 handleUserScroll 不依赖那个 ref,但保留这个保险)。
+      onUserScrollRef.current?.(m);
+      onScrollMetricsRef.current?.(m);
+    };
 
-  const recomputeAll = useCallback(() => {
-    const node = scrollRef.current;
-    const track = trackRef.current;
-    const m = metricsRef.current;
+    // 首次挂载先 emit 一次,让父组件拿到初始 atBottom 状态。
+    emit();
 
-    if (!node || !track) {
-      if (m.visible) {
-        m.visible = false;
-        setVisualState((s) => (s.visible ? { ...s, visible: false } : s));
-      }
-      return;
-    }
+    node.addEventListener("scroll", onScrollEvent, { passive: true });
+    window.addEventListener("resize", emit);
 
-    const scrollHeight = node.scrollHeight;
-    const clientHeight = node.clientHeight;
-    const trackHeight = Math.max(track.clientHeight, 0);
-    const maxScrollTop = Math.max(scrollHeight - clientHeight, 0);
-
-    if (trackHeight <= 0 || maxScrollTop < SCROLLBAR_OVERFLOW_THRESHOLD) {
-      m.visible = false;
-      m.maxScrollTop = 0;
-      m.maxThumbTop = 0;
-      setVisualState((s) => (s.visible ? { ...s, visible: false } : s));
-      emitMetrics(node.scrollTop, scrollHeight, clientHeight);
-      return;
-    }
-
-    const rawThumbHeight = (clientHeight / scrollHeight) * trackHeight;
-    const thumbHeight = clampNumber(
-      Math.round(rawThumbHeight),
-      Math.min(SCROLLBAR_MIN_THUMB_HEIGHT, trackHeight),
-      Math.min(SCROLLBAR_MAX_THUMB_HEIGHT, trackHeight),
-    );
-    const maxThumbTop = Math.max(trackHeight - thumbHeight, 0);
-    const scrollTop = clampNumber(node.scrollTop, 0, maxScrollTop);
-    const thumbTop = maxThumbTop > 0 ? (scrollTop / maxScrollTop) * maxThumbTop : 0;
-
-    m.visible = true;
-    m.thumbHeight = thumbHeight;
-    m.trackHeight = trackHeight;
-    m.maxThumbTop = maxThumbTop;
-    m.maxScrollTop = maxScrollTop;
-
-    writeThumbTransform(thumbTop);
-    emitMetrics(scrollTop, scrollHeight, clientHeight);
-
-    setVisualState((s) =>
-      s.visible && s.thumbHeight === thumbHeight ? s : { visible: true, thumbHeight },
-    );
-  }, [emitMetrics, scrollRef, writeThumbTransform]);
-
-  // Fast path on scroll: only update thumb transform via ref. If content size
-  // changed (e.g. new messages appended), fall back to a full recompute.
-  const syncOnScroll = useCallback(() => {
-    const node = scrollRef.current;
-    if (!node) return;
-    const m = metricsRef.current;
-    const scrollHeight = node.scrollHeight;
-    const clientHeight = node.clientHeight;
-    const maxScrollTop = Math.max(scrollHeight - clientHeight, 0);
-
-    markActive();
-
-    if (Math.abs(maxScrollTop - m.maxScrollTop) > 0.5) {
-      recomputeAll();
-      return;
-    }
-
-    if (m.maxThumbTop <= 0 || maxScrollTop <= 0) {
-      emitMetrics(node.scrollTop, scrollHeight, clientHeight);
-      return;
-    }
-
-    const scrollTop = clampNumber(node.scrollTop, 0, maxScrollTop);
-    const thumbTop = (scrollTop / maxScrollTop) * m.maxThumbTop;
-    writeThumbTransform(thumbTop);
-    emitMetrics(scrollTop, scrollHeight, clientHeight);
-  }, [emitMetrics, markActive, recomputeAll, scrollRef, writeThumbTransform]);
-
-  useLayoutEffect(() => {
-    const node = scrollRef.current;
-    if (!node) return;
-
-    recomputeAll();
-    node.addEventListener("scroll", syncOnScroll, { passive: true });
-    window.addEventListener("resize", recomputeAll);
-
-    // ResizeObserver 监听 viewport + 当前 firstElementChild。后者会在 ChatArea
-    // 的 loading/empty/log 状态切换时被替换，原版只在 effect 挂载时绑一次，
-    // 之后切到不同 child 就停止追踪内容高度，scrollbar thumb 大小停止更新。
-    // 用 MutationObserver 监听 viewport 子节点变化，重新绑定到新的 firstChild。
-    const resizeObserver = new ResizeObserver(recomputeAll);
-    resizeObserver.observe(node);
+    // viewport 自身尺寸 + 内容尺寸都可能变(loading→data 状态切换、新消息追加、
+    // 窗口拖宽收窄)。ResizeObserver 同时观察 viewport 和当前 firstElementChild,
+    // MutationObserver 检测 ChatArea 的 state 切换替换了 firstElementChild 时重绑。
+    const ro = new ResizeObserver(emit);
+    ro.observe(node);
     let observedChild: Element | null = node.firstElementChild;
-    if (observedChild) resizeObserver.observe(observedChild);
-
-    const childObserver = new MutationObserver(() => {
+    if (observedChild) ro.observe(observedChild);
+    const mo = new MutationObserver(() => {
       const next = node.firstElementChild;
       if (next === observedChild) return;
-      if (observedChild) resizeObserver.unobserve(observedChild);
-      if (next) resizeObserver.observe(next);
+      if (observedChild) ro.unobserve(observedChild);
+      if (next) ro.observe(next);
       observedChild = next;
-      recomputeAll();
+      emit();
     });
-    childObserver.observe(node, { childList: true });
+    mo.observe(node, { childList: true });
 
     return () => {
-      node.removeEventListener("scroll", syncOnScroll);
-      window.removeEventListener("resize", recomputeAll);
-      resizeObserver.disconnect();
-      childObserver.disconnect();
+      node.removeEventListener("scroll", onScrollEvent);
+      window.removeEventListener("resize", emit);
+      ro.disconnect();
+      mo.disconnect();
     };
-  }, [recomputeAll, scrollRef, syncOnScroll]);
-
-  useEffect(() => {
-    if (!isDragging) return;
-
-    const flush = () => {
-      dragRafRef.current = null;
-      const node = scrollRef.current;
-      const drag = dragRef.current;
-      if (!node || !drag.active) return;
-      node.scrollTop = drag.targetScrollTop;
-    };
-    const requestFlush = () => {
-      if (dragRafRef.current !== null) return;
-      dragRafRef.current = window.requestAnimationFrame(flush);
-    };
-
-    const handlePointerMove = (event: PointerEvent) => {
-      const drag = dragRef.current;
-      if (!drag.active || drag.maxThumbTop <= 0) return;
-      const deltaY = event.clientY - drag.startY;
-      const ratio = drag.maxScrollTop / drag.maxThumbTop;
-      drag.targetScrollTop = clampNumber(
-        drag.startScrollTop + deltaY * ratio,
-        0,
-        drag.maxScrollTop,
-      );
-      requestFlush();
-    };
-    const stopDragging = () => {
-      dragRef.current.active = false;
-      setIsDragging(false);
-    };
-    const previousUserSelect = document.body.style.userSelect;
-
-    document.body.style.userSelect = "none";
-    window.addEventListener("pointermove", handlePointerMove);
-    window.addEventListener("pointerup", stopDragging);
-    window.addEventListener("pointercancel", stopDragging);
-
-    return () => {
-      document.body.style.userSelect = previousUserSelect;
-      window.removeEventListener("pointermove", handlePointerMove);
-      window.removeEventListener("pointerup", stopDragging);
-      window.removeEventListener("pointercancel", stopDragging);
-      if (dragRafRef.current !== null) {
-        window.cancelAnimationFrame(dragRafRef.current);
-        dragRafRef.current = null;
-      }
-    };
-  }, [isDragging, scrollRef]);
-
-  const handleTrackPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
-    const node = scrollRef.current;
-    const track = trackRef.current;
-    if (!node || !track || event.target !== event.currentTarget) return;
-    const m = metricsRef.current;
-    if (m.maxThumbTop <= 0) return;
-    const rect = track.getBoundingClientRect();
-    const targetThumbTop = clampNumber(
-      event.clientY - rect.top - m.thumbHeight / 2,
-      0,
-      m.maxThumbTop,
-    );
-    node.scrollTop = (targetThumbTop / m.maxThumbTop) * m.maxScrollTop;
-  };
-
-  // Scrollbar track/thumb 与 viewport 是兄弟节点（同一父级下并排,非 DOM 嵌套）,
-  // 浏览器原生 wheel 处理沿 DOM 树寻找 overflow:auto 的祖先 → 找不到 viewport →
-  // 滚轮在 scrollbar 6px 宽度内直接空转。手工把 wheel delta 写回 viewport.scrollTop
-  // 修正:用 native addEventListener 而非 React onWheel，因为 React 在 root 委派
-  // wheel 时 passive:true,且在某些 webkit 版本下 e.preventDefault 不起作用会让浏览器
-  // 先执行默认行为(找祖先 overflow → 找不到 → 无效)再触发 React 同步,顺序错位。
-  // native 注册到 trackRef 上,passive:false 让我们能 preventDefault,确保浏览器
-  // 不会再额外尝试找祖先滚动。deltaMode=DOM_DELTA_LINE/PAGE 时换算成像素后再滚。
-  useLayoutEffect(() => {
-    const track = trackRef.current;
-    if (!track) return;
-    const onWheel = (event: WheelEvent) => {
-      const node = scrollRef.current;
-      if (!node) return;
-      const lineHeight = 16;
-      const pageHeight = node.clientHeight || 600;
-      let dy = event.deltaY;
-      let dx = event.deltaX;
-      if (event.deltaMode === 1) {
-        dy *= lineHeight;
-        dx *= lineHeight;
-      } else if (event.deltaMode === 2) {
-        dy *= pageHeight;
-        dx *= pageHeight;
-      }
-      node.scrollTop += dy;
-      if (dx !== 0) node.scrollLeft += dx;
-      event.preventDefault();
-    };
-    track.addEventListener("wheel", onWheel, { passive: false });
-    return () => track.removeEventListener("wheel", onWheel);
-  }, [scrollRef]);
-
-  const handleThumbPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
-    const node = scrollRef.current;
-    if (!node) return;
-    event.preventDefault();
-    event.stopPropagation();
-    const m = metricsRef.current;
-    const startScrollTop = clampNumber(node.scrollTop, 0, m.maxScrollTop);
-    dragRef.current = {
-      active: true,
-      startY: event.clientY,
-      startScrollTop,
-      maxScrollTop: m.maxScrollTop,
-      maxThumbTop: m.maxThumbTop,
-      targetScrollTop: startScrollTop,
-    };
-    setIsDragging(true);
-  };
-
-  // Effective visibility: there must be overflow AND either the user is
-  // currently interacting (hover/drag) or just finished scrolling.
-  const shouldShow = visualState.visible && (isHovering || isDragging || recentlyScrolled);
+  }, []);
 
   return (
-    <div
-      ref={trackRef}
-      aria-hidden
-      onPointerDown={handleTrackPointerDown}
-      className={cn(
-        "absolute bottom-3 right-2 top-3 z-10 w-1.5 rounded-full transition-opacity duration-200",
-        shouldShow ? "opacity-100" : "pointer-events-none opacity-0",
-      )}
-    >
+    <div className={cn("min-h-0", className)}>
       <div
-        ref={thumbRef}
-        onPointerDown={handleThumbPointerDown}
-        className={cn(
-          "absolute left-0 top-0 w-full rounded-full bg-workbench-thumb transition-colors will-change-transform hover:bg-workbench-thumb-hover",
-          isDragging ? "cursor-grabbing bg-workbench-thumb-hover" : "cursor-grab",
-          !shouldShow && "pointer-events-none",
-        )}
-        style={{ height: visualState.thumbHeight }}
-      />
+        ref={setViewportRef}
+        className={cn("h-full overflow-y-auto overflow-x-hidden", viewportClassName)}
+      >
+        <div className={contentClassName}>{children}</div>
+      </div>
     </div>
   );
 }

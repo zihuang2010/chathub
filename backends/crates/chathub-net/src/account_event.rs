@@ -13,41 +13,36 @@
 //! 幂等性:`AccountCacheStore::apply_binding` 内 SQL 都自然幂等;watermark 走"取大不取小"。
 //! 同 notify_seq 重投不会重复处理。
 
+use crate::change_notice::{ChangeNotice, ChangeScope, ChangeTopic};
 use crate::error::AuthError;
 use crate::hub::{HubClient, ListAccountsFilter, ListAccountsItem};
 use chathub_proto::v1::PushBatchOut;
 use chathub_state::{AccountCacheStore, BindingAction, WecomAccountRow};
+use std::collections::HashSet;
 use tokio::sync::broadcast;
 use tracing::warn;
 
-/// 广播给上层(backends/src/lib.rs)的"账号缓存有变化"信号。
-#[derive(Debug, Clone, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AccountChanged {
-    /// 受影响 employee 的 String 形态 ID(= UserProfile.user_id)。
-    pub employee_id: String,
-}
+// C6 拆双发:`AccountChanged` 类型已删除。所有变更通知统一走 ChangeNotice + hub:change。
 
 #[derive(Clone)]
 pub struct AccountEventApplier {
     cache_store: AccountCacheStore,
     hub_client: HubClient,
-    event_tx: broadcast::Sender<AccountChanged>,
+    /// 统一变更通知通道。C6 后单一通道。
+    change_notice_tx: broadcast::Sender<ChangeNotice>,
 }
 
 impl AccountEventApplier {
-    pub fn new(cache_store: AccountCacheStore, hub_client: HubClient) -> Self {
-        let (tx, _) = broadcast::channel(64);
+    pub fn new(
+        cache_store: AccountCacheStore,
+        hub_client: HubClient,
+        change_notice_tx: broadcast::Sender<ChangeNotice>,
+    ) -> Self {
         Self {
             cache_store,
             hub_client,
-            event_tx: tx,
+            change_notice_tx,
         }
-    }
-
-    /// 套现有 `ConnectionManager::state_subscribe()` 套路 —— 上层 `subscribe()` 后开个 task 接事件。
-    pub fn subscribe(&self) -> broadcast::Receiver<AccountChanged> {
-        self.event_tx.subscribe()
     }
 
     /// 处理一批 PushBatchOut。
@@ -72,6 +67,8 @@ impl AccountEventApplier {
         let mut applied = 0usize;
         let mut needs_fallback = false;
         let mut account_event_seen = false;
+        // 聚合本批涉及的 wecom_account_id:若只 1 个,ChangeNotice scope 可带;否则不带(广义)。
+        let mut accounts_in_batch: HashSet<String> = HashSet::new();
 
         for ev in &events {
             let event_type = ev.get("eventType").and_then(|v| v.as_str()).unwrap_or("");
@@ -79,6 +76,9 @@ impl AccountEventApplier {
                 continue;
             }
             account_event_seen = true;
+            if let Some(acct) = ev.get("wecomAccountId").and_then(|v| v.as_str()) {
+                accounts_in_batch.insert(acct.to_string());
+            }
             let reason = ev.get("eventReason").and_then(|v| v.as_str()).unwrap_or("");
             match decode_action(event_type, reason, ev, &employee_id_str) {
                 Decoded::Action(action) => {
@@ -120,9 +120,24 @@ impl AccountEventApplier {
             warn!(target: "chathub_net::account_event", ?e, "advance_watermark failed");
         }
 
-        let _ = self.event_tx.send(AccountChanged {
+        // C6 单发:ChangeNotice 是唯一通道。
+        let scope_account = if accounts_in_batch.len() == 1 {
+            accounts_in_batch.into_iter().next()
+        } else {
+            None
+        };
+        let scope = ChangeScope {
             employee_id: employee_id_str,
-        });
+            wecom_account_id: scope_account,
+            ..Default::default()
+        };
+        let notice = if needs_fallback {
+            ChangeNotice::server_bulk(ChangeTopic::Accounts, scope)
+        } else {
+            ChangeNotice::server_upsert(ChangeTopic::Accounts, scope)
+        };
+        let _ = self.change_notice_tx.send(notice);
+
         let _ = applied; // applied 计数用于日志/调试,目前不强制使用
     }
 

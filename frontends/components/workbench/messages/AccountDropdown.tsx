@@ -1,5 +1,5 @@
-import type { ReactNode } from "react";
-import { useMemo, useState } from "react";
+import type { ReactNode, Ref } from "react";
+import { useCallback, useMemo, useState } from "react";
 import * as Popover from "@radix-ui/react-popover";
 import { Search } from "lucide-react";
 
@@ -47,6 +47,12 @@ export function AccountDropdown({
 }: AccountDropdownProps) {
   const [query, setQuery] = useState("");
 
+  // 弹层打开时把当前选中行滚到可见区(block:"nearest")。回调 ref 在选中行挂载时
+  // 触发——弹层 portal 仅在 open 时挂载,故等价于"开则定位",30+ 账号也不必手动翻找。
+  const scrollActiveIntoView = useCallback((node: HTMLButtonElement | null) => {
+    node?.scrollIntoView({ block: "nearest" });
+  }, []);
+
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q) return accounts;
@@ -80,6 +86,8 @@ export function AccountDropdown({
           className={cn(
             // 与 AccountPicker 对齐:固定宽 + 最大高 + flex 列 + overflow-hidden
             "z-20 flex max-h-[480px] w-[280px] flex-col overflow-hidden rounded-xl border border-workbench-line bg-workbench-surface shadow-wb-popover-strong outline-none",
+            // 开/合补间:fade + zoom + 贴边滑入,150ms;reduced-motion 直接跳过。
+            "duration-150 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[side=bottom]:slide-in-from-top-1 data-[side=left]:slide-in-from-right-1 data-[side=right]:slide-in-from-left-1 data-[side=top]:slide-in-from-bottom-1 motion-reduce:animate-none",
             contentClassName,
           )}
         >
@@ -95,6 +103,7 @@ export function AccountDropdown({
               active={!selectedAccount}
               total={accounts.length}
               onClick={() => handleSelect(null)}
+              innerRef={!selectedAccount ? scrollActiveIntoView : undefined}
             />
             <Group title={`全部账号 (${formatTotalCount(accounts.length)})`}>
               {filtered.length === 0 ? (
@@ -106,6 +115,7 @@ export function AccountDropdown({
                     account={a}
                     active={selectedAccount === a.name}
                     onClick={() => handleSelect(a.name)}
+                    innerRef={selectedAccount === a.name ? scrollActiveIntoView : undefined}
                   />
                 ))
               )}
@@ -150,13 +160,16 @@ function AllAccountsRow({
   active,
   total,
   onClick,
+  innerRef,
 }: {
   active: boolean;
   total: number;
   onClick: () => void;
+  innerRef?: Ref<HTMLButtonElement>;
 }) {
   return (
     <button
+      ref={innerRef}
       type="button"
       role="option"
       aria-selected={active}
@@ -168,7 +181,7 @@ function AllAccountsRow({
     >
       <span
         aria-hidden
-        className="grid size-6 shrink-0 place-items-center rounded-full bg-workbench-surface-active text-[10px] font-medium text-workbench-accent"
+        className="grid size-6 shrink-0 place-items-center rounded-md bg-workbench-surface-active text-[10px] font-medium text-workbench-accent"
       >
         全
       </span>
@@ -192,13 +205,16 @@ function AccountRow({
   account,
   active,
   onClick,
+  innerRef,
 }: {
   account: Account;
   active: boolean;
   onClick: () => void;
+  innerRef?: Ref<HTMLButtonElement>;
 }) {
   return (
     <button
+      ref={innerRef}
       type="button"
       role="option"
       aria-selected={active}
@@ -226,7 +242,7 @@ function Avatar({ account }: { account: Account }) {
   return (
     <span
       aria-hidden
-      className="grid size-6 shrink-0 place-items-center rounded-full text-[10.5px] font-medium text-workbench-text"
+      className="grid size-6 shrink-0 place-items-center rounded-md text-[10.5px] font-medium text-workbench-text"
       style={{ background: `hsl(var(--wb-avatar-${account.colorToken}))` }}
     >
       {account.name.slice(0, 1)}

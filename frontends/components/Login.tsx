@@ -2,6 +2,7 @@ import { useState, type FormEvent, type ReactNode } from "react";
 import { ArrowRight, Eye, EyeOff, Lock, Smartphone, UserRound } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 
+import type { UserProfile } from "@/App";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -27,7 +28,29 @@ import {
 type Tab = "account" | "phone";
 
 interface LoginProps {
-  onSuccess?: (payload: { tab: Tab; identifier: string }) => void;
+  /** 登录成功后回调,把 backend 返的 UserProfile 透传给上层(App.tsx 用它切 Workbench)。 */
+  onSuccess?: (profile: UserProfile) => void;
+  /** 来自 App.tsx 的提示文案,场景:token 失效 / 被踢导致跳回登录页。
+   *  mount 时 useState initializer 一次性吸收到 errorMsg;用户重新提交时被覆盖/清空。 */
+  notice?: string | null;
+}
+
+// "记住账号" 本地持久化 key —— 按 tab 分别记一份,跨重启预填。
+const ACCOUNT_KEY = "chathub-login-remember-account";
+const PHONE_KEY = "chathub-login-remember-phone";
+const REMEMBER_KEY = "chathub-login-remember";
+
+function readRememberAccount(): string {
+  if (typeof window === "undefined") return "";
+  return window.localStorage.getItem(ACCOUNT_KEY) ?? "";
+}
+function readRememberPhone(): string {
+  if (typeof window === "undefined") return "";
+  return window.localStorage.getItem(PHONE_KEY) ?? "";
+}
+function readRememberFlag(): boolean {
+  if (typeof window === "undefined") return true;
+  return window.localStorage.getItem(REMEMBER_KEY) !== "false"; // 缺省为 true
 }
 
 // ─── Data ───────────────────────────────────────────────────────────────────
@@ -96,15 +119,17 @@ const LOGIN_WAVES = [
 
 // ─── Login (entry) ──────────────────────────────────────────────────────────
 
-export function Login({ onSuccess }: LoginProps) {
+export function Login({ onSuccess, notice }: LoginProps) {
   const [tab, setTab] = useState<Tab>("account");
-  const [account, setAccount] = useState("");
-  const [phone, setPhone] = useState("");
+  // C3: 持久化预填 — 上次"记住账号"勾选时存的 identifier 在 mount 时读回。
+  const [account, setAccount] = useState<string>(readRememberAccount);
+  const [phone, setPhone] = useState<string>(readRememberPhone);
   const [password, setPassword] = useState("");
-  const [remember, setRemember] = useState(true);
+  const [remember, setRemember] = useState<boolean>(readRememberFlag);
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  // mount 时一次性吸收 notice(父组件 logged_out 时已 set 好):后续 setErrorMsg(null) 会清掉。
+  const [errorMsg, setErrorMsg] = useState<string | null>(() => notice ?? null);
 
   const identifier = tab === "account" ? account : phone;
   const canSubmit = identifier.trim().length > 0 && password.trim().length > 0;
@@ -115,8 +140,23 @@ export function Login({ onSuccess }: LoginProps) {
     setErrorMsg(null);
     setLoading(true);
     try {
-      await invoke("login", { username: identifier, password });
-      onSuccess?.({ tab, identifier });
+      const profile = await invoke<UserProfile>("login", { username: identifier, password });
+      // C3: 持久化 — 根据 remember 写或清(按当前 tab 分别记)
+      if (typeof window !== "undefined") {
+        if (remember) {
+          if (tab === "account") {
+            window.localStorage.setItem(ACCOUNT_KEY, account);
+          } else {
+            window.localStorage.setItem(PHONE_KEY, phone);
+          }
+          window.localStorage.setItem(REMEMBER_KEY, "true");
+        } else {
+          window.localStorage.removeItem(ACCOUNT_KEY);
+          window.localStorage.removeItem(PHONE_KEY);
+          window.localStorage.setItem(REMEMBER_KEY, "false");
+        }
+      }
+      onSuccess?.(profile);
     } catch (err) {
       setErrorMsg(formatLoginError(err));
     } finally {

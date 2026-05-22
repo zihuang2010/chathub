@@ -1,23 +1,22 @@
 // 好友(客户)API 层 —— 桥接 Tauri `list_friends` 命令到前端 WecomFriend 类型。
 //
-// **阶段 2:行存全量化**
-//   链路:UI → invoke("list_friends", { accountIds, force })
-//        → Tauri:行存读;失效则 list_all_friends_for_account 循环拉所有页 → 入库 → 行存读
-//        → 返 Vec<WecomFriendRow>(camelCase JSON,带 wecomAccountId 归属)
-//   分页 / 筛选 / 排序均**前端本地**(useCustomersFilters);
-//   推送事件 → friends_changed 事件 → useFriends refetch(走行存,通常零远程往返)。
+// **阶段 3:纯 cursor 滚动**
+//   链路:UI → invoke("list_friends", { accountIds, cursor, size, externalId, addStartTime, addEndTime })
+//        → Tauri:透传单 cursor 跨账号 keyset 请求(不写本地镜像)
+//        → 返 { records, hasMore, nextCursor }(每条 record 自带 wecomAccountId 归属)
+//   筛选(externalId 模糊匹配名称/手机号 + 加好友时间区间)全部下推服务端;
+//   翻页靠 nextCursor;FRIEND_* 推送事件 → ChangeNotice → useFriends 重拉首页。
 
 import { invoke } from "@tauri-apps/api/core";
 
 import type { Customer, CustomerGender } from "@/lib/types/customer";
 
 /**
- * 好友(客户)行存形态(21 字段)。对应 Rust `WecomFriendRow`,字段顺序与序列化对齐。
- * `wecomAccountId` 是行存归属字段,API 响应不下发但 Tauri 写入时带上 —— 修复"多账号
- * 查询时单条 record 无归属"问题。
+ * 好友(客户)单条记录(20 字段)。对应 Rust `WecomFriend`,字段顺序与序列化对齐。
+ * `wecomAccountId` 是归属字段,单 cursor 跨账号合并时多账号场景每条都能精确对上账号。
  */
 export interface WecomFriend {
-  /** 归属账号 ID(写入时由 Tauri 层填,API 响应不下发)。 */
+  /** 归属账号 ID。 */
   wecomAccountId: string;
   externalUserId: string;
   externalName: string;
@@ -44,20 +43,40 @@ export interface WecomFriend {
   syncStatus: number;
 }
 
-/**
- * 按多账号拉取好友全量列表。Tauri 端:
- *   - 行存 fresh(未过 10min TTL)→ 直接返
- *   - 失效 / `force=true` → 循环拉所有页 → 入库 → 返
- *
- * `accountIds` 为空时不应调用(组件层做短路);全量化后无 size/current/filter 入参。
- */
-export async function fetchFriends(opts: {
+/** listFriends cursor 响应(对应 Rust `ListFriendsResp`,totalMode none)。 */
+export interface ListFriendsResponse {
+  records: WecomFriend[];
+  hasMore: boolean;
+  nextCursor: string;
+}
+
+export interface FetchFriendsParams {
+  /** 跨账号单 cursor keyset:传入需合并的所有账号。空数组时组件层应短路不调用。 */
   accountIds: string[];
-  force?: boolean;
-}): Promise<WecomFriend[]> {
-  return invoke<WecomFriend[]>("list_friends", {
-    accountIds: opts.accountIds,
-    force: opts.force,
+  /** 首页 ""(空串);续页填上轮 nextCursor。 */
+  cursor?: string;
+  /** 每页条数,默认 20,服务端 clamp 到 [1,100]。 */
+  size?: number;
+  /** 名称/手机号统一模糊匹配;空 / undefined 不筛选。 */
+  externalId?: string;
+  /** 加好友时间下界 `yyyy-MM-dd HH:mm:ss`。 */
+  addStartTime?: string;
+  /** 加好友时间上界 `yyyy-MM-dd HH:mm:ss`。 */
+  addEndTime?: string;
+}
+
+/**
+ * 按多账号 cursor 拉取一页好友。Tauri 端透传单 cursor 跨账号 keyset 请求,不写本地镜像。
+ * `accountIds` 为空时不应调用(组件层做短路)。
+ */
+export async function fetchFriends(params: FetchFriendsParams): Promise<ListFriendsResponse> {
+  return invoke<ListFriendsResponse>("list_friends", {
+    accountIds: params.accountIds,
+    cursor: params.cursor ?? "",
+    size: params.size,
+    externalId: params.externalId || undefined,
+    addStartTime: params.addStartTime || undefined,
+    addEndTime: params.addEndTime || undefined,
   });
 }
 

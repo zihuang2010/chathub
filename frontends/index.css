@@ -33,6 +33,10 @@
     --wb-accent: 215 85% 50%;
     --wb-accent-hover: 215 85% 44%;
     --wb-accent-soft: 215 75% 62%;
+    /* Pinned corner-fold (G) — 右上角"折角"标记。fold = 浅蓝三角,crease =
+       沿斜边 1px 高光。仅 ConversationList 置顶行用。 */
+    --wb-pin-fold: 215 85% 86%;
+    --wb-pin-fold-crease: 215 85% 74%;
     /* 4-tier text ramp: primary ≈12.4:1, secondary 6.7:1, muted 4.6:1,
        disabled 3.0:1 (large only). Each tier ≥14% L apart for clear hierarchy.
        Primary uses 18% L (≈ Feishu #1F2329) — Chinese strokes need extra
@@ -48,7 +52,7 @@
     --wb-surface-elevated: 0 0% 100%;
     --wb-surface-subtle: 220 22% 97%;
     --wb-surface-soft: 218 30% 96%;
-    --wb-surface-active: 216 80% 94%;
+    --wb-surface-active: 216 70% 96%;
     /* Bubble pair — 4% L below surface so block edges read without a
        hard 1px border. Outgoing keeps a soft blue tint for identity. */
     --wb-bubble-in: 220 20% 96%;
@@ -118,6 +122,9 @@
     --wb-accent: 215 80% 65%;
     --wb-accent-hover: 215 80% 60%;
     --wb-accent-soft: 215 70% 55%;
+    /* 暗色:折角压低饱和/亮度,作克制的蓝色标记而非高亮光斑。 */
+    --wb-pin-fold: 215 45% 42%;
+    --wb-pin-fold-crease: 215 50% 54%;
     /* 4-tier text ramp on dark: 12.1 / 6.4 / 4.6 / 3.0 against new surface. */
     --wb-text: 220 12% 90%;
     --wb-text-secondary: 218 10% 70%;
@@ -204,6 +211,16 @@
     /* tnum = tabular figures, zero = slashed zero (avoids 0/O confusion in
        contact IDs and timestamps), ss01 = stylistic alternate. */
     font-feature-settings: "tnum", "zero", "ss01";
+  }
+
+  /* Timestamp variant of .wb-num — same column-aligned tabular figures
+     (uniform digit width, stable colon, even spacing) but WITHOUT the slashed
+     "zero": HH:mm / MM-dd has no 0/O ambiguity, so a round 0 reads cleaner.
+     No stylistic set → upright Inter 1, no slant. Used for the conversation
+     list / chat row time. */
+  .wb-time {
+    @apply font-numeric tabular-nums;
+    font-feature-settings: "tnum";
   }
 
   /* Standard focus ring — apply to every interactive element. */

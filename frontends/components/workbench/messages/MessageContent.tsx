@@ -1,5 +1,7 @@
-import { Fragment } from "react";
-import { Download, FileText, Play } from "lucide-react";
+import { Fragment, useState } from "react";
+import { Download, FileText, ImageOff, Play } from "lucide-react";
+
+import { cn } from "@/lib/utils";
 
 import type { MessageAttachment, MessageBlock } from "./data";
 import { STRINGS } from "./strings";
@@ -92,11 +94,10 @@ function ImageAttachment({ attachment }: { attachment: MessageAttachment }) {
       title={STRINGS.attachment.openImage}
       className="focus-ring inline-block max-w-full overflow-hidden rounded-xl border border-workbench-line bg-workbench-surface p-1 shadow-wb-bubble transition-colors hover:bg-workbench-surface-subtle"
     >
-      <img
+      <MessageImage
         src={attachment.url}
         alt={STRINGS.attachment.imageAlt(attachment.name)}
-        loading="lazy"
-        className="block max-h-72 max-w-full rounded-lg object-contain"
+        imgClassName="block max-h-72 max-w-full rounded-lg object-contain"
       />
     </a>
   );
@@ -283,12 +284,79 @@ function ImageStandalone({ block }: { block: Extract<MessageBlock, { type: "imag
       title={STRINGS.attachment.openImage}
       className="focus-ring inline-block max-w-full overflow-hidden rounded-xl border border-workbench-line bg-workbench-surface p-1 shadow-wb-bubble transition-colors hover:bg-workbench-surface-subtle"
     >
-      <img
+      <MessageImage
         src={block.url}
         alt={STRINGS.attachment.imageAlt(block.name)}
-        loading="lazy"
-        className="block max-h-72 max-w-full rounded-lg object-contain"
+        imgClassName="block max-h-72 max-w-full rounded-lg object-contain"
       />
     </a>
+  );
+}
+
+// ─── 异步图片加载封装 ─────────────────────────────────────────────────────
+//
+// 解决两类闪烁:
+//   A. layout shift: `<img>` 在 load 前 0×0,load(成功/失败)后才撑高,导致整列气泡
+//      位移。外层 span 用 `min-h/min-w` 把这帧空间提前占住,从 128 起步而非 0。
+//   B. broken-icon 闪现: src 失败时浏览器自带的 broken-icon 出现时机不可控,且在
+//      AnimatePresence fade-in 同一时间窗内,放大视觉跳变。改用本地 state +
+//      onLoad / onError 自管显隐:加载中渲染骨架,失败用稳定的"图片加载失败"卡片
+//      替代浏览器默认 UI。
+//
+// 渲染态:
+//   loading → 128×128 骨架 + 隐形 img(还在 loading,不参与可见层)
+//   loaded  → img 撑到自然尺寸(<= max-h-72),骨架移除
+//   error   → 直接换 128×128 失败卡片,img 卸载,杜绝 broken-icon 偶现
+
+interface MessageImageProps {
+  src: string;
+  alt: string;
+  /** img 元素自身样式;容器尺寸由本组件管。 */
+  imgClassName: string;
+}
+
+function MessageImage({ src, alt, imgClassName }: MessageImageProps) {
+  const [state, setState] = useState<"loading" | "loaded" | "error">("loading");
+  // src 变化(消息流刷新 / 媒体 URL 重签等)时回到 loading,杜绝旧 state 复用。
+  // 用 React 推荐的"渲染期同步"模式而非 useEffect:effect 内 setState 会先用
+  // 旧 state 渲染一帧再修正,reflow 已经看见。这里走 React 渲染中断重新生效路径。
+  const [lastSrc, setLastSrc] = useState(src);
+  if (lastSrc !== src) {
+    setLastSrc(src);
+    setState("loading");
+  }
+
+  if (state === "error") {
+    return (
+      <span
+        role="img"
+        aria-label={STRINGS.attachment.imageLoadFailed}
+        className="grid h-32 w-32 place-items-center rounded-lg bg-workbench-surface-soft text-wb-3xs text-workbench-text-muted"
+      >
+        <span className="flex flex-col items-center gap-1.5">
+          <ImageOff size={22} strokeWidth={1.5} aria-hidden />
+          <span>{STRINGS.attachment.imageLoadFailed}</span>
+        </span>
+      </span>
+    );
+  }
+
+  return (
+    <span className="relative inline-block min-h-32 min-w-32">
+      <img
+        src={src}
+        alt={alt}
+        loading="lazy"
+        onLoad={() => setState("loaded")}
+        onError={() => setState("error")}
+        className={cn(imgClassName, state !== "loaded" && "opacity-0")}
+      />
+      {state === "loading" && (
+        <span
+          aria-hidden
+          className="pointer-events-none absolute inset-0 animate-pulse rounded-lg bg-workbench-surface-soft"
+        />
+      )}
+    </span>
   );
 }

@@ -1,6 +1,8 @@
 import { memo } from "react";
 import { ChevronLeft, ChevronRight, Menu } from "lucide-react";
 
+import { SyncStatusBadge } from "@/components/workbench/messages/SyncStatusBadge";
+import { useHubSyncStatus } from "@/lib/data/useHubSyncStatus";
 import { FROSTED_GLASS_STYLE, WORKBENCH_BLUE, WORKBENCH_NAV_TEXT } from "@/lib/theme";
 import { cn } from "@/lib/utils";
 
@@ -72,6 +74,10 @@ export const Sidebar = memo(function Sidebar({
 // ─── User badge ─────────────────────────────────────────────────────────────
 
 function UserBadge({ collapsed }: { collapsed: boolean }) {
+  // 全局 hub 同步状态 — 把原来挂在接待列表搜索框右侧的 SyncStatusBadge 搬到这里,
+  // 让"在线 / 离线 / 对齐中" 在任意页面都可见。
+  const sync = useHubSyncStatus();
+
   if (collapsed) {
     return (
       <div className="flex flex-col items-center px-2 pb-2 pt-3">
@@ -85,6 +91,17 @@ function UserBadge({ collapsed }: { collapsed: boolean }) {
       <AvatarMark />
       <div className="flex min-w-0 flex-1 flex-col leading-tight">
         <span className="truncate text-[13px] font-semibold text-[#1F2937]">匠多多</span>
+        {/* min-w-0 + max-w-full 让 badge 永远适配父容器宽度,超长用 truncate 兜底 */}
+        <div className="mt-1 flex min-w-0">
+          <SyncStatusBadge
+            connectionState={sync.connectionState}
+            lastEventAt={sync.lastEventAt}
+            lastRefreshAt={sync.lastRefreshAt}
+            resyncing={sync.resyncing}
+            error={null}
+            onRefresh={() => void sync.refresh()}
+          />
+        </div>
       </div>
     </div>
   );

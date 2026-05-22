@@ -7,17 +7,31 @@ import {
   PhysicalSize,
 } from "@tauri-apps/api/window";
 
-import { CUSTOMER_DETAILS_WIDTH, DETAILS_RESIZE_TOLERANCE } from "./constants";
+import {
+  CHAT_AREA_MIN_WIDTH,
+  CONVERSATION_LIST_MIN_WIDTH,
+  CUSTOMER_DETAILS_WIDTH,
+  DETAILS_RESIZE_TOLERANCE,
+  RESIZE_HANDLE_WIDTH,
+} from "./constants";
+import { computeExpandTarget, computeRestoreTarget } from "./detailsWindowGeometry";
 
-interface DetailsWindowState {
-  baseContentSize: PhysicalSize;
-  expandedContentSize: PhysicalSize;
+/** Narrowest usable inner width WITHOUT the details panel (logical px) — used as
+ *  the close-restore floor so a window dragged narrow while open can't shrink
+ *  into a sliver. Scaled to physical px at open time. */
+const APP_MIN_INNER_WIDTH_LOGICAL =
+  CONVERSATION_LIST_MIN_WIDTH + RESIZE_HANDLE_WIDTH + CHAT_AREA_MIN_WIDTH;
+
+/** What an open actually did to the window, so close can undo exactly that. */
+interface DetailsGrow {
+  /** Physical px the window inner width actually grew by (may be < requested if OS-clamped). */
+  achievedDeltaWidth: number;
+  /** Restore floor in physical px (APP_MIN_INNER_WIDTH_LOGICAL × scaleFactor at open). */
+  minRestoreWidth: number;
+  /** Window position before growing, restored on close. */
   position: PhysicalPosition;
   wasMaximized: boolean;
-  manuallyResized: boolean;
 }
-
-type DetailsResizePhase = "closed" | "opening" | "open" | "closing";
 
 function isTauriRuntime() {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -35,10 +49,6 @@ function waitForLayoutFrame() {
   });
 }
 
-function sizeDeltaExceeds(a: PhysicalSize, b: PhysicalSize, tolerance: number) {
-  return Math.abs(a.width - b.width) > tolerance || Math.abs(a.height - b.height) > tolerance;
-}
-
 interface UseDetailsWindowOptions {
   /** Reference to the chat area, used to lock its current pixel width during a transition. */
   chatAreaRef: RefObject<HTMLDivElement | null>;
@@ -49,55 +59,29 @@ interface UseDetailsWindowResult {
   /** Pixel width to pin the chat area at while details panel is opening/closing; null otherwise. */
   chatWidthLock: number | null;
   toggleDetails: () => void;
-  /** Tell the hook the user might have manually resized the Tauri window so we shouldn't auto-restore. */
-  markManualResizeIfNeeded: () => void;
 }
 
 /**
  * Owns the open/close state of the customer details panel and the choreography
- * that grows / shrinks the surrounding Tauri window in lockstep. Pure React
- * state outside of Tauri (browser preview) is supported as a degraded path.
+ * that grows / shrinks the surrounding Tauri window in lockstep.
+ *
+ * Single source of truth: the React `detailsOpen` state, guarded by one
+ * in-flight ref. A successful grow records exactly what it changed in `growRef`;
+ * close undoes that delta from the CURRENT window size (delta-undo), so a window
+ * the user manually resized while the panel was open keeps that change. When the
+ * work area can't fit a wider window — or the OS clamps the grow — the panel
+ * opens anyway and the chat area's min-width guard absorbs the squeeze; no grow
+ * is recorded, so close is a no-op. Plain browser preview (no Tauri) is a
+ * degraded path that just toggles React state.
  */
 export function useDetailsWindow({ chatAreaRef }: UseDetailsWindowOptions): UseDetailsWindowResult {
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [chatWidthLock, setChatWidthLock] = useState<number | null>(null);
 
-  const detailsOpenRef = useRef(false);
-  const detailsResizePhaseRef = useRef<DetailsResizePhase>("closed");
-  const detailsResizeInFlightRef = useRef(false);
-  const manualResizeCheckInFlightRef = useRef(false);
-  const detailsWindowStateRef = useRef<DetailsWindowState | null>(null);
+  const inFlightRef = useRef(false);
+  const growRef = useRef<DetailsGrow | null>(null);
 
-  const markManualResizeIfNeeded = useCallback(() => {
-    if (!isTauriRuntime()) return;
-    if (manualResizeCheckInFlightRef.current) return;
-    if (!detailsOpenRef.current || detailsResizePhaseRef.current !== "open") return;
-
-    const previousState = detailsWindowStateRef.current;
-    if (!previousState || previousState.manuallyResized) return;
-
-    manualResizeCheckInFlightRef.current = true;
-    void (async () => {
-      try {
-        const contentSize = await getCurrentWindow().innerSize();
-        const currentState = detailsWindowStateRef.current;
-        if (
-          currentState &&
-          detailsOpenRef.current &&
-          detailsResizePhaseRef.current === "open" &&
-          sizeDeltaExceeds(contentSize, currentState.expandedContentSize, DETAILS_RESIZE_TOLERANCE)
-        ) {
-          currentState.manuallyResized = true;
-        }
-      } catch {
-        // Browser preview has no Tauri window; ignore manual resize tracking there.
-      } finally {
-        manualResizeCheckInFlightRef.current = false;
-      }
-    })();
-  }, []);
-
-  const openDetailsWithWindowResize = useCallback(async () => {
+  const openDetailsWithWindowResize = useCallback(async (): Promise<boolean> => {
     try {
       const win = getCurrentWindow();
       const wasMaximized = await win.isMaximized();
@@ -114,49 +98,46 @@ export function useDetailsWindow({ chatAreaRef }: UseDetailsWindowOptions): UseD
         currentMonitor(),
       ]);
       const detailsWidth = Math.round(CUSTOMER_DETAILS_WIDTH * scaleFactor);
-      const targetContentWidth = contentSize.width + detailsWidth;
-      const targetWindowWidth = windowSize.width + detailsWidth;
-      const workArea = monitor?.workArea;
+      const workArea = monitor
+        ? { x: monitor.workArea.position.x, width: monitor.workArea.size.width }
+        : null;
 
-      // If the work area can't fit a wider window, open the panel anyway and
-      // let it squeeze the chat area within the current window — the
-      // alternative (refusing to open) is worse UX than a tighter chat column.
-      // No window mutation here, so detailsWindowStateRef stays null and the
-      // close path becomes a no-op.
-      if (workArea && targetWindowWidth > workArea.size.width) {
+      const { canGrow, targetInnerWidth, nextX } = computeExpandTarget({
+        innerWidth: contentSize.width,
+        outerWidth: windowSize.width,
+        outerX: position.x,
+        detailsWidth,
+        workArea,
+      });
+
+      // Work area can't fit a wider window → open the panel anyway and let the
+      // chat min-width guard squeeze the chat column. No window mutation, so no
+      // grow recorded and close stays a no-op.
+      if (!canGrow) {
         if (wasMaximized) await win.maximize();
         return true;
       }
 
-      if (workArea) {
-        const workRight = workArea.position.x + workArea.size.width;
-        const targetRight = position.x + targetWindowWidth;
-        const overflow = Math.max(0, targetRight - workRight);
-        if (overflow > 0) {
-          await win.setPosition(
-            new PhysicalPosition(Math.max(workArea.position.x, position.x - overflow), position.y),
-          );
-        }
+      if (nextX !== position.x) {
+        await win.setPosition(new PhysicalPosition(nextX, position.y));
       }
-
-      await win.setSize(new PhysicalSize(targetContentWidth, contentSize.height));
+      await win.setSize(new PhysicalSize(targetInnerWidth, contentSize.height));
       await waitForWindowMutation();
 
-      const nextContentSize = await win.innerSize();
-      if (nextContentSize.width < contentSize.width + detailsWidth - DETAILS_RESIZE_TOLERANCE) {
-        await win.setSize(contentSize);
-        await win.setPosition(position);
-        if (wasMaximized) await win.maximize();
-        detailsWindowStateRef.current = null;
-        return false;
+      const achievedDeltaWidth = (await win.innerSize()).width - contentSize.width;
+
+      // OS clamped the grow away (e.g. useWindowMaxSize.setMaxSize). Revert the
+      // position nudge and fall back to squeeze — don't record a grow we didn't get.
+      if (achievedDeltaWidth <= DETAILS_RESIZE_TOLERANCE) {
+        if (nextX !== position.x) await win.setPosition(position);
+        return true;
       }
 
-      detailsWindowStateRef.current = {
-        baseContentSize: contentSize,
-        expandedContentSize: nextContentSize,
+      growRef.current = {
+        achievedDeltaWidth,
+        minRestoreWidth: Math.round(APP_MIN_INNER_WIDTH_LOGICAL * scaleFactor),
         position,
         wasMaximized,
-        manuallyResized: false,
       };
       return true;
     } catch {
@@ -166,21 +147,23 @@ export function useDetailsWindow({ chatAreaRef }: UseDetailsWindowOptions): UseD
   }, []);
 
   const closeDetailsWithWindowResize = useCallback(async () => {
-    const previousState = detailsWindowStateRef.current;
-    if (!previousState) return;
-    if (previousState.manuallyResized) {
-      detailsWindowStateRef.current = null;
-      return;
-    }
+    const grow = growRef.current;
+    if (!grow) return;
     try {
       const win = getCurrentWindow();
-      await win.setSize(previousState.baseContentSize);
-      await win.setPosition(previousState.position);
-      if (previousState.wasMaximized) await win.maximize();
+      const current = await win.innerSize();
+      const targetWidth = computeRestoreTarget(
+        current.width,
+        grow.achievedDeltaWidth,
+        grow.minRestoreWidth,
+      );
+      await win.setSize(new PhysicalSize(targetWidth, current.height));
+      await win.setPosition(grow.position);
+      if (grow.wasMaximized) await win.maximize();
     } catch {
       // Browser preview: nothing to restore.
     } finally {
-      detailsWindowStateRef.current = null;
+      growRef.current = null;
     }
   }, []);
 
@@ -192,15 +175,9 @@ export function useDetailsWindow({ chatAreaRef }: UseDetailsWindowOptions): UseD
   }, [chatAreaRef]);
 
   const toggleDetails = useCallback(() => {
-    if (detailsResizeInFlightRef.current) return;
-
-    const currentPhase = detailsResizePhaseRef.current;
-    const opening = currentPhase === "closed" && !detailsOpenRef.current;
-    const closing = currentPhase === "open" && detailsOpenRef.current;
-    if (!opening && !closing) return;
-
-    detailsResizeInFlightRef.current = true;
-    detailsResizePhaseRef.current = opening ? "opening" : "closing";
+    if (inFlightRef.current) return;
+    inFlightRef.current = true;
+    const opening = !detailsOpen;
 
     void (async () => {
       try {
@@ -210,39 +187,29 @@ export function useDetailsWindow({ chatAreaRef }: UseDetailsWindowOptions): UseD
         if (opening) {
           const resized = await openDetailsWithWindowResize();
           if (resized) {
-            detailsOpenRef.current = true;
             setDetailsOpen(true);
             await waitForLayoutFrame();
-            detailsResizePhaseRef.current = "open";
-          } else {
-            detailsOpenRef.current = false;
-            detailsResizePhaseRef.current = "closed";
           }
         } else {
-          detailsOpenRef.current = false;
           setDetailsOpen(false);
           await closeDetailsWithWindowResize();
           await waitForLayoutFrame();
-          detailsResizePhaseRef.current = "closed";
         }
       } finally {
-        if (
-          detailsResizePhaseRef.current === "opening" ||
-          detailsResizePhaseRef.current === "closing"
-        ) {
-          detailsOpenRef.current = false;
-          detailsResizePhaseRef.current = "closed";
-        }
         setChatWidthLock(null);
-        detailsResizeInFlightRef.current = false;
+        inFlightRef.current = false;
       }
     })();
-  }, [closeDetailsWithWindowResize, lockCurrentChatWidth, openDetailsWithWindowResize]);
+  }, [
+    closeDetailsWithWindowResize,
+    detailsOpen,
+    lockCurrentChatWidth,
+    openDetailsWithWindowResize,
+  ]);
 
   return {
     detailsOpen,
     chatWidthLock,
     toggleDetails,
-    markManualResizeIfNeeded,
   };
 }

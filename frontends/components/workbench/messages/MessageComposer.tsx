@@ -34,7 +34,7 @@ import { EmojiPicker } from "./EmojiPicker";
 import type { ReplyTarget } from "./MessageBubble";
 import { QuickRepliesPanel } from "./QuickRepliesPanel";
 import { STRINGS } from "./strings";
-import { clearDraft, useDraft, useFileAttachments } from "./useDraftStore";
+import { clearDraft, flushDraftToBackend, useDraft, useFileAttachments } from "./useDraftStore";
 import { formatFileSize } from "./utils";
 
 interface MessageComposerProps {
@@ -158,6 +158,17 @@ export function MessageComposer({
     };
     // 仅依赖 onHeightChange；卸载时执行一次。父组件应保证 onHeightChange 引用稳定。
   }, [onHeightChange]);
+
+  // 草稿"切走才更新会话列表":输入过程中只写本地(useDraftStore debounce),不动
+  // 后端。本组件按 conversation.id 重挂载,cleanup 触发即"切到了别的接待人",此刻
+  // 把草稿刷到后端 → 会话列表才出现 "[草稿]" 样式并按 localDraftAtMs 重排。
+  // flushDraftToBackend 对非 dirty 会话是 no-op,故初次挂载 / StrictMode 双挂不会
+  // 误把刚打开的会话标成草稿态。
+  useEffect(() => {
+    return () => {
+      flushDraftToBackend(conversationId);
+    };
+  }, [conversationId]);
 
   // ─── Attachment helpers ────────────────────────────────────────────────────
 

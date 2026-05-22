@@ -43,6 +43,12 @@ export const STRINGS = {
     contextUnpin: "取消置顶",
     /** 接待列表行右键菜单的"移除会话"操作文案。V11 后端持久化软删除,新消息严格晚于 removed_at_ms 时自动恢复。 */
     contextRemove: "移除会话",
+    /** 接待列表行右键菜单的"消息免打扰"操作文案。V12 后端持久化本地列。 */
+    contextMute: "消息免打扰",
+    /** 接待列表行右键菜单的"取消免打扰"操作文案。 */
+    contextUnmute: "取消免打扰",
+    /** 免打扰会话有未读时,preview 前缀显示条数(替代 [未读])。 */
+    mutedCountPrefix: (n: number) => `[${n > 99 ? "99+" : n}条]`,
   },
   status: {
     unreadDivider: (n: number) => `以下为未读消息 (${n})`,
@@ -54,6 +60,8 @@ export const STRINGS = {
     newMessagesBelow: (n: number) => `${n > 99 ? "99+" : n} 条新消息`,
     /** 顶部浮动 pill,提示视口上方还有未读;点击跳到 UnreadDivider。 */
     unreadAbove: (n: number) => `↑ ${n > 99 ? "99+" : n} 条未读`,
+    /** 顶部浮动 pill,向上翻历史时加载更早消息的状态文案(带 spinner)。 */
+    loadingHistory: "加载更早的消息",
     recalledByMe: "你撤回了一条消息",
     recalledByPeer: "对方撤回了一条消息",
   },

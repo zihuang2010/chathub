@@ -1,83 +1,205 @@
-// 好友列表 hook —— 跟随 accountIds 变化自动重拉。
+// 好友(客户)列表 hook —— cursor keyset 分页 + 前端页缓存 + 上一页/下一页。
 //
-// **阶段 2:行存全量化**
-//   - 返回全量 `friends: WecomFriend[]`,不再有分页 / filter 入参
-//   - listen `friends_changed` 事件 → refetch(走行存,通常零远程往返)
-//   - **keepPreviousData 语义**:loading / error / 空账号入参时不清空 `friends`,
-//     避免下游 useCustomersFilters 的 tabCounts 闪 0
-//   - 跟 useAccounts.ts 的 accounts_changed 同款 effect-driven fetch 风格
+// 数据流:
+//   - 首页(page 0)由 useResource 接管:订阅 ChangeBus topic="friends" +
+//     scope={employeeId, wecomAccountId?},FRIEND_* 事件 → 自动重拉首页并清缓存。
+//     新增好友按 add_time DESC 天然浮顶,首页重拉即可见;删除好友重拉后消失。
+//   - 续页(page 1..N)由 nextPage 远端 cursor 续拉,push 进本地 tailPages 缓存。
+//   - **上一页纯命中缓存**(cursor 单向无法回退,已翻页面必须缓存);下一页只在未缓存时请求。
+//   - 当前展示 = allPages[pageIndex] 单页(不再跨页累积)。
+//
+// **降自动重拉**:刻意关闭 useResource 的 focus 刷新 + 90s 静默探活(refetchOnFocus=false,
+//   silentProbeMs=0)。客户数据非实时,只靠"显式刷新 + FRIEND_* 事件失效"驱动重拉,
+//   避免每次窗口聚焦/空闲探活都打 listFriends 业务接口。
+//
+// **scope 选择**:
+//   - 单 account 入参 → scope.wecomAccountId 带,精准 match(其他账号事件不刷新)
+//   - 多 account 入参 → scope 仅 employee 维度,任何 account 事件都刷新(广义订阅)
+//   - 空 accountIds → enabled=false,不拉不订阅
+//
+// 筛选(externalId / 加好友时间区间)与 pageSize 下推服务端;任一变化 → 重置 cursor 从首页重拉。
 
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { listen } from "@tauri-apps/api/event";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+
+import { useCurrentEmployeeId } from "@/lib/data/useCurrentEmployeeId";
+import { useResource } from "@/lib/data/useResource";
 
 import { fetchFriends, type WecomFriend } from "./customers";
 
-export interface UseFriendsResult {
-  friends: WecomFriend[];
-  loading: boolean;
-  /** 失败时人读字符串;成功为 null。 */
-  error: string | null;
-  /** 手动刷新(用户点"刷新"按钮)。force=true 跳过 Tauri 行存 TTL 直接透传业务后台。 */
-  refetch: (opts?: { force?: boolean }) => Promise<void>;
+const DEFAULT_PAGE_SIZE = 20;
+
+export interface UseFriendsFilters {
+  /** 名称/手机号统一模糊匹配。 */
+  externalId?: string;
+  /** 加好友时间下界 `yyyy-MM-dd HH:mm:ss`。 */
+  addStartTime?: string;
+  /** 加好友时间上界 `yyyy-MM-dd HH:mm:ss`。 */
+  addEndTime?: string;
 }
 
-export function useFriends(accountIds: string[]): UseFriendsResult {
-  const [friends, setFriends] = useState<WecomFriend[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+export interface UseFriendsResult {
+  /** 当前页的客户(单页,非累积)。 */
+  friends: WecomFriend[];
+  loading: boolean;
+  error: string | null;
+  /** 1-based 当前页码。 */
+  page: number;
+  /** 能否回上一页(pageIndex>0,纯缓存命中)。 */
+  canPrev: boolean;
+  /** 能否去下一页(已缓存下一页 或 末页 hasMore)。 */
+  canNext: boolean;
+  prevPage: () => void;
+  nextPage: () => Promise<void>;
+  refresh: () => Promise<void>;
+}
 
-  // 入参指纹:账号 ID 顺序无关。useMemo 让 refetch dep 稳定,避免每次 render 重建。
-  const accountKey = useMemo(() => [...accountIds].sort().join(","), [accountIds]);
+/** 一页的本地快照:服务端已按 keyset 排好序,无需再排。 */
+interface FriendsPage {
+  records: WecomFriend[];
+  nextCursor: string;
+  hasMore: boolean;
+}
 
-  const refetch = useCallback(
-    async (opts?: { force?: boolean }) => {
-      // 空账号入参 → 不发请求,但保留 friends 与 error,只清 loading
-      if (accountIds.length === 0) {
-        setLoading(false);
-        return;
-      }
-      setLoading(true);
-      setError(null);
-      try {
-        const list = await fetchFriends({ accountIds, force: opts?.force });
-        setFriends(list);
-      } catch (e) {
-        const message =
-          e && typeof e === "object" && "message" in e
-            ? String((e as { message: unknown }).message)
-            : String(e);
-        setError(message);
-        // 不清 friends:保留上次成功的数据,UI 通过 error 做提示
-      } finally {
-        setLoading(false);
-      }
+export function useFriends(
+  accountIds: string[],
+  filters?: UseFriendsFilters,
+  pageSize: number = DEFAULT_PAGE_SIZE,
+): UseFriendsResult {
+  const employeeId = useCurrentEmployeeId();
+  const sortedAccountIds = useMemo(() => [...accountIds].sort(), [accountIds]);
+  const accountKey = sortedAccountIds.join(",");
+  const scopeAccount = sortedAccountIds.length === 1 ? sortedAccountIds[0] : undefined;
+
+  const externalId = filters?.externalId ?? "";
+  const addStartTime = filters?.addStartTime ?? "";
+  const addEndTime = filters?.addEndTime ?? "";
+  // 重拉指纹:筛选 / pageSize 任一变化都从首页重拉(它们不进 scope)。
+  const resetKey = `${externalId}|${addStartTime}|${addEndTime}|${pageSize}`;
+  // queryFn / nextPage 经 ref 读最新筛选 + pageSize,避免 stale closure。
+  const paramsRef = useRef({ externalId, addStartTime, addEndTime, pageSize });
+  useEffect(() => {
+    paramsRef.current = { externalId, addStartTime, addEndTime, pageSize };
+  }, [externalId, addStartTime, addEndTime, pageSize]);
+
+  // 续页缓存(page 1..N)+ 当前页指针。page 0 由 useResource 持有。
+  const [tailPages, setTailPages] = useState<FriendsPage[]>([]);
+  const [pageIndex, setPageIndex] = useState(0);
+  const [tailLoading, setTailLoading] = useState(false);
+  const [localError, setLocalError] = useState<string | null>(null);
+  // 每次首页重拉自增;nextPage 捕获当代,首页 reset 后旧续页结果丢弃。
+  const genRef = useRef(0);
+
+  const resource = useResource<FriendsPage>({
+    topic: "friends",
+    scope: {
+      employeeId: employeeId ?? "",
+      wecomAccountId: scopeAccount,
     },
-    // accountKey 是稳定指纹,代替 accountIds 做 dep。
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [accountKey],
+    queryFn: async () => {
+      if (sortedAccountIds.length === 0) {
+        return { records: [], nextCursor: "", hasMore: false };
+      }
+      const gen = ++genRef.current;
+      const p = paramsRef.current;
+      const resp = await fetchFriends({
+        accountIds: sortedAccountIds,
+        cursor: "",
+        size: p.pageSize,
+        externalId: p.externalId,
+        addStartTime: p.addStartTime,
+        addEndTime: p.addEndTime,
+      });
+      // 首页落地:清续页缓存 + 回到第一页(仅当仍是最新代)。
+      if (gen === genRef.current) {
+        setTailPages([]);
+        setPageIndex(0);
+      }
+      return { records: resp.records, nextCursor: resp.nextCursor, hasMore: resp.hasMore };
+    },
+    enabled: !!employeeId && sortedAccountIds.length > 0,
+    // 降自动重拉:客户数据非实时,关掉聚焦刷新 + 静默探活,只靠事件 + 显式刷新。
+    refetchOnFocus: false,
+    silentProbeMs: 0,
+  });
+
+  const page0 = resource.data;
+  const allPages = useMemo<FriendsPage[]>(
+    () => (page0 ? [page0, ...tailPages] : []),
+    [page0, tailPages],
   );
 
-  // refetch 是 useCallback,内部 setLoading/setFriends/setError 是数据拉取的合理副作用;
-  // 跟 useAccounts.ts 同款 effect-driven fetch 风格保持一致。React 19 的
-  // react-hooks/set-state-in-effect 把这种间接 setState 也标为 error,就近豁免。
-  useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    void refetch();
-  }, [refetch]);
+  // pageIndex 超出范围(首页重拉清缓存 / pageSize 变小)时收敛到末页。
+  const safeIndex = allPages.length === 0 ? 0 : Math.min(pageIndex, allPages.length - 1);
+  const currentPage = allPages[safeIndex] ?? null;
+  const friends = useMemo(() => currentPage?.records ?? [], [currentPage]);
 
-  // Subscribe 流推 FRIEND_* 事件后 Tauri 端写完行存 → emit("friends_changed") →
-  // 这里 refetch 读行存(不带 force,本地读不走远程)。
-  useEffect(() => {
-    let unlisten: (() => void) | undefined;
-    void (async () => {
-      unlisten = await listen("friends_changed", () => {
-        void refetch();
+  const lastPage = allPages[allPages.length - 1];
+  const canPrev = safeIndex > 0;
+  const canNext = safeIndex + 1 < allPages.length || (lastPage?.hasMore ?? false);
+
+  const prevPage = useCallback(() => {
+    setPageIndex((i) => (i > 0 ? i - 1 : 0));
+  }, []);
+
+  const nextPage = useCallback(async () => {
+    if (tailLoading) return;
+    // 已缓存:纯指针前移,不请求。
+    if (safeIndex + 1 < allPages.length) {
+      setPageIndex(safeIndex + 1);
+      return;
+    }
+    const tail = allPages[allPages.length - 1];
+    if (!tail || !tail.hasMore || !tail.nextCursor) return;
+    if (sortedAccountIds.length === 0) return;
+    const gen = genRef.current;
+    const targetIndex = allPages.length; // 追加后新页所在下标
+    setTailLoading(true);
+    setLocalError(null);
+    try {
+      const p = paramsRef.current;
+      const resp = await fetchFriends({
+        accountIds: sortedAccountIds,
+        cursor: tail.nextCursor,
+        size: p.pageSize,
+        externalId: p.externalId,
+        addStartTime: p.addStartTime,
+        addEndTime: p.addEndTime,
       });
-    })();
-    return () => {
-      unlisten?.();
-    };
-  }, [refetch]);
+      if (gen !== genRef.current) return; // 首页已重拉,旧续页丢弃
+      setTailPages((prev) => [
+        ...prev,
+        { records: resp.records, nextCursor: resp.nextCursor, hasMore: resp.hasMore },
+      ]);
+      setPageIndex(targetIndex);
+    } catch (e) {
+      setLocalError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setTailLoading(false);
+    }
+  }, [tailLoading, safeIndex, allPages, sortedAccountIds]);
 
-  return { friends, loading, error, refetch };
+  const refresh = resource.refresh;
+
+  // accountIds 变化时 scope(多账号 scope 不含 wecomAccountId)不变 → useResource 不重拉,
+  // 这里主动 refresh。resetKey(筛选 + pageSize,不进 scope)变化同理。跳过 mount(useResource 已拉一次)。
+  const prevKeyRef = useRef(`${accountKey}|${resetKey}`);
+  useEffect(() => {
+    const key = `${accountKey}|${resetKey}`;
+    if (prevKeyRef.current === key) return;
+    prevKeyRef.current = key;
+    if (!employeeId || sortedAccountIds.length === 0) return;
+    void refresh();
+  }, [accountKey, resetKey, employeeId, refresh, sortedAccountIds.length]);
+
+  return {
+    friends,
+    loading: resource.loading || tailLoading,
+    error: resource.error ?? localError,
+    page: safeIndex + 1,
+    canPrev,
+    canNext,
+    prevPage,
+    nextPage,
+    refresh,
+  };
 }

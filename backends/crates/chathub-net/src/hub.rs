@@ -9,9 +9,12 @@
 //!   - `ConnectionState`:Connecting / Subscribed / Disconnected{last_error}
 
 use crate::account_event::AccountEventApplier;
+use crate::change_notice::{ChangeNotice, ChangeScope, ChangeTopic};
 use crate::error::AuthError;
 use crate::friend_event::FriendEventApplier;
 use crate::interceptor::AuthInterceptor;
+use crate::message_event::MessageEventApplier;
+use crate::recent_session_event::RecentSessionEventApplier;
 use crate::token::TokenStore;
 use chathub_proto::v1::hub_client::HubClient as RawHubClient;
 use chathub_proto::v1::{
@@ -175,49 +178,92 @@ impl HubClient {
         })
     }
 
-    /// 拉取单账号好友的**全量**(内部循环 list_friends 分页直到拉完)。
-    ///
-    /// 用法:Tauri 层在 cache miss / TTL 失效 / 推送 fallback 时调,把整账号的好友灌入
-    /// 本地 `wecom_friends` 行存。size 固定 100,无服务端筛选。
-    ///
-    /// 上限保护:`max_pages = 100`(即最多 10000 条),防止后台分页响应异常导致死循环。
-    /// 实际客户量级远低于此,触顶时返 `AuthError::Internal`。
-    pub async fn list_all_friends_for_account(
+    /// 拉取"接待好友列表"(消息页的最近会话列表)。POST body 透传:
+    ///   `{ size, cursor, externalName, externalMobile, wecomAccountId, onlyUnread }`
+    /// 服务端按 `last_message_time` 倒序 + 游标分页;响应自带 `last_message_*` 快照
+    /// 与 `unread_count`,前端可直接渲染列表。
+    pub async fn list_recent_friends(
         &self,
-        wecom_account_id: &str,
-    ) -> Result<Vec<WecomFriend>, AuthError> {
-        const MAX_PAGES: u32 = 100;
-        const PAGE_SIZE: u32 = 100;
-        let mut all: Vec<WecomFriend> = Vec::new();
-        let mut current: u32 = 1;
-        loop {
-            let resp = self
-                .list_friends(ListFriendsRequest {
-                    wecom_account_ids: vec![wecom_account_id.to_string()],
-                    current,
-                    size: PAGE_SIZE,
-                    external_name: None,
-                    external_mobile: None,
-                    add_start_time: None,
-                    add_end_time: None,
-                })
-                .await?;
-            let got = resp.records.len() as u32;
-            all.extend(resp.records);
-            if got < PAGE_SIZE || current >= resp.pages.max(1) {
-                break;
-            }
-            current += 1;
-            if current > MAX_PAGES {
-                return Err(AuthError::Internal {
-                    message: format!(
-                        "list_all_friends_for_account exceeded {MAX_PAGES} pages \
-                         for wecom_account_id={wecom_account_id}"
-                    ),
-                });
-            }
+        req: ListRecentFriendsRequest,
+    ) -> Result<ListRecentFriendsResp, AuthError> {
+        let body = serde_json::to_vec(&req).map_err(|e| AuthError::Internal {
+            message: format!("list_recent_friends serialize: {e}"),
+        })?;
+        let resp = self.forward("list_recent_friends", body).await?;
+        if resp.http_status != 200 {
+            return Err(AuthError::Internal {
+                message: format!("list_recent_friends returned http {}", resp.http_status),
+            });
         }
-        Ok(all)
+        serde_json::from_slice::<ListRecentFriendsResp>(&resp.body_json).map_err(|e| {
+            AuthError::Internal {
+                message: format!("list_recent_friends JSON parse: {e}"),
+            }
+        })
+    }
+
+    /// 拉取一条会话的历史消息(扁平列表,cursor 分页)。
+    ///
+    /// POST body 透传:
+    ///   `{ size, wecomAccountId, externalUserId, cursor }`
+    /// 语义固定"earlier-only"(往更早翻);服务端 `records` 按 sortKey 升序(早→晚)扁平返回 +
+    /// 游标分页;首页 `cursor=""`,后续传 `nextCursor`。
+    pub async fn fetch_message_history(
+        &self,
+        req: FetchMessageHistoryRequest,
+    ) -> Result<FetchMessageHistoryResp, AuthError> {
+        let body = serde_json::to_vec(&req).map_err(|e| AuthError::Internal {
+            message: format!("fetch_message_history serialize: {e}"),
+        })?;
+        let resp = self.forward("fetch_message_history", body).await?;
+        if resp.http_status != 200 {
+            return Err(AuthError::Internal {
+                message: format!("fetch_message_history returned http {}", resp.http_status),
+            });
+        }
+        serde_json::from_slice::<FetchMessageHistoryResp>(&resp.body_json).map_err(|e| {
+            AuthError::Internal {
+                message: format!("fetch_message_history JSON parse: {e}"),
+            }
+        })
+    }
+
+    /// 发送一条文本消息(`messageType=1`)。POST body 透传请求字段。
+    pub async fn send_message(
+        &self,
+        req: SendMessageRequest,
+    ) -> Result<SendMessageResp, AuthError> {
+        let body = serde_json::to_vec(&req).map_err(|e| AuthError::Internal {
+            message: format!("send_message serialize: {e}"),
+        })?;
+        let resp = self.forward("send_message", body).await?;
+        if resp.http_status != 200 {
+            return Err(AuthError::Internal {
+                message: format!("send_message returned http {}", resp.http_status),
+            });
+        }
+        serde_json::from_slice::<SendMessageResp>(&resp.body_json).map_err(|e| {
+            AuthError::Internal {
+                message: format!("send_message JSON parse: {e}"),
+            }
+        })
+    }
+
+    /// 标记会话已读。POST body 透传 `{ conversationId, readSortKey? }`;`readSortKey` 省略时
+    /// 服务端按摘要最后一条消息清零未读。`code != 1` 经 forward 映射为 `AuthError::Business`。
+    pub async fn mark_read(&self, req: MarkReadRequest) -> Result<MarkReadResp, AuthError> {
+        let body = serde_json::to_vec(&req).map_err(|e| AuthError::Internal {
+            message: format!("mark_read serialize: {e}"),
+        })?;
+        let resp = self.forward("mark_read", body).await?;
+        if resp.http_status != 200 {
+            return Err(AuthError::Internal {
+                message: format!("mark_read returned http {}", resp.http_status),
+            });
+        }
+        serde_json::from_slice::<MarkReadResp>(&resp.body_json).map_err(|e| AuthError::Internal {
+            message: format!("mark_read JSON parse: {e}"),
+        })
     }
 
     /// 上报 notify_seq 水位(per-employee)。
@@ -320,27 +366,37 @@ pub struct ListAccountsItem {
 
 // ─── list_friends typed contract ────────────────────────────────────────────
 
-/// 按多账号拉取好友(客户)列表入参。POST body,size 调用方固定 100。
+/// 按多账号拉取好友(客户)列表入参。游标分页 + 服务端筛选。
+///
+/// 跨账号单 cursor:`wecom_account_ids` 全集合一次提交,业务后台做
+/// `add_time DESC, id DESC` 的全局 keyset,返回单条游标 `next_cursor`。
+///
+/// 空字符串语义:
+///   - `cursor = ""` → 首页;`cursor = nextCursor` → 续页
+///   - `external_id = None` → 不筛选;非空 → 名称/手机号统一模糊匹配
+///   - `add_start_time / add_end_time = None` → 不限时间
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ListFriendsRequest {
     pub wecom_account_ids: Vec<String>,
-    pub current: u32,
     pub size: u32,
+    pub cursor: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub external_name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub external_mobile: Option<String>,
+    pub external_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub add_start_time: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub add_end_time: Option<String>,
 }
 
-/// 好友单条记录(20 字段,camelCase JSON ↔ Rust snake_case)。
+/// 好友单条记录(camelCase JSON ↔ Rust snake_case)。
+///
+/// 单 cursor 跨账号 keyset:每条记录自带 `wecom_account_id` 归属,前端多账号合并时
+/// chip 数字、账号显示名都能精确对上(不再靠 Tauri 层按查询账号注入)。
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WecomFriend {
+    pub wecom_account_id: String,
     pub external_user_id: String,
     pub external_name: String,
     pub external_position: String,
@@ -366,15 +422,184 @@ pub struct WecomFriend {
     pub sync_status: i32,
 }
 
-/// listFriends 分页响应(2xx envelope.data 的形态)。
+/// listFriends 游标响应(2xx envelope.data 的形态)。
+///
+/// totalMode `none`:不返 total/pages —— 10万级数据量下全表 count 没意义,UI 走纯滚动。
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ListFriendsResp {
     pub records: Vec<WecomFriend>,
-    pub total: u64,
-    pub current: u32,
+    pub has_more: bool,
+    pub next_cursor: String,
+}
+
+// ─── list_recent_friends typed contract ─────────────────────────────────────
+
+/// session/recentFriends 入参。游标分页 + 服务端筛选。
+///
+/// 空字符串字段的语义:
+///   - `cursor = ""` → 首页;`cursor = nextCursor` → 续页
+///   - `wecom_account_id = ""` → 全部账号聚合;非空 → 仅该账号
+///   - `external_name / external_mobile = ""` → 不筛选
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListRecentFriendsRequest {
     pub size: u32,
-    pub pages: u32,
+    pub cursor: String,
+    pub external_name: String,
+    pub external_mobile: String,
+    pub wecom_account_id: String,
+    pub only_unread: bool,
+}
+
+/// session/recentFriends 单条记录(17 字段,camelCase JSON ↔ Rust snake_case)。
+///
+/// 业务后台已经做完了"会话最近"语义,客户端拿到即可渲染列表 —— 无需二次拉消息。
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecentFriendRecord {
+    pub conversation_id: String,
+    pub wecom_account_id: String,
+    pub wecom_name: String,
+    pub wecom_account: String,
+    pub wecom_alias: String,
+    pub external_user_id: String,
+    pub external_name: String,
+    pub external_avatar: String,
+    pub external_mobile: String,
+    pub last_local_message_id: String,
+    /// 1=文本 / 2=图片 / 3=…(具体枚举翻译留给前端)
+    pub last_message_type: i32,
+    /// 1=入 / 2=出
+    pub last_message_direction: i32,
+    /// 3=已读 / 4=失败 …
+    pub last_send_status: i32,
+    pub last_message_summary: String,
+    /// ISO 8601 with TZ,例如 "2026-05-18T10:28:36Z"
+    pub last_message_time: String,
+    pub unread_count: i64,
+    pub has_unread: bool,
+    /// 该会话单调排序键,首段为 epoch-ms(形如 `1715836200000:abc`)。LWW 主版本。
+    /// 旧服务端缺省 → "" → 版本回退到 `last_message_time`。
+    #[serde(default)]
+    pub last_message_sort_key: String,
+    /// 记录最后修改时间 `yyyy-MM-dd HH:mm:ss`。LWW 次版本(同 sortKey 时比较)。
+    #[serde(default)]
+    pub gmt_modified_time: String,
+}
+
+/// session/recentFriends 响应(2xx envelope.data 的形态)。
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListRecentFriendsResp {
+    pub size: u32,
+    pub has_more: bool,
+    pub next_cursor: String,
+    pub records: Vec<RecentFriendRecord>,
+}
+
+// ─── fetch_message_history typed contract ───────────────────────────────────
+
+/// message/history 入参。游标分页(earlier-only)。
+/// 语义固定"往更早翻":服务端取 `sortKey < cursor.sortKey` 的一页。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FetchMessageHistoryRequest {
+    pub size: u32,
+    pub wecom_account_id: String,
+    pub external_user_id: String,
+    /// 首页 ""(空串)/续页填上轮 `nextCursor`。
+    pub cursor: String,
+}
+
+/// 单条历史消息记录(对照业务后台 message/history 单条形态)。
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryMessage {
+    pub local_message_id: String,
+    /// 1=入(对方发来) / 2=出(自己发出)。
+    pub message_direction: i32,
+    /// 1=文本 / 2=图片 / 3=...(具体枚举翻译留前端)。
+    pub message_type: i32,
+    pub content_text: String,
+    /// 1=已发送 / 2=已送达 / 3=已读 / 4=失败 等。
+    pub send_status: i32,
+    /// `yyyy-MM-dd HH:mm:ss`,服务端本地时区。
+    pub message_time: String,
+    /// 服务端排序键(opaque,客户端不解析)。
+    pub sort_key: String,
+    pub attachments: Vec<HistoryAttachment>,
+    /// 记录最后修改时间 `yyyy-MM-dd HH:mm:ss`(状态/内容变更时刷新;客户端暂不消费)。
+    pub gmt_modified_time: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryAttachment {
+    pub media_id: String,
+    pub file_name: String,
+    pub file_size: i64,
+    pub file_type: String,
+}
+
+/// 响应(2xx envelope.data 的形态)。
+/// `records` 为扁平消息列表,按 sortKey 升序(早→晚)。
+/// `total/current/pages` 服务端不维护时返 -1,客户端忽略。
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FetchMessageHistoryResp {
+    pub records: Vec<HistoryMessage>,
+    pub size: u32,
+    pub has_more: bool,
+    pub next_cursor: String,
+    pub total: i64,
+    pub current: i32,
+    pub pages: i32,
+}
+
+// ─── send_message typed contract(text-only,messageType=1)────────────────────
+
+/// message/send 入参。当前仅文本(`message_type = 1`)。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SendMessageRequest {
+    /// 客户端幂等键(去重用)。
+    pub request_message_id: String,
+    pub wecom_account_id: String,
+    pub external_user_id: String,
+    /// 1=文本(目前只对接文本)。
+    pub message_type: i32,
+    pub content_text: String,
+}
+
+/// 响应(2xx envelope.data 的形态)。
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SendMessageResp {
+    pub local_message_id: String,
+    /// 1=已发送 / 2=已送达 / 3=已读 / 4=失败 等。
+    pub send_status: i32,
+    /// `yyyy-MM-dd HH:mm:ss`,服务端本地时区。
+    pub message_time: String,
+}
+
+// ─── mark_read typed contract ────────────────────────────────────────────────
+
+/// session/markRead 入参。`read_sort_key` 省略 = 按摘要最后一条消息清零。
+/// 客户端目前不持有完整复合 sortKey,故 `read_sort_key` 恒为 `None`(清零到最新)。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MarkReadRequest {
+    pub conversation_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub read_sort_key: Option<String>,
+}
+
+/// 响应(2xx envelope.data 的形态)。
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MarkReadResp {
+    pub success: bool,
 }
 
 /// Full jitter 指数退避。
@@ -410,6 +635,22 @@ impl ExponentialBackoff {
     }
 }
 
+/// 服务端"请求全量重拉"信号 —— 两条触发路径汇聚到这里:
+///
+///   1. Subscribe 首帧 `SubscribeAck.resync_required=true`:客户端 since_notify_seq
+///      超出 relay 事件保留窗口,或服务端积压超 1000 截断,需要走兜底 API 对齐。
+///   2. 实时流 `SystemSignal::ResyncRequired`:服务端检测到反压/日志窗口问题,
+///      主动通知客户端走兜底。同步断重连(现有逻辑)。
+///
+/// 客户端上层(useRecentFriends)收到此信号 → 调一次 `list_recent_friends_remote_page`
+/// 首页对齐。watermark 不重置,后续实时流照常从 `replayed_to_seq + 1` 推进。
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResyncSignal {
+    /// 人类可读理由,仅用于日志/UI 展示,**不要 parse**。
+    pub reason: String,
+}
+
 struct Inner {
     hub: HubClient,
     token_store: Arc<TokenStore>,
@@ -419,12 +660,23 @@ struct Inner {
     backoff: BackoffConfig,
     state_tx: watch::Sender<ConnectionState>,
     event_tx: broadcast::Sender<ServerEvent>,
+    /// SubscribeAck.resync_required / SystemSignal::ResyncRequired 触发,上层桥接 → app.emit
+    resync_tx: broadcast::Sender<ResyncSignal>,
+    /// 统一变更通知通道 — applier / 用户命令 / resync 都往这里发,上层桥接 → app.emit("hub:change")。
+    /// 由 setup 阶段创建并同时注入到 ConnectionManager 与各 applier(共享 broadcast channel)。
+    change_notice_tx: broadcast::Sender<ChangeNotice>,
     /// 2026-05-17:Subscribe 流里 ACCOUNT_* 事件 → 本地账号缓存 + 广播给 Tauri 层。
     /// Optional 是为了让 chathub-net 单测可以构造 ConnectionManager 而不必带 AccountCacheStore。
     account_event_applier: Option<Arc<AccountEventApplier>>,
     /// 阶段 2:Subscribe 流里 FRIEND_* 事件 → 本地好友行存 + 广播给 Tauri 层。
     /// 与 account_event_applier 并列;PushBatchOut 来时两个 applier 都调一次,各自按 eventType 筛分支。
     friend_event_applier: Option<Arc<FriendEventApplier>>,
+    /// 阶段 3:Subscribe 流里 MESSAGE_UPSERT / SESSION_SUMMARY_UPSERT 事件 → 本地最近会话行存 + 广播。
+    /// 与上两个 applier 并列;PushBatchOut 来时三者都调一次,各自按 eventType 筛分支。
+    recent_session_event_applier: Option<Arc<RecentSessionEventApplier>>,
+    /// 阶段 4:Subscribe 流里 MESSAGE_UPSERT → 本地消息气泡行存 + broadcast。
+    /// 与前三个 applier 并列;PushBatchOut 来时四者都调一次,各自按 eventType 筛分支。
+    message_event_applier: Option<Arc<MessageEventApplier>>,
     task: tokio::sync::Mutex<Option<JoinHandle<()>>>,
 }
 
@@ -444,9 +696,14 @@ impl ConnectionManager {
         backoff: BackoffConfig,
         account_event_applier: Option<Arc<AccountEventApplier>>,
         friend_event_applier: Option<Arc<FriendEventApplier>>,
+        recent_session_event_applier: Option<Arc<RecentSessionEventApplier>>,
+        message_event_applier: Option<Arc<MessageEventApplier>>,
+        // 共享 ChangeNotice 通道 —— setup 阶段统一创建,applier 与 ConnectionManager 持同一 sender。
+        change_notice_tx: broadcast::Sender<ChangeNotice>,
     ) -> Self {
         let (state_tx, _) = watch::channel(ConnectionState::Disconnected { last_error: None });
         let (event_tx, _) = broadcast::channel(256);
+        let (resync_tx, _) = broadcast::channel(16);
         Self {
             inner: Arc::new(Inner {
                 hub,
@@ -457,8 +714,12 @@ impl ConnectionManager {
                 backoff,
                 state_tx,
                 event_tx,
+                resync_tx,
+                change_notice_tx,
                 account_event_applier,
                 friend_event_applier,
+                recent_session_event_applier,
+                message_event_applier,
                 task: tokio::sync::Mutex::new(None),
             }),
         }
@@ -472,27 +733,21 @@ impl ConnectionManager {
         self.inner.event_tx.subscribe()
     }
 
-    /// 订阅"账号缓存变了"广播。若未注入 [`AccountEventApplier`] 返 `None`。
-    /// 上层(backends/src/lib.rs)收到后 `app.emit("accounts_changed", { employee_id })`。
-    pub fn account_event_subscribe(
-        &self,
-    ) -> Option<broadcast::Receiver<crate::account_event::AccountChanged>> {
-        self.inner
-            .account_event_applier
-            .as_ref()
-            .map(|a| a.subscribe())
+    /// 订阅"请全量重拉"信号。两条触发路径(SubscribeAck.resync_required /
+    /// SystemSignal::ResyncRequired)都汇聚到这里。上层调一次 list_recent_friends_remote_page
+    /// 首页对齐即可。
+    pub fn resync_subscribe(&self) -> broadcast::Receiver<ResyncSignal> {
+        self.inner.resync_tx.subscribe()
     }
 
-    /// 订阅"好友缓存变了"广播。若未注入 [`FriendEventApplier`] 返 `None`。
-    /// 上层(backends/src/lib.rs)收到后 `app.emit("friends_changed", { employeeId, wecomAccountId? })`。
-    pub fn friend_event_subscribe(
-        &self,
-    ) -> Option<broadcast::Receiver<crate::friend_event::FriendChanged>> {
-        self.inner
-            .friend_event_applier
-            .as_ref()
-            .map(|a| a.subscribe())
+    /// 订阅统一变更通知。setup 阶段桥接到 app.emit("hub:change")。
+    pub fn change_notice_subscribe(&self) -> broadcast::Receiver<ChangeNotice> {
+        self.inner.change_notice_tx.subscribe()
     }
+
+    // C6 拆双发后:applier 不再各自暴露 subscribe;所有变更通过 change_notice_subscribe()
+    // 统一接收。Inner.{account/friend/recent_session/message}_event_applier 字段仍保留,
+    // 是因为 run_loop 内仍需调 apply_push_batch 处理 PushBatchOut 事件。
 
     pub async fn start(&self) {
         let mut guard = self.inner.task.lock().await;
@@ -519,11 +774,35 @@ impl ConnectionManager {
 }
 
 impl Inner {
+    /// Resync 路径触发 — 给所有已知 topic 各发一条 BulkInvalidate ChangeNotice。
+    /// employee_id 取 token_store 当前会话的 user_id;若未登录(异常路径),不发。
+    fn broadcast_resync_to_all_topics(&self) {
+        let employee_id = match self.token_store.current_user_id() {
+            Some(uid) if !uid.is_empty() => uid,
+            _ => return,
+        };
+        let scope = ChangeScope::employee(employee_id);
+        for topic in [
+            ChangeTopic::Accounts,
+            ChangeTopic::Friends,
+            ChangeTopic::RecentSessions,
+        ] {
+            let _ = self
+                .change_notice_tx
+                .send(ChangeNotice::resync(topic, scope.clone()));
+        }
+    }
+}
+
+impl Inner {
     async fn run_loop(
         self: Arc<Inner>,
         mut logged_out_rx: broadcast::Receiver<crate::token::LoggedOutReason>,
     ) {
         let mut backoff = ExponentialBackoff::new(&self.backoff);
+        // 已回传给 relay 的最高水位。跨重连保留:重连后 relay 从 since 重放,
+        // 再 ack 同值幂等,不必清零。仅当持久化水位 > 此值时才发一次 ack。
+        let mut last_acked: u64 = 0;
 
         'reconnect: loop {
             self.state_tx.send_replace(ConnectionState::Connecting);
@@ -562,12 +841,30 @@ impl Inner {
             self.state_tx.send_replace(ConnectionState::Subscribed);
             backoff.reset();
 
+            // ack 合并:每 1s 最多回传一次"最高已落库水位"(apply-then-advance 后持久化的值),
+            // 避免每条消息一次 RPC,又让 relay 重放缓冲有界。空闲时水位不前进 → 不发。
+            // interval 首 tick 立即就绪,消费掉以让第一次 ack 落在一个完整窗口之后。
+            let mut ack_interval = tokio::time::interval(Duration::from_secs(1));
+            ack_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            ack_interval.tick().await;
+
             loop {
                 tokio::select! {
                     biased;
                     _ = logged_out_rx.recv() => {
                         self.state_tx.send_replace(ConnectionState::Disconnected { last_error: None });
                         return;
+                    }
+                    _ = ack_interval.tick() => {
+                        // 读持久化水位(= 已 apply-then-advance 的最高 seq);advanced 才 ack。
+                        let durable = self.notify_seq_store.read().await.unwrap_or(0);
+                        if durable > last_acked {
+                            match self.hub.ack(durable).await {
+                                Ok(()) => last_acked = durable,
+                                // 失败不前进 last_acked,下个窗口重试(seq 单调,重发幂等)。
+                                Err(e) => tracing::warn!(?e, durable, "hub.ack failed; retry next window"),
+                            }
+                        }
                     }
                     msg = stream.message() => match msg {
                         Ok(Some(event)) => {
@@ -581,12 +878,43 @@ impl Inner {
                                        || s.kind == Kind::ResyncRequired as i32
                             );
 
-                            // PushBatchOut → 更新水位 + 账号事件应用
-                            if let Some(Body::PushBatch(pb)) = &event.body {
-                                if let Err(e) = self.notify_seq_store
-                                    .upsert_if_greater(pb.notify_seq).await {
-                                    tracing::warn!(?e, "notify_seq_store upsert failed, ignored");
+                            // resync 信号汇聚:两条路径都触发上层全量重拉
+                            //   1) Subscribe 首帧 ack.resync_required=true(超 retention 或积压截断)
+                            //   2) 实时流 SystemSignal::ResyncRequired(服务端主动 + should_terminate 断重连)
+                            // 注意 SystemSignal 触发后会断重连,下次首帧 ack 可能再次广播 ResyncSignal,
+                            // 这是预期的(两次都该让上层 refreshFirstPage 一次,幂等)。
+                            match &event.body {
+                                Some(Body::SubscribeAck(ack)) if ack.resync_required => {
+                                    tracing::info!(
+                                        target: "chathub_net::hub",
+                                        reason = %ack.resync_reason,
+                                        resumed_from_seq = ack.resumed_from_seq,
+                                        replayed_to_seq = ack.replayed_to_seq,
+                                        "SubscribeAck.resync_required=true; broadcasting ResyncSignal"
+                                    );
+                                    let _ = self.resync_tx.send(ResyncSignal {
+                                        reason: ack.resync_reason.clone(),
+                                    });
+                                    self.broadcast_resync_to_all_topics();
                                 }
+                                Some(Body::System(s)) if s.kind == Kind::ResyncRequired as i32 => {
+                                    tracing::info!(
+                                        target: "chathub_net::hub",
+                                        detail = %s.detail,
+                                        "SystemSignal::ResyncRequired received; broadcasting ResyncSignal"
+                                    );
+                                    let _ = self.resync_tx.send(ResyncSignal {
+                                        reason: s.detail.clone(),
+                                    });
+                                    self.broadcast_resync_to_all_topics();
+                                }
+                                _ => {}
+                            }
+
+                            // PushBatchOut → 账号事件应用 → **应用后**推进水位(apply-then-advance)。
+                            // 水位必须在 appliers 提交 SQLite 之后才前进:否则崩溃重启会用
+                            // 一个超前的 since 重订阅,跳过尚未落库的批次(数据丢失到下次 resync)。
+                            if let Some(Body::PushBatch(pb)) = &event.body {
                                 // 2026-05-17:账号事件 → 本地 cache + broadcast。
                                 // 内部按 eventType 过滤,非 ACCOUNT_* 直接返回。
                                 if let Some(applier) = &self.account_event_applier {
@@ -596,6 +924,22 @@ impl Inner {
                                 // 内部按 eventType 过滤,非 FRIEND_* 直接返回。两个 applier 并存。
                                 if let Some(applier) = &self.friend_event_applier {
                                     applier.apply_push_batch(pb).await;
+                                }
+                                // 阶段 3:消息会话事件(MESSAGE_UPSERT / SESSION_SUMMARY_UPSERT)
+                                // → 本地最近会话行存 + broadcast。内部按 eventType 过滤,非命中直接返回。
+                                if let Some(applier) = &self.recent_session_event_applier {
+                                    applier.apply_push_batch(pb).await;
+                                }
+                                // 阶段 4:消息气泡(MESSAGE_UPSERT)→ 本地 hub_conversation_messages。
+                                // 内部按 eventType 过滤,非命中直接返回。
+                                if let Some(applier) = &self.message_event_applier {
+                                    applier.apply_push_batch(pb).await;
+                                }
+                                // 四个 applier 都已 best-effort 应用(失败内部 log + 安排 fallback),
+                                // 现在才推进全局水位。下次(重)订阅以此为 since。
+                                if let Err(e) = self.notify_seq_store
+                                    .upsert_if_greater(pb.notify_seq).await {
+                                    tracing::warn!(?e, "notify_seq_store upsert failed, ignored");
                                 }
                             }
 

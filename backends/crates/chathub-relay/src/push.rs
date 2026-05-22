@@ -1,4 +1,4 @@
-//! axum router: `POST /internal/push` (spec §3 字段) + `GET /healthz`(Plan 7 — legacy /internal/push 已删)。
+//! axum router: `POST /rpc/v1/wecomAggregate/notify/push` (spec §3 字段) + `GET /healthz`。
 
 use crate::event_policy::{self, EventPolicy};
 use crate::router::Router;
@@ -12,6 +12,9 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Instant;
 use subtle::ConstantTimeEq;
+
+/// 业务后台 → relay 的统一事件推送端点路径(对齐网关规范)。
+const NOTIFY_PUSH_PATH: &str = "/rpc/v1/wecomAggregate/notify/push";
 
 /// 常数时间比较 Authorization header 与 `Bearer <secret>`,防止时序攻击(P0-2)。
 fn bearer_matches(header_val: Option<&str>, expected_secret: &str) -> bool {
@@ -43,13 +46,13 @@ pub fn app(state: PushState) -> AxumRouter {
     let max_body = state.max_body_bytes;
     AxumRouter::new()
         .route("/healthz", get(|| async { (StatusCode::OK, "ok") }))
-        .route("/internal/push", post(handle_push))
+        .route(NOTIFY_PUSH_PATH, post(handle_push))
         // F2 安全:axum 默认 body limit 2MB,我们收紧到 RELAY_PUSH_MAX_BODY_BYTES(默认 1MB)
         .layer(DefaultBodyLimit::max(max_body))
         .with_state(state)
 }
 
-// ─── /internal/push ─────────────────────────────────────────────────────
+// ─── /rpc/v1/wecomAggregate/notify/push ───────────────────────────────────
 //
 // 入参对应 docs/工具网关通知事件与字段规范.md §3 外层通知包 + §5 events[]。
 // relay 不解析业务 payload —— events 数组每个元素当作 opaque JSON,入库时回写整原文。
@@ -328,7 +331,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/internal/push")
+                    .uri(NOTIFY_PUSH_PATH)
                     .header("authorization", format!("Bearer {secret}"))
                     .header("content-type", "application/json")
                     .body(Body::from(body))
