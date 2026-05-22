@@ -16,6 +16,14 @@
 //!                                            Bearer <token> → 返账号列表
 //!     POST /wechat-business-app/wecom-cs/v1/wecomAggregate/account/listFriends
 //!                                            Bearer <token> + JSON body → 返多账号好友分页
+//!     POST /wechat-business-app/wecom-cs/v1/wecomAggregate/session/recentFriends
+//!                                            Bearer <token> + JSON body → 返接待列表(cursor 分页)
+//!     POST /wechat-business-app/wecom-cs/v1/wecomAggregate/session/markRead
+//!                                            Bearer <token> + JSON body → 返 {success:true}
+//!     POST /wechat-business-app/wecom-cs/v1/wecomAggregate/message/history
+//!                                            Bearer <token> + JSON body → 返历史消息(cursor 分页)
+//!     POST /wechat-business-app/wecom-cs/v1/wecomAggregate/message/send
+//!                                            Bearer <token> + JSON body → 返 {localMessageId, sendStatus, messageTime}
 //!     POST /v1/send, /v1/recall, /v1/ack_read, /v1/fetch_history
 //!                                            Bearer <token> + X-Relay-Employee-Id → 返业务响应
 //!
@@ -148,18 +156,19 @@ struct ListMineItem {
     position: String,
 }
 
-// ─── listFriends 请求/响应(POST,20 字段 + 分页)────────────────────────────
+// ─── listFriends 请求/响应(POST,单 cursor 跨账号 keyset)──────────────────────
 
 #[derive(Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 struct ListFriendsReq {
     wecom_account_ids: Vec<String>,
-    current: u32,
     size: u32,
+    /// 首页 ""(空串);续页填上轮 nextCursor。keyset 位置编码,见 `decode_friend_cursor`。
     #[serde(default)]
-    external_name: Option<String>,
+    cursor: String,
+    /// 非空 → 名称/手机号统一模糊匹配(契约 #3:externalId 替代 externalName/externalMobile)。
     #[serde(default)]
-    external_mobile: Option<String>,
+    external_id: Option<String>,
     #[serde(default)]
     add_start_time: Option<String>,
     #[serde(default)]
@@ -169,6 +178,7 @@ struct ListFriendsReq {
 #[derive(Serialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 struct MockFriend {
+    wecom_account_id: String,
     external_user_id: String,
     external_name: String,
     external_position: String,
@@ -194,10 +204,59 @@ struct MockFriend {
 #[serde(rename_all = "camelCase")]
 struct ListFriendsResp {
     records: Vec<MockFriend>,
-    total: u64,
-    current: u32,
+    has_more: bool,
+    next_cursor: String,
+}
+
+// ─── session/recentFriends 请求/响应(POST,cursor 分页)──────────────────────
+
+#[derive(Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+struct ListRecentFriendsReq {
     size: u32,
-    pages: u32,
+    #[serde(default)]
+    cursor: String,
+    #[serde(default)]
+    external_name: String,
+    #[serde(default)]
+    external_mobile: String,
+    #[serde(default)]
+    wecom_account_id: String,
+    #[serde(default)]
+    only_unread: bool,
+}
+
+/// 接待列表单条记录(17 字段,对齐 chathub-net::RecentFriendRecord)。
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+struct MockRecentFriend {
+    conversation_id: String,
+    wecom_account_id: String,
+    wecom_name: String,
+    wecom_account: String,
+    wecom_alias: String,
+    external_user_id: String,
+    external_name: String,
+    external_avatar: String,
+    external_mobile: String,
+    last_local_message_id: String,
+    last_message_type: i32,
+    last_message_direction: i32,
+    last_send_status: i32,
+    last_message_summary: String,
+    /// ISO 8601 UTC,形如 "2026-05-18T10:28:36Z"
+    last_message_time: String,
+    unread_count: i64,
+    has_unread: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ListRecentFriendsResp {
+    size: u32,
+    has_more: bool,
+    next_cursor: String,
+    records: Vec<MockRecentFriend>,
 }
 
 // ─── 业务类 ─────────────────────────────────────────────────────────────────
@@ -206,6 +265,17 @@ struct ListFriendsResp {
 struct SendResp {
     server_msg_id: String,
     sent_at_ms: i64,
+}
+
+/// message/send 响应(text-only,镜像业务后台 data 形态)。
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SendMessageResp {
+    local_message_id: String,
+    /// 2=已送达
+    send_status: i32,
+    /// `yyyy-MM-dd HH:mm:ss`
+    message_time: String,
 }
 
 #[derive(Serialize)]
@@ -218,10 +288,64 @@ struct AckReadResp {
     acked_at_ms: i64,
 }
 
+/// session/markRead 响应(镜像业务后台 data 形态)。
 #[derive(Serialize)]
-struct FetchHistoryResp {
-    messages: Vec<serde_json::Value>,
+struct MarkReadResp {
+    success: bool,
+}
+
+// ─── message/history 请求/响应 ──────────────────────────────────────────────
+
+#[derive(Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+struct FetchMessageHistoryReq {
+    size: u32,
+    wecom_account_id: String,
+    external_user_id: String,
+    /// 首页 ""(空串)/续页填上轮 nextCursor。语义固定 earlier-only(往更早翻)。
+    #[serde(default)]
+    cursor: String,
+}
+
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+struct MockHistoryAttachment {
+    media_id: String,
+    file_name: String,
+    file_size: i64,
+    file_type: String,
+}
+
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+struct MockHistoryMessage {
+    local_message_id: String,
+    /// 1=入(对方发来) / 2=出(自己发出)
+    message_direction: i32,
+    /// 1=文本 / 2=图片
+    message_type: i32,
+    content_text: String,
+    /// 1=已发送 / 3=已读
+    send_status: i32,
+    /// `yyyy-MM-dd HH:mm:ss`
+    message_time: String,
+    sort_key: String,
+    attachments: Vec<MockHistoryAttachment>,
+    /// 记录最后修改时间 `yyyy-MM-dd HH:mm:ss`
+    gmt_modified_time: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FetchMessageHistoryResp {
+    records: Vec<MockHistoryMessage>,
+    size: u32,
+    has_more: bool,
     next_cursor: String,
+    /// 服务端不维护时 -1
+    total: i64,
+    current: i32,
+    pages: i32,
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -341,10 +465,25 @@ async fn main() -> anyhow::Result<()> {
             "/wechat-business-app/wecom-cs/v1/wecomAggregate/account/listFriends",
             post(list_friends),
         )
+        .route(
+            "/wechat-business-app/wecom-cs/v1/wecomAggregate/session/recentFriends",
+            post(list_recent_friends),
+        )
         .route("/v1/send", post(send))
         .route("/v1/recall", post(recall))
         .route("/v1/ack_read", post(ack_read))
-        .route("/v1/fetch_history", post(fetch_history))
+        .route(
+            "/wechat-business-app/wecom-cs/v1/wecomAggregate/message/history",
+            post(fetch_message_history),
+        )
+        .route(
+            "/wechat-business-app/wecom-cs/v1/wecomAggregate/message/send",
+            post(send_message),
+        )
+        .route(
+            "/wechat-business-app/wecom-cs/v1/wecomAggregate/session/markRead",
+            post(mark_read),
+        )
         .layer(axum::middleware::from_fn(dump_http))
         .with_state(state.clone());
 
@@ -621,8 +760,7 @@ async fn list_friends(
     if req.wecom_account_ids.is_empty() {
         return (StatusCode::BAD_REQUEST, "wecomAccountIds required").into_response();
     }
-    let size = req.size.max(1);
-    let current = req.current.max(1);
+    let size = req.size.clamp(1, 100) as usize;
 
     // 已知 mock 账号集合;请求里不存在的账号 ID 静默忽略(契约上不返错,空集合即可)
     let known: std::collections::HashSet<&str> = state
@@ -637,12 +775,9 @@ async fn list_friends(
         .flat_map(|id| generate_friends(id, state.friends_per_account))
         .collect();
 
-    // 服务端筛选:子串匹配 + 时间区间(字符串比较即可,因格式 yyyy-MM-dd HH:mm:ss 可比)
-    if let Some(name) = req.external_name.as_deref().filter(|s| !s.is_empty()) {
-        all.retain(|f| f.external_name.contains(name));
-    }
-    if let Some(mobile) = req.external_mobile.as_deref().filter(|s| !s.is_empty()) {
-        all.retain(|f| f.external_mobile.contains(mobile));
+    // 服务端筛选:externalId 统一模糊匹配名称/手机号;时间区间字符串比较(yyyy-MM-dd HH:mm:ss 可比)
+    if let Some(q) = req.external_id.as_deref().filter(|s| !s.is_empty()) {
+        all.retain(|f| f.external_name.contains(q) || f.external_mobile.contains(q));
     }
     if let Some(start) = req.add_start_time.as_deref().filter(|s| !s.is_empty()) {
         all.retain(|f| f.add_time.as_str() >= start);
@@ -651,24 +786,50 @@ async fn list_friends(
         all.retain(|f| f.add_time.as_str() <= end);
     }
 
-    let total = all.len() as u64;
-    let pages = total.div_ceil(size as u64).max(1) as u32;
-    let offset = ((current.saturating_sub(1)) as u64).saturating_mul(size as u64) as usize;
-    let end = (offset + size as usize).min(all.len());
-    let records: Vec<MockFriend> = if offset >= all.len() {
-        Vec::new()
+    // 单 cursor 跨账号 keyset:不可变排序键 (add_time DESC, external_user_id DESC)。
+    all.sort_by(|a, b| {
+        b.add_time
+            .cmp(&a.add_time)
+            .then_with(|| b.external_user_id.cmp(&a.external_user_id))
+    });
+
+    // cursor 解出上轮末行的 (add_time, external_user_id),保留严格更"小"(更靠后)的行。
+    if let Some((c_time, c_uid)) = decode_friend_cursor(&req.cursor) {
+        all.retain(|f| f.add_time < c_time || (f.add_time == c_time && f.external_user_id < c_uid));
+    }
+
+    let has_more = all.len() > size;
+    all.truncate(size);
+    let next_cursor = if has_more {
+        all.last()
+            .map(|f| encode_friend_cursor(&f.add_time, &f.external_user_id))
+            .unwrap_or_default()
     } else {
-        all[offset..end].to_vec()
+        String::new()
     };
 
     envelope_ok(ListFriendsResp {
-        records,
-        total,
-        current,
-        size,
-        pages,
+        records: all,
+        has_more,
+        next_cursor,
     })
     .into_response()
+}
+
+/// keyset cursor 编码:base64(`add_time \u{1} external_user_id`),模拟生产不透明 cursor。
+fn encode_friend_cursor(add_time: &str, external_user_id: &str) -> String {
+    base64_encode(format!("{add_time}\u{1}{external_user_id}"))
+}
+
+/// 解码 keyset cursor;空串或格式不符返 None(当首页处理)。
+fn decode_friend_cursor(cursor: &str) -> Option<(String, String)> {
+    if cursor.is_empty() {
+        return None;
+    }
+    let raw = base64_decode(cursor)?;
+    let s = String::from_utf8(raw).ok()?;
+    let (add_time, uid) = s.split_once('\u{1}')?;
+    Some((add_time.to_string(), uid.to_string()))
 }
 
 /// 按 `(account_id, i)` 确定性派生一个 friend。同一 (account, i) 永远得同一份数据,
@@ -720,6 +881,7 @@ fn generate_friends(account_id: &str, count: usize) -> Vec<MockFriend> {
             let from_channels = i % 5 == 0;
 
             MockFriend {
+                wecom_account_id: account_id.to_string(),
                 external_user_id: format!("wo-{account_id}-{i:03}"),
                 external_name: format!("{surname}{given}"),
                 external_position: position.to_string(),
@@ -751,6 +913,128 @@ fn generate_friends(account_id: &str, count: usize) -> Vec<MockFriend> {
                 wechat_channels_source: if from_channels { 2 } else { 0 },
                 last_sync_time: now_local_yyyy_mm_dd_hh_mm_ss(),
                 sync_status: 1,
+            }
+        })
+        .collect()
+}
+
+// ─── listRecentFriends(POST,Bearer + JSON body)─────────────────────────────
+
+/// 接待列表 handler。从 `generate_friends` 派生会话,加上消息摘要/时间/未读等字段;
+/// 按 lastMessageTime 倒序;cursor = "offset" 简易整数编码(对联调够用)。
+async fn list_recent_friends(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(req): Json<ListRecentFriendsReq>,
+) -> impl IntoResponse {
+    if !has_bearer(&headers) {
+        return (StatusCode::UNAUTHORIZED, "missing Bearer").into_response();
+    }
+    let size = req.size.max(1).min(100);
+    let offset: usize = req.cursor.parse().unwrap_or(0);
+
+    // 派生 mock 会话池:每个启用账号取前 N 条 friend 当会话(N=8 给 27 启用账号即 216 条)
+    const SESSIONS_PER_ACCOUNT: usize = 8;
+    let mut all: Vec<MockRecentFriend> = state
+        .accounts
+        .iter()
+        .filter(|a| a.enabled)
+        .filter(|a| req.wecom_account_id.is_empty() || a.wecom_account_id == req.wecom_account_id)
+        .flat_map(|a| generate_recent_sessions(a, SESSIONS_PER_ACCOUNT))
+        .collect();
+
+    // 服务端筛选
+    if !req.external_name.is_empty() {
+        all.retain(|r| r.external_name.contains(&req.external_name));
+    }
+    if !req.external_mobile.is_empty() {
+        all.retain(|r| r.external_mobile.contains(&req.external_mobile));
+    }
+    if req.only_unread {
+        all.retain(|r| r.has_unread);
+    }
+
+    // 按 lastMessageTime 倒序(ISO 8601 字符串比较即可)
+    all.sort_by(|a, b| b.last_message_time.cmp(&a.last_message_time));
+
+    let total = all.len();
+    let end = (offset + size as usize).min(total);
+    let records: Vec<MockRecentFriend> = if offset >= total {
+        Vec::new()
+    } else {
+        all[offset..end].to_vec()
+    };
+    let has_more = end < total;
+    let next_cursor = if has_more {
+        end.to_string()
+    } else {
+        String::new()
+    };
+
+    envelope_ok(ListRecentFriendsResp {
+        size: records.len() as u32,
+        has_more,
+        next_cursor,
+        records,
+    })
+    .into_response()
+}
+
+/// 从 generate_friends 池前 N 条派生 recent sessions。
+/// 消息时间在最近 30 天内分散,unread / direction / summary 用 seed 确定性派生。
+fn generate_recent_sessions(account: &MockAccount, count: usize) -> Vec<MockRecentFriend> {
+    const SUMMARIES: &[&str] = &[
+        "您好,请问还有库存吗?",
+        "明天上午方便约个时间吗?",
+        "[图片]",
+        "已收到合同,我看一下",
+        "好的,辛苦了",
+        "麻烦发一下报价",
+        "周五下午有空对接",
+        "已下单,谢谢",
+        "我这边再确认下",
+        "可以,稍等",
+    ];
+    let friends = generate_friends(&account.wecom_account_id, count);
+    let now_secs = now_ms() / 1000;
+    friends
+        .into_iter()
+        .enumerate()
+        .map(|(i, f)| {
+            let seed = mock_hash(&account.wecom_account_id, i + 7919);
+            // 最近 30 天内分散
+            let minutes_ago = (seed % (30 * 24 * 60)) as i64;
+            let msg_secs = now_secs - minutes_ago * 60;
+            let (y, mo, d, h, mi, s) = ymdhms_from_unix(msg_secs);
+            let last_message_time =
+                format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z", y, mo, d, h, mi, s);
+            // 未读 0-4 条,1 在 ~ 60% 概率没未读
+            let unread_raw = ((seed >> 8) % 10) as i64;
+            let unread = if unread_raw < 6 { 0 } else { unread_raw - 5 };
+            let summary = SUMMARIES[((seed >> 16) as usize) % SUMMARIES.len()];
+            // 1=入 2=出,均匀分布
+            let direction = ((seed >> 24) % 2) as i32 + 1;
+            // 文本=1, 图片=2;每 5 条 1 张图
+            let message_type = if i % 5 == 0 { 2 } else { 1 };
+
+            MockRecentFriend {
+                conversation_id: format!("cv-{}-{:03}", account.wecom_account_id, i),
+                wecom_account_id: account.wecom_account_id.clone(),
+                wecom_name: account.display_name.clone(),
+                wecom_account: format!("mock_{}", account.wecom_account_id),
+                wecom_alias: account.display_name.clone(),
+                external_user_id: f.external_user_id,
+                external_name: f.external_name,
+                external_avatar: f.external_avatar,
+                external_mobile: f.external_mobile,
+                last_local_message_id: format!("lm-{}-{:03}", account.wecom_account_id, i),
+                last_message_type: message_type,
+                last_message_direction: direction,
+                last_send_status: 3, // 已读
+                last_message_summary: summary.to_string(),
+                last_message_time,
+                unread_count: unread,
+                has_unread: unread > 0,
             }
         })
         .collect()
@@ -812,6 +1096,19 @@ async fn send(headers: HeaderMap, body: Bytes) -> impl IntoResponse {
     .into_response()
 }
 
+async fn send_message(headers: HeaderMap, body: Bytes) -> impl IntoResponse {
+    if !has_bearer(&headers) {
+        return (StatusCode::UNAUTHORIZED, "missing Bearer").into_response();
+    }
+    let _ = body; // raw body 已被 dump 打印,不再 typed-parse
+    envelope_ok(SendMessageResp {
+        local_message_id: format!("lm-mock-{}", uuid::Uuid::new_v4().simple()),
+        send_status: 2,
+        message_time: now_local_yyyy_mm_dd_hh_mm_ss(),
+    })
+    .into_response()
+}
+
 async fn recall(headers: HeaderMap, body: Bytes) -> impl IntoResponse {
     if !has_bearer(&headers) {
         return (StatusCode::UNAUTHORIZED, "missing Bearer").into_response();
@@ -834,16 +1131,170 @@ async fn ack_read(headers: HeaderMap, body: Bytes) -> impl IntoResponse {
     .into_response()
 }
 
-async fn fetch_history(headers: HeaderMap, body: Bytes) -> impl IntoResponse {
+/// session/markRead:点开有未读的会话时调用,恒返成功(本地未读由后端清零)。
+async fn mark_read(headers: HeaderMap, body: Bytes) -> impl IntoResponse {
     if !has_bearer(&headers) {
         return (StatusCode::UNAUTHORIZED, "missing Bearer").into_response();
     }
     let _ = body;
-    envelope_ok(FetchHistoryResp {
-        messages: Vec::new(),
-        next_cursor: String::new(),
+    envelope_ok(MarkReadResp { success: true }).into_response()
+}
+
+// ─── message/history(POST,Bearer + JSON body)────────────────────────────
+
+/// 历史消息池总条数(per conversation)。env `MOCK_HISTORY_MESSAGES` 调整,默认 80。
+fn history_pool_size() -> usize {
+    std::env::var("MOCK_HISTORY_MESSAGES")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(80)
+}
+
+async fn fetch_message_history(
+    headers: HeaderMap,
+    Json(req): Json<FetchMessageHistoryReq>,
+) -> impl IntoResponse {
+    if !has_bearer(&headers) {
+        return (StatusCode::UNAUTHORIZED, "missing Bearer").into_response();
+    }
+    if req.wecom_account_id.is_empty() || req.external_user_id.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            "wecomAccountId / externalUserId required",
+        )
+            .into_response();
+    }
+    let size = req.size.max(1).min(100) as usize;
+
+    // 派生完整消息池 — 同一 (account_id, external_user_id) 永远得同一份消息
+    let pool = generate_message_pool(
+        &req.wecom_account_id,
+        &req.external_user_id,
+        history_pool_size(),
+    );
+    let total_in_pool = pool.len();
+
+    // cursor 编码: "" 首页 / "page_<offset>" 续页
+    let offset: usize = if req.cursor.is_empty() {
+        0
+    } else if let Some(rest) = req.cursor.strip_prefix("page_") {
+        rest.parse().unwrap_or(0)
+    } else {
+        0
+    };
+
+    // earlier-only 语义:从 offset 往后取(更早)。pool 按时间倒序(新→旧),
+    // offset=0 拿到"最新一批",offset=20 拿到"更早一批"。
+    let start = offset;
+    let end = (start + size).min(total_in_pool);
+    let page_slice = &pool[start..end];
+
+    // 新契约:服务端按 sortKey **升序**(早→晚)返回。page_slice 取自倒序 pool,
+    // 这里 reverse 成升序;客户端整页 prepend 到头部即得全局升序。
+    let mut records = page_slice.to_vec();
+    records.reverse();
+    let next_offset = offset + size;
+    let has_more = next_offset < total_in_pool;
+    let next_cursor = if has_more {
+        format!("page_{}", next_offset)
+    } else {
+        String::new()
+    };
+
+    envelope_ok(FetchMessageHistoryResp {
+        records,
+        size: page_slice.len() as u32,
+        has_more,
+        next_cursor,
+        total: -1,
+        current: -1,
+        pages: -1,
     })
     .into_response()
+}
+
+/// 派生一条会话的完整消息池,**新 → 旧** 排序。
+/// 每条消息时间在过去 30 天内某分钟;message_direction / message_type / 文本 由 seed 派生。
+fn generate_message_pool(
+    wecom_account_id: &str,
+    external_user_id: &str,
+    count: usize,
+) -> Vec<MockHistoryMessage> {
+    const TEXTS: &[&str] = &[
+        "你好,请问有什么可以帮您?",
+        "我想咨询一下订单情况",
+        "好的,我看一下",
+        "麻烦发一下报价单",
+        "已收到,稍等",
+        "请问什么时候可以发货?",
+        "今天下午,辛苦了",
+        "好的,谢谢",
+        "请问支持企业转账吗?",
+        "可以,我把账号发您",
+        "[图片]",
+        "明天上午我们再确认一下",
+        "OK,期待您的回复",
+        "嗯,好的",
+        "周五对接进度",
+    ];
+    let now_secs = now_ms() / 1000;
+    let composite_key = format!("{wecom_account_id}|{external_user_id}");
+    (0..count)
+        .map(|i| {
+            let seed = mock_hash(&composite_key, i);
+            // 时间分布:30 天内某分钟。i=0 最近,i 越大越早。
+            let minutes_ago = (i as i64) * 25 + ((seed % 15) as i64);
+            let msg_secs = now_secs - minutes_ago * 60;
+            let (y, mo, d, h, mi, s) = ymdhms_from_unix(msg_secs + 8 * 3600); // UTC+8
+            let message_time = format!("{:04}-{:02}-{:02} {:02}:{:02}:{:02}", y, mo, d, h, mi, s);
+            // direction:1=入 2=出,交替为主但偶尔连发
+            let message_direction = ((seed >> 8) % 3) as i32; // 0/1/2
+            let message_direction = if message_direction == 0 { 1 } else { 2 };
+            // 图片消息约 1/8 概率
+            let is_image = (seed >> 16) % 8 == 0;
+            let message_type = if is_image { 2 } else { 1 };
+            let content_text = if is_image {
+                "[图片]".to_string()
+            } else {
+                TEXTS[(seed >> 24) as usize % TEXTS.len()].to_string()
+            };
+            let attachments = if is_image {
+                vec![MockHistoryAttachment {
+                    media_id: format!("media_{}_{:03}", wecom_account_id, i),
+                    file_name: format!("image_{:03}.jpg", i),
+                    file_size: 102_400 + (seed as i64 % 500_000),
+                    file_type: "jpg".to_string(),
+                }]
+            } else {
+                Vec::new()
+            };
+            // sort_key:真实协议格式 {epochMs}:{dir}:{seq}(与网关推送 / message/history 同源)。
+            // 旧 "sort_########" 假格式首字符 's',会让真实 {epochMs} 键(首字符数字)错排到顶部;
+            // {seq} 用 99999999-i 保证同毫秒内更新的消息(i 更小)排在后面(更靠底)。
+            let msg_ms = msg_secs * 1000;
+            let sort_key = format!(
+                "{:013}:{}:{:020}",
+                msg_ms,
+                message_direction,
+                99_999_999 - i
+            );
+            // localMessageId 跟 conversation 强相关
+            let local_message_id =
+                format!("msg_{}_{}_{:03}", wecom_account_id, external_user_id, i);
+            MockHistoryMessage {
+                local_message_id,
+                message_direction,
+                message_type,
+                content_text,
+                send_status: if message_direction == 2 { 3 } else { 1 },
+                message_time: message_time.clone(),
+                sort_key,
+                attachments,
+                // mock 无独立修改语义,gmtModifiedTime 与 messageTime 同值即可。
+                gmt_modified_time: message_time,
+            }
+        })
+        .collect()
 }
 
 // ─── helpers ──────────────────────────────────────────────────────────────
@@ -867,6 +1318,12 @@ fn base64_encode(s: String) -> String {
     use base64::engine::general_purpose::STANDARD;
     use base64::Engine;
     STANDARD.encode(s)
+}
+
+fn base64_decode(s: &str) -> Option<Vec<u8>> {
+    use base64::engine::general_purpose::STANDARD;
+    use base64::Engine;
+    STANDARD.decode(s).ok()
 }
 
 /// 返回 "yyyy-MM-dd HH:mm:ss" 本地时区(简化:UTC+8 中国时间)
