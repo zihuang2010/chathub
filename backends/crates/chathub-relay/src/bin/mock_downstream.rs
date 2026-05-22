@@ -1131,13 +1131,63 @@ async fn ack_read(headers: HeaderMap, body: Bytes) -> impl IntoResponse {
     .into_response()
 }
 
-/// session/markRead:点开有未读的会话时调用,恒返成功(本地未读由后端清零)。
+/// session/markRead:点开有未读会话时调用,返成功。
+///
+/// 联调保真:同时清零 push-message.sh 的未读账本,模拟"真实服务端收到已读 → 服务端未读归 0"。
+/// 否则脚本的账本(`.push-unread-<emp>-<conv>`)在 markRead 后仍是陈旧累加值,下一条
+/// `--summary` 推送会把"清掉的未读 +1"灌回客户端。账本路径与脚本对齐(见 reset_push_unread_ledger)。
 async fn mark_read(headers: HeaderMap, body: Bytes) -> impl IntoResponse {
     if !has_bearer(&headers) {
         return (StatusCode::UNAUTHORIZED, "missing Bearer").into_response();
     }
-    let _ = body;
+    // body: { conversationId, readSortKey? }。employee 取 relay 注入的 X-Relay-Employee-Id 头。
+    if let Some(conv) = serde_json::from_slice::<serde_json::Value>(&body)
+        .ok()
+        .and_then(|v| {
+            v.get("conversationId")
+                .and_then(|c| c.as_str())
+                .map(str::to_owned)
+        })
+    {
+        let emp = headers
+            .get("X-Relay-Employee-Id")
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_owned)
+            .or_else(|| std::env::var("MOCK_USER_ID").ok())
+            .unwrap_or_else(|| "1234".to_string());
+        reset_push_unread_ledger(&emp, &conv);
+    }
     envelope_ok(MarkReadResp { success: true }).into_response()
+}
+
+/// 删掉 push-message.sh 的未读账本文件,使其下次 dir=2 推送从 0 重新累加(→ unread=1)。
+/// 路径与脚本严格对齐:`${RELAY_PUSH_UNREAD_DIR:-scripts}/.push-unread-<emp>-<convSafe>`,
+/// convSafe 用与脚本 `tr -c 'A-Za-z0-9._-' '_'` 相同的清洗规则。
+/// best-effort:文件不存在(从未推过该会话)属正常,其余错误仅打印不阻断已读应答。
+fn reset_push_unread_ledger(employee_id: &str, conversation_id: &str) {
+    let dir = std::env::var("RELAY_PUSH_UNREAD_DIR").unwrap_or_else(|_| "scripts".to_string());
+    let conv_safe: String = conversation_id
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let path = std::path::Path::new(&dir).join(format!(".push-unread-{employee_id}-{conv_safe}"));
+    match std::fs::remove_file(&path) {
+        Ok(()) => println!(
+            "[mock-downstream] markRead → 清零 push 未读账本 {}",
+            path.display()
+        ),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => eprintln!(
+            "[mock-downstream] markRead 清未读账本失败(忽略):{} ({e})",
+            path.display()
+        ),
+    }
 }
 
 // ─── message/history(POST,Bearer + JSON body)────────────────────────────
