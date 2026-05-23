@@ -1,7 +1,7 @@
 import { memo, useState } from "react";
 import { ChevronLeft, ChevronRight, Menu } from "lucide-react";
 
-import { DriftingWave, buildWavePath } from "@/components/illustrations";
+import { DriftingWave } from "@/components/illustrations";
 import { useCurrentProfile } from "@/lib/data/useCurrentProfile";
 import { useHubSyncStatus } from "@/lib/data/useHubSyncStatus";
 import type { HubConnectionState } from "@/lib/data/useResource";
@@ -13,9 +13,21 @@ import { NAV_ITEMS, type NavItem, type Section } from "./nav";
 // 头像回退底色 —— 贴主题的蓝色品牌渐变,作为左栏顶部的视觉锚点。
 const AVATAR_GRADIENT = "linear-gradient(140deg, #6FA8F0 0%, #3E7BD6 100%)";
 
-// 底部波浪 viewBox 高度。复用 Splash 的无缝漂移方案(buildWavePath 生成 2× 宽路径,
-// DriftingWave 平移 -1280 无缝循环);viewBox 宽固定 1280,preserveAspectRatio=none 拉伸进窄栏。
+// 底部波浪 viewBox 高/宽 与无缝平移量。窄栏(144px)里要"丝滑大波澜",必须用超长波长:
+// 周期 2560(viewBox 宽 1280 只露半个周期 → 同一时刻一道平缓大波,坡度低)。路径画到
+// 2× 周期(5120)宽,配合 DriftingWave 平移 -2560 无缝循环。
 const WAVE_BOTTOM = 240;
+const WAVE_SHIFT = 2560;
+
+// 生成宽周期波浪路径。crest=true 起手波峰,false 波谷,两层错相叠出层次。
+function broadWavePath(baseline: number, amplitude: number, bottom: number, crest = true): string {
+  const ctrl = crest ? baseline - amplitude : baseline + amplitude;
+  return (
+    `M0,${baseline} ` +
+    `Q640,${ctrl} 1280,${baseline} T2560,${baseline} T3840,${baseline} T5120,${baseline} ` +
+    `L5120,${bottom} L0,${bottom} Z`
+  );
+}
 
 // 取首个字符作头像回退;用展开运算符正确处理多字节字符(CJK/emoji)。
 function initialOf(name: string | undefined): string {
@@ -132,38 +144,42 @@ function SidebarBackdrop({ collapsed }: { collapsed: boolean }) {
       {/* 装饰只在展开态出现,折叠态保持干净。 */}
       {!collapsed && (
         <>
-          {/* 缓慢漂移的装饰圈点。chSidebarHalo* 周期各异(24/28/32s)避免可见循环;
-              prefers-reduced-motion 下由 index.css 自动静止为纯色背景。 */}
-          <span className="absolute right-3 top-2 size-2 rounded-full bg-white/60" />
+          {/* 装饰圈点落在导航下方的中下部空白区(底部锚定,浮在波浪之上)。
+              chSidebarHalo* 周期各异(24/28/32s)缓慢漂移;prefers-reduced-motion
+              下由 index.css 自动静止为纯色背景。 */}
           <span
-            className="absolute left-4 top-7 size-7 rounded-full border border-[#9FBDE6]/45"
+            className="absolute bottom-[300px] left-5 size-9 rounded-full border border-[#9FBDE6]/40"
             style={{ animation: "chSidebarHaloA 24s ease-in-out infinite" }}
           />
           <span
-            className="absolute right-5 top-[60px] size-2.5 rounded-full bg-[#9FBDE6]/40"
+            className="absolute bottom-[252px] right-6 size-3 rounded-full bg-[#9FBDE6]/40"
             style={{ animation: "chSidebarHaloB 28s ease-in-out infinite" }}
           />
           <span
-            className="absolute left-7 top-[128px] size-4 rounded-full bg-[#A9C7F0]/35"
+            className="absolute bottom-[210px] left-9 size-4 rounded-full bg-[#A9C7F0]/35"
             style={{ animation: "chSidebarHaloC 32s ease-in-out infinite" }}
           />
-          {/* 底部柔光波浪,托在"更多"上方给左栏一个底部重心。两层反向缓慢漂移。 */}
+          <span className="absolute bottom-[330px] right-9 size-2 rounded-full bg-white/55" />
+          {/* 底部柔光波浪,托在"更多"上方给左栏一个底部重心。超长波长 → 平缓大波,
+              两层反向错相缓慢漂移。 */}
           <svg
-            className="absolute inset-x-0 bottom-0 h-40 w-full"
+            className="absolute inset-x-0 bottom-0 h-44 w-full"
             viewBox={`0 0 1280 ${WAVE_BOTTOM}`}
             preserveAspectRatio="none"
           >
             <DriftingWave
-              d={buildWavePath(112, 46, WAVE_BOTTOM)}
+              d={broadWavePath(130, 64, WAVE_BOTTOM, true)}
               fill="#7BA7E0"
               opacity={0.16}
-              dur="30s"
+              dur="32s"
+              shift={WAVE_SHIFT}
             />
             <DriftingWave
-              d={buildWavePath(158, 36, WAVE_BOTTOM)}
+              d={broadWavePath(162, 50, WAVE_BOTTOM, false)}
               fill="#638CCD"
               opacity={0.12}
-              dur="22s"
+              dur="24s"
+              shift={WAVE_SHIFT}
             />
           </svg>
         </>
