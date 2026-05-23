@@ -7,6 +7,8 @@ lint:
     - DEFAULT
   except:
     - PACKAGE_VERSION_SUFFIX # 我们用 chathub.v1 而非 chathub.v1alpha1,不需要
+    - SERVICE_SUFFIX # service Auth/Hub 不强制 *Service 后缀,改名会波及生成符号 + 约 40 处 Rust 引用,收益为零
+    - RPC_RESPONSE_STANDARD_NAME # Subscribe 返回 stream ServerEvent(推流帧),语义比 SubscribeResponse 更准确
 breaking:
   use:
     - FILE
