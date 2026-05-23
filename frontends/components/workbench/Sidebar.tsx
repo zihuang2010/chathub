@@ -135,15 +135,16 @@ function UserBadge({ collapsed }: { collapsed: boolean }) {
 }
 
 function AvatarMark({ avatarUrl, displayName }: { avatarUrl?: string; displayName?: string }) {
-  const [imgFailed, setImgFailed] = useState(false);
-  const showImg = !!avatarUrl && !imgFailed;
+  // 存储"导致失败的那个 url"，avatarUrl 变化时失败态自动失效，无需 useEffect。
+  const [failedUrl, setFailedUrl] = useState<string | undefined>(undefined);
+  const showImg = !!avatarUrl && avatarUrl !== failedUrl;
 
   if (showImg) {
     return (
       <img
         src={avatarUrl}
         alt=""
-        onError={() => setImgFailed(true)}
+        onError={() => setFailedUrl(avatarUrl)}
         className="size-10 shrink-0 rounded-xl object-cover shadow-[0_1px_2px_rgba(15,23,42,0.06)]"
       />
     );
