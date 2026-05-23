@@ -120,12 +120,16 @@ describe("Sidebar 顶部员工区", () => {
     expect(screen.getByText("连接中")).toBeTruthy();
   });
 
-  it("折叠态仅渲染头像首字符,不渲染姓名/在线状态", () => {
+  it("折叠态:头像首字符常显,姓名/在线状态以 opacity-0 淡出隐藏(常驻挂载保证收展丝滑)", () => {
     mockUseCurrentProfile.mockReturnValue(PROFILE);
     mockUseHubSyncStatus.mockReturnValue(syncWith({ state: "subscribed" }));
     renderSidebar({ collapsed: true });
-    expect(screen.queryByText("测试员")).toBeNull();
-    expect(screen.queryByText("在线")).toBeNull();
+    // 头像首字符照常渲染。
     expect(screen.getByText("测")).toBeTruthy();
+    // 姓名/状态不再卸载,而是常驻 DOM、所在文字块以 opacity-0 隐藏 —— 这样收/展两态间
+    // 才能做 opacity 交叉淡入淡出,避免整树替换造成的跳动闪烁。
+    const nameBlock = screen.getByText("测试员").closest("div");
+    expect(nameBlock?.className).toContain("opacity-0");
+    expect(screen.getByText("在线")).toBeTruthy();
   });
 });

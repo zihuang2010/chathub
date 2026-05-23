@@ -158,6 +158,37 @@ export function formatRichText(text: string): RichSegment[] {
   return segments;
 }
 
+// ─── URL 安全白名单 ──────────────────────────────────────────────────────────
+//
+// 后端附件 URL 在进入 href / <img src> / CSS url() 前必须过滤。Tauri WebView 下
+// 未过滤的 javascript: / file: / data:text/html 协议可被点击触发脚本执行或本地
+// 文件读取。link 仅放行 http(s) 与站内相对路径;image 额外放行 data:image/、blob:。
+export function isSafeUrl(url: string | undefined, kind: "link" | "image"): boolean {
+  if (!url) return false;
+  // 去掉空白与控制字符(charCode <= 0x20 或 = 0x7f),防止形如 "java<LF>script:"
+  // 的 URL 在浏览器去掉空白后变成可执行协议的绕过。
+  let value = "";
+  for (const ch of url) {
+    const code = ch.charCodeAt(0);
+    if (code > 0x20 && code !== 0x7f) value += ch;
+  }
+  if (!value) return false;
+  // 站内绝对路径放行,但排除协议相对 "//host"。
+  if (value.startsWith("/")) return !value.startsWith("//");
+  const proto = /^([a-z][a-z0-9+.-]*):/i.exec(value)?.[1]?.toLowerCase();
+  // 无协议前缀 = 相对路径,不能注入脚本,放行。
+  if (!proto) return true;
+  if (proto === "http" || proto === "https") return true;
+  // mediaproxy:应用自有媒体代理协议,前端在 messageHistory 统一构造 `mediaproxy://${mediaId}`
+  // (图片 src 与文件/视频 href 都用它),前缀固定、非外部可注入,放行。
+  if (proto === "mediaproxy") return true;
+  if (kind === "image") {
+    if (proto === "blob") return true;
+    if (proto === "data" && /^data:image\//i.test(value)) return true;
+  }
+  return false;
+}
+
 // ─── Reply preview ──────────────────────────────────────────────────────────
 //
 // 引用预览(composer 顶上的引用条 + 气泡内 ReplyBlock)优先展示文本;若文本

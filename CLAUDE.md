@@ -1,79 +1,154 @@
 # CLAUDE.md
 
-Behavioral guidelines to reduce common LLM coding mistakes. Merge with project-specific instructions as needed.
+# AI 工程行为规范（生产级）
 
-**Tradeoff:** These guidelines bias toward caution over speed. For trivial tasks, use judgment.
+本文件用于约束 AI Agent（Claude Code / Cursor / OpenCode / GPT 等）的工程行为。
 
-## 1. Think Before Coding
+目标：
 
-**Don't assume. Don't hide confusion. Surface tradeoffs.**
+- 降低误修改
+- 降低过度设计
+- 降低隐式假设
+- 降低大范围破坏
+- 提高可维护性
+- 提高可验证性
+- 提高多人协作稳定性
 
-Before implementing:
-
-- State your assumptions explicitly. If uncertain, ask.
-- If multiple interpretations exist, present them - don't pick silently.
-- If a simpler approach exists, say so. Push back when warranted.
-- If something is unclear, stop. Name what's confusing. Ask.
-
-## 2. Simplicity First
-
-**Minimum code that solves the problem. Nothing speculative.**
-
-- No features beyond what was asked.
-- No abstractions for single-use code.
-- No "flexibility" or "configurability" that wasn't requested.
-- No error handling for impossible scenarios.
-- If you write 200 lines and it could be 50, rewrite it.
-
-Ask yourself: "Would a senior engineer say this is overcomplicated?" If yes, simplify.
-
-## 3. Surgical Changes
-
-**Touch only what you must. Clean up only your own mess.**
-
-When editing existing code:
-
-- Don't "improve" adjacent code, comments, or formatting.
-- Don't refactor things that aren't broken.
-- Match existing style, even if you'd do it differently.
-- If you notice unrelated dead code, mention it - don't delete it.
-
-When your changes create orphans:
-
-- Remove imports/variables/functions that YOUR changes made unused.
-- Don't remove pre-existing dead code unless asked.
-
-The test: Every changed line should trace directly to the user's request.
-
-## 4. Goal-Driven Execution
-
-**Define success criteria. Loop until verified.**
-
-Transform tasks into verifiable goals:
-
-- "Add validation" → "Write tests for invalid inputs, then make them pass"
-- "Fix the bug" → "Write a test that reproduces it, then make it pass"
-- "Refactor X" → "Ensure tests pass before and after"
-
-For multi-step tasks, state a brief plan:
-
-```
-1. [Step] → verify: [check]
-2. [Step] → verify: [check]
-3. [Step] → verify: [check]
-```
-
-Strong success criteria let you loop independently. Weak criteria ("make it work") require constant clarification.
+本规范优先级高于默认模型行为。
 
 ---
 
-**These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.
+# 0. 输出语言规则（最高优先级）
+
+- 除非用户明确要求其他语言，否则必须始终使用中文回复。
+- 所有分析、解释、计划、风险说明、设计讨论必须使用中文。
+- 不允许默认切换英文。
+- 终端输出、日志、代码标识符保持原语言即可。
+- 引用英文资料时必须附带中文解释。
+- Commit Message 默认使用中文。
+- 新增代码注释默认使用中文。
+
+---
+
+# 1. 核心工程原则
+
+## 1.1 先思考，再编码
+
+禁止直接开始修改代码。
+
+在编码前必须：
+
+- 明确理解需求
+- 显式说明假设
+- 指出不确定点
+- 给出风险分析
+- 给出影响范围
+- 给出验证方案
+
+如果存在歧义：
+
+- 必须停止并询问
+- 不允许自行猜测业务逻辑
+
+如果存在更简单方案：
+
+- 必须明确指出
+- 不允许默认采用复杂方案
+
+---
+
+## 1.2 简单优先（极其重要）
+
+始终选择：
+
+- 最简单
+- 最直接
+- 最小改动
+- 最低风险
+
+的方案。
+
+禁止：
+
+- 为未来扩展提前抽象
+- 单次使用却创建复杂架构
+- 添加未被要求的配置
+- 添加未被要求的“灵活性”
+- 添加未被要求的“通用性”
+- 添加推测性的功能
+
+必须持续思考：
+
+“这个实现是否被高级工程师认为过度设计？”
+
+如果答案可能是“是”，必须继续简化。
+
+---
+
+## 1.3 最小修改原则
+
+只修改：
+
+- 当前任务必须修改的代码
+
+禁止：
+
+- 顺手重构
+- 顺手优化
+- 顺手统一风格
+- 顺手调整命名
+- 顺手修改无关逻辑
+
+即使发现：
+
+- 坏代码
+- 死代码
+- 风格问题
+
+也只能：
+
+- 提醒用户
+- 不允许擅自修改
+
+---
+
+## 1.4 保持现有风格
+
+修改代码时：
+
+- 必须遵循项目现有风格
+- 必须遵循现有架构
+- 必须遵循现有命名方式
+
+禁止：
+
+- 强行引入个人偏好
+- 强行统一代码风格
+- 强行替换框架习惯
+
+---
+
+# 2. 任务执行规范
+
+## 2.1 多步骤任务必须先给计划
+
+格式：
+
+```txt
+1. [步骤]
+   - 目标：
+   - 风险：
+   - 验证：
+
+2. [步骤]
+   - 目标：
+   - 风险：
+   - 验证：
 
 <!-- gitnexus:start -->
-
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **chathub** (4781 symbols, 8853 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **chathub** (4926 symbols, 9151 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 
@@ -94,22 +169,23 @@ This project is indexed by GitNexus as **chathub** (4781 symbols, 8853 relations
 
 ## Resources
 
-| Resource                                 | Use for                                  |
-| ---------------------------------------- | ---------------------------------------- |
-| `gitnexus://repo/chathub/context`        | Codebase overview, check index freshness |
-| `gitnexus://repo/chathub/clusters`       | All functional areas                     |
-| `gitnexus://repo/chathub/processes`      | All execution flows                      |
-| `gitnexus://repo/chathub/process/{name}` | Step-by-step execution trace             |
+| Resource | Use for |
+|----------|---------|
+| `gitnexus://repo/chathub/context` | Codebase overview, check index freshness |
+| `gitnexus://repo/chathub/clusters` | All functional areas |
+| `gitnexus://repo/chathub/processes` | All execution flows |
+| `gitnexus://repo/chathub/process/{name}` | Step-by-step execution trace |
 
 ## CLI
 
-| Task                                         | Read this skill file                                        |
-| -------------------------------------------- | ----------------------------------------------------------- |
-| Understand architecture / "How does X work?" | `.claude/skills/gitnexus/gitnexus-exploring/SKILL.md`       |
-| Blast radius / "What breaks if I change X?"  | `.claude/skills/gitnexus/gitnexus-impact-analysis/SKILL.md` |
-| Trace bugs / "Why is X failing?"             | `.claude/skills/gitnexus/gitnexus-debugging/SKILL.md`       |
-| Rename / extract / split / refactor          | `.claude/skills/gitnexus/gitnexus-refactoring/SKILL.md`     |
-| Tools, resources, schema reference           | `.claude/skills/gitnexus/gitnexus-guide/SKILL.md`           |
-| Index, status, clean, wiki CLI commands      | `.claude/skills/gitnexus/gitnexus-cli/SKILL.md`             |
+| Task | Read this skill file |
+|------|---------------------|
+| Understand architecture / "How does X work?" | `.claude/skills/gitnexus/gitnexus-exploring/SKILL.md` |
+| Blast radius / "What breaks if I change X?" | `.claude/skills/gitnexus/gitnexus-impact-analysis/SKILL.md` |
+| Trace bugs / "Why is X failing?" | `.claude/skills/gitnexus/gitnexus-debugging/SKILL.md` |
+| Rename / extract / split / refactor | `.claude/skills/gitnexus/gitnexus-refactoring/SKILL.md` |
+| Tools, resources, schema reference | `.claude/skills/gitnexus/gitnexus-guide/SKILL.md` |
+| Index, status, clean, wiki CLI commands | `.claude/skills/gitnexus/gitnexus-cli/SKILL.md` |
 
 <!-- gitnexus:end -->
+```

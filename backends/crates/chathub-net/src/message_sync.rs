@@ -70,7 +70,16 @@ pub fn history_to_row(
         message_type: h.message_type,
         content_text: h.content_text.clone(),
         send_status: h.send_status,
-        attachments_json: serde_json::to_string(&h.attachments).unwrap_or_else(|_| "[]".into()),
+        attachments_json: serde_json::to_string(&h.attachments).unwrap_or_else(|e| {
+            tracing::warn!(
+                target: "chathub::msg",
+                %conversation_id,
+                local_message_id = %h.local_message_id,
+                error = %e,
+                "附件序列化失败,降级为空数组"
+            );
+            "[]".into()
+        }),
         gmt_modified_time: h.gmt_modified_time.clone(),
         updated_at_ms: 0,
     }

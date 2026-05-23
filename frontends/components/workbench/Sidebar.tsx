@@ -87,13 +87,13 @@ export const Sidebar = memo(function Sidebar({
         <SidebarBackdrop collapsed={collapsed} />
         <div className="relative z-10 flex flex-1 flex-col">
           <UserBadge collapsed={collapsed} />
-          {/* 始终占位(mt-1 + h-px + mb-1 ≈ 9px),保证收/展两态高度一致 —— 否则收缩时
-              这条线消失,下方导航瞬间上跳"闪一下"。线只在展开态可见。 */}
+          {/* 始终占位(mt-1 + h-px + mb-1 ≈ 9px)且渐变常驻,仅以 opacity 跟随收/展淡入淡出:
+              既保证收/展两态高度一致(下方导航不上跳),又避免分隔线在切换瞬间硬生生闪现。 */}
           <div
             aria-hidden
             className={cn(
-              "mx-3 mb-1 mt-1 h-px",
-              !collapsed && "bg-gradient-to-r from-transparent via-[#9DB6D8]/45 to-transparent",
+              "mx-3 mb-1 mt-1 h-px bg-gradient-to-r from-transparent via-[#9DB6D8]/45 to-transparent transition-opacity duration-200 ease-out",
+              collapsed ? "opacity-0" : "opacity-100",
             )}
           />
           <nav className="flex flex-col gap-0.5 px-2 pt-1">
@@ -110,15 +110,21 @@ export const Sidebar = memo(function Sidebar({
           <div className="mt-auto px-2 pb-3 pt-2">
             <button
               type="button"
-              className={cn(
-                "flex h-10 w-full items-center rounded-md transition-colors hover:bg-white/55 hover:text-[#1F2937]",
-                collapsed ? "justify-center px-0" : "gap-3 px-3",
-              )}
+              className="flex h-10 w-full items-center rounded-md transition-colors hover:bg-white/55 hover:text-[#1F2937]"
               style={{ color: WORKBENCH_NAV_TEXT }}
               aria-label="更多"
             >
-              <Menu size={18} />
-              {!collapsed && <span className="text-[13.5px] font-medium">更多</span>}
+              <span className="grid w-12 shrink-0 place-items-center">
+                <Menu size={18} />
+              </span>
+              <span
+                className={cn(
+                  "truncate text-[13.5px] font-medium transition-opacity duration-150 ease-out",
+                  collapsed ? "opacity-0" : "opacity-100",
+                )}
+              >
+                更多
+              </span>
             </button>
           </div>
         </div>
@@ -143,45 +149,57 @@ function SidebarBackdrop({ collapsed }: { collapsed: boolean }) {
             "linear-gradient(180deg, rgba(255,255,255,0) 0%, rgba(255,255,255,0.26) 15%, rgba(255,255,255,0) 45%, rgba(99,140,205,0.18) 100%)",
         }}
       />
-      {/* 装饰只在展开态出现,折叠态保持干净。 */}
-      {!collapsed && (
-        <>
-          {/* 中下部空白区的低调装饰小点(底部锚定,浮在波浪之上)。已去掉空心环"气泡"。
-              chSidebarHalo* 周期各异(28/32s)缓慢漂移;prefers-reduced-motion 下由
-              index.css 自动静止为纯色背景。 */}
-          <span
-            className="absolute bottom-[300px] right-7 size-3 rounded-full bg-[#9FBDE6]/40"
-            style={{ animation: "chSidebarHaloB 28s ease-in-out infinite" }}
+      {/* 装饰层:渐变之上、内容之下。常驻挂载,仅以 opacity 跟随收/展淡入淡出 ——
+          收缩时不再"硬切消失"造成闪烁,而是与宽度动画(200ms)同步柔和淡出。 */}
+      <div
+        className={cn(
+          "absolute inset-0 transition-opacity duration-200 ease-out",
+          collapsed ? "opacity-0" : "opacity-100",
+        )}
+      >
+        {/* 中下部空白区的 5 颗低调装饰圈点(底部锚定,浮在波浪之上),大小/位置/相位
+            各异,chSidebarHaloA/B/C 缓慢漂移营造呼吸感;prefers-reduced-motion 下由
+            index.css 自动静止为纯色背景。 */}
+        <span
+          className="absolute bottom-[300px] right-7 size-3 rounded-full bg-[#9FBDE6]/40"
+          style={{ animation: "chSidebarHaloB 28s ease-in-out infinite" }}
+        />
+        <span
+          className="absolute bottom-[252px] left-9 size-4 rounded-full bg-[#A9C7F0]/35"
+          style={{ animation: "chSidebarHaloC 32s ease-in-out infinite" }}
+        />
+        <span
+          className="absolute bottom-[372px] right-10 size-2.5 rounded-full bg-[#B8D2F4]/40"
+          style={{ animation: "chSidebarHaloA 24s ease-in-out infinite" }}
+        />
+        <span
+          className="absolute bottom-[212px] right-12 size-1.5 rounded-full bg-white/55"
+          style={{ animation: "chSidebarHaloC 36s ease-in-out infinite" }}
+        />
+        <span className="absolute bottom-[340px] left-12 size-2 rounded-full bg-white/55" />
+        {/* 底部柔光波浪,托在"更多"上方给左栏一个底部重心。超长波长 → 平缓大波澜,
+            两层反向错相缓慢漂移。波幅收敛、铺得更低,整体更含蓄。 */}
+        <svg
+          className="absolute inset-x-0 bottom-0 h-56 w-full"
+          viewBox={`0 0 1280 ${WAVE_BOTTOM}`}
+          preserveAspectRatio="none"
+        >
+          <DriftingWave
+            d={broadWavePath(132, 64, WAVE_BOTTOM, true)}
+            fill="#7BA7E0"
+            opacity={0.16}
+            dur="32s"
+            shift={WAVE_SHIFT}
           />
-          <span
-            className="absolute bottom-[252px] left-9 size-4 rounded-full bg-[#A9C7F0]/35"
-            style={{ animation: "chSidebarHaloC 32s ease-in-out infinite" }}
+          <DriftingWave
+            d={broadWavePath(164, 50, WAVE_BOTTOM, false)}
+            fill="#638CCD"
+            opacity={0.12}
+            dur="24s"
+            shift={WAVE_SHIFT}
           />
-          <span className="absolute bottom-[340px] left-12 size-2 rounded-full bg-white/55" />
-          {/* 底部柔光波浪,托在"更多"上方给左栏一个底部重心。超长波长 → 平缓大波,
-              两层反向错相缓慢漂移。 */}
-          <svg
-            className="absolute inset-x-0 bottom-0 h-56 w-full"
-            viewBox={`0 0 1280 ${WAVE_BOTTOM}`}
-            preserveAspectRatio="none"
-          >
-            <DriftingWave
-              d={broadWavePath(116, 76, WAVE_BOTTOM, true)}
-              fill="#7BA7E0"
-              opacity={0.16}
-              dur="32s"
-              shift={WAVE_SHIFT}
-            />
-            <DriftingWave
-              d={broadWavePath(152, 60, WAVE_BOTTOM, false)}
-              fill="#638CCD"
-              opacity={0.12}
-              dur="24s"
-              shift={WAVE_SHIFT}
-            />
-          </svg>
-        </>
-      )}
+        </svg>
+      </div>
     </div>
   );
 }
@@ -197,22 +215,26 @@ function UserBadge({ collapsed }: { collapsed: boolean }) {
   const name = profile?.display_name ?? "";
   const status = onlineStatus(sync.connectionState);
 
-  if (collapsed) {
-    return (
-      <div className="flex flex-col items-center px-2 pb-2 pt-3">
-        <AvatarMark avatarUrl={profile?.avatar_url} displayName={name} />
-      </div>
-    );
-  }
-
+  // 单一布局:头像恒定居左(px-2.5 → 头像中心 32px,与导航图标左槽中心对齐),收/展
+  // 两态零位移;名称/状态常驻挂载,仅以 opacity 淡入淡出 —— 收缩时不再整树替换造成跳动。
   return (
-    <div className="flex items-center gap-2.5 px-3 pb-1 pt-4">
+    <div className="flex items-center px-2.5 pb-1 pt-4">
       <AvatarMark avatarUrl={profile?.avatar_url} displayName={name} />
-      <div className="flex min-w-0 flex-1 flex-col gap-1 leading-tight">
+      <div
+        className={cn(
+          "ml-2.5 flex min-w-0 flex-1 flex-col gap-1 leading-tight transition-opacity duration-150 ease-out",
+          collapsed ? "opacity-0" : "opacity-100",
+        )}
+      >
         <span className="truncate text-[14px] font-semibold text-[#1F2937]">{name}</span>
         <span className="flex items-center gap-1.5">
           <span className="size-[7px] shrink-0 rounded-full" style={{ background: status.dot }} />
-          <span className="text-[11px] font-medium" style={{ color: status.text }}>
+          {/* whitespace-nowrap 是纵向不跳动的关键:收缩态文字块被挤到 ~0 宽,若状态文字
+              换行就会把整个顶部区撑高,从而把下方导航图标推下去(展开复原又收回)。 */}
+          <span
+            className="whitespace-nowrap text-[11px] font-medium"
+            style={{ color: status.text }}
+          >
             {status.label}
           </span>
         </span>
@@ -305,8 +327,7 @@ function NavButton({
       type="button"
       onClick={onClick}
       className={cn(
-        "relative flex h-10 items-center rounded-md transition-colors",
-        collapsed ? "justify-center px-0" : "gap-3 px-3",
+        "relative flex h-10 w-full items-center rounded-md transition-colors",
         active
           ? "bg-white shadow-[0_1px_3px_rgba(15,23,42,0.045)]"
           : "hover:bg-white/45 hover:text-[#1F2937]",
@@ -318,8 +339,19 @@ function NavButton({
       aria-pressed={active}
       aria-label={item.label}
     >
-      <item.Icon size={18} strokeWidth={1.8} />
-      {!collapsed && <span className="text-[13.5px] font-medium">{item.label}</span>}
+      {/* 图标恒定居于 48px 左槽中心(收/展两态像素一致),收缩时图标"零位移",只让标签
+          淡入淡出 —— 这是丝滑的关键:消除 justify-center↔px 切换造成的图标横向瞬移。 */}
+      <span className="grid w-12 shrink-0 place-items-center">
+        <item.Icon size={18} strokeWidth={1.8} />
+      </span>
+      <span
+        className={cn(
+          "truncate text-[13.5px] font-medium transition-opacity duration-150 ease-out",
+          collapsed ? "opacity-0" : "opacity-100",
+        )}
+      >
+        {item.label}
+      </span>
       {item.badge !== undefined && item.badge > 0 && (
         <span
           aria-hidden

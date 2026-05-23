@@ -110,7 +110,8 @@ async fn login(
     username: String,
     password: String,
 ) -> Result<UserProfile, AuthError> {
-    info!(target: "chathub::cmd", %username, "login command invoked");
+    // 不在常规日志打印 username(PII);失败路径保留账号以便排查认证问题。
+    info!(target: "chathub::cmd", "login command invoked");
     let profile = match state.login(&username, &password).await {
         Ok(p) => p,
         Err(e) => {
@@ -156,8 +157,17 @@ async fn hub_forward(
     let resp = hub.forward(&method, body_json.into_bytes()).await?;
     Ok(ForwardResult {
         http_status: resp.http_status,
-        // F6: Bytes → String,只在 Tauri command 出口转一次
-        body_json: String::from_utf8(resp.body_json.to_vec()).unwrap_or_default(),
+        // F6: Bytes → String,只在 Tauri command 出口转一次。
+        // 非 UTF-8 说明响应编码损坏,降级为空串但必须告警,不静默吞错。
+        body_json: String::from_utf8(resp.body_json.to_vec()).unwrap_or_else(|e| {
+            tracing::warn!(
+                target: "chathub::cmd",
+                method = %method,
+                error = %e,
+                "hub_forward 响应非 UTF-8,已降级为空串"
+            );
+            String::new()
+        }),
     })
 }
 

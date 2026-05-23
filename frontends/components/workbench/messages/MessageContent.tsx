@@ -5,7 +5,7 @@ import { cn } from "@/lib/utils";
 
 import type { MessageAttachment, MessageBlock } from "./data";
 import { STRINGS } from "./strings";
-import { formatFileSize, formatRichText } from "./utils";
+import { formatFileSize, formatRichText, isSafeUrl } from "./utils";
 
 interface MessageContentProps {
   text: string;
@@ -86,9 +86,11 @@ function AttachmentCard({ attachment }: { attachment: MessageAttachment }) {
 }
 
 function ImageAttachment({ attachment }: { attachment: MessageAttachment }) {
+  // 不安全 URL 时去掉 href,链接不可点击;MessageImage 内部同样会落 error 态。
+  const href = isSafeUrl(attachment.url, "image") ? attachment.url : undefined;
   return (
     <a
-      href={attachment.url}
+      href={href}
       target="_blank"
       rel="noopener noreferrer"
       title={STRINGS.attachment.openImage}
@@ -106,9 +108,10 @@ function ImageAttachment({ attachment }: { attachment: MessageAttachment }) {
 function FileAttachment({ attachment }: { attachment: MessageAttachment }) {
   const name = attachment.name ?? STRINGS.attachment.file;
   const size = formatFileSize(attachment.sizeBytes);
+  const href = isSafeUrl(attachment.url, "link") ? attachment.url : undefined;
   return (
     <a
-      href={attachment.url}
+      href={href}
       download={attachment.name}
       target="_blank"
       rel="noopener noreferrer"
@@ -161,9 +164,12 @@ function VoiceAttachment({ attachment }: { attachment: MessageAttachment }) {
 }
 
 function VideoAttachment({ attachment }: { attachment: MessageAttachment }) {
+  // 视频 URL 既作链接 href 又作缩略图 CSS background。不安全时一并去掉,
+  // 同时避免 url() 内的 ")" / 引号破坏 CSS 表达式。
+  const safe = isSafeUrl(attachment.url, "link");
   return (
     <a
-      href={attachment.url}
+      href={safe ? attachment.url : undefined}
       target="_blank"
       rel="noopener noreferrer"
       aria-label={STRINGS.attachment.video}
@@ -172,11 +178,15 @@ function VideoAttachment({ attachment }: { attachment: MessageAttachment }) {
       <span
         aria-hidden
         className="block aspect-video w-64 max-w-full bg-workbench-surface-active"
-        style={{
-          backgroundImage: `url(${attachment.url})`,
-          backgroundSize: "cover",
-          backgroundPosition: "center",
-        }}
+        style={
+          safe
+            ? {
+                backgroundImage: `url(${attachment.url})`,
+                backgroundSize: "cover",
+                backgroundPosition: "center",
+              }
+            : undefined
+        }
       />
       <span
         aria-hidden
@@ -259,6 +269,18 @@ function TextRun({ value }: { value: string }) {
 }
 
 function InlineImage({ block }: { block: Extract<MessageBlock, { type: "image" }> }) {
+  // 不安全 URL 不进 <img src>,渲染占位;安全图加 lazy 减少长消息一次性全量请求。
+  if (!isSafeUrl(block.url, "image")) {
+    return (
+      <span
+        role="img"
+        aria-label={STRINGS.attachment.imageLoadFailed}
+        className="mx-1 inline-grid size-16 place-items-center rounded-lg bg-workbench-surface-soft align-middle text-workbench-text-muted"
+      >
+        <ImageOff size={18} strokeWidth={1.5} aria-hidden />
+      </span>
+    );
+  }
   return (
     <a
       href={block.url}
@@ -269,6 +291,7 @@ function InlineImage({ block }: { block: Extract<MessageBlock, { type: "image" }
       <img
         src={block.url}
         alt={block.name ?? STRINGS.attachment.image}
+        loading="lazy"
         className="block max-h-[200px] max-w-[260px] object-contain"
       />
     </a>
@@ -276,9 +299,10 @@ function InlineImage({ block }: { block: Extract<MessageBlock, { type: "image" }
 }
 
 function ImageStandalone({ block }: { block: Extract<MessageBlock, { type: "image" }> }) {
+  const href = isSafeUrl(block.url, "image") ? block.url : undefined;
   return (
     <a
-      href={block.url}
+      href={href}
       target="_blank"
       rel="noopener noreferrer"
       title={STRINGS.attachment.openImage}
@@ -316,14 +340,16 @@ interface MessageImageProps {
 }
 
 function MessageImage({ src, alt, imgClassName }: MessageImageProps) {
-  const [state, setState] = useState<"loading" | "loaded" | "error">("loading");
+  // 不安全协议(javascript:/file:/data:text-html 等)直接进 error 态,绝不落到 <img src>。
+  const initialState = isSafeUrl(src, "image") ? "loading" : "error";
+  const [state, setState] = useState<"loading" | "loaded" | "error">(initialState);
   // src 变化(消息流刷新 / 媒体 URL 重签等)时回到 loading,杜绝旧 state 复用。
   // 用 React 推荐的"渲染期同步"模式而非 useEffect:effect 内 setState 会先用
   // 旧 state 渲染一帧再修正,reflow 已经看见。这里走 React 渲染中断重新生效路径。
   const [lastSrc, setLastSrc] = useState(src);
   if (lastSrc !== src) {
     setLastSrc(src);
-    setState("loading");
+    setState(isSafeUrl(src, "image") ? "loading" : "error");
   }
 
   if (state === "error") {

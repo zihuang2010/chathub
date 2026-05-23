@@ -84,18 +84,14 @@ interface ConversationCount {
   count: number;
 }
 
-function buildTimelineItems(messages: Message[], conversation: Conversation): TimelineItem[] {
+function buildTimelineItems(
+  messages: Message[],
+  conversation: Conversation,
+  unreadAnchorId: string | null,
+  unreadCount: number,
+): TimelineItem[] {
   const items: TimelineItem[] = [];
   let previousDayKey: string | null = null;
-
-  let firstUnreadIdx: number | null = null;
-  let unreadCount = 0;
-  for (let i = 0; i < messages.length; i++) {
-    if (messages[i].direction === "in" && messages[i].isUnread) {
-      if (firstUnreadIdx === null) firstUnreadIdx = i;
-      unreadCount++;
-    }
-  }
 
   for (let i = 0; i < messages.length; i++) {
     const message = messages[i];
@@ -110,7 +106,7 @@ function buildTimelineItems(messages: Message[], conversation: Conversation): Ti
       previousDayKey = dayKey;
     }
 
-    if (i === firstUnreadIdx && unreadCount > 0) {
+    if (unreadCount > 0 && message.id === unreadAnchorId) {
       items.push({ type: "unread-divider", id: "unread-divider", count: unreadCount });
     }
 
@@ -247,31 +243,37 @@ export const ChatArea = memo(function ChatArea({
   }
   const unreadSnapshot = unreadSnapshotRef.current.unread;
 
-  // 真实后端的 Message.isUnread 字段没有被 historyToMessage 填充(后端 records
-  // 没逐条 read 状态),所以 buildTimelineItems 的 UnreadDivider 在生产环境永远
-  // 不渲染。这里按打开时快照的 unread 从尾部反向数 N 条 in 方向
-  // 消息标 isUnread=true,让分隔条能正确出现。
-  // mock 数据已经手标 isUnread 的不重复标(localMessages.some(...) 短路)。
-  const messagesWithUnread = useMemo(() => {
-    const n = unreadSnapshot;
-    if (n <= 0) return localMessages;
-    if (localMessages.some((m) => m.isUnread)) return localMessages;
-    const unreadIds = new Set<string>();
-    let counted = 0;
-    for (let i = localMessages.length - 1; i >= 0 && counted < n; i--) {
-      const m = localMessages[i];
-      if (m.direction === "in") {
-        unreadIds.add(m.id);
-        counted++;
+  // 把未读「边界」钉死:进入会话那一刻第一条未读消息的 id + 条数。一旦定下,会话内
+  // 不再随尾部漂移 —— 活跃期间实时到达的消息一律追加在分隔条下方,不移动分隔条、不计
+  // 未读(主流 IM:分隔条标记「上次读到哪」,而非一个跟着尾巴滑的窗口)。
+  //
+  // 后端 records 无逐条 read 状态(historyToMessage 不填 isUnread),边界只能由打开时的
+  // unread 快照推得:从消息尾部反数 N 条 in 方向消息,取最早那条作锚点。与 unreadSnapshotRef
+  // 同样按 conversation.id 在渲染期冻结;消息异步到达,故只在本会话消息首次非空时定锚一次,
+  // 在那之前保持「未定」(不渲染分隔条)。
+  const unreadAnchorRef = useRef<{ id: string; anchorId: string | null; count: number }>({
+    id: "",
+    anchorId: null,
+    count: 0,
+  });
+  if (unreadAnchorRef.current.id !== conversation.id && localMessages.length > 0) {
+    let anchorId: string | null = null;
+    let count = 0;
+    for (let i = localMessages.length - 1; i >= 0 && count < unreadSnapshot; i--) {
+      if (localMessages[i].direction === "in") {
+        anchorId = localMessages[i].id;
+        count++;
       }
     }
-    if (unreadIds.size === 0) return localMessages;
-    return localMessages.map((m) => (unreadIds.has(m.id) ? { ...m, isUnread: true } : m));
-  }, [localMessages, unreadSnapshot]);
+    unreadAnchorRef.current = { id: conversation.id, anchorId, count };
+  }
+  const anchored = unreadAnchorRef.current.id === conversation.id;
+  const unreadAnchorId = anchored ? unreadAnchorRef.current.anchorId : null;
+  const unreadDividerCount = anchored ? unreadAnchorRef.current.count : 0;
 
   const timelineItems = useMemo(
-    () => buildTimelineItems(messagesWithUnread, conversation),
-    [messagesWithUnread, conversation],
+    () => buildTimelineItems(localMessages, conversation, unreadAnchorId, unreadDividerCount),
+    [localMessages, conversation, unreadAnchorId, unreadDividerCount],
   );
 
   const handleScrollMetrics = useCallback((m: ScrollMetrics) => {

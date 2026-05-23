@@ -345,3 +345,63 @@ describe("ChatArea history scrolling", () => {
     expect(getByTestId("loading")).toBeTruthy();
   });
 });
+
+describe("ChatArea unread divider", () => {
+  const convUnread: Conversation = { ...conversation, unread: 2 };
+  const sharedProps = {
+    accounts,
+    selectedAccount: null as string | null,
+    onAccountChange: vi.fn(),
+    detailsOpen: false,
+    onToggleDetails: vi.fn(),
+  };
+
+  const orderedTimeline = (container: HTMLElement) =>
+    Array.from(
+      container.querySelectorAll('[data-testid="message"],[data-testid="unread-divider"]'),
+    ).map((el) =>
+      el.getAttribute("data-testid") === "unread-divider"
+        ? `divider:${el.textContent}`
+        : `msg:${el.textContent}`,
+    );
+
+  it("anchors the divider to the entry boundary and keeps it fixed when active-conversation messages arrive", async () => {
+    const { container, rerender } = render(
+      <ChatArea
+        {...sharedProps}
+        conversation={convUnread}
+        messages={[message("01"), message("02"), message("03"), message("04")]}
+      />,
+    );
+    await act(async () => undefined);
+
+    // 进入时:unread=2 → 分隔条钉在最后 2 条 in 消息的第一条("03")之前。
+    expect(orderedTimeline(container)).toEqual([
+      "msg:01",
+      "msg:02",
+      "divider:2",
+      "msg:03",
+      "msg:04",
+    ]);
+
+    // 活跃会话实时收到新消息 "05":分隔条必须仍钉在 "03" 之前、计数仍为 2,
+    // 新消息落在底部不计未读 —— 而不是随尾部漂移到 "04" 之前。
+    rerender(
+      <ChatArea
+        {...sharedProps}
+        conversation={convUnread}
+        messages={[message("01"), message("02"), message("03"), message("04"), message("05")]}
+      />,
+    );
+    await act(async () => undefined);
+
+    expect(orderedTimeline(container)).toEqual([
+      "msg:01",
+      "msg:02",
+      "divider:2",
+      "msg:03",
+      "msg:04",
+      "msg:05",
+    ]);
+  });
+});

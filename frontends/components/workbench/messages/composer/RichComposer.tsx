@@ -9,6 +9,7 @@ import {
 import StarterKit from "@tiptap/starter-kit";
 import Image from "@tiptap/extension-image";
 import Placeholder from "@tiptap/extension-placeholder";
+import DOMPurify from "dompurify";
 
 import type { Conversation } from "../data";
 import { ImageNodeView } from "./ImageNodeView";
@@ -75,6 +76,15 @@ export function RichComposer({
         class:
           "min-h-[64px] w-full px-2 pb-2 pt-0 text-wb-xs font-medium text-workbench-text outline-none",
       },
+      // HTML 富文本粘贴净化:严格白名单只留基础格式标签,剥离所有属性
+      // (href/style/on* 全去),杜绝 <script>/事件处理器/危险协议注入。链接文本
+      // 保留为纯文本,接收端 formatRichText 仍会自动识别 http(s) 链接。
+      transformPastedHTML: (html) =>
+        DOMPurify.sanitize(html, {
+          ALLOWED_TAGS: ["p", "br", "span", "b", "strong", "i", "em", "s", "strike", "code"],
+          ALLOWED_ATTR: [],
+          FORBID_TAGS: ["style"],
+        }),
       handleKeyDown: (_view, event) => {
         if (
           event.key === "Enter" &&

@@ -82,8 +82,6 @@ export interface Message {
   replyTo?: string;
   /** Mentioned user handles parsed from `text` (post-processed by backend). */
   mentions?: string[];
-  /** `in` only: marker for the unread divider rendered just above the first true entry. */
-  isUnread?: boolean;
   /** Recalled by sender within the recall window. Renderer collapses the
    *  bubble into a centered system line ("你撤回了一条消息" / "对方撤回了一条消息"). */
   isRecalled?: boolean;
