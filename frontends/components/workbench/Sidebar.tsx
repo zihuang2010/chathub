@@ -254,14 +254,14 @@ function AvatarMark({ avatarUrl, displayName }: { avatarUrl?: string; displayNam
         src={avatarUrl}
         alt=""
         onError={() => setFailedUrl(avatarUrl)}
-        className="size-11 shrink-0 rounded-[14px] object-cover shadow-[0_4px_10px_rgba(62,123,214,0.28)]"
+        className="size-11 shrink-0 rounded-lg object-cover shadow-[0_4px_10px_rgba(62,123,214,0.28)]"
       />
     );
   }
 
   return (
     <div
-      className="relative grid size-11 shrink-0 place-items-center overflow-hidden rounded-[14px] text-[16px] font-semibold text-white shadow-[0_4px_10px_rgba(62,123,214,0.28)]"
+      className="relative grid size-11 shrink-0 place-items-center overflow-hidden rounded-lg text-[16px] font-semibold text-white shadow-[0_4px_10px_rgba(62,123,214,0.28)]"
       style={{ background: AVATAR_GRADIENT }}
     >
       {/* 顶部高光,增加立体感/高级感。 */}

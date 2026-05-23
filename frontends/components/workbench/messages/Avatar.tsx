@@ -22,7 +22,7 @@ export function CustomerAvatar({ name, color }: CustomerAvatarProps) {
     <div
       role="img"
       aria-label={name}
-      className="size-11 shrink-0 rounded-xl bg-cover bg-center shadow-[inset_0_0_0_1px_rgba(255,255,255,0.48)]"
+      className="size-11 shrink-0 rounded-lg bg-cover bg-center shadow-[inset_0_0_0_1px_rgba(255,255,255,0.48)]"
       style={{
         backgroundColor: resolveAvatarColor(name, color),
         backgroundImage: `url(${pickCustomerAvatarImage(name)})`,
@@ -39,7 +39,7 @@ export function AgentAvatar({ account }: { account: string }) {
     <div
       role="img"
       aria-label={account}
-      className="size-11 shrink-0 rounded-xl bg-cover bg-center shadow-[inset_0_0_0_1px_rgba(255,255,255,0.48)]"
+      className="size-11 shrink-0 rounded-lg bg-cover bg-center shadow-[inset_0_0_0_1px_rgba(255,255,255,0.48)]"
       style={{
         backgroundColor: pickAvatarColor(account),
         backgroundImage: `url(${pickCustomerAvatarImage(account)})`,
@@ -62,7 +62,7 @@ export function ConversationAvatar({ name, color, online, pinned }: Conversation
       <div
         role="img"
         aria-label={name}
-        className="size-11 rounded-xl bg-cover bg-center shadow-[inset_0_0_0_1px_rgba(255,255,255,0.45)]"
+        className="size-11 rounded-lg bg-cover bg-center shadow-[inset_0_0_0_1px_rgba(255,255,255,0.45)]"
         style={{
           backgroundColor: resolveAvatarColor(name, color),
           backgroundImage: `url(${pickCustomerAvatarImage(name)})`,

@@ -228,7 +228,10 @@ impl MessageSync {
     /// 发送一条文本消息(`messageType=1`):调 hub → 落库(出站气泡)→ 推进/建窗 →
     /// 发 ConversationMessages ChangeNotice 让打开着的会话重读缓存追加气泡。
     ///
-    /// 排序键 `~{ms}`(`~`=0x7E)词典序大于 mock 的 `sort_…` 与真实 `<ms>:…`,故出站气泡停在底部;
+    /// 排序键用与协议同构的 `{ms:013}:2:{seq:020}`(`2`=出站方向),与入站/历史/推送的
+    /// `{epochMs}:{dir}:{seq}` 同源可比。**不能再用旧的 `~{ms}` 前缀**:`~`(0x7E)词典序大于
+    /// 所有数字开头的 key,会把出站气泡永久钉在最底,导致之后到达的入站消息(数字开头)
+    /// 反而排到出站消息上方 → 乱序。改用真实 ms 后,出站气泡按发送时刻与入站消息正确穿插。
     /// UPSERT 冻结 sort_key,后续重对齐(Stitch)不会移位。
     pub async fn send_message(
         &self,
@@ -260,7 +263,9 @@ impl MessageSync {
         let now = now_ms();
         let parsed_ms = parse_server_time_to_ms(&resp.message_time);
         let freshness_ms = if parsed_ms > 0 { parsed_ms } else { now };
-        let sort_key = format!("~{now:013}");
+        // 与协议同构:{ms:013}:{dir=2}:{seq:020}。ms 取服务端回填时间(无则用 now),保证按真实
+        // 发送时刻与入站消息穿插;seq 用 now 这个大值,使同毫秒内本出站气泡排在入站之后(更靠底)。
+        let sort_key = format!("{freshness_ms:013}:2:{now:020}");
         let row = MessageRow {
             local_message_id: resp.local_message_id.clone(),
             conversation_id: conversation_id.to_string(),

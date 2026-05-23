@@ -42,7 +42,7 @@ function SkeletonRow({ side, wide }: { side: "left" | "right"; wide?: boolean })
       variants={SKELETON_ROW_VARIANTS}
       className={cn("flex items-center gap-2", side === "right" && "flex-row-reverse")}
     >
-      <div className="size-9 shrink-0 animate-pulse rounded-xl bg-workbench-line-subtle" />
+      <div className="size-9 shrink-0 animate-pulse rounded-lg bg-workbench-line-subtle" />
       <div
         className={cn(
           "h-9 animate-pulse rounded-md bg-workbench-line-subtle",

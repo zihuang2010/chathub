@@ -48,7 +48,7 @@ export function MessagesSkeleton() {
 function SkeletonRow() {
   return (
     <div className="grid grid-cols-[44px_minmax(0,1fr)] items-center gap-3 rounded-xl px-3 py-2">
-      <div className="size-11 animate-pulse rounded-xl bg-workbench-surface-subtle" />
+      <div className="size-11 animate-pulse rounded-lg bg-workbench-surface-subtle" />
       <div className="flex flex-col gap-1.5">
         <div className="h-3 w-24 animate-pulse rounded bg-workbench-surface-subtle" />
         <div className="h-2.5 w-32 animate-pulse rounded bg-workbench-surface-subtle" />

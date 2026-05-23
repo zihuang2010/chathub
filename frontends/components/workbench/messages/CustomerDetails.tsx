@@ -121,7 +121,7 @@ function ProfileHeader({ customer }: { customer: Customer }) {
       <div
         role="img"
         aria-label={customer.name}
-        className="size-10 shrink-0 rounded-xl bg-cover bg-center"
+        className="size-10 shrink-0 rounded-lg bg-cover bg-center"
         style={{
           backgroundColor: pickAvatarColor(customer.id),
           backgroundImage: `url(${pickCustomerAvatarImage(customer.name)})`,

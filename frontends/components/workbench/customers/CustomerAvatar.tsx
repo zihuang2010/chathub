@@ -37,13 +37,13 @@ export function CustomerAvatar({
           alt=""
           loading="lazy"
           onError={() => setImgFailed(true)}
-          className="block size-full rounded-xl object-cover"
+          className="block size-full rounded-lg object-cover"
           style={{ width: size, height: size }}
         />
       ) : (
         <div
           className={cn(
-            "grid size-full place-items-center rounded-xl font-medium text-workbench-text",
+            "grid size-full place-items-center rounded-lg font-medium text-workbench-text",
             "shadow-[inset_0_0_0_1px_rgba(255,255,255,0.45)]",
           )}
           style={{

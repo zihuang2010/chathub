@@ -137,7 +137,12 @@ export function useMessageHistory(opts: UseMessageHistoryOptions): UseMessageHis
       return;
     }
     targetKeyRef.current = conversationId;
-    void readCache(true);
+    // 热会话(store 已有该分片缓存)直接秒开复用旧分片,不再 showLoading —— 否则每次切换都
+    // 把 loading 翻 true→false,既触发 ChatArea 重渲染,也 invalidate useScrollController 里
+    // 以 loading 为依赖的 layout effect(切换路径平白多跑滚动重算),切换显钝。仅冷会话(无缓存)
+    // 才显 loading 等 IPC;热会话走 stale-while-revalidate,后台读到新数据再平滑替换。
+    const cached = (useChatStore.getState().conversations[conversationId]?.order.length ?? 0) > 0;
+    void readCache(!cached);
   }, [ready, conversationId, readCache]);
 
   // 订阅 conversation-messages:后台 reconcile 落库 → 重读缓存(不显 loading,stale-while-revalidate)。

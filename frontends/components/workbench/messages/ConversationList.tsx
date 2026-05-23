@@ -12,7 +12,7 @@ import { ConversationAvatar } from "./Avatar";
 import type { Conversation } from "./data";
 import { STRINGS } from "./strings";
 import { extractAccountOperator } from "./utils";
-import { WorkbenchScrollArea } from "./WorkbenchScrollArea";
+import { WorkbenchScrollArea, type ScrollMetrics } from "./WorkbenchScrollArea";
 
 type StatusTab = "all" | "unread" | "mentioned";
 
@@ -136,6 +136,8 @@ export const ConversationList = memo(function ConversationList({
 // 把间隔算进去,行与行之间留出透明缝隙,卡片不再贴死。
 const ROW_GAP_PX = 4;
 const ROW_ESTIMATE_PX = 60;
+// 距底 ≤ 该像素(约 4 行卡片缓冲)即触发翻更老一页。
+const LOAD_MORE_BOTTOM_THRESHOLD_PX = 240;
 
 const VirtualizedList = memo(function VirtualizedList({
   items,
@@ -172,19 +174,21 @@ const VirtualizedList = memo(function VirtualizedList({
   });
 
   const virtualItems = virtualizer.getVirtualItems();
-  // 末项进入渲染窗口(借 overscan=8 提前约 8 行)→ 拉更老一页。键 lastIndex 是稳定数值,
-  // 不会每次 render 触发(virtualItems 数组本身每 render 变)。
-  //   - scrollTop>0 守卫:短列表全可见时 mount 即 lastIndex==末项但未滚动,不应误拉
-  //     (hook 的 loadMore 首调会打一发远端播种 cursor,不能在启动时触发)。
+  // 距底阈值内 → 拉更老一页。**只挂 onUserScroll(原生 scroll 事件),不挂 onScrollMetrics**:
+  // 后者还会被 WorkbenchScrollArea 的 ResizeObserver/MutationObserver 重排 emit 触发,翻页后
+  // 若新页被 dedupe 掉(items 不增长)会再次命中"距底阈值内"→ 无限重拉(历史 BUG:接待列表
+  // 向下滑无休止循环)。改为仅用户主动滚动触发后,翻页完成不会自激重入。
+  //   - scrollTop>0 守卫:短列表全可见、mount 即贴底但未滚动时不误拉(首调会播种远端 cursor)。
   //   - loading 期间不重复触发;是否真的还有更多由 hook 内部 cursor/hasMore 自守(到底即 no-op)。
-  const lastIndex = virtualItems.length > 0 ? virtualItems[virtualItems.length - 1].index : -1;
-  useEffect(() => {
-    if (!onLoadMore || loading) return;
-    if (lastIndex < 0 || lastIndex < items.length - 1) return;
-    const el = scrollRef.current;
-    if (!el || el.scrollTop <= 0) return;
-    onLoadMore();
-  }, [lastIndex, items.length, loading, onLoadMore]);
+  const handleNearBottom = useCallback(
+    (m: ScrollMetrics) => {
+      if (!onLoadMore || loading) return;
+      if (m.scrollTop <= 0) return;
+      if (m.scrollHeight - m.scrollTop - m.clientHeight > LOAD_MORE_BOTTOM_THRESHOLD_PX) return;
+      onLoadMore();
+    },
+    [onLoadMore, loading],
+  );
 
   if (items.length === 0) {
     return (
@@ -201,6 +205,7 @@ const VirtualizedList = memo(function VirtualizedList({
       className="flex-1"
       viewportClassName="pb-1.5 pt-0.5 pl-3 pr-2"
       scrollRef={setScrollViewport}
+      onUserScroll={handleNearBottom}
     >
       <div
         style={{
