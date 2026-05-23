@@ -65,19 +65,92 @@ export type MessageBlock =
       height?: number;
     };
 
+// 渲染用的单一内容通道:文本与各类媒体统一为按显示顺序排列的判别联合。取代早先
+// `blocks`(composer 富文本) + `attachments`(服务端附件)双通道,渲染端只按 kind 分发。
+// `MessageBlock` / `MessageAttachment` 仍保留作 composer 中间类型与转换输入。
+export type MessagePart =
+  | { kind: "text"; text: string }
+  | {
+      kind: "image";
+      url: string;
+      name?: string;
+      sizeBytes?: number;
+      width?: number;
+      height?: number;
+      /** true=随文本内联(composer 富文本);否则按附件大卡渲染。 */
+      inline?: boolean;
+    }
+  | { kind: "file"; url: string; name?: string; sizeBytes?: number }
+  | { kind: "voice"; url: string; durationSec?: number }
+  | { kind: "video"; url: string; name?: string };
+
+function attachmentToPart(a: MessageAttachment): MessagePart {
+  switch (a.type) {
+    case "image":
+      return { kind: "image", url: a.url, name: a.name, sizeBytes: a.sizeBytes };
+    case "file":
+      return { kind: "file", url: a.url, name: a.name, sizeBytes: a.sizeBytes };
+    case "voice":
+      return { kind: "voice", url: a.url, durationSec: a.durationSec };
+    case "video":
+      return { kind: "video", url: a.url, name: a.name };
+  }
+}
+
+function blockToPart(b: MessageBlock): MessagePart {
+  return b.type === "text"
+    ? { kind: "text", text: b.value }
+    : {
+        kind: "image",
+        url: b.url,
+        name: b.name,
+        sizeBytes: b.sizeBytes,
+        width: b.width,
+        height: b.height,
+        inline: true,
+      };
+}
+
+/**
+ * 组装消息的显示 parts。
+ * - 有 blocks(composer 富文本):text/image 内联保持顺序;附件里的**图片丢弃**(已在
+ *   blocks 内,避免重复渲染),仅追加文件/语音/视频附件卡片。
+ * - 无 blocks:文本 part 在前,附件卡片依序在后(匹配旧"文本 + 附件下方"布局)。
+ */
+export function buildMessageParts(
+  text: string,
+  blocks?: MessageBlock[],
+  attachments?: MessageAttachment[],
+): MessagePart[] {
+  if (blocks && blocks.length > 0) {
+    const parts = blocks.map(blockToPart);
+    if (attachments) {
+      for (const a of attachments) {
+        if (a.type !== "image") parts.push(attachmentToPart(a));
+      }
+    }
+    return parts;
+  }
+  const parts: MessagePart[] = [];
+  if (text.length > 0) parts.push({ kind: "text", text });
+  if (attachments && attachments.length > 0) {
+    for (const a of attachments) parts.push(attachmentToPart(a));
+  }
+  return parts;
+}
+
 export interface Message {
   id: string;
   conversationId: string;
   direction: "in" | "out";
+  /** 原始纯文本:用于搜索 / 引用预览 / 无障碍回退;实际渲染走 `parts`。 */
   text: string;
   /** ISO 8601 timestamp; UI components derive any display label from this. */
   sentAt: string;
   /** Only meaningful for `out` messages. `in` messages are always treated as read. */
   status?: MessageStatus;
-  attachments?: MessageAttachment[];
-  /** Rich content blocks (text + inline images). When present, rendering end
-   *  prioritizes blocks; `text` remains as fallback original string. */
-  blocks?: MessageBlock[];
+  /** 唯一内容通道:文本 + 媒体,按显示顺序排列。 */
+  parts: MessagePart[];
   /** id of the message being replied to. */
   replyTo?: string;
   /** Mentioned user handles parsed from `text` (post-processed by backend). */
@@ -305,7 +378,7 @@ export const MOCK_CONVERSATIONS: Conversation[] = [
   },
 ];
 
-export const MOCK_MESSAGES_BY_CONVERSATION: Record<string, Message[]> = {
+const RAW_MOCK_MESSAGES: Record<string, Omit<Message, "parts">[]> = {
   c1: [
     {
       id: "m1",
@@ -782,6 +855,15 @@ export const MOCK_MESSAGES_BY_CONVERSATION: Record<string, Message[]> = {
     },
   ],
 };
+
+// RAW_MOCK_MESSAGES 为纯文本演示数据(当前无消费者,见 useChatMessages 注释);统一补
+// parts 以满足 Message 类型。可在后续清理中整体删除。
+export const MOCK_MESSAGES_BY_CONVERSATION: Record<string, Message[]> = Object.fromEntries(
+  Object.entries(RAW_MOCK_MESSAGES).map(([id, msgs]) => [
+    id,
+    msgs.map((m) => ({ ...m, parts: buildMessageParts(m.text) })),
+  ]),
+);
 
 export const MOCK_CUSTOMERS_BY_CONVERSATION: Record<string, Customer> = {
   c1: {

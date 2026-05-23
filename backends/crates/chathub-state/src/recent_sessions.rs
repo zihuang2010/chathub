@@ -262,7 +262,8 @@ impl RecentSessionsStore {
                        removed_at_ms = CASE WHEN ?6 > removed_at_ms THEN 0 ELSE removed_at_ms END \
                      WHERE employee_id = ?15 AND conversation_id = ?16 \
                        AND ( ?9 > last_message_sort_key_ms \
-                             OR (?9 = last_message_sort_key_ms AND ?10 >= gmt_modified_time) )",
+                             OR (?9 = last_message_sort_key_ms \
+                                 AND (?10 = '' OR ?10 >= gmt_modified_time)) )",
                     rusqlite::params![
                         s.last_local_message_id,
                         s.last_message_type as i64,
@@ -962,6 +963,26 @@ mod tests {
         let got = store.list_top(E, None, 10).await.unwrap();
         assert_eq!(got[0].last_message_time_ms, 500, "stale 不得覆盖");
         assert_eq!(got[0].unread_count, 3, "stale 不得覆盖未读");
+    }
+
+    #[tokio::test]
+    async fn apply_summary_same_sortkey_empty_gmt_still_applies() {
+        let pool = SqlitePool::in_memory().await.unwrap();
+        let store = RecentSessionsStore::new(pool);
+        // 预置一行:sort_key_ms=500,带非空 gmt(模拟此前由带 gmt 的源写入)。
+        let mut seed = sample_remote("c1", "wa-1", 500, 3);
+        seed.gmt_modified_time = "2026-05-20 10:00:00".into();
+        store.upsert_remote_many(&[seed]).await.unwrap();
+        // 摘要事件:同 sort_key_ms=500,但不带 gmt(空串)。旧逻辑下 "" >= "2026-..." 为
+        // 假会误拒;修复后空 gmt 视为放行,同版本摘要刷新得以应用。
+        let changed = store
+            .apply_summary(sample_summary("c1", 500, 7))
+            .await
+            .unwrap();
+        assert!(changed, "同 sort_key + 空 gmt 的摘要应被接受,不得误拒");
+        let got = store.list_top(E, None, 10).await.unwrap();
+        assert_eq!(got[0].unread_count, 7, "摘要未读应已更新");
+        assert_eq!(got[0].last_message_summary, "新的客户消息");
     }
 
     #[tokio::test]

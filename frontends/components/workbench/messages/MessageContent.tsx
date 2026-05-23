@@ -3,65 +3,50 @@ import { Download, FileText, ImageOff, Play } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 
-import type { MessageAttachment, MessageBlock } from "./data";
+import type { MessagePart } from "./data";
 import { STRINGS } from "./strings";
 import { formatFileSize, formatRichText, isSafeUrl } from "./utils";
 
+type ImagePart = Extract<MessagePart, { kind: "image" }>;
+type FilePart = Extract<MessagePart, { kind: "file" }>;
+type VoicePart = Extract<MessagePart, { kind: "voice" }>;
+type VideoPart = Extract<MessagePart, { kind: "video" }>;
+
 interface MessageContentProps {
-  text: string;
-  blocks?: MessageBlock[];
-  attachments?: MessageAttachment[];
+  parts: MessagePart[];
+}
+
+// 内联部分:文本 + 标记为内联的图片(composer 富文本)。其余(附件图片/文件/语音/
+// 视频)走下方卡片堆叠。
+function isInlinePart(p: MessagePart): boolean {
+  return p.kind === "text" || (p.kind === "image" && p.inline === true);
 }
 
 /**
- * Render plain message text with inline link / mention / emoji decorations,
- * followed by any attachment cards (image / file / voice / video). Output is
- * a Fragment so it composes inside any bubble layout without introducing
- * extra block-level wrappers around the text portion.
+ * 按 parts 顺序渲染消息内容。单张图片独占 → 大卡(与服务端图片气泡视觉一致);否则
+ * 内联流(文本 + 内联图片)在前、媒体卡片堆叠在后。输出 Fragment,不引入额外块级包裹。
  */
-export function MessageContent({ text, blocks, attachments }: MessageContentProps) {
-  if (blocks && blocks.length > 0) {
-    return <BlocksContent blocks={blocks} attachments={attachments} />;
+export function MessageContent({ parts }: MessageContentProps) {
+  if (parts.length === 1 && parts[0].kind === "image") {
+    return <ImageStandalone part={parts[0]} />;
   }
 
-  const segments = formatRichText(text);
-  const hasText = text.length > 0;
-  const hasAttachments = attachments && attachments.length > 0;
+  const inlineParts = parts.filter(isInlinePart);
+  const cardParts = parts.filter((p) => !isInlinePart(p));
+  const hasInline = inlineParts.length > 0;
 
   return (
     <>
-      {hasText &&
-        segments.map((seg, i) => {
-          const key = `${seg.type}-${i}`;
-          switch (seg.type) {
-            case "link":
-              return (
-                <a
-                  key={key}
-                  href={seg.href}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-workbench-accent underline-offset-2 hover:underline"
-                >
-                  {seg.value}
-                </a>
-              );
-            case "mention":
-              return (
-                <span key={key} className="font-medium text-workbench-accent">
-                  {seg.value}
-                </span>
-              );
-            case "emoji":
-              return <span key={key}>{seg.value}</span>;
-            case "text":
-              return <Fragment key={key}>{seg.value}</Fragment>;
-          }
-        })}
-      {hasAttachments && (
-        <div className={hasText ? "mt-2 flex flex-col gap-2" : "flex flex-col gap-2"}>
-          {attachments!.map((att, i) => (
-            <AttachmentCard key={`${att.type}-${i}`} attachment={att} />
+      {inlineParts.map((p, i) => {
+        const key = `${p.kind}-${i}`;
+        if (p.kind === "text") return <TextRun key={key} value={p.text} />;
+        if (p.kind === "image") return <InlineImage key={key} part={p} />;
+        return null;
+      })}
+      {cardParts.length > 0 && (
+        <div className={hasInline ? "mt-2 flex flex-col gap-2" : "flex flex-col gap-2"}>
+          {cardParts.map((p, i) => (
+            <PartCard key={`${p.kind}-${i}`} part={p} />
           ))}
         </div>
       )}
@@ -71,23 +56,24 @@ export function MessageContent({ text, blocks, attachments }: MessageContentProp
 
 // ─── Attachment cards ───────────────────────────────────────────────────────
 
-function AttachmentCard({ attachment }: { attachment: MessageAttachment }) {
-  switch (attachment.type) {
+function PartCard({ part }: { part: MessagePart }) {
+  switch (part.kind) {
     case "image":
-      return <ImageAttachment attachment={attachment} />;
+      return <ImageAttachment part={part} />;
     case "voice":
-      return <VoiceAttachment attachment={attachment} />;
+      return <VoiceAttachment part={part} />;
     case "video":
-      return <VideoAttachment attachment={attachment} />;
+      return <VideoAttachment part={part} />;
     case "file":
-    default:
-      return <FileAttachment attachment={attachment} />;
+      return <FileAttachment part={part} />;
+    case "text":
+      return null; // text 走内联流,不会落到卡片
   }
 }
 
-function ImageAttachment({ attachment }: { attachment: MessageAttachment }) {
+function ImageAttachment({ part }: { part: ImagePart }) {
   // 不安全 URL 时去掉 href,链接不可点击;MessageImage 内部同样会落 error 态。
-  const href = isSafeUrl(attachment.url, "image") ? attachment.url : undefined;
+  const href = isSafeUrl(part.url, "image") ? part.url : undefined;
   return (
     <a
       href={href}
@@ -97,22 +83,22 @@ function ImageAttachment({ attachment }: { attachment: MessageAttachment }) {
       className="focus-ring inline-block max-w-full overflow-hidden rounded-xl border border-workbench-line bg-workbench-surface p-1 shadow-wb-bubble transition-colors hover:bg-workbench-surface-subtle"
     >
       <MessageImage
-        src={attachment.url}
-        alt={STRINGS.attachment.imageAlt(attachment.name)}
+        src={part.url}
+        alt={STRINGS.attachment.imageAlt(part.name)}
         imgClassName="block max-h-72 max-w-full rounded-lg object-contain"
       />
     </a>
   );
 }
 
-function FileAttachment({ attachment }: { attachment: MessageAttachment }) {
-  const name = attachment.name ?? STRINGS.attachment.file;
-  const size = formatFileSize(attachment.sizeBytes);
-  const href = isSafeUrl(attachment.url, "link") ? attachment.url : undefined;
+function FileAttachment({ part }: { part: FilePart }) {
+  const name = part.name ?? STRINGS.attachment.file;
+  const size = formatFileSize(part.sizeBytes);
+  const href = isSafeUrl(part.url, "link") ? part.url : undefined;
   return (
     <a
       href={href}
-      download={attachment.name}
+      download={part.name}
       target="_blank"
       rel="noopener noreferrer"
       aria-label={`${STRINGS.attachment.download} ${name}`}
@@ -135,8 +121,8 @@ function FileAttachment({ attachment }: { attachment: MessageAttachment }) {
   );
 }
 
-function VoiceAttachment({ attachment }: { attachment: MessageAttachment }) {
-  const seconds = attachment.durationSec ?? 0;
+function VoiceAttachment({ part }: { part: VoicePart }) {
+  const seconds = part.durationSec ?? 0;
   // Wave bar count scales with duration so a 5s voice doesn't visually claim
   // the same width as a 60s one. Cap at 18 bars for layout stability.
   const barCount = Math.min(18, Math.max(6, Math.ceil(seconds / 2)));
@@ -163,13 +149,13 @@ function VoiceAttachment({ attachment }: { attachment: MessageAttachment }) {
   );
 }
 
-function VideoAttachment({ attachment }: { attachment: MessageAttachment }) {
+function VideoAttachment({ part }: { part: VideoPart }) {
   // 视频 URL 既作链接 href 又作缩略图 CSS background。不安全时一并去掉,
   // 同时避免 url() 内的 ")" / 引号破坏 CSS 表达式。
-  const safe = isSafeUrl(attachment.url, "link");
+  const safe = isSafeUrl(part.url, "link");
   return (
     <a
-      href={safe ? attachment.url : undefined}
+      href={safe ? part.url : undefined}
       target="_blank"
       rel="noopener noreferrer"
       aria-label={STRINGS.attachment.video}
@@ -181,7 +167,7 @@ function VideoAttachment({ attachment }: { attachment: MessageAttachment }) {
         style={
           safe
             ? {
-                backgroundImage: `url(${attachment.url})`,
+                backgroundImage: `url(${part.url})`,
                 backgroundSize: "cover",
                 backgroundPosition: "center",
               }
@@ -200,39 +186,7 @@ function VideoAttachment({ attachment }: { attachment: MessageAttachment }) {
   );
 }
 
-// ─── Blocks-path helpers ─────────────────────────────────────────────────────
-
-function BlocksContent({
-  blocks,
-  attachments,
-}: {
-  blocks: MessageBlock[];
-  attachments?: MessageAttachment[];
-}) {
-  // 「图片独占消息」判定：blocks 长度 = 1 且唯一一项为 image。命中走旧大卡样式。
-  if (blocks.length === 1 && blocks[0].type === "image") {
-    const only = blocks[0];
-    return <ImageStandalone block={only} />;
-  }
-
-  // 否则 inline 混排；非图片附件仍走下方堆叠
-  const nonImageAttachments = (attachments ?? []).filter((a) => a.type !== "image");
-  return (
-    <>
-      {blocks.map((b, i) => {
-        if (b.type === "text") return <TextRun key={i} value={b.value} />;
-        return <InlineImage key={i} block={b} />;
-      })}
-      {nonImageAttachments.length > 0 && (
-        <div className="mt-2 flex flex-col gap-2">
-          {nonImageAttachments.map((att, i) => (
-            <AttachmentCard key={`${att.type}-${i}`} attachment={att} />
-          ))}
-        </div>
-      )}
-    </>
-  );
-}
+// ─── Inline content ──────────────────────────────────────────────────────────
 
 function TextRun({ value }: { value: string }) {
   const segs = formatRichText(value);
@@ -268,9 +222,9 @@ function TextRun({ value }: { value: string }) {
   );
 }
 
-function InlineImage({ block }: { block: Extract<MessageBlock, { type: "image" }> }) {
+function InlineImage({ part }: { part: ImagePart }) {
   // 不安全 URL 不进 <img src>,渲染占位;安全图加 lazy 减少长消息一次性全量请求。
-  if (!isSafeUrl(block.url, "image")) {
+  if (!isSafeUrl(part.url, "image")) {
     return (
       <span
         role="img"
@@ -283,14 +237,14 @@ function InlineImage({ block }: { block: Extract<MessageBlock, { type: "image" }
   }
   return (
     <a
-      href={block.url}
+      href={part.url}
       target="_blank"
       rel="noopener noreferrer"
       className="focus-ring mx-1 inline-block overflow-hidden rounded-lg align-middle ring-1 ring-workbench-line transition-shadow hover:ring-workbench-accent"
     >
       <img
-        src={block.url}
-        alt={block.name ?? STRINGS.attachment.image}
+        src={part.url}
+        alt={part.name ?? STRINGS.attachment.image}
         loading="lazy"
         className="block max-h-[200px] max-w-[260px] object-contain"
       />
@@ -298,8 +252,8 @@ function InlineImage({ block }: { block: Extract<MessageBlock, { type: "image" }
   );
 }
 
-function ImageStandalone({ block }: { block: Extract<MessageBlock, { type: "image" }> }) {
-  const href = isSafeUrl(block.url, "image") ? block.url : undefined;
+function ImageStandalone({ part }: { part: ImagePart }) {
+  const href = isSafeUrl(part.url, "image") ? part.url : undefined;
   return (
     <a
       href={href}
@@ -309,8 +263,8 @@ function ImageStandalone({ block }: { block: Extract<MessageBlock, { type: "imag
       className="focus-ring inline-block max-w-full overflow-hidden rounded-xl border border-workbench-line bg-workbench-surface p-1 shadow-wb-bubble transition-colors hover:bg-workbench-surface-subtle"
     >
       <MessageImage
-        src={block.url}
-        alt={STRINGS.attachment.imageAlt(block.name)}
+        src={part.url}
+        alt={STRINGS.attachment.imageAlt(part.name)}
         imgClassName="block max-h-72 max-w-full rounded-lg object-contain"
       />
     </a>

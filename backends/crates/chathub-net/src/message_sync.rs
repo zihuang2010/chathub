@@ -237,11 +237,19 @@ impl MessageSync {
         external_user_id: &str,
         employee_id: &str,
         content_text: &str,
+        client_msg_id: &str,
     ) -> Result<SendMessageResp, AuthError> {
+        // 幂等键:复用前端传入的 client_msg_id 作为 request_message_id,使重复点击 / 网络
+        // 重试在服务端按同一键去重,不产生重复消息。空值兜底生成 uuid(向后兼容老调用)。
+        let request_message_id = if client_msg_id.is_empty() {
+            format!("req-{}", uuid::Uuid::new_v4().simple())
+        } else {
+            client_msg_id.to_string()
+        };
         let resp = self
             .hub
             .send_message(SendMessageRequest {
-                request_message_id: format!("req-{}", uuid::Uuid::new_v4().simple()),
+                request_message_id,
                 wecom_account_id: wecom_account_id.to_string(),
                 external_user_id: external_user_id.to_string(),
                 message_type: 1,
@@ -258,7 +266,7 @@ impl MessageSync {
             conversation_id: conversation_id.to_string(),
             employee_id: employee_id.to_string(),
             wecom_account_id: wecom_account_id.to_string(),
-            sort_key: sort_key.clone(),
+            sort_key,
             message_time_ms: freshness_ms,
             message_direction: 2,
             message_type: 1,
@@ -268,48 +276,14 @@ impl MessageSync {
             gmt_modified_time: resp.message_time.clone(),
             updated_at_ms: now,
         };
+        // 原子写:单事务内落库出站气泡 + 推进/建窗,消除"行已落但水位未 bump"中间态——
+        // 否则并发 reconcile 的 Replace 可能删掉刚发的行(水位 bump 正是会话水位门判 fresh、
+        // 跳过会删它的 Replace 重对齐的依据)。窗口不存在则以这条建一扇窗(newest=oldest,
+        // 保守 has_more_older=true,后续 reconcile 缝合真实历史)。
         self.store
-            .upsert_messages(&[row])
+            .upsert_message_and_bump_window(row, external_user_id.to_string(), freshness_ms)
             .await
             .map_err(state_err)?;
-
-        // 推进/建窗:这条出站消息总是当前最新方向。bump newest_message_time_ms 让会话水位门判 fresh,
-        // 跳过会把它删掉的 Replace 重对齐。newest_sort_key 仍跟踪真实最新位置(classify 用),
-        // 不被 `~` 键污染。
-        match self
-            .store
-            .get_window(employee_id, conversation_id)
-            .await
-            .map_err(state_err)?
-        {
-            Some(mut w) => {
-                w.newest_message_time_ms = w.newest_message_time_ms.max(freshness_ms);
-                w.last_accessed_ms = now;
-                w.updated_at_ms = now;
-                self.store.upsert_window(w).await.map_err(state_err)?;
-            }
-            None => {
-                // 极少:在任何读对齐落窗前就发送。以这条建一扇窗(既是 newest 也是 oldest),
-                // 保守留 has_more_older=true,后续 reconcile 会缝合补齐真实历史。
-                self.store
-                    .upsert_window(MessageWindow {
-                        conversation_id: conversation_id.to_string(),
-                        employee_id: employee_id.to_string(),
-                        wecom_account_id: wecom_account_id.to_string(),
-                        external_user_id: external_user_id.to_string(),
-                        newest_sort_key: sort_key.clone(),
-                        oldest_sort_key: sort_key,
-                        older_cursor: String::new(),
-                        has_more_older: true,
-                        newest_message_time_ms: freshness_ms,
-                        last_accessed_ms: now,
-                        reconciled_at_ms: now,
-                        updated_at_ms: now,
-                    })
-                    .await
-                    .map_err(state_err)?;
-            }
-        }
 
         let _ = self.change_notice_tx.send(ChangeNotice::server_upsert(
             ChangeTopic::ConversationMessages,

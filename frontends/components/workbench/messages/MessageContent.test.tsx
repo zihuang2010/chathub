@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { act, cleanup, fireEvent, render } from "@testing-library/react";
 
+import { buildMessageParts } from "./data";
 import type { MessageAttachment, MessageBlock } from "./data";
 import { MessageContent } from "./MessageContent";
 
@@ -13,13 +14,10 @@ function renderContent(props: {
   blocks?: MessageBlock[];
   attachments?: MessageAttachment[];
 }) {
+  const parts = buildMessageParts(props.text ?? "", props.blocks, props.attachments);
   return render(
     <article data-testid="bubble">
-      <MessageContent
-        text={props.text ?? ""}
-        blocks={props.blocks}
-        attachments={props.attachments}
-      />
+      <MessageContent parts={parts} />
     </article>,
   );
 }
@@ -190,7 +188,11 @@ describe("MessageImage layout-shift + error fallback", () => {
   it("resets state to loading when src changes", () => {
     const { container, rerender } = render(
       <article>
-        <MessageContent text="" attachments={[{ type: "image", url: "https://e.example/a.png" }]} />
+        <MessageContent
+          parts={buildMessageParts("", undefined, [
+            { type: "image", url: "https://e.example/a.png" },
+          ])}
+        />
       </article>,
     );
     const firstImg = container.querySelector("img")!;
@@ -201,7 +203,11 @@ describe("MessageImage layout-shift + error fallback", () => {
 
     rerender(
       <article>
-        <MessageContent text="" attachments={[{ type: "image", url: "https://e.example/b.png" }]} />
+        <MessageContent
+          parts={buildMessageParts("", undefined, [
+            { type: "image", url: "https://e.example/b.png" },
+          ])}
+        />
       </article>,
     );
     const secondImg = container.querySelector("img")!;

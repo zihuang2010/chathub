@@ -229,6 +229,11 @@ impl HubClient {
     }
 
     /// 发送一条文本消息(`messageType=1`)。POST body 透传请求字段。
+    ///
+    /// `request_message_id` 是幂等键(由 MessageSync 复用前端 client_msg_id 固化),故对
+    /// 瞬时网络错误 / 超时做有限重试是安全的:服务端按同键去重,不会产生重复消息。
+    /// 只重试 `classify == Backoff`(Network / Internal)的瞬时错误;业务错(Business)、
+    /// 协议不匹配(ProtocolMismatch)、4xx(经 http_status 返回)一律不重试。
     pub async fn send_message(
         &self,
         req: SendMessageRequest,
@@ -236,7 +241,44 @@ impl HubClient {
         let body = serde_json::to_vec(&req).map_err(|e| AuthError::Internal {
             message: format!("send_message serialize: {e}"),
         })?;
-        let resp = self.forward("send_message", body).await?;
+
+        const MAX_ATTEMPTS: u32 = 3;
+        const ATTEMPT_TIMEOUT: Duration = Duration::from_secs(8);
+        const RETRY_BACKOFF: Duration = Duration::from_millis(300);
+
+        let mut attempt = 0u32;
+        let resp = loop {
+            attempt += 1;
+            match tokio::time::timeout(ATTEMPT_TIMEOUT, self.forward("send_message", body.clone()))
+                .await
+            {
+                Ok(Ok(resp)) => break resp,
+                Ok(Err(e)) if attempt < MAX_ATTEMPTS && matches!(classify(&e), Action::Backoff) => {
+                    tracing::warn!(
+                        target: "chathub::msg",
+                        attempt,
+                        error = %e,
+                        "send_message 瞬时失败,重试(幂等键去重)"
+                    );
+                    tokio::time::sleep(RETRY_BACKOFF).await;
+                }
+                Ok(Err(e)) => return Err(e),
+                Err(_) if attempt < MAX_ATTEMPTS => {
+                    tracing::warn!(
+                        target: "chathub::msg",
+                        attempt,
+                        "send_message 超时,重试(幂等键去重)"
+                    );
+                    tokio::time::sleep(RETRY_BACKOFF).await;
+                }
+                Err(_) => {
+                    return Err(AuthError::Network {
+                        message: format!("send_message 超时(已重试 {attempt} 次)"),
+                    });
+                }
+            }
+        };
+
         if resp.http_status != 200 {
             return Err(AuthError::Internal {
                 message: format!("send_message returned http {}", resp.http_status),

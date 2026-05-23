@@ -28,9 +28,7 @@ interface MessageBubbleProps {
 const COMPACT_TEXT_LIMIT = 8;
 
 function messageAriaText(message: Message): string {
-  const blockImageCount = message.blocks?.filter((b) => b.type === "image").length ?? 0;
-  const attachmentImageCount = message.attachments?.filter((a) => a.type === "image").length ?? 0;
-  const imageCount = blockImageCount + attachmentImageCount;
+  const imageCount = message.parts.filter((p) => p.kind === "image").length;
   const trimmed = message.text.trim();
   if (imageCount === 0) return message.text;
   return trimmed ? `${trimmed}（含 ${imageCount} 张图片）` : `（含 ${imageCount} 张图片）`;
@@ -137,11 +135,7 @@ function IncomingBubble({
             <MessageTimeTooltip label={fullLabel} align="left" />
             {replyTarget && <ReplyBlock target={replyTarget} />}
             <span className="whitespace-pre-wrap [overflow-wrap:anywhere]">
-              <MessageContent
-                text={message.text}
-                blocks={message.blocks}
-                attachments={message.attachments}
-              />
+              <MessageContent parts={message.parts} />
             </span>
           </article>
         </MessageContextMenu>
@@ -175,11 +169,7 @@ function OutgoingBubble({
             <MessageTimeTooltip label={fullLabel} align="right" />
             {replyTarget && <ReplyBlock target={replyTarget} />}
             <span className="whitespace-pre-wrap [overflow-wrap:anywhere]">
-              <MessageContent
-                text={message.text}
-                blocks={message.blocks}
-                attachments={message.attachments}
-              />
+              <MessageContent parts={message.parts} />
             </span>
           </article>
         </MessageContextMenu>

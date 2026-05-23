@@ -43,6 +43,11 @@ export function RichComposer({
     [mentionCandidates],
   );
 
+  // IME 兜底:部分输入法(如搜狗)候选词上屏瞬间 isComposing 已转 false 且 keyCode!==229,
+  // 此时回车会被误判为"发送"。compositionend 后短暂置位本标志,handleKeyDown 命中则吞掉该次
+  // Enter,只放过真正的换行触发发送。
+  const justComposedRef = useRef(false);
+
   const editor = useEditor({
     // 切会话时父组件按 conversation.id key 重挂载本组件,新 editor 实例需自动 focus
     // 到末尾,这样用户切到新会话可以直接打字,不必先点输入区。
@@ -85,12 +90,22 @@ export function RichComposer({
           ALLOWED_ATTR: [],
           FORBID_TAGS: ["style"],
         }),
+      handleDOMEvents: {
+        compositionend: () => {
+          justComposedRef.current = true;
+          setTimeout(() => {
+            justComposedRef.current = false;
+          }, 50);
+          return false; // 不拦截,让 ProseMirror 正常完成上屏
+        },
+      },
       handleKeyDown: (_view, event) => {
         if (
           event.key === "Enter" &&
           !event.shiftKey &&
           !event.isComposing &&
-          event.keyCode !== 229
+          event.keyCode !== 229 &&
+          !justComposedRef.current
         ) {
           event.preventDefault();
           onSubmit?.();

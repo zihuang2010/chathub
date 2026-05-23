@@ -197,10 +197,10 @@ export function isSafeUrl(url: string | undefined, kind: "link" | "image"): bool
 //
 // 与 extractDraftPreview 的占位约定保持一致(草稿预览 / 引用预览同语义)。
 
-import type { Message, MessageAttachment, MessageBlock } from "./data";
+import type { Message, MessagePart } from "./data";
 
-function attachmentTypePlaceholder(type: MessageAttachment["type"]): string {
-  switch (type) {
+function partTypePlaceholder(kind: Exclude<MessagePart["kind"], "text">): string {
+  switch (kind) {
     case "image":
       return "[图片]";
     case "file":
@@ -212,22 +212,12 @@ function attachmentTypePlaceholder(type: MessageAttachment["type"]): string {
   }
 }
 
-function blockTypePlaceholder(type: MessageBlock["type"]): string | null {
-  // MessageBlock 当前只有 text / image;text 走不到这里(由调用方文本路径处理)。
-  return type === "image" ? "[图片]" : null;
-}
-
 export function messageReplyPreview(message: Message): string {
   const trimmed = message.text.trim();
   if (trimmed) return trimmed;
-  if (message.blocks) {
-    for (const b of message.blocks) {
-      const placeholder = blockTypePlaceholder(b.type);
-      if (placeholder) return placeholder;
-    }
-  }
-  if (message.attachments && message.attachments.length > 0) {
-    return attachmentTypePlaceholder(message.attachments[0].type);
+  // 无文本 → 取第一个媒体 part 的占位("[图片]" 等)。
+  for (const p of message.parts) {
+    if (p.kind !== "text") return partTypePlaceholder(p.kind);
   }
   return "";
 }

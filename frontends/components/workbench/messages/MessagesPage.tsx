@@ -312,13 +312,14 @@ export function MessagesPage({ accounts }: MessagesPageProps) {
   // 真发送(text-only):后端落库出站气泡 + 发 conversation-messages ChangeNotice,
   // useChatMessages 重读缓存把这条消息收敛进权威列表。缺会话归属(account/user)时静默忽略。
   const handleSendMessage = useCallback(
-    async (text: string) => {
+    async (text: string, clientMsgId: string) => {
       if (!conversation || !selectedEntry?.wecomAccountId || !selectedEntry?.externalUserId) return;
       await sendMessage({
         conversationId: conversation.id,
         wecomAccountId: selectedEntry.wecomAccountId,
         externalUserId: selectedEntry.externalUserId,
         contentText: text,
+        clientMsgId,
       });
     },
     [conversation, selectedEntry],

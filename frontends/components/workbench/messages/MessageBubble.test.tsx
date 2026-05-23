@@ -11,12 +11,14 @@ afterEach(() => {
 const LONG_UNBREAKABLE = "1".repeat(200);
 
 function makeMessage(overrides: Partial<Message> = {}): Message {
+  const text = overrides.text ?? LONG_UNBREAKABLE;
   return {
     id: "m1",
     conversationId: "c1",
     direction: "out",
-    text: LONG_UNBREAKABLE,
     sentAt: "2026-05-08T09:51:00.000Z",
+    text,
+    parts: [{ kind: "text", text }],
     ...overrides,
   };
 }

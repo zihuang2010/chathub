@@ -10,6 +10,7 @@ import { cn } from "@/lib/utils";
 import { ChatEmptyState, ChatErrorState, ChatLoadingState } from "./ChatStates";
 import { ChatHeader } from "./ChatHeader";
 import { AT_BOTTOM_THRESHOLD, COMPOSER_DEFAULT_HEIGHT, TIME_BURST_GAP_MS } from "./constants";
+import { buildMessageParts } from "./data";
 import type { Conversation, Message, MessageAttachment, MessageBlock, QuickReply } from "./data";
 import { DateDivider, MessageBubble, type ReplyTarget, UnreadDivider } from "./MessageBubble";
 import { MessageComposer } from "./MessageComposer";
@@ -50,7 +51,7 @@ interface ChatAreaProps {
    * 真发送回调(text-only)。成功后后端落库 + 发 conversation-messages ChangeNotice,
    * 整窗 REPLACE 把这条收敛进权威列表(乐观气泡随之被替换)。失败则把该气泡标 failed。
    */
-  onSendMessage?: (text: string) => Promise<void>;
+  onSendMessage?: (text: string, clientMsgId: string) => Promise<void>;
   /** 切走/卸载该会话时回调,补一次 markRead(只在 leave 同步服务端,不按消息打)。 */
   onLeaveMarkRead?: (conversationId: string) => void | Promise<void>;
 }
@@ -519,7 +520,8 @@ export const ChatArea = memo(function ChatArea({
     async (messageId: string, text: string) => {
       const owningConversationId = conversation.id;
       try {
-        await onSendMessage?.(text);
+        // 复用乐观气泡 id 作为 clientMsgId(幂等键),重发时同键不重复。
+        await onSendMessage?.(text, messageId);
       } catch {
         if (owningConversationId !== activeConversationIdRef.current) return;
         setLocalMessages((current) =>
@@ -543,10 +545,9 @@ export const ChatArea = memo(function ChatArea({
         conversationId: conversation.id,
         direction: "out",
         text,
-        blocks: blocks && blocks.length > 0 ? blocks : undefined,
+        parts: buildMessageParts(text, blocks, attachments),
         sentAt: new Date().toISOString(),
         status: "sending",
-        attachments: attachments && attachments.length > 0 ? attachments : undefined,
         replyTo,
       };
       setLocalMessages((current) => [...current, newMessage]);

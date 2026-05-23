@@ -500,6 +500,7 @@ async fn send_message(
     wecom_account_id: String,
     external_user_id: String,
     content_text: String,
+    client_msg_id: String,
 ) -> Result<SendMessageResp, AuthError> {
     let employee_id = auth_api
         .current_session()
@@ -513,6 +514,7 @@ async fn send_message(
             &external_user_id,
             &employee_id,
             &content_text,
+            &client_msg_id,
         )
         .await
 }

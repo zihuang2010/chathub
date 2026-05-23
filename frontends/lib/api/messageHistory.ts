@@ -5,9 +5,15 @@
 //        → Tauri:HubClient.fetch_message_history → relay → 业务后台 → records 透传
 //        → UI 适配扁平 records[] 成 Message[] 喂给现有渲染逻辑
 
-import { invoke } from "@tauri-apps/api/core";
-
+import { buildMessageParts } from "@/components/workbench/messages/data";
 import type { Message, MessageAttachment } from "@/components/workbench/messages/data";
+
+import { invokeWithTimeout } from "./invokeClient";
+
+// 网络命令(经 relay 到业务后台)给较宽超时;send_message 后端已自带最多 ~25s 的重试,
+// 故前端超时设更长,避免前端先超时诱发用户重复发送。
+const HISTORY_TIMEOUT_MS = 20_000;
+const SEND_TIMEOUT_MS = 30_000;
 
 /** Tauri `fetch_message_history` 命令入参(对齐 Rust `FetchMessageHistoryRequest`)。 */
 export interface FetchMessageHistoryRequest {
@@ -58,7 +64,11 @@ export interface FetchMessageHistoryResp {
 export async function fetchMessageHistory(
   req: FetchMessageHistoryRequest,
 ): Promise<FetchMessageHistoryResp> {
-  return invoke<FetchMessageHistoryResp>("fetch_message_history", { req });
+  return invokeWithTimeout<FetchMessageHistoryResp>(
+    "fetch_message_history",
+    { req },
+    HISTORY_TIMEOUT_MS,
+  );
 }
 
 /** 缓存优先读命令返回(对齐 Rust `CachedMessagesResp`)。records 升序(早→晚)。 */
@@ -77,12 +87,16 @@ export async function loadConversationMessages(params: {
   externalUserId: string;
   limit?: number;
 }): Promise<CachedMessagesResp> {
-  return invoke<CachedMessagesResp>("load_conversation_messages", {
-    conversationId: params.conversationId,
-    wecomAccountId: params.wecomAccountId,
-    externalUserId: params.externalUserId,
-    limit: params.limit,
-  });
+  return invokeWithTimeout<CachedMessagesResp>(
+    "load_conversation_messages",
+    {
+      conversationId: params.conversationId,
+      wecomAccountId: params.wecomAccountId,
+      externalUserId: params.externalUserId,
+      limit: params.limit,
+    },
+    HISTORY_TIMEOUT_MS,
+  );
 }
 
 /** 往更老翻一页:网络拉更旧页 → 落库 → 返回升序新增 records + 是否还有更老。 */
@@ -90,10 +104,14 @@ export async function loadOlderMessages(params: {
   conversationId: string;
   pageSize?: number;
 }): Promise<CachedMessagesResp> {
-  return invoke<CachedMessagesResp>("load_older_messages", {
-    conversationId: params.conversationId,
-    pageSize: params.pageSize,
-  });
+  return invokeWithTimeout<CachedMessagesResp>(
+    "load_older_messages",
+    {
+      conversationId: params.conversationId,
+      pageSize: params.pageSize,
+    },
+    HISTORY_TIMEOUT_MS,
+  );
 }
 
 /** `send_message` 命令返回(对齐 Rust `SendMessageResp`)。 */
@@ -114,13 +132,20 @@ export async function sendMessage(params: {
   wecomAccountId: string;
   externalUserId: string;
   contentText: string;
+  /** 幂等键:重复点击 / 重试复用同一值,后端按 request_message_id 去重。 */
+  clientMsgId: string;
 }): Promise<SendMessageResp> {
-  return invoke<SendMessageResp>("send_message", {
-    conversationId: params.conversationId,
-    wecomAccountId: params.wecomAccountId,
-    externalUserId: params.externalUserId,
-    contentText: params.contentText,
-  });
+  return invokeWithTimeout<SendMessageResp>(
+    "send_message",
+    {
+      conversationId: params.conversationId,
+      wecomAccountId: params.wecomAccountId,
+      externalUserId: params.externalUserId,
+      contentText: params.contentText,
+      clientMsgId: params.clientMsgId,
+    },
+    SEND_TIMEOUT_MS,
+  );
 }
 
 // ─── 形态转换:HistoryMessage → Message ─────────────────────────────────────
@@ -137,6 +162,8 @@ function historyToMessage(h: HistoryMessage, conversationId: string): Message {
   // "[图片]"。本前端能直接渲染 image attachment,留这段文本会在气泡上方多一行
   // 冗余"[图片]" + 下面再叠图,体验冗余。把占位剥掉,只让附件出图。
   const text = h.messageType === 2 ? "" : h.contentText;
+  const attachments =
+    h.attachments.length > 0 ? h.attachments.map(historyAttachmentToMessage) : undefined;
   return {
     id: h.localMessageId,
     conversationId,
@@ -144,8 +171,7 @@ function historyToMessage(h: HistoryMessage, conversationId: string): Message {
     text,
     sentAt: parseServerTimeToIso(h.messageTime),
     status: h.messageDirection === 2 ? mapSendStatus(h.sendStatus) : undefined,
-    attachments:
-      h.attachments.length > 0 ? h.attachments.map(historyAttachmentToMessage) : undefined,
+    parts: buildMessageParts(text, undefined, attachments),
   };
 }
 
@@ -172,12 +198,21 @@ function mapSendStatus(s: number): Message["status"] {
   return "sent";
 }
 
-/** "yyyy-MM-dd HH:mm:ss"(服务端本地,假设 UTC+8) → ISO 8601 UTC */
+// 企业微信服务端统一以北京时间(UTC+8)输出 "yyyy-MM-dd HH:mm:ss",字符串本身不带
+// 时区。这是固定的服务端契约(非 mock/猜测),解析时按此补全偏移再转 ISO UTC。
+const WECOM_SERVER_TZ_OFFSET = "+08:00";
+
+/** "yyyy-MM-dd HH:mm:ss"(企业微信服务端北京时间) → ISO 8601 UTC */
 function parseServerTimeToIso(s: string): string {
-  // s 形如 "2026-05-17 10:01:23",服务端 mock 用 UTC+8。
-  // 简单转 ISO,Date.parse 在 mac/chrome 上接受 "yyyy-MM-ddTHH:mm:ss+08:00"。
-  const isoLike = s.replace(" ", "T") + "+08:00";
+  // Date.parse 在 mac/chrome 上接受 "yyyy-MM-ddTHH:mm:ss+08:00"。
+  const isoLike = s.replace(" ", "T") + WECOM_SERVER_TZ_OFFSET;
   const t = Date.parse(isoLike);
-  if (!Number.isFinite(t)) return new Date().toISOString();
+  if (!Number.isFinite(t)) {
+    // 服务端时间格式异常极少见;退化为当前时间以保证 UI 有可显示的标签,但记录告警以便
+    // 发现契约漂移(不静默吞)。注意:消息列表顺序由后端 sortKey 决定,此处仅影响时间
+    // 标签/日期分隔,不影响排序。
+    console.warn(`[messageHistory] 无法解析服务端时间 "${s}",已退化为当前时间`);
+    return new Date().toISOString();
+  }
   return new Date(t).toISOString();
 }

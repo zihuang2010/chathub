@@ -36,8 +36,15 @@ export function useComposerPrefs() {
 
   useEffect(() => {
     subscribers.add(setPrefs);
+    // 跨窗口同步:storage 事件只在「其它」窗口触发(改动方自身不触发),用进程内
+    // subscribers 覆盖同窗口、storage 事件覆盖多 Tauri 窗口,两者互补。
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === COMPOSER_PREFS_KEY) setPrefs(loadComposerPrefs());
+    };
+    window.addEventListener("storage", onStorage);
     return () => {
       subscribers.delete(setPrefs);
+      window.removeEventListener("storage", onStorage);
     };
   }, []);
 

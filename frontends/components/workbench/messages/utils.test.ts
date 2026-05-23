@@ -1,16 +1,24 @@
 import { describe, expect, it } from "vitest";
 
-import type { Message } from "./data";
+import { buildMessageParts } from "./data";
+import type { Message, MessageAttachment, MessageBlock } from "./data";
 import { isSafeUrl, messageReplyPreview } from "./utils";
 
-function makeMessage(partial: Partial<Message>): Message {
+function makeMessage(
+  partial: Omit<Partial<Message>, "parts"> & {
+    blocks?: MessageBlock[];
+    attachments?: MessageAttachment[];
+  },
+): Message {
+  const { text = "", blocks, attachments, ...rest } = partial;
   return {
     id: "m1",
     conversationId: "c1",
     direction: "in",
-    text: "",
     sentAt: "2026-05-19T00:00:00.000Z",
-    ...partial,
+    text,
+    parts: buildMessageParts(text, blocks, attachments),
+    ...rest,
   };
 }
 

@@ -182,6 +182,7 @@ function message(id: string, text = id): Message {
     conversationId: conversation.id,
     direction: "in",
     text,
+    parts: [{ kind: "text", text }],
     sentAt: `2026-05-19T10:${id.padStart(2, "0")}:00.000Z`,
   };
 }
