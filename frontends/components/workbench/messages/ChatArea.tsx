@@ -1,6 +1,7 @@
 import { memo, useMemo, useState } from "react";
 import { ArrowDown, ArrowUp, Loader2 } from "lucide-react";
 import { AnimatePresence, motion } from "framer-motion";
+import { useVirtualizer } from "@tanstack/react-virtual";
 
 import type { SendMessageResp } from "@/lib/api/messageHistory";
 import type { Account } from "@/lib/types/account";
@@ -12,7 +13,7 @@ import { ChatHeader } from "./ChatHeader";
 import { COMPOSER_DEFAULT_HEIGHT } from "./constants";
 import type { Conversation, Message, QuickReply } from "./data";
 import { useChatActions } from "./hooks/useChatActions";
-import { useChatTimeline } from "./hooks/useChatTimeline";
+import { useChatTimeline, type TimelineItem } from "./hooks/useChatTimeline";
 import { useScrollController } from "./hooks/useScrollController";
 import { DateDivider, MessageBubble, type ReplyTarget, UnreadDivider } from "./MessageBubble";
 import { MessageComposer } from "./MessageComposer";
@@ -103,6 +104,7 @@ export const ChatArea = memo(function ChatArea({
     unreadBelow,
     unreadAbove,
     wasAtBottomRef,
+    scrollElementRef,
   } = useScrollController({
     conversation,
     localMessages,
@@ -124,6 +126,37 @@ export const ChatArea = memo(function ChatArea({
     wasAtBottomRef,
     setReplyDraft,
   });
+
+  // Stage 3.2 消息区虚拟化:仅长会话(>阈值)启用,短会话/测试走原全量渲染(零结构变化、
+  // 测试保持绿)。⚠️ 虚拟模式下与命令式滚动(置底/翻页锚点/未读 pill 滚动到分隔条)的整合
+  // 依赖真实布局,需真机手测调和;measureElement 处理动态气泡高度。
+  const VIRTUALIZE_THRESHOLD = 50;
+  const shouldVirtualize = timelineItems.length > VIRTUALIZE_THRESHOLD;
+  const rowVirtualizer = useVirtualizer({
+    count: timelineItems.length,
+    // 仅虚拟模式才把滚动元素交给虚拟器:否则虚拟器会在挂载时把 viewport scrollTo 到
+    // initialOffset=0,覆盖 useScrollController 的 snap 置底(短会话/测试都会被波及)。
+    // 返回 null 时虚拟器惰性,完全不碰滚动。虚拟模式下虚拟器与命令式滚动的协调需真机调。
+    getScrollElement: () => (shouldVirtualize ? scrollElementRef.current : null),
+    estimateSize: () => 76,
+    overscan: 10,
+  });
+
+  // 单条 timeline 行的内容(不含间距/包裹):虚拟与非虚拟分支共用,避免重复。
+  const renderRowContent = (item: TimelineItem) => {
+    if (item.type === "date-divider") return <DateDivider label={item.label} />;
+    if (item.type === "unread-divider") return <UnreadDivider count={item.count} />;
+    return (
+      <MessageBubble
+        message={item.message}
+        avatarName={conversation.name}
+        avatarColor={conversation.avatarColor}
+        account={conversation.account}
+        replyTarget={item.replyTarget}
+        onAction={handleAction}
+      />
+    );
+  };
 
   // 会话切换时 ChatHeader 和消息区必须同步 crossfade,不然标题(头像/名字/账号)
   // 瞬间硬切而消息区淡入淡出,视觉上"出一下出两下"。两块都用 conversation.id 作
@@ -184,41 +217,90 @@ export const ChatArea = memo(function ChatArea({
                 viewportClassName="overscroll-contain bg-workbench-surface px-4 pt-5 pb-10 pr-6"
                 contentClassName="flex w-full flex-col"
               >
-                <div role="log" aria-live="polite" aria-atomic="false" className="flex flex-col">
-                  {timelineItems.map((item, idx) => {
-                    if (item.type === "date-divider") {
-                      return (
-                        <div key={item.id} className={idx === 0 ? "" : "mt-7"}>
-                          <DateDivider label={item.label} />
-                        </div>
-                      );
-                    }
-                    if (item.type === "unread-divider") {
+                {shouldVirtualize ? (
+                  <div
+                    role="log"
+                    aria-live="polite"
+                    aria-atomic="false"
+                    style={{
+                      position: "relative",
+                      width: "100%",
+                      height: rowVirtualizer.getTotalSize(),
+                    }}
+                  >
+                    {rowVirtualizer.getVirtualItems().map((vi) => {
+                      const item = timelineItems[vi.index];
+                      const idx = vi.index;
+                      // 间距用 padding(而非 margin)以并入 measureElement 量到的高度;
+                      // margin 在盒外不计入 getBoundingClientRect。
+                      const spacing =
+                        idx === 0
+                          ? ""
+                          : item.type === "message"
+                            ? item.isFirstInBurst
+                              ? "pt-7"
+                              : "pt-6"
+                            : "pt-7";
                       return (
                         <div
                           key={item.id}
-                          ref={setUnreadDividerNode}
-                          className={idx === 0 ? "" : "mt-7"}
+                          data-index={idx}
+                          ref={rowVirtualizer.measureElement}
+                          style={{
+                            position: "absolute",
+                            top: 0,
+                            left: 0,
+                            width: "100%",
+                            transform: `translateY(${vi.start}px)`,
+                          }}
                         >
-                          <UnreadDivider count={item.count} />
+                          <div
+                            ref={item.type === "unread-divider" ? setUnreadDividerNode : undefined}
+                            className={spacing}
+                          >
+                            {renderRowContent(item)}
+                          </div>
                         </div>
                       );
-                    }
-                    const spacing = idx === 0 ? "" : item.isFirstInBurst ? "mt-7" : "mt-6";
-                    return (
-                      <div key={item.id} className={spacing}>
-                        <MessageBubble
-                          message={item.message}
-                          avatarName={conversation.name}
-                          avatarColor={conversation.avatarColor}
-                          account={conversation.account}
-                          replyTarget={item.replyTarget}
-                          onAction={handleAction}
-                        />
-                      </div>
-                    );
-                  })}
-                </div>
+                    })}
+                  </div>
+                ) : (
+                  <div role="log" aria-live="polite" aria-atomic="false" className="flex flex-col">
+                    {timelineItems.map((item, idx) => {
+                      if (item.type === "date-divider") {
+                        return (
+                          <div key={item.id} className={idx === 0 ? "" : "mt-7"}>
+                            <DateDivider label={item.label} />
+                          </div>
+                        );
+                      }
+                      if (item.type === "unread-divider") {
+                        return (
+                          <div
+                            key={item.id}
+                            ref={setUnreadDividerNode}
+                            className={idx === 0 ? "" : "mt-7"}
+                          >
+                            <UnreadDivider count={item.count} />
+                          </div>
+                        );
+                      }
+                      const spacing = idx === 0 ? "" : item.isFirstInBurst ? "mt-7" : "mt-6";
+                      return (
+                        <div key={item.id} className={spacing}>
+                          <MessageBubble
+                            message={item.message}
+                            avatarName={conversation.name}
+                            avatarColor={conversation.avatarColor}
+                            account={conversation.account}
+                            replyTarget={item.replyTarget}
+                            onAction={handleAction}
+                          />
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
               </WorkbenchScrollArea>
             )}
           </motion.div>

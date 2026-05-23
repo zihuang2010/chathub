@@ -61,6 +61,8 @@ export interface UseScrollControllerResult {
   unreadAbove: number;
   /** 暴露给发送流程:发出消息后置 true 触发贴底跟随(原 ChatArea handleSend 行为)。 */
   wasAtBottomRef: MutableRefObject<boolean>;
+  /** 滚动 viewport 节点 ref,供虚拟器 getScrollElement 使用。 */
+  scrollElementRef: MutableRefObject<HTMLDivElement | null>;
 }
 
 export function useScrollController({
@@ -334,5 +336,6 @@ export function useScrollController({
     unreadBelow,
     unreadAbove,
     wasAtBottomRef,
+    scrollElementRef: scrollRef,
   };
 }
