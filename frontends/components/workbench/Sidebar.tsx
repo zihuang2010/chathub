@@ -1,4 +1,4 @@
-import { memo } from "react";
+import { memo, useState } from "react";
 import { ChevronLeft, ChevronRight, Menu } from "lucide-react";
 
 import { SyncStatusBadge } from "@/components/workbench/messages/SyncStatusBadge";
@@ -7,6 +7,26 @@ import { FROSTED_GLASS_STYLE, WORKBENCH_BLUE, WORKBENCH_NAV_TEXT } from "@/lib/t
 import { cn } from "@/lib/utils";
 
 import { NAV_ITEMS, type NavItem, type Section } from "./nav";
+
+import { useCurrentProfile } from "@/lib/data/useCurrentProfile";
+
+// role 原始值来自 relay(自由字符串,实测如 "operator")。已知值映射成中文,
+// 未知值原样显示,空值由调用方决定不渲染副标题。
+const ROLE_LABELS: Record<string, string> = {
+  operator: "客服坐席",
+  admin: "管理员",
+};
+
+function roleLabel(role: string | undefined): string {
+  if (!role) return "";
+  return ROLE_LABELS[role] ?? role;
+}
+
+// 取首个字符作头像回退;用展开运算符正确处理多字节字符(CJK/emoji)。
+function initialOf(name: string | undefined): string {
+  const trimmed = name?.trim();
+  return trimmed ? [...trimmed][0] : "·";
+}
 
 interface SidebarProps {
   value: Section;
@@ -74,52 +94,67 @@ export const Sidebar = memo(function Sidebar({
 // ─── User badge ─────────────────────────────────────────────────────────────
 
 function UserBadge({ collapsed }: { collapsed: boolean }) {
-  // 全局 hub 同步状态 — 把原来挂在接待列表搜索框右侧的 SyncStatusBadge 搬到这里,
-  // 让"在线 / 离线 / 对齐中" 在任意页面都可见。
+  // 登录员工信息(头像/姓名/角色)+ 全局 hub 同步状态。两者都在组件内部自取,
+  // Sidebar/Workbench 无需透传 props。
+  const profile = useCurrentProfile();
   const sync = useHubSyncStatus();
+
+  const name = profile?.display_name ?? "";
+  const role = roleLabel(profile?.role);
 
   if (collapsed) {
     return (
       <div className="flex flex-col items-center px-2 pb-2 pt-3">
-        <AvatarMark />
+        <AvatarMark avatarUrl={profile?.avatar_url} displayName={name} />
       </div>
     );
   }
 
   return (
-    <div className="flex min-h-[58px] items-center gap-2.5 px-3 pb-2 pt-3">
-      <AvatarMark />
-      <div className="flex min-w-0 flex-1 flex-col leading-tight">
-        <span className="truncate text-[13px] font-semibold text-[#1F2937]">匠多多</span>
-        {/* min-w-0 + max-w-full 让 badge 永远适配父容器宽度,超长用 truncate 兜底 */}
-        <div className="mt-1 flex min-w-0">
-          <SyncStatusBadge
-            connectionState={sync.connectionState}
-            lastEventAt={sync.lastEventAt}
-            lastRefreshAt={sync.lastRefreshAt}
-            resyncing={sync.resyncing}
-            error={null}
-            onRefresh={() => void sync.refresh()}
-          />
+    <div className="flex flex-col gap-2 px-3 pb-2 pt-3">
+      <div className="flex items-center gap-2.5">
+        <AvatarMark avatarUrl={profile?.avatar_url} displayName={name} />
+        <div className="flex min-w-0 flex-1 flex-col leading-tight">
+          <span className="truncate text-[13px] font-semibold text-[#1F2937]">{name}</span>
+          {role && <span className="truncate text-[11px] text-[#6B7A90]">{role}</span>}
         </div>
+      </div>
+      {/* 同步状态独占一整行(原先嵌在姓名下方);min-w-0 让 badge 适配窄列。 */}
+      <div className="flex min-w-0">
+        <SyncStatusBadge
+          connectionState={sync.connectionState}
+          lastEventAt={sync.lastEventAt}
+          lastRefreshAt={sync.lastRefreshAt}
+          resyncing={sync.resyncing}
+          error={null}
+          onRefresh={() => void sync.refresh()}
+        />
       </div>
     </div>
   );
 }
 
-function AvatarMark() {
-  return (
-    <div className="relative shrink-0">
-      <div
-        className="grid size-10 place-items-center rounded-xl text-[14px] font-medium text-[#1F2937] shadow-[0_1px_2px_rgba(15,23,42,0.06)]"
-        style={{ background: "#FCE7B8" }}
-      >
-        M
-      </div>
-      <span
-        aria-hidden
-        className="absolute bottom-[-2px] right-[-2px] size-[10px] rounded-full border-2 border-[#EEF6FF] bg-[#10B981]"
+function AvatarMark({ avatarUrl, displayName }: { avatarUrl?: string; displayName?: string }) {
+  const [imgFailed, setImgFailed] = useState(false);
+  const showImg = !!avatarUrl && !imgFailed;
+
+  if (showImg) {
+    return (
+      <img
+        src={avatarUrl}
+        alt=""
+        onError={() => setImgFailed(true)}
+        className="size-10 shrink-0 rounded-xl object-cover shadow-[0_1px_2px_rgba(15,23,42,0.06)]"
       />
+    );
+  }
+
+  return (
+    <div
+      className="grid size-10 shrink-0 place-items-center rounded-xl text-[14px] font-medium text-[#1F2937] shadow-[0_1px_2px_rgba(15,23,42,0.06)]"
+      style={{ background: "#FCE7B8" }}
+    >
+      {initialOf(displayName)}
     </div>
   );
 }
