@@ -247,6 +247,10 @@ export function useRecentFriends(opts: UseRecentFriendsOptions): UseRecentFriend
   const [remoteTailItems, setRemoteTailItems] = useState<RecentFriendListEntry[]>([]);
   const [defaultNextCursor, setDefaultNextCursor] = useState<string>("");
   const [defaultHasMore, setDefaultHasMore] = useState(false);
+  // 是否已成功播种远端首页(cursor/hasMore 有意义)。与空 cursor 解耦:末页后端约定
+  // 返回 nextCursor="",若仍用 !defaultNextCursor 判"未播种"会把"已到底"误判成"重新播种",
+  // 导致 loadMore 反复回首页 → 接待列表下滑无限循环。用独立标志拆开二义。
+  const [defaultSeeded, setDefaultSeeded] = useState(false);
   const [defaultLoading, setDefaultLoading] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
 
@@ -304,6 +308,7 @@ export function useRecentFriends(opts: UseRecentFriendsOptions): UseRecentFriend
         if (seq !== reqSeqRef.current) return; // 已被更新请求接力,丢弃旧结果
         setDefaultNextCursor(resp.nextCursor);
         setDefaultHasMore(resp.hasMore);
+        setDefaultSeeded(true);
         setRemoteTailItems([]);
         await resource.refresh();
       } catch (e) {
@@ -316,6 +321,19 @@ export function useRecentFriends(opts: UseRecentFriendsOptions): UseRecentFriend
     },
     [accountFilter, employeeId, resource],
   );
+
+  // 切账号重置游标状态:cursor/hasMore/seeded/远端尾部都按账号维护,不重置会让新账号
+  // 复用旧账号 cursor + 旧账号 append 的尾部行(useResource 的 cacheItems 已按账号 scope,
+  // 但 remoteTailItems 不会自动换 scope)。在 render 期重置(而非 effect):切账号当帧即清,
+  // 不会让旧账号 loadMore 的尾部行(displayItems 合并 remoteTailItems)闪一帧再消失。
+  const [prevAccountFilter, setPrevAccountFilter] = useState(accountFilter);
+  if (accountFilter !== prevAccountFilter) {
+    setPrevAccountFilter(accountFilter);
+    setDefaultSeeded(false);
+    setDefaultNextCursor("");
+    setDefaultHasMore(false);
+    setRemoteTailItems([]);
+  }
 
   // 冷启动门(消掉每次启动那一发 recentFriends):首次本地 cache 读出(initialFetched)后,
   // 仅当缓存为空(无任何本地行)才远端首页拉一发作初始快照。非空 → 不拉:回放路径接管
@@ -349,13 +367,15 @@ export function useRecentFriends(opts: UseRecentFriendsOptions): UseRecentFriend
   const loadMore = useCallback(async () => {
     if (filteredQueryRef.current) return;
     if (defaultLoading) return;
-    if (!defaultNextCursor) {
-      // 跳过 mount 拉后,cursor 未播种 → 先远端首页播种 cursor+hasMore,本次不翻页;
+    if (!defaultSeeded) {
+      // 首次下滚:cursor 未播种 → 先远端首页播种 cursor+hasMore,本次不翻页;
       // 下次下滚用已播种 cursor 翻更老页。如此远端请求仅在用户下滚时发生,不在启动时。
+      // 用 !defaultSeeded(而非 !defaultNextCursor)判定:末页后端返回 nextCursor="",
+      // 旧逻辑会把它当"未播种"重新拉首页 → 永远到不了底的无限循环。
       await refreshFirstPage(true);
       return;
     }
-    if (!defaultHasMore) return;
+    if (!defaultHasMore) return; // 已到底:永久 no-op,绝不回首页(修复无限循环根因)
     setDefaultLoading(true);
     setLocalError(null);
     try {
@@ -378,7 +398,14 @@ export function useRecentFriends(opts: UseRecentFriendsOptions): UseRecentFriend
     } finally {
       setDefaultLoading(false);
     }
-  }, [accountFilter, defaultHasMore, defaultLoading, defaultNextCursor, refreshFirstPage]);
+  }, [
+    accountFilter,
+    defaultHasMore,
+    defaultLoading,
+    defaultNextCursor,
+    defaultSeeded,
+    refreshFirstPage,
+  ]);
 
   const refresh = useCallback(async () => {
     await refreshFirstPage(true);
