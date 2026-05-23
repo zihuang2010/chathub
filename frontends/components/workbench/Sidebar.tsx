@@ -1,31 +1,38 @@
 import { memo, useState } from "react";
 import { ChevronLeft, ChevronRight, Menu } from "lucide-react";
 
-import { SyncStatusBadge } from "@/components/workbench/messages/SyncStatusBadge";
+import { useCurrentProfile } from "@/lib/data/useCurrentProfile";
 import { useHubSyncStatus } from "@/lib/data/useHubSyncStatus";
+import type { HubConnectionState } from "@/lib/data/useResource";
 import { FROSTED_GLASS_STYLE, WORKBENCH_BLUE, WORKBENCH_NAV_TEXT } from "@/lib/theme";
 import { cn } from "@/lib/utils";
 
 import { NAV_ITEMS, type NavItem, type Section } from "./nav";
 
-import { useCurrentProfile } from "@/lib/data/useCurrentProfile";
-
-// role 原始值来自 relay(自由字符串,实测如 "operator")。已知值映射成中文,
-// 未知值原样显示,空值由调用方决定不渲染副标题。
-const ROLE_LABELS: Record<string, string> = {
-  operator: "客服坐席",
-  admin: "管理员",
-};
-
-function roleLabel(role: string | undefined): string {
-  if (!role) return "";
-  return ROLE_LABELS[role] ?? role;
-}
+// 头像回退底色 —— 贴主题的蓝色品牌渐变,作为左栏顶部的视觉锚点。
+const AVATAR_GRADIENT = "linear-gradient(140deg, #6FA8F0 0%, #3E7BD6 100%)";
 
 // 取首个字符作头像回退;用展开运算符正确处理多字节字符(CJK/emoji)。
 function initialOf(name: string | undefined): string {
   const trimmed = name?.trim();
   return trimmed ? [...trimmed][0] : "·";
+}
+
+// 在线状态由 hub 连接态派生:在线绿 / 连接中琥珀 / 离线灰。不写死。
+function onlineStatus(conn: HubConnectionState | null): {
+  label: string;
+  dot: string;
+  text: string;
+} {
+  switch (conn?.state) {
+    case "subscribed":
+      return { label: "在线", dot: "#10B981", text: "#0E9F6E" };
+    case "disconnected":
+      return { label: "离线", dot: "#9CA3AF", text: "#6B7280" };
+    default:
+      // connecting 或 null(还没拿到首条 hub:connection)
+      return { label: "连接中", dot: "#F59E0B", text: "#B45309" };
+  }
 }
 
 interface SidebarProps {
@@ -59,31 +66,42 @@ export const Sidebar = memo(function Sidebar({
       }}
     >
       <div className="relative z-10 flex h-full flex-col overflow-hidden rounded-bl-[10px]">
-        <UserBadge collapsed={collapsed} />
-        <nav className="flex flex-col gap-0.5 px-2 pt-2">
-          {NAV_ITEMS.map((item) => (
-            <NavButton
-              key={item.value}
-              item={item}
-              active={item.value === value}
-              onClick={() => onChange(item.value)}
-              collapsed={collapsed}
+        {/* 渐变层 + 装饰层,垫在内容之下,营造层次/重心/呼吸感。 */}
+        <SidebarBackdrop collapsed={collapsed} />
+        <div className="relative z-10 flex flex-1 flex-col">
+          <UserBadge collapsed={collapsed} />
+          {!collapsed && (
+            // 徽章与导航之间的渐隐分隔线 —— 制造层次,不抢镜。
+            <div
+              aria-hidden
+              className="mx-3 mb-1 mt-1 h-px bg-gradient-to-r from-transparent via-[#9DB6D8]/45 to-transparent"
             />
-          ))}
-        </nav>
-        <div className="mt-auto px-2 pb-3 pt-2">
-          <button
-            type="button"
-            className={cn(
-              "flex h-10 w-full items-center rounded-md transition-colors hover:bg-white/45 hover:text-[#1F2937]",
-              collapsed ? "justify-center px-0" : "gap-3 px-3",
-            )}
-            style={{ color: WORKBENCH_NAV_TEXT }}
-            aria-label="更多"
-          >
-            <Menu size={18} />
-            {!collapsed && <span className="text-[13.5px] font-medium">更多</span>}
-          </button>
+          )}
+          <nav className="flex flex-col gap-0.5 px-2 pt-1">
+            {NAV_ITEMS.map((item) => (
+              <NavButton
+                key={item.value}
+                item={item}
+                active={item.value === value}
+                onClick={() => onChange(item.value)}
+                collapsed={collapsed}
+              />
+            ))}
+          </nav>
+          <div className="mt-auto px-2 pb-3 pt-2">
+            <button
+              type="button"
+              className={cn(
+                "flex h-10 w-full items-center rounded-md transition-colors hover:bg-white/55 hover:text-[#1F2937]",
+                collapsed ? "justify-center px-0" : "gap-3 px-3",
+              )}
+              style={{ color: WORKBENCH_NAV_TEXT }}
+              aria-label="更多"
+            >
+              <Menu size={18} />
+              {!collapsed && <span className="text-[13.5px] font-medium">更多</span>}
+            </button>
+          </div>
         </div>
       </div>
       <EdgeHandle collapsed={collapsed} onToggle={onToggleCollapsed} />
@@ -91,16 +109,57 @@ export const Sidebar = memo(function Sidebar({
   );
 });
 
+// ─── Backdrop: 渐变 + 装饰圈点 + 底部波浪 ─────────────────────────────────────
+
+function SidebarBackdrop({ collapsed }: { collapsed: boolean }) {
+  return (
+    <div aria-hidden className="pointer-events-none absolute inset-0 z-0 overflow-hidden">
+      {/* 竖向渐变:顶部冷白 → 中段透明 → 底部偏蓝。 */}
+      <div
+        className="absolute inset-0"
+        style={{
+          background:
+            "linear-gradient(180deg, rgba(255,255,255,0.5) 0%, rgba(255,255,255,0) 34%, rgba(99,140,205,0.16) 100%)",
+        }}
+      />
+      {/* 装饰只在展开态出现,折叠态保持干净。 */}
+      {!collapsed && (
+        <>
+          <span className="absolute right-3 top-2 size-2 rounded-full bg-white/60" />
+          <span className="absolute left-4 top-7 size-7 rounded-full border border-[#9FBDE6]/45" />
+          <span className="absolute right-5 top-[60px] size-2.5 rounded-full bg-[#9FBDE6]/40" />
+          <span className="absolute left-7 top-[128px] size-4 rounded-full bg-[#A9C7F0]/30" />
+          {/* 底部柔光波浪,托在"更多"上方,给左栏一个底部重心。 */}
+          <svg
+            className="absolute inset-x-0 bottom-0 h-24 w-full"
+            viewBox="0 0 144 96"
+            preserveAspectRatio="none"
+          >
+            <path
+              d="M0 46 C 28 28, 52 64, 80 50 S 130 30, 144 44 L 144 96 L 0 96 Z"
+              fill="rgba(123,167,224,0.14)"
+            />
+            <path
+              d="M0 62 C 30 48, 56 80, 88 64 S 132 52, 144 62 L 144 96 L 0 96 Z"
+              fill="rgba(99,140,205,0.10)"
+            />
+          </svg>
+        </>
+      )}
+    </div>
+  );
+}
+
 // ─── User badge ─────────────────────────────────────────────────────────────
 
 function UserBadge({ collapsed }: { collapsed: boolean }) {
-  // 登录员工信息(头像/姓名/角色)+ 全局 hub 同步状态。两者都在组件内部自取,
+  // 登录员工信息(头像/姓名)+ hub 连接态(派生在线状态)。两者都在组件内部自取,
   // Sidebar/Workbench 无需透传 props。
   const profile = useCurrentProfile();
   const sync = useHubSyncStatus();
 
   const name = profile?.display_name ?? "";
-  const role = roleLabel(profile?.role);
+  const status = onlineStatus(sync.connectionState);
 
   if (collapsed) {
     return (
@@ -111,24 +170,16 @@ function UserBadge({ collapsed }: { collapsed: boolean }) {
   }
 
   return (
-    <div className="flex flex-col gap-2 px-3 pb-2 pt-3">
-      <div className="flex items-center gap-2.5">
-        <AvatarMark avatarUrl={profile?.avatar_url} displayName={name} />
-        <div className="flex min-w-0 flex-1 flex-col leading-tight">
-          <span className="truncate text-[13px] font-semibold text-[#1F2937]">{name}</span>
-          {role && <span className="truncate text-[11px] text-[#6B7A90]">{role}</span>}
-        </div>
-      </div>
-      {/* 同步状态独占一整行(原先嵌在姓名下方);min-w-0 让 badge 适配窄列。 */}
-      <div className="flex min-w-0">
-        <SyncStatusBadge
-          connectionState={sync.connectionState}
-          lastEventAt={sync.lastEventAt}
-          lastRefreshAt={sync.lastRefreshAt}
-          resyncing={sync.resyncing}
-          error={null}
-          onRefresh={() => void sync.refresh()}
-        />
+    <div className="flex items-center gap-2.5 px-3 pb-1 pt-4">
+      <AvatarMark avatarUrl={profile?.avatar_url} displayName={name} />
+      <div className="flex min-w-0 flex-1 flex-col gap-1 leading-tight">
+        <span className="truncate text-[14px] font-semibold text-[#1F2937]">{name}</span>
+        <span className="flex items-center gap-1.5">
+          <span className="size-[7px] shrink-0 rounded-full" style={{ background: status.dot }} />
+          <span className="text-[11px] font-medium" style={{ color: status.text }}>
+            {status.label}
+          </span>
+        </span>
       </div>
     </div>
   );
@@ -145,17 +196,25 @@ function AvatarMark({ avatarUrl, displayName }: { avatarUrl?: string; displayNam
         src={avatarUrl}
         alt=""
         onError={() => setFailedUrl(avatarUrl)}
-        className="size-10 shrink-0 rounded-xl object-cover shadow-[0_1px_2px_rgba(15,23,42,0.06)]"
+        className="size-11 shrink-0 rounded-[14px] object-cover shadow-[0_4px_10px_rgba(62,123,214,0.28)]"
       />
     );
   }
 
   return (
     <div
-      className="grid size-10 shrink-0 place-items-center rounded-xl text-[14px] font-medium text-[#1F2937] shadow-[0_1px_2px_rgba(15,23,42,0.06)]"
-      style={{ background: "#FCE7B8" }}
+      className="relative grid size-11 shrink-0 place-items-center overflow-hidden rounded-[14px] text-[16px] font-semibold text-white shadow-[0_4px_10px_rgba(62,123,214,0.28)]"
+      style={{ background: AVATAR_GRADIENT }}
     >
-      {initialOf(displayName)}
+      {/* 顶部高光,增加立体感/高级感。 */}
+      <span
+        aria-hidden
+        className="absolute inset-x-0 top-0 h-1/2"
+        style={{
+          background: "linear-gradient(180deg, rgba(255,255,255,0.28), rgba(255,255,255,0))",
+        }}
+      />
+      <span className="relative">{initialOf(displayName)}</span>
     </div>
   );
 }
