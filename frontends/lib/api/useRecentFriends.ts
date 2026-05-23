@@ -335,6 +335,16 @@ export function useRecentFriends(opts: UseRecentFriendsOptions): UseRecentFriend
     setRemoteTailItems([]);
   }
 
+  // 切员工/登出:清掉非当前 employeeId 的远端刷新时间戳。lastRemoteRefreshAt 是模块级 Map
+  // (键 `${employeeId}|${accountFilter}`),不清会跨员工累积、整个会话期不回收。
+  // 操作的是外部 Map(非 React state),不触发 set-state-in-effect。
+  useEffect(() => {
+    const prefix = `${employeeId ?? ""}|`;
+    for (const key of [...lastRemoteRefreshAt.keys()]) {
+      if (!key.startsWith(prefix)) lastRemoteRefreshAt.delete(key);
+    }
+  }, [employeeId]);
+
   // 冷启动门(消掉每次启动那一发 recentFriends):首次本地 cache 读出(initialFetched)后,
   // 仅当缓存为空(无任何本地行)才远端首页拉一发作初始快照。非空 → 不拉:回放路径接管
   // (有新事件 → applier 写库 → useResource 重读;无事件则本就无变化)。
