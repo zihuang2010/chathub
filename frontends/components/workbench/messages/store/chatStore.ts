@@ -150,8 +150,15 @@ export function selectTimeline(slice: ConversationSlice | undefined): ChatMessag
 
 // ─── Zustand store(薄壳:取/建分片 + 调纯 reducer) ──────────────────────────
 
+// 单员工会话期内的热会话切片上限:超出按 LRU 淘汰最久未访问的非活跃会话切片(重开时
+// useMessageHistory 会 refetch 重填,store 本就是缓存)。防长会话(一班坐席访问大量会话)
+// 内存无界增长。
+export const MAX_HOT_CONVERSATIONS = 30;
+
 interface ChatStoreState {
   conversations: Record<string, ConversationSlice>;
+  /** @internal LRU 访问顺序,最近使用在尾;仅用于切片淘汰,渲染不消费。 */
+  touchOrder: string[];
   replaceAuthoritative(
     conversationId: string,
     messages: Message[],
@@ -180,13 +187,22 @@ export const useChatStore = create<ChatStoreState>((set) => {
   const update = (conversationId: string, fn: (slice: ConversationSlice) => ConversationSlice) =>
     set((state) => {
       const slice = state.conversations[conversationId] ?? emptySlice();
-      return {
-        conversations: { ...state.conversations, [conversationId]: fn(slice) },
-      };
+      const conversations = { ...state.conversations, [conversationId]: fn(slice) };
+      // 该会话标记为最近使用(移到尾);超上限时淘汰最久未访问的非活跃切片。
+      const touchOrder = [
+        ...state.touchOrder.filter((id) => id !== conversationId),
+        conversationId,
+      ];
+      while (touchOrder.length > MAX_HOT_CONVERSATIONS) {
+        const evicted = touchOrder.shift();
+        if (evicted) delete conversations[evicted];
+      }
+      return { conversations, touchOrder };
     });
 
   return {
     conversations: {},
+    touchOrder: [],
     replaceAuthoritative: (conversationId, messages, meta) =>
       update(conversationId, (slice) => {
         const next = replaceAuthoritative(slice, messages);
@@ -219,8 +235,11 @@ export const useChatStore = create<ChatStoreState>((set) => {
         if (!state.conversations[conversationId]) return state;
         const conversations = { ...state.conversations };
         delete conversations[conversationId];
-        return { conversations };
+        return {
+          conversations,
+          touchOrder: state.touchOrder.filter((id) => id !== conversationId),
+        };
       }),
-    reset: () => set({ conversations: {} }),
+    reset: () => set({ conversations: {}, touchOrder: [] }),
   };
 });

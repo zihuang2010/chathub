@@ -6,6 +6,7 @@ import {
   type ConversationSlice,
   emptySlice,
   enqueueOptimistic,
+  MAX_HOT_CONVERSATIONS,
   markFailed,
   markSent,
   prependOlder,
@@ -145,6 +146,27 @@ describe("useChatStore actions", () => {
     const convs = useChatStore.getState().conversations;
     expect(convs.c1).toBeUndefined();
     expect(convs.c2).toBeDefined();
+    useChatStore.getState().reset();
+  });
+
+  it("LRU 淘汰:超过上限丢最久未访问的非活跃切片,活跃会话保留", () => {
+    useChatStore.getState().reset();
+    const total = MAX_HOT_CONVERSATIONS + 5;
+    for (let i = 0; i < total; i++) {
+      useChatStore.getState().replaceAuthoritative(`conv-${i}`, [msg(`m-${i}`)]);
+    }
+    const convs = useChatStore.getState().conversations;
+    expect(Object.keys(convs)).toHaveLength(MAX_HOT_CONVERSATIONS);
+    // 最早的 5 个被淘汰,最近的保留。
+    expect(convs["conv-0"]).toBeUndefined();
+    expect(convs["conv-4"]).toBeUndefined();
+    expect(convs[`conv-${total - 1}`]).toBeDefined();
+
+    // 再次访问最旧仍存活的会话 → 刷新为 MRU,后续淘汰轮不到它。
+    const oldestAlive = `conv-5`;
+    useChatStore.getState().setLoading(oldestAlive, true);
+    useChatStore.getState().replaceAuthoritative("conv-NEW", [msg("m-new")]);
+    expect(useChatStore.getState().conversations[oldestAlive]).toBeDefined();
     useChatStore.getState().reset();
   });
 });
