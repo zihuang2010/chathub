@@ -3,6 +3,7 @@ import { ArrowDown, ArrowUp, Loader2 } from "lucide-react";
 import { AnimatePresence, motion } from "framer-motion";
 
 import { showToast } from "@/components/ui/toast";
+import type { SendMessageResp } from "@/lib/api/messageHistory";
 import type { Account } from "@/lib/types/account";
 import { TRANSITION_DURATIONS, TRANSITION_EASE } from "@/lib/theme";
 import { cn } from "@/lib/utils";
@@ -10,11 +11,10 @@ import { cn } from "@/lib/utils";
 import { ChatEmptyState, ChatErrorState, ChatLoadingState } from "./ChatStates";
 import { ChatHeader } from "./ChatHeader";
 import { AT_BOTTOM_THRESHOLD, COMPOSER_DEFAULT_HEIGHT, TIME_BURST_GAP_MS } from "./constants";
-import { buildMessageParts } from "./data";
-import type { Conversation, Message, MessageAttachment, MessageBlock, QuickReply } from "./data";
+import type { Conversation, Message, QuickReply } from "./data";
+import { useChatActions } from "./hooks/useChatActions";
 import { DateDivider, MessageBubble, type ReplyTarget, UnreadDivider } from "./MessageBubble";
 import { MessageComposer } from "./MessageComposer";
-import { type MessageActionType } from "./MessageContextMenu";
 import { RangePill } from "./RangePill";
 import { STRINGS } from "./strings";
 import { formatMessageDate, getMessageDayKey, messageReplyPreview } from "./utils";
@@ -51,7 +51,7 @@ interface ChatAreaProps {
    * 真发送回调(text-only)。成功后后端落库 + 发 conversation-messages ChangeNotice,
    * 整窗 REPLACE 把这条收敛进权威列表(乐观气泡随之被替换)。失败则把该气泡标 failed。
    */
-  onSendMessage?: (text: string, clientMsgId: string) => Promise<void>;
+  onSendMessage?: (text: string, clientMsgId: string) => Promise<SendMessageResp | void>;
   /** 切走/卸载该会话时回调,补一次 markRead(只在 leave 同步服务端,不按消息打)。 */
   onLeaveMarkRead?: (conversationId: string) => void | Promise<void>;
 }
@@ -178,7 +178,6 @@ export const ChatArea = memo(function ChatArea({
   // 记录当前活动会话，给定时器/异步回调判断"我所属的会话是否还活着"。
   const activeConversationIdRef = useRef(conversation.id);
   const [composerHeight, setComposerHeight] = useState(COMPOSER_DEFAULT_HEIGHT);
-  const [localMessages, setLocalMessages] = useState<Message[]>(messages);
   const [replyDraft, setReplyDraft] = useState<
     (ReplyTarget & { id: string; conversationId: string }) | null
   >(null);
@@ -211,29 +210,14 @@ export const ChatArea = memo(function ChatArea({
   // 一次性提示语义:只要看过一次,pill 在本会话内不再触发,避免反复闪烁。
   // 切会话 useLayoutEffect 清回 false。
   const hasSeenDividerRef = useRef(false);
-  // 当父组件传入新会话的 messages 时，把本地副本同步过去。原版用
-  // useEffect + queueMicrotask 包裹会引入一帧 stale 渲染；改用 React 官方
-  // "渲染期同步"模式：把上一次同步过的 props 也存进 useState，渲染中比对、
-  // 不一致就 setState——React 会丢弃当前渲染并立即用新 state 重新渲染，
-  // 不产生 stale 帧、也不会无限循环。
-  // 参考 https://react.dev/reference/react/useState#storing-information-from-previous-renders
-  //
-  // 同时跟踪 conversation.id：用户切会话时 messages prop 通常先停留在旧值,
-  // useChatMessages 的 effect 才把它清空 → 拉新 → 三次渲染。
-  // 渲染 1 中如不主动过滤,localMessages 仍是旧会话的消息(同 reference,跳过 sync),
-  // 头部已变新会话 → "气泡是李四、标题是张三" 的闪一帧。
-  // 这里在 conversation.id 变更时，按 conversationId 过滤 prop messages,
-  // 不匹配的会话内容被立即丢弃,会显示 empty/loading 占位直到新数据到达。
-  const [lastSyncedMessages, setLastSyncedMessages] = useState(messages);
-  const [syncedConversationId, setSyncedConversationId] = useState(conversation.id);
-  if (syncedConversationId !== conversation.id) {
-    setSyncedConversationId(conversation.id);
-    setLastSyncedMessages(messages);
-    setLocalMessages(messages.filter((m) => m.conversationId === conversation.id));
-  } else if (lastSyncedMessages !== messages) {
-    setLastSyncedMessages(messages);
-    setLocalMessages(messages);
-  }
+  // Stage 4b:消息真相在 chatStore(由 useMessageHistory 写入、按 conversationId 分片),
+  // `messages` prop 即本会话 store 切片的投影,不再维护 localMessages 本地副本(双真相消除)。
+  // 仍按 conversation.id 过滤一道:防 messages prop 在切会话瞬间短暂落后于 conversation.id 时,
+  // 把旧会话内容渲染到新标题下("气泡李四、标题张三"的闪帧)。
+  const localMessages = useMemo(
+    () => messages.filter((m) => m.conversationId === conversation.id),
+    [messages, conversation.id],
+  );
 
   // 打开会话(conversation.id 变化)时快照一次 unread。标已读会把 live conversation.unread 归零,
   // 分隔条改用快照值渲染 —— 坐席阅读期间分隔条不随红标被清而消失。点击触发的 markRead 是异步的,
@@ -512,96 +496,13 @@ export const ChatArea = memo(function ChatArea({
     }
   }, [localMessages]);
 
-  // 真发送一条出站消息:把发送时所属会话 id 闭包进来,settle 时与 ref 中的
-  // "当前活跃会话"比对。成功路径不在这里改 localMessages —— 后端落库 + 发
-  // conversation-messages ChangeNotice,整窗 REPLACE 把权威气泡收敛进来。失败时
-  // 若用户仍在该会话,把这条乐观气泡标 failed(供 context menu resend)。
-  const deliverMessage = useCallback(
-    async (messageId: string, text: string) => {
-      const owningConversationId = conversation.id;
-      try {
-        // 复用乐观气泡 id 作为 clientMsgId(幂等键),重发时同键不重复。
-        await onSendMessage?.(text, messageId);
-      } catch {
-        if (owningConversationId !== activeConversationIdRef.current) return;
-        setLocalMessages((current) =>
-          current.map((m) => (m.id === messageId ? { ...m, status: "failed" } : m)),
-        );
-      }
-    },
-    [conversation.id, onSendMessage],
-  );
-
-  const handleSend = useCallback(
-    (
-      text: string,
-      blocks?: MessageBlock[],
-      attachments?: MessageAttachment[],
-      replyTo?: string,
-    ) => {
-      const id = `local-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-      const newMessage: Message = {
-        id,
-        conversationId: conversation.id,
-        direction: "out",
-        text,
-        parts: buildMessageParts(text, blocks, attachments),
-        sentAt: new Date().toISOString(),
-        status: "sending",
-        replyTo,
-      };
-      setLocalMessages((current) => [...current, newMessage]);
-      wasAtBottomRef.current = true;
-      setReplyDraft(null);
-      void deliverMessage(id, text);
-    },
-    [conversation.id, deliverMessage],
-  );
-
-  const handleAction = useCallback(
-    (action: MessageActionType, message: Message) => {
-      switch (action) {
-        case "resend":
-          setLocalMessages((current) =>
-            current.map((m) => (m.id === message.id ? { ...m, status: "sending" } : m)),
-          );
-          void deliverMessage(message.id, message.text);
-          break;
-        case "delete":
-          setLocalMessages((current) => current.filter((m) => m.id !== message.id));
-          // 若引用预览正指向被删消息，发送时 replyTo 会指向不存在的 id
-          // → buildTimelineItems 解析不到 replyTarget 静默丢失。同步清空。
-          setReplyDraft((draft) => (draft?.id === message.id ? null : draft));
-          break;
-        case "recall":
-          setLocalMessages((current) =>
-            current.map((m) =>
-              m.id === message.id ? { ...m, isRecalled: true, status: undefined } : m,
-            ),
-          );
-          // 撤回的消息不再适合作为引用对象，同样清空。
-          setReplyDraft((draft) => (draft?.id === message.id ? null : draft));
-          showToast(STRINGS.toast.recallSuccess, { type: "success" });
-          break;
-        case "copy":
-          // Already handled inside MessageContextMenu; this is just telemetry.
-          break;
-        case "reply":
-          setReplyDraft({
-            id: message.id,
-            conversationId: conversation.id,
-            senderName:
-              message.direction === "out" ? STRINGS.status.selfSenderName : conversation.name,
-            text: messageReplyPreview(message),
-          });
-          break;
-        case "scroll-to":
-          // 由 ChatHeader 的内部跳转处理，此处不需要额外动作。
-          break;
-      }
-    },
-    [deliverMessage, conversation.id, conversation.name],
-  );
+  // 消息动作(发送/重发/删除/撤回/引用)抽到 useChatActions(Stage 4d),走 chatStore。
+  const { handleSend, handleAction } = useChatActions({
+    conversation,
+    onSendMessage,
+    wasAtBottomRef,
+    setReplyDraft,
+  });
 
   // 会话切换时 ChatHeader 和消息区必须同步 crossfade,不然标题(头像/名字/账号)
   // 瞬间硬切而消息区淡入淡出,视觉上"出一下出两下"。两块都用 conversation.id 作

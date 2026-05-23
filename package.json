@@ -55,7 +55,8 @@
     "react-day-picker": "^10.0.0",
     "react-dom": "^19.1.0",
     "tailwind-merge": "^3.5.0",
-    "tippy.js": "^6.3.7"
+    "tippy.js": "^6.3.7",
+    "zustand": "^5.0.13"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

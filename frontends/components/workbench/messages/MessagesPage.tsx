@@ -314,7 +314,8 @@ export function MessagesPage({ accounts }: MessagesPageProps) {
   const handleSendMessage = useCallback(
     async (text: string, clientMsgId: string) => {
       if (!conversation || !selectedEntry?.wecomAccountId || !selectedEntry?.externalUserId) return;
-      await sendMessage({
+      // 返回后端响应,供 ChatArea 用 localMessageId 作 serverId 收敛乐观气泡。
+      return await sendMessage({
         conversationId: conversation.id,
         wecomAccountId: selectedEntry.wecomAccountId,
         externalUserId: selectedEntry.externalUserId,
