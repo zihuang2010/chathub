@@ -87,13 +87,15 @@ export const Sidebar = memo(function Sidebar({
         <SidebarBackdrop collapsed={collapsed} />
         <div className="relative z-10 flex flex-1 flex-col">
           <UserBadge collapsed={collapsed} />
-          {!collapsed && (
-            // 徽章与导航之间的渐隐分隔线 —— 制造层次,不抢镜。
-            <div
-              aria-hidden
-              className="mx-3 mb-1 mt-1 h-px bg-gradient-to-r from-transparent via-[#9DB6D8]/45 to-transparent"
-            />
-          )}
+          {/* 始终占位(mt-1 + h-px + mb-1 ≈ 9px),保证收/展两态高度一致 —— 否则收缩时
+              这条线消失,下方导航瞬间上跳"闪一下"。线只在展开态可见。 */}
+          <div
+            aria-hidden
+            className={cn(
+              "mx-3 mb-1 mt-1 h-px",
+              !collapsed && "bg-gradient-to-r from-transparent via-[#9DB6D8]/45 to-transparent",
+            )}
+          />
           <nav className="flex flex-col gap-0.5 px-2 pt-1">
             {NAV_ITEMS.map((item) => (
               <NavButton
@@ -144,38 +146,34 @@ function SidebarBackdrop({ collapsed }: { collapsed: boolean }) {
       {/* 装饰只在展开态出现,折叠态保持干净。 */}
       {!collapsed && (
         <>
-          {/* 装饰圈点落在导航下方的中下部空白区(底部锚定,浮在波浪之上)。
-              chSidebarHalo* 周期各异(24/28/32s)缓慢漂移;prefers-reduced-motion
-              下由 index.css 自动静止为纯色背景。 */}
+          {/* 中下部空白区的低调装饰小点(底部锚定,浮在波浪之上)。已去掉空心环"气泡"。
+              chSidebarHalo* 周期各异(28/32s)缓慢漂移;prefers-reduced-motion 下由
+              index.css 自动静止为纯色背景。 */}
           <span
-            className="absolute bottom-[300px] left-5 size-9 rounded-full border border-[#9FBDE6]/40"
-            style={{ animation: "chSidebarHaloA 24s ease-in-out infinite" }}
-          />
-          <span
-            className="absolute bottom-[252px] right-6 size-3 rounded-full bg-[#9FBDE6]/40"
+            className="absolute bottom-[300px] right-7 size-3 rounded-full bg-[#9FBDE6]/40"
             style={{ animation: "chSidebarHaloB 28s ease-in-out infinite" }}
           />
           <span
-            className="absolute bottom-[210px] left-9 size-4 rounded-full bg-[#A9C7F0]/35"
+            className="absolute bottom-[252px] left-9 size-4 rounded-full bg-[#A9C7F0]/35"
             style={{ animation: "chSidebarHaloC 32s ease-in-out infinite" }}
           />
-          <span className="absolute bottom-[330px] right-9 size-2 rounded-full bg-white/55" />
+          <span className="absolute bottom-[340px] left-12 size-2 rounded-full bg-white/55" />
           {/* 底部柔光波浪,托在"更多"上方给左栏一个底部重心。超长波长 → 平缓大波,
               两层反向错相缓慢漂移。 */}
           <svg
-            className="absolute inset-x-0 bottom-0 h-44 w-full"
+            className="absolute inset-x-0 bottom-0 h-56 w-full"
             viewBox={`0 0 1280 ${WAVE_BOTTOM}`}
             preserveAspectRatio="none"
           >
             <DriftingWave
-              d={broadWavePath(130, 64, WAVE_BOTTOM, true)}
+              d={broadWavePath(116, 76, WAVE_BOTTOM, true)}
               fill="#7BA7E0"
               opacity={0.16}
               dur="32s"
               shift={WAVE_SHIFT}
             />
             <DriftingWave
-              d={broadWavePath(162, 50, WAVE_BOTTOM, false)}
+              d={broadWavePath(152, 60, WAVE_BOTTOM, false)}
               fill="#638CCD"
               opacity={0.12}
               dur="24s"

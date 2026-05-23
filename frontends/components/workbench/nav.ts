@@ -29,7 +29,7 @@ export interface NavItem {
 }
 
 export const NAV_ITEMS: NavItem[] = [
-  { value: "messages", label: "消息", Icon: MessageSquare, badge: 12 },
+  { value: "messages", label: "消息", Icon: MessageSquare },
   { value: "customers", label: "客户", Icon: UserRound },
   { value: "accounts", label: "账号", Icon: Users },
   { value: "groups", label: "群聊", Icon: MessagesSquare },
