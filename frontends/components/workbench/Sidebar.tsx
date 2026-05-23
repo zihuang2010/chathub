@@ -1,6 +1,7 @@
 import { memo, useState } from "react";
 import { ChevronLeft, ChevronRight, Menu } from "lucide-react";
 
+import { DriftingWave, buildWavePath } from "@/components/illustrations";
 import { useCurrentProfile } from "@/lib/data/useCurrentProfile";
 import { useHubSyncStatus } from "@/lib/data/useHubSyncStatus";
 import type { HubConnectionState } from "@/lib/data/useResource";
@@ -11,6 +12,10 @@ import { NAV_ITEMS, type NavItem, type Section } from "./nav";
 
 // 头像回退底色 —— 贴主题的蓝色品牌渐变,作为左栏顶部的视觉锚点。
 const AVATAR_GRADIENT = "linear-gradient(140deg, #6FA8F0 0%, #3E7BD6 100%)";
+
+// 底部波浪 viewBox 高度。复用 Splash 的无缝漂移方案(buildWavePath 生成 2× 宽路径,
+// DriftingWave 平移 -1280 无缝循环);viewBox 宽固定 1280,preserveAspectRatio=none 拉伸进窄栏。
+const WAVE_BOTTOM = 240;
 
 // 取首个字符作头像回退;用展开运算符正确处理多字节字符(CJK/emoji)。
 function initialOf(name: string | undefined): string {
@@ -114,34 +119,51 @@ export const Sidebar = memo(function Sidebar({
 function SidebarBackdrop({ collapsed }: { collapsed: boolean }) {
   return (
     <div aria-hidden className="pointer-events-none absolute inset-0 z-0 overflow-hidden">
-      {/* 竖向渐变:顶部冷白 → 中段透明 → 底部偏蓝。 */}
+      {/* 竖向渐变。顶端 0% 必须为完全透明 —— 否则与上方 TitleBar(纯 FROSTED_GLASS)
+          在 y=40 交界处产生色差带(这正是之前"颜色不统一"的根因)。冷白只在边沿下方
+          晕开,底部偏蓝增加纵深。 */}
       <div
         className="absolute inset-0"
         style={{
           background:
-            "linear-gradient(180deg, rgba(255,255,255,0.5) 0%, rgba(255,255,255,0) 34%, rgba(99,140,205,0.16) 100%)",
+            "linear-gradient(180deg, rgba(255,255,255,0) 0%, rgba(255,255,255,0.26) 15%, rgba(255,255,255,0) 45%, rgba(99,140,205,0.18) 100%)",
         }}
       />
       {/* 装饰只在展开态出现,折叠态保持干净。 */}
       {!collapsed && (
         <>
+          {/* 缓慢漂移的装饰圈点。chSidebarHalo* 周期各异(24/28/32s)避免可见循环;
+              prefers-reduced-motion 下由 index.css 自动静止为纯色背景。 */}
           <span className="absolute right-3 top-2 size-2 rounded-full bg-white/60" />
-          <span className="absolute left-4 top-7 size-7 rounded-full border border-[#9FBDE6]/45" />
-          <span className="absolute right-5 top-[60px] size-2.5 rounded-full bg-[#9FBDE6]/40" />
-          <span className="absolute left-7 top-[128px] size-4 rounded-full bg-[#A9C7F0]/30" />
-          {/* 底部柔光波浪,托在"更多"上方,给左栏一个底部重心。 */}
+          <span
+            className="absolute left-4 top-7 size-7 rounded-full border border-[#9FBDE6]/45"
+            style={{ animation: "chSidebarHaloA 24s ease-in-out infinite" }}
+          />
+          <span
+            className="absolute right-5 top-[60px] size-2.5 rounded-full bg-[#9FBDE6]/40"
+            style={{ animation: "chSidebarHaloB 28s ease-in-out infinite" }}
+          />
+          <span
+            className="absolute left-7 top-[128px] size-4 rounded-full bg-[#A9C7F0]/35"
+            style={{ animation: "chSidebarHaloC 32s ease-in-out infinite" }}
+          />
+          {/* 底部柔光波浪,托在"更多"上方给左栏一个底部重心。两层反向缓慢漂移。 */}
           <svg
-            className="absolute inset-x-0 bottom-0 h-24 w-full"
-            viewBox="0 0 144 96"
+            className="absolute inset-x-0 bottom-0 h-40 w-full"
+            viewBox={`0 0 1280 ${WAVE_BOTTOM}`}
             preserveAspectRatio="none"
           >
-            <path
-              d="M0 46 C 28 28, 52 64, 80 50 S 130 30, 144 44 L 144 96 L 0 96 Z"
-              fill="rgba(123,167,224,0.14)"
+            <DriftingWave
+              d={buildWavePath(112, 46, WAVE_BOTTOM)}
+              fill="#7BA7E0"
+              opacity={0.16}
+              dur="30s"
             />
-            <path
-              d="M0 62 C 30 48, 56 80, 88 64 S 132 52, 144 62 L 144 96 L 0 96 Z"
-              fill="rgba(99,140,205,0.10)"
+            <DriftingWave
+              d={buildWavePath(158, 36, WAVE_BOTTOM)}
+              fill="#638CCD"
+              opacity={0.12}
+              dur="22s"
             />
           </svg>
         </>
