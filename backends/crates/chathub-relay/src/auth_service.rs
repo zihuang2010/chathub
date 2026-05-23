@@ -93,6 +93,8 @@ impl Auth for AuthSvc {
         req: Request<LogoutRequest>,
     ) -> Result<Response<LogoutResponse>, Status> {
         let r = req.into_inner();
+        // 先失效本地鉴权缓存:否则旧 token 在 5min TTL 内仍能命中 Subscribe/Ack,登出形同虚设。
+        self.auth.invalidate(&r.token).await;
         // best-effort:下游网络/状态错误不阻断客户端登出。Bearer 用客户端原 token。
         if let Err(e) = self.downstream.logout(&r.token).await {
             tracing::debug!(error = %e, "logout downstream failed (ignored, best-effort)");
@@ -112,7 +114,7 @@ mod tests {
     use tokio::net::TcpListener;
     use tokio_stream::wrappers::TcpListenerStream;
     use tonic::transport::{Endpoint, Server};
-    use wiremock::matchers::{method, path};
+    use wiremock::matchers::{header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     async fn spawn_auth(downstream_uri: &str) -> (SocketAddr, tokio::task::JoinHandle<()>) {
@@ -217,5 +219,39 @@ mod tests {
         let mut client = AuthClient::connect(endpoint).await.unwrap();
         let resp = client.logout(LogoutRequest { token: "t".into() }).await;
         assert!(resp.is_ok());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn logout_evicts_token_from_shared_auth_cache() {
+        let mock = MockServer::start().await;
+        // verify_token 必须被调 2 次:logout 清缓存后再 authenticate 必须回源
+        Mock::given(method("POST"))
+            .and(path(
+                "/wechat-business-app/rpc/v1/wecomAggregate/connection/verifyToken",
+            ))
+            .and(header("authorization", "Bearer tok-L"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "code": 1, "serviceCode": "", "msg": "成功",
+                "data": { "employeeId": 5, "username": "", "nickName": "", "mobile": "", "channel": "" }
+            })))
+            .expect(2)
+            .mount(&mock)
+            .await;
+        let downstream = Arc::new(DownstreamClient::new_with_defaults(&mock.uri()).unwrap());
+        let auth = Arc::new(TokenAuthenticator::new(downstream.clone()));
+        let svc = AuthSvc {
+            downstream,
+            auth: auth.clone(),
+        };
+        // 1) 预热缓存
+        assert_eq!(auth.authenticate("tok-L").await.unwrap().employee_id, 5);
+        // 2) logout 清缓存(下游 logout 路由未挂 → 404,best-effort 不影响)
+        svc.logout(Request::new(LogoutRequest {
+            token: "tok-L".into(),
+        }))
+        .await
+        .unwrap();
+        // 3) 缓存已清 → 再 authenticate 回源(verify 第 2 次)
+        assert_eq!(auth.authenticate("tok-L").await.unwrap().employee_id, 5);
     }
 }

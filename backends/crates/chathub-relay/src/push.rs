@@ -1,6 +1,7 @@
 //! axum router: `POST /rpc/v1/wecomAggregate/notify/push` (spec §3 字段) + `GET /healthz`。
 
 use crate::event_policy::{self, EventPolicy};
+use crate::hub_service::TokenAuthenticator;
 use crate::router::Router;
 use crate::storage::events::{EventLog, EventRow};
 use axum::extract::{DefaultBodyLimit, State};
@@ -40,6 +41,8 @@ pub struct PushState {
     pub allowed_client_ids: Vec<String>,
     /// F2 安全:push body 最大字节数,防 body-bomb DoS。默认 1MB。
     pub max_body_bytes: usize,
+    /// 与 HubSvc 共享的鉴权缓存 —— FORCE_CLOSE 时失效被踢 employee 的旧 token。
+    pub auth: Arc<TokenAuthenticator>,
 }
 
 pub fn app(state: PushState) -> AxumRouter {
@@ -128,64 +131,25 @@ async fn handle_push(
         return (StatusCode::BAD_REQUEST, "events must be non-empty").into_response();
     }
 
-    // 4. 分类 + 准备 EventRow(Persist 类) / 计数 Control 类
+    // 4. 分类 + 准备 EventRow(Persist 类) / 计数 Control 类。
+    // 转换逻辑抽到 convert_batch_to_rows,与 notify_pull 写回共用。
     let now_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0);
 
-    let mut rows: Vec<EventRow> = Vec::with_capacity(body.events.len());
-    let mut control_count = 0usize;
-    let mut unknown_count = 0usize;
-    let mut has_force_close = false;
-
-    for (index, event_value) in body.events.iter().enumerate() {
-        let event_type = event_value
-            .get("eventType")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-        if event_type.is_empty() {
+    let BatchConversion {
+        rows,
+        control_count,
+        unknown_count,
+        has_force_close,
+    } = match convert_batch_to_rows(&body, now_ms) {
+        Ok(c) => c,
+        Err(index) => {
             tracing::warn!(status = 400, event_index = index, "push missing eventType",);
             return (StatusCode::BAD_REQUEST, "events[i].eventType required").into_response();
         }
-
-        match event_policy::policy(event_type) {
-            EventPolicy::ControlOnly => {
-                control_count += 1;
-                if event_type == "CONNECTION_FORCE_CLOSE" {
-                    has_force_close = true;
-                }
-            }
-            EventPolicy::Persist => {
-                if !is_known_event_type(event_type) {
-                    unknown_count += 1;
-                    tracing::warn!(
-                        event_type,
-                        event_index = index,
-                        "push unknown eventType (persisted by default)"
-                    );
-                }
-                // P1-9:Value::to_string() infallible(Display 永远产出有效 JSON)
-                let payload_json = event_value.to_string();
-                rows.push(EventRow {
-                    employee_id: body.employee_id,
-                    notify_seq: body.notify_seq as i64,
-                    event_index: index as i64,
-                    event_type: event_type.to_string(),
-                    event_reason: extract_str(event_value, "eventReason"),
-                    conversation_id: extract_str(event_value, "conversationId"),
-                    customer_user_id: extract_str(event_value, "customerUserId"),
-                    external_user_id: extract_str(event_value, "externalUserId"),
-                    client_id: body.client_id.clone(),
-                    batch_id: body.batch_id.clone(),
-                    batch_time: body.batch_time.clone(),
-                    event_time: extract_str(event_value, "eventTime"),
-                    payload_json,
-                    created_at_ms: now_ms,
-                });
-            }
-        }
-    }
+    };
 
     // 5+6. F7:**并行** persist + fanout(原本是串行的 await)。
     //
@@ -231,10 +195,13 @@ async fn handle_push(
 
     // P0-3:CONNECTION_FORCE_CLOSE grace 流程
     //   1. force_close 事件已经包在上面 fanout 的 events_json 里送达客户端
-    //   2. 等 grace,让客户端读完帧并显示提示
-    //   3. 然后摘除该 employee 的所有路由 → gRPC stream 自然关闭
-    //   4. 客户端旧 token 之后再 Subscribe 会被 verify_token 拒(token 已失效)
+    //   2. 立即失效该 employee 的鉴权缓存 → 旧 token 重连时不再命中缓存、强制回源 verify_token
+    //   3. 等 grace,让客户端读完帧并显示提示
+    //   4. 然后摘除该 employee 的所有路由 → gRPC stream 自然关闭
+    //   5. 客户端旧 token 之后再 Subscribe 由缓存失效 + 后台 verify_token 双重拒(不再只靠 TTL 自然过期)
     if has_force_close {
+        // 失效缓存:不依赖 grace timer,踢人即刻生效。
+        state.auth.invalidate_employee(body.employee_id).await;
         let router = state.router.clone();
         let emp_id = body.employee_id;
         let grace = state.force_close_grace_ms;
@@ -275,6 +242,82 @@ async fn handle_push(
         .into_response()
 }
 
+/// `convert_batch_to_rows` 的结果:待入库的 Persist 行 + 控制/未知计数。
+#[derive(Debug)]
+pub struct BatchConversion {
+    /// 仅 Persist 类事件(ControlOnly 不入库)。
+    pub rows: Vec<EventRow>,
+    pub control_count: usize,
+    pub unknown_count: usize,
+    pub has_force_close: bool,
+}
+
+/// 把一个 batch(push 入站 / notify_pull 拉回 共用同一 `PushBatchIn` 结构)分类转换为
+/// 待入库的 `EventRow`。去 axum 化 — 不返回 HTTP 响应,纯逻辑。
+///
+/// `Err(index)` = `events[index]` 的 `eventType` 为空。调用方决定语义:
+/// push 路径→400;notify_pull 写回→跳过该 batch + log。
+pub fn convert_batch_to_rows(b: &PushBatchIn, now_ms: i64) -> Result<BatchConversion, usize> {
+    let mut rows: Vec<EventRow> = Vec::with_capacity(b.events.len());
+    let mut control_count = 0usize;
+    let mut unknown_count = 0usize;
+    let mut has_force_close = false;
+
+    for (index, event_value) in b.events.iter().enumerate() {
+        let event_type = event_value
+            .get("eventType")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        if event_type.is_empty() {
+            return Err(index);
+        }
+
+        match event_policy::policy(event_type) {
+            EventPolicy::ControlOnly => {
+                control_count += 1;
+                if event_type == "CONNECTION_FORCE_CLOSE" {
+                    has_force_close = true;
+                }
+            }
+            EventPolicy::Persist => {
+                if !is_known_event_type(event_type) {
+                    unknown_count += 1;
+                    tracing::warn!(
+                        event_type,
+                        event_index = index,
+                        "batch unknown eventType (persisted by default)"
+                    );
+                }
+                // P1-9:Value::to_string() infallible(Display 永远产出有效 JSON)
+                let payload_json = event_value.to_string();
+                rows.push(EventRow {
+                    employee_id: b.employee_id,
+                    notify_seq: b.notify_seq as i64,
+                    event_index: index as i64,
+                    event_type: event_type.to_string(),
+                    event_reason: extract_str(event_value, "eventReason"),
+                    conversation_id: extract_str(event_value, "conversationId"),
+                    customer_user_id: extract_str(event_value, "customerUserId"),
+                    external_user_id: extract_str(event_value, "externalUserId"),
+                    client_id: b.client_id.clone(),
+                    batch_id: b.batch_id.clone(),
+                    batch_time: b.batch_time.clone(),
+                    event_time: extract_str(event_value, "eventTime"),
+                    payload_json,
+                    created_at_ms: now_ms,
+                });
+            }
+        }
+    }
+
+    Ok(BatchConversion {
+        rows,
+        control_count,
+        unknown_count,
+        has_force_close,
+    })
+}
+
 fn extract_str(value: &serde_json::Value, key: &str) -> Option<String> {
     value.get(key).and_then(|v| v.as_str()).map(String::from)
 }
@@ -304,6 +347,10 @@ mod tests {
         let db = tmp.path().join("t.db");
         let storage = Storage::open(&db).await.unwrap();
         std::mem::forget(tmp);
+        // invalidate_employee 只动本地缓存,不发网络;downstream 仅为构造 TokenAuthenticator。
+        let downstream = Arc::new(
+            crate::downstream::DownstreamClient::new_with_defaults("http://localhost").unwrap(),
+        );
         PushState {
             secret: "ps".into(),
             events_log: EventLog::new(storage),
@@ -311,6 +358,7 @@ mod tests {
             force_close_grace_ms: 50,
             allowed_client_ids: vec!["rh_wxchat".into()],
             max_body_bytes: 1024 * 1024,
+            auth: Arc::new(TokenAuthenticator::new(downstream)),
         }
     }
 
@@ -488,6 +536,46 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn push_force_close_invalidates_auth_cache_for_employee() {
+        let st = make_state().await;
+        // 预热 emp42 与 emp99 的鉴权缓存
+        st.auth
+            .prepopulate(
+                "tok-42",
+                crate::hub_service::UserCtx {
+                    user_id: "42".into(),
+                    accounts: vec![],
+                    device_id: String::new(),
+                    employee_id: 42,
+                },
+            )
+            .await;
+        st.auth
+            .prepopulate(
+                "tok-99",
+                crate::hub_service::UserCtx {
+                    user_id: "99".into(),
+                    accounts: vec![],
+                    device_id: String::new(),
+                    employee_id: 99,
+                },
+            )
+            .await;
+
+        let b = body(
+            700,
+            42,
+            serde_json::json!([{ "eventType": "CONNECTION_FORCE_CLOSE" }]),
+        );
+        let (status, _) = post(app(st.clone()), b, "ps").await;
+        assert_eq!(status, StatusCode::OK);
+
+        // emp42 旧 token 缓存被清,emp99 不受影响
+        assert!(!st.auth.is_cached_for_test("tok-42").await);
+        assert!(st.auth.is_cached_for_test("tok-99").await);
+    }
+
+    #[tokio::test]
     async fn push_fanout_delivers_to_registered_employee_stream() {
         let st = make_state().await;
         let (tx, mut rx) = tokio::sync::mpsc::channel(8);
@@ -515,6 +603,55 @@ mod tests {
             }
             other => panic!("expected PushBatch, got {other:?}"),
         }
+    }
+
+    fn batch_in(events: serde_json::Value) -> PushBatchIn {
+        PushBatchIn {
+            notify_seq: 500,
+            client_id: "rh_wxchat".into(),
+            employee_id: 42,
+            batch_id: Some("rh_wxchat:42:500".into()),
+            batch_time: Some("2026-05-14 10:30:00".into()),
+            events: events.as_array().unwrap().clone(),
+        }
+    }
+
+    #[test]
+    fn convert_persist_and_control_classified() {
+        let b = batch_in(serde_json::json!([
+            { "eventType": "MESSAGE_UPSERT", "conversationId": "c1", "eventReason": "X" },
+            { "eventType": "CONNECTION_FORCE_CLOSE" },
+        ]));
+        let c = convert_batch_to_rows(&b, 111).unwrap();
+        assert_eq!(c.rows.len(), 1); // 仅 Persist 入库
+        assert_eq!(c.control_count, 1);
+        assert!(c.has_force_close);
+        assert_eq!(c.unknown_count, 0);
+        let r = &c.rows[0];
+        assert_eq!(r.employee_id, 42);
+        assert_eq!(r.notify_seq, 500);
+        assert_eq!(r.event_index, 0);
+        assert_eq!(r.conversation_id.as_deref(), Some("c1"));
+        assert_eq!(r.event_reason.as_deref(), Some("X"));
+        assert_eq!(r.created_at_ms, 111);
+    }
+
+    #[test]
+    fn convert_unknown_type_persisted_and_counted() {
+        let b = batch_in(serde_json::json!([{ "eventType": "FUTURE_X", "f": 1 }]));
+        let c = convert_batch_to_rows(&b, 0).unwrap();
+        assert_eq!(c.rows.len(), 1);
+        assert_eq!(c.unknown_count, 1);
+        assert_eq!(c.rows[0].event_type, "FUTURE_X");
+    }
+
+    #[test]
+    fn convert_empty_event_type_errs_with_index() {
+        let b = batch_in(serde_json::json!([
+            { "eventType": "MESSAGE_UPSERT" },
+            { "noType": true },
+        ]));
+        assert_eq!(convert_batch_to_rows(&b, 0).unwrap_err(), 1);
     }
 
     #[tokio::test]

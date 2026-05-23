@@ -93,20 +93,25 @@ impl Router {
 
     /// Fanout 一个事件给某 employee 的所有在线连接。**完全无锁**,原子 load Arc。
     pub fn fanout_employee(&self, employee_id: i64, event: ServerEvent) -> FanoutOutcome {
-        // 复制 Vec(浅拷贝 mpsc::Sender — Arc-counted),Arc snapshot 立即可 drop
-        let conns: Vec<EmployeeStream> = {
-            let table = self.employees.load();
-            table.get(&employee_id).cloned().unwrap_or_default()
-        };
+        // 持 load guard 直接迭代,不再 clone 整个 Vec + 每条 connection_id/device_id String。
+        // try_send 非阻塞、无 await;register/drop 走 rcu(copy-on-write)不依赖此 guard,
+        // 故跨 send 持有 guard 无锁序风险。connection_id 仅在 send 失败(罕见)时才 clone。
+        let table = self.employees.load();
         let mut delivered = 0;
         let mut backpressure = Vec::new();
         let mut closed = Vec::new();
-        for c in conns {
-            // event.clone() 现在是 Bytes refcount bump(F6),不再深拷贝 events_json
-            match c.tx.try_send(Ok(event.clone())) {
-                Ok(()) => delivered += 1,
-                Err(mpsc::error::TrySendError::Full(_)) => backpressure.push(c.connection_id),
-                Err(mpsc::error::TrySendError::Closed(_)) => closed.push(c.connection_id),
+        if let Some(conns) = table.get(&employee_id) {
+            for c in conns {
+                // event.clone() 是 Bytes refcount bump(F6),不深拷贝 events_json
+                match c.tx.try_send(Ok(event.clone())) {
+                    Ok(()) => delivered += 1,
+                    Err(mpsc::error::TrySendError::Full(_)) => {
+                        backpressure.push(c.connection_id.clone())
+                    }
+                    Err(mpsc::error::TrySendError::Closed(_)) => {
+                        closed.push(c.connection_id.clone())
+                    }
+                }
             }
         }
         FanoutOutcome {

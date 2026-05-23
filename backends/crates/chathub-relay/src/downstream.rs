@@ -12,7 +12,7 @@
 use crate::config::{DownstreamRoutes, HttpMethod};
 use crate::error::{map_downstream_4xx_5xx, RelayError};
 use reqwest::Client;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::time::{Duration, Instant};
 
 /// 业务后台统一响应包络(2026-05-17 起):
@@ -77,6 +77,8 @@ pub struct AuthPaths {
     pub login: String,
     pub verify_token: String,
     pub logout: String,
+    /// notify/pull 通知补偿拉取(relay→业务端内部 RPC)。
+    pub notify_pull: String,
 }
 
 #[derive(Clone, Debug)]
@@ -153,6 +155,63 @@ pub struct VerifyTokenResp {
     pub nick_name: String,
 }
 
+/// notify/pull 请求体(relay→业务端,§6.4)。list 模式与 range 模式二选一:
+/// 传 `notify_seq_list` 时不要同时传 `start/end`。
+#[derive(Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct NotifyPullReq<'a> {
+    pub client_id: &'a str,
+    pub employee_id: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub notify_seq_list: Option<&'a [u64]>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub start_notify_seq: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub end_notify_seq: Option<u64>,
+    pub limit: u32,
+    pub request_id: &'a str,
+    /// 拉取原因:`RELAY_LOG_MISSING` / `PUSH_LOST` / `CLIENT_GAP_REPLAY` / `OPS_COMPENSATE`。
+    pub reason: &'a str,
+    pub trace_id: &'a str,
+}
+
+/// notify/pull 响应 data(§6.4)。
+#[derive(Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct NotifyPullResp {
+    #[serde(default)]
+    pub accepted: bool,
+    #[serde(default)]
+    pub employee_id: i64,
+    #[serde(default)]
+    pub batches: Vec<NotifyPullBatch>,
+    #[serde(default)]
+    pub missing_notify_seq_list: Vec<u64>,
+    #[serde(default)]
+    pub has_more: bool,
+    #[serde(default)]
+    pub next_start_notify_seq: Option<u64>,
+    #[serde(default)]
+    pub reject_code: Option<String>,
+    #[serde(default)]
+    pub reject_message: Option<String>,
+}
+
+/// notify/pull 命中的单个 batch。`payload` 与 §6.3 push body 同结构 →
+/// 由调用方 `serde_json::from_value::<PushBatchIn>` 复用解析。
+#[derive(Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct NotifyPullBatch {
+    pub notify_seq: u64,
+    #[serde(default)]
+    pub batch_id: Option<String>,
+    #[serde(default)]
+    pub batch_time: Option<String>,
+    #[serde(default)]
+    pub send_status: Option<i32>,
+    pub payload: serde_json::Value,
+}
+
 #[derive(Deserialize, Debug, Clone)]
 pub struct WecomAccount {
     pub wecom_account_id: String,
@@ -166,8 +225,27 @@ pub struct WecomAccount {
 const VERIFY_TOKEN_TIMEOUT: Duration = Duration::from_secs(3);
 /// 业务路径(forward)默认超时。比 verify 长,业务可能慢点。
 const BUSINESS_REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
+/// notify/pull 超时。介于 verify(3s)与业务(15s)之间 — 补偿拉取罕见但要兜住分页往返。
+const NOTIFY_PULL_TIMEOUT: Duration = Duration::from_secs(5);
 
 impl DownstreamClient {
+    /// base_url 的 host 是否为 loopback(localhost / 127.0.0.0/8 / ::1)。
+    fn is_loopback_base(base_url: &str) -> bool {
+        reqwest::Url::parse(base_url)
+            .ok()
+            .and_then(|u| u.host_str().map(str::to_owned))
+            .map(|host| match host.as_str() {
+                "localhost" => true,
+                h => h
+                    .trim_start_matches('[')
+                    .trim_end_matches(']')
+                    .parse::<std::net::IpAddr>()
+                    .map(|ip| ip.is_loopback())
+                    .unwrap_or(false),
+            })
+            .unwrap_or(false)
+    }
+
     pub fn new(base_url: &str, paths: AuthPaths, oauth: OAuthCreds) -> Result<Self, RelayError> {
         // F4:reqwest 全面 h2 调优 — 关键是 HTTP/2 多路复用,把 5000 conn × N forward
         // 收敛到 1-2 个 TCP carries 数千 streams。pool size 在 h2 下基本无意义,
@@ -190,6 +268,10 @@ impl DownstreamClient {
             // https 场景靠 ALPN 自动协商,不需要 prior_knowledge。
             builder = builder.http2_prior_knowledge();
         }
+        // loopback downstream(mock/dev)绕过系统代理:reqwest 默认读 ALL_PROXY,会把 127.0.0.1 请求误导向 SOCKS 代理,代理不在时触发 transient downstream。
+        if Self::is_loopback_base(base_url) {
+            builder = builder.no_proxy();
+        }
         let http = builder
             .build()
             .map_err(|e| RelayError::Http(e.to_string()))?;
@@ -210,6 +292,7 @@ impl DownstreamClient {
                 verify_token: "/wechat-business-app/rpc/v1/wecomAggregate/connection/verifyToken"
                     .into(),
                 logout: "/auth/logout".into(),
+                notify_pull: "/wechat-business-app/rpc/v1/wecomAggregate/notify/pull".into(),
             },
             OAuthCreds {
                 client_id: "rh_wxchat".into(),
@@ -434,6 +517,83 @@ impl DownstreamClient {
         Ok(body)
     }
 
+    /// notify/pull 通知补偿拉取(relay→业务端内部 RPC,§6.4)。
+    /// 形态同 verify_token:Bearer 透传客户端 token + `X-Relay-Employee-Id` 头,JSON body。
+    /// 2xx → 解 envelope 取 data;非 2xx → `map_downstream_4xx_5xx`;超时/连接错 → `Transient`。
+    pub async fn notify_pull(
+        &self,
+        client_token: &str,
+        req: NotifyPullReq<'_>,
+    ) -> Result<NotifyPullResp, RelayError> {
+        let url = format!("{}{}", self.base_url, self.paths.notify_pull);
+        let started = Instant::now();
+        let body = serde_json::to_vec(&req).map_err(|_| RelayError::Internal)?;
+
+        let resp = self
+            .http
+            .post(&url)
+            .bearer_auth(client_token)
+            .header("Content-Type", "application/json")
+            .header("X-Relay-Employee-Id", req.employee_id.to_string())
+            .body(body)
+            .timeout(NOTIFY_PULL_TIMEOUT)
+            .send()
+            .await
+            .map_err(|e| {
+                let elapsed_ms = started.elapsed().as_millis() as u64;
+                tracing::warn!(
+                    target: "chathub_relay::downstream",
+                    url = %url,
+                    error = %e,
+                    elapsed_ms,
+                    "notify_pull send failed",
+                );
+                if e.is_timeout() || e.is_connect() {
+                    RelayError::Transient
+                } else {
+                    RelayError::Http(e.to_string())
+                }
+            })?;
+
+        let status = resp.status();
+        let elapsed_ms = started.elapsed().as_millis() as u64;
+        if !status.is_success() {
+            let code = status.as_u16();
+            tracing::warn!(
+                target: "chathub_relay::downstream",
+                status = code,
+                elapsed_ms,
+                "notify_pull non-2xx",
+            );
+            return Err(map_downstream_4xx_5xx(code, "notify_pull returned non-2xx"));
+        }
+
+        let body_bytes = resp
+            .bytes()
+            .await
+            .map_err(|e| RelayError::Http(e.to_string()))?;
+        let data: NotifyPullResp = unwrap_envelope::<NotifyPullResp>(&body_bytes, "notify_pull")?
+            .ok_or_else(|| {
+            tracing::warn!(
+                target: "chathub_relay::downstream",
+                elapsed_ms,
+                "notify_pull envelope ok but data missing",
+            );
+            RelayError::Internal
+        })?;
+
+        tracing::info!(
+            target: "chathub_relay::downstream",
+            elapsed_ms,
+            employee_id = req.employee_id,
+            batches = data.batches.len(),
+            missing = data.missing_notify_seq_list.len(),
+            has_more = data.has_more,
+            "notify_pull ok",
+        );
+        Ok(data)
+    }
+
     // ─── Hub.Forward 透传 ────────────────────────────────────────────
     //
     // relay 不解析 body_json,按 routes 查到 method 对应的 (HTTP verb, 路径) 后整段透传。
@@ -445,7 +605,7 @@ impl DownstreamClient {
         routes: &DownstreamRoutes,
         method: &str,
         employee_id: i64,
-        body_bytes: &[u8],
+        body: bytes::Bytes,
         query: &std::collections::HashMap<String, String>,
         client_token: &str,
     ) -> Result<ForwardOutcome, RelayError> {
@@ -459,18 +619,18 @@ impl DownstreamClient {
             verb = ?spec.method,
             url = %url,
             employee_id,
-            body_len = body_bytes.len(),
+            body_len = body.len(),
             query_len = query.len(),
             "forward request",
         );
 
         let builder = match spec.method {
             HttpMethod::Get => {
-                if !body_bytes.is_empty() {
+                if !body.is_empty() {
                     tracing::debug!(
                         target: "chathub_relay::downstream",
                         method,
-                        body_len = body_bytes.len(),
+                        body_len = body.len(),
                         "GET method given non-empty body — ignored",
                     );
                 }
@@ -486,10 +646,11 @@ impl DownstreamClient {
                         "POST method given query params — ignored (POST 用 body 传参)",
                     );
                 }
+                // body 直接交给 reqwest(Bytes → Body 零拷贝),不再 to_vec() 多拷一次
                 self.http
                     .post(&url)
                     .header("Content-Type", "application/json")
-                    .body(body_bytes.to_vec())
+                    .body(body)
             }
         };
 
@@ -770,6 +931,118 @@ mod tests {
         assert!(matches!(err, RelayError::InvalidCreds));
     }
 
+    const NOTIFY_PULL_PATH: &str = "/wechat-business-app/rpc/v1/wecomAggregate/notify/pull";
+
+    fn pull_req<'a>(start: u64, limit: u32) -> NotifyPullReq<'a> {
+        NotifyPullReq {
+            client_id: "rh_wxchat",
+            employee_id: 42,
+            notify_seq_list: None,
+            start_notify_seq: Some(start),
+            end_notify_seq: None,
+            limit,
+            request_id: "PULL_TEST_1",
+            reason: "RELAY_LOG_MISSING",
+            trace_id: "TRACE_TEST_1",
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn notify_pull_parses_batches_and_pagination() {
+        let mock = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path(NOTIFY_PULL_PATH))
+            .and(header("authorization", "Bearer client-xyz"))
+            .and(header("content-type", "application/json"))
+            .and(header("x-relay-employee-id", "42"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(envelope_ok_json(
+                serde_json::json!({
+                    "accepted": true,
+                    "clientId": "rh_wxchat",
+                    "employeeId": 42,
+                    "batches": [{
+                        "notifySeq": 1025,
+                        "batchId": "rh_wxchat:42:1025",
+                        "batchTime": "2026-05-17 11:28:00",
+                        "sendStatus": 1,
+                        "payload": {
+                            "notifySeq": 1025,
+                            "clientId": "rh_wxchat",
+                            "employeeId": 42,
+                            "batchId": "rh_wxchat:42:1025",
+                            "batchTime": "2026-05-17 11:28:00",
+                            "events": [{ "eventType": "MESSAGE_UPSERT", "conversationId": "c1" }]
+                        }
+                    }],
+                    "missingNotifySeqList": [1026],
+                    "hasMore": true,
+                    "nextStartNotifySeq": 1027
+                }),
+            )))
+            .mount(&mock)
+            .await;
+        let client = DownstreamClient::new_with_defaults(&mock.uri()).unwrap();
+        let resp = client
+            .notify_pull("client-xyz", pull_req(1025, 100))
+            .await
+            .unwrap();
+        assert!(resp.accepted);
+        assert_eq!(resp.batches.len(), 1);
+        assert_eq!(resp.batches[0].notify_seq, 1025);
+        assert_eq!(resp.missing_notify_seq_list, vec![1026]);
+        assert!(resp.has_more);
+        assert_eq!(resp.next_start_notify_seq, Some(1027));
+        // payload 与 §6.3 push body 同构,可直接解析
+        assert_eq!(
+            resp.batches[0].payload["events"][0]["eventType"],
+            "MESSAGE_UPSERT"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn notify_pull_404_maps_protocol_mismatch() {
+        let mock = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path(NOTIFY_PULL_PATH))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&mock)
+            .await;
+        let client = DownstreamClient::new_with_defaults(&mock.uri()).unwrap();
+        let err = client.notify_pull("t", pull_req(1, 100)).await.unwrap_err();
+        assert!(matches!(
+            err,
+            RelayError::ProtocolMismatch { code: 404, .. }
+        ));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn notify_pull_503_maps_transient() {
+        let mock = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path(NOTIFY_PULL_PATH))
+            .respond_with(ResponseTemplate::new(503))
+            .mount(&mock)
+            .await;
+        let client = DownstreamClient::new_with_defaults(&mock.uri()).unwrap();
+        let err = client.notify_pull("t", pull_req(1, 100)).await.unwrap_err();
+        assert!(matches!(err, RelayError::Transient));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn notify_pull_malformed_maps_internal() {
+        let mock = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path(NOTIFY_PULL_PATH))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"garbage": true})),
+            )
+            .mount(&mock)
+            .await;
+        let client = DownstreamClient::new_with_defaults(&mock.uri()).unwrap();
+        let err = client.notify_pull("t", pull_req(1, 100)).await.unwrap_err();
+        assert!(matches!(err, RelayError::Internal));
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn logout_is_best_effort_ok_even_on_404() {
         let mock = MockServer::start().await;
@@ -795,7 +1068,7 @@ mod tests {
                 &routes,
                 "send",
                 42,
-                br#"{"x":1}"#,
+                bytes::Bytes::from_static(br#"{"x":1}"#),
                 &std::collections::HashMap::new(),
                 "client-xyz",
             )
@@ -825,7 +1098,7 @@ mod tests {
                 &routes,
                 "list_accounts",
                 42,
-                b"ignored-body",
+                bytes::Bytes::from_static(b"ignored-body"),
                 &std::collections::HashMap::new(),
                 "client-xyz",
             )
@@ -854,7 +1127,14 @@ mod tests {
         let mut q = std::collections::HashMap::new();
         q.insert("enabled".to_string(), "true".to_string());
         let outcome = client
-            .forward(&routes, "list_accounts", 42, b"", &q, "client-xyz")
+            .forward(
+                &routes,
+                "list_accounts",
+                42,
+                bytes::Bytes::new(),
+                &q,
+                "client-xyz",
+            )
             .await
             .unwrap();
         assert_eq!(outcome.http_status, 200);
@@ -870,7 +1150,7 @@ mod tests {
                 &routes,
                 "unknown_method",
                 1,
-                b"",
+                bytes::Bytes::new(),
                 &std::collections::HashMap::new(),
                 "tok",
             )
@@ -897,7 +1177,7 @@ mod tests {
                 &routes,
                 "send",
                 1,
-                b"{}",
+                bytes::Bytes::from_static(b"{}"),
                 &std::collections::HashMap::new(),
                 "tok",
             )
@@ -921,7 +1201,7 @@ mod tests {
                 &routes,
                 "send",
                 1,
-                b"{}",
+                bytes::Bytes::from_static(b"{}"),
                 &std::collections::HashMap::new(),
                 "tok",
             )

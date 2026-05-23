@@ -39,6 +39,7 @@ async fn main() -> anyhow::Result<()> {
             login: cfg.path_login.clone(),
             verify_token: cfg.path_verify_token.clone(),
             logout: cfg.path_logout.clone(),
+            notify_pull: cfg.path_notify_pull.clone(),
         },
         chathub_relay::downstream::OAuthCreds {
             client_id: cfg.oauth_client_id.clone(),
@@ -62,6 +63,15 @@ async fn main() -> anyhow::Result<()> {
         downstream: downstream.clone(),
         auth: auth.clone(),
         routes: cfg.routes.clone(),
+        client_id: cfg
+            .allowed_client_ids
+            .first()
+            .cloned()
+            .unwrap_or_else(|| "rh_wxchat".into()),
+        notify_pull_enabled: cfg.notify_pull_enabled,
+        notify_pull_page_size: cfg.notify_pull_page_size,
+        notify_pull_max_iters: cfg.notify_pull_max_iters,
+        notify_pull_budget_ms: cfg.notify_pull_budget_ms,
     };
 
     let grpc_listener = TcpListener::bind(cfg.grpc_addr).await?;
@@ -73,6 +83,7 @@ async fn main() -> anyhow::Result<()> {
         force_close_grace_ms: cfg.force_close_grace_ms,
         allowed_client_ids: cfg.allowed_client_ids.clone(),
         max_body_bytes: cfg.push_max_body_bytes,
+        auth: auth.clone(),
     };
     let push_app = push::app(push_state);
 
@@ -115,7 +126,7 @@ async fn main() -> anyhow::Result<()> {
     //   1. 收到 Ctrl-C / SIGTERM 后,先广播 SERVER_DRAIN 给所有连接
     //   2. 等 grace 让客户端读完帧并主动断
     //   3. 用 graceful_shutdown 让 tonic + axum 排空在途请求后退出
-    let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 
     // 监听信号的 task
     let router_for_signal = router.clone();
@@ -161,6 +172,8 @@ async fn main() -> anyhow::Result<()> {
         .initial_stream_window_size(256 * 1024)                         // F4 T4 → 256KB
         .max_concurrent_streams(Some(256))                              // F4 T6 防 stream-flood
         .concurrency_limit_per_connection(256); // F4 T7
+                                                // 注:以上均为 per-connection 限流;全局 TCP 连接数上限依赖基础设施层(LB/网关)兜底,
+                                                // relay 本身不设全局连接上限。
     if let Some(tls) = tls_config {
         server_builder = server_builder.tls_config(tls)?;
     }
@@ -189,15 +202,17 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
-    tokio::select! {
-        r = grpc_fut => { r?; tracing::info!("gRPC server exited"); }
-        r = axum_fut => { r?; tracing::info!("axum server exited"); }
-        _ = shutdown_rx.changed() => {
-            if *shutdown_rx.borrow() {
-                tracing::info!("shutdown signal observed; waiting for server tasks");
-            }
-        }
-    }
+    // 必须等两个 server **都排空完**再退出:它们各自的 graceful-shutdown future
+    // 已接到同一个 watch,信号到来后会各自排空在途请求并返回。用 join! 而非 select! —
+    // select! 会在 watch 翻 true 的瞬间(或任一 server 先返回时)立即退出并 drop 掉另一个
+    // 仍在排空的 server,把 SERVER_DRAIN 之后的真正排空掐断。
+    // 取舍:join! 下若某 server 在无信号时意外提前返回,另一个会继续跑到信号才退出 ——
+    // 为换取"信号到来时两端都真正排空"的有意取舍,serve 中途返回 Err 属极少见路径。
+    let (grpc_res, axum_res) = tokio::join!(grpc_fut, axum_fut);
+    grpc_res?;
+    tracing::info!("gRPC server exited");
+    axum_res?;
+    tracing::info!("axum server exited");
 
     tracing::info!("relay graceful shutdown complete");
     Ok(())

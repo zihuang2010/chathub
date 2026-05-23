@@ -121,6 +121,11 @@ pub struct TokenAuthenticator {
     cache: moka::future::Cache<String, UserCtx>,
     /// 同 token 并发 miss 时 dedupe 到一个 verify_token 调用,避免 stampede。
     inflight: dashmap::DashMap<String, Arc<OnceCell<InflightResult>>>,
+    /// employee_id → 该员工近期 cache key,供 `invalidate_employee` 反查后逐 key 失效。
+    /// relay 无法从 employee_id 反查 token,故维护此小索引;每员工上限 16,
+    /// 仅在写缓存的冷路径维护,不碰 authenticate 命中热路径。
+    /// 条目随 invalidate_employee 移除;企微客服员工数有界,内存可控。
+    emp_keys: dashmap::DashMap<i64, Vec<String>>,
 }
 
 impl TokenAuthenticator {
@@ -138,6 +143,7 @@ impl TokenAuthenticator {
                 .time_to_live(MAX_CACHE_TTL)
                 .build(),
             inflight: dashmap::DashMap::new(),
+            emp_keys: dashmap::DashMap::new(),
         }
     }
 
@@ -195,6 +201,7 @@ impl TokenAuthenticator {
         // 短 TTL token 仍能用全局 TTL 包,过期由 moka 自动剔除。
         if leader_guard.is_some() {
             if let Ok((ctx, _ttl)) = &result {
+                self.record_employee_key(ctx.employee_id, key.clone());
                 self.cache.insert(key.clone(), ctx.clone()).await;
             }
         }
@@ -209,13 +216,53 @@ impl TokenAuthenticator {
     /// / 5min TTL 过期)时才调,真正"登录刚结束就 Subscribe"那一次完全跳过。
     pub async fn prepopulate(&self, token: &str, ctx: UserCtx) {
         let key = cache_key(token);
+        self.record_employee_key(ctx.employee_id, key.clone());
         self.cache.insert(key, ctx).await;
+    }
+
+    /// 登出时按 token 精确失效 —— 否则旧 token 在 5min TTL 内仍能命中缓存 Subscribe/Ack。
+    pub async fn invalidate(&self, token: &str) {
+        self.cache.invalidate(&cache_key(token)).await;
+    }
+
+    /// FORCE_CLOSE(独占登录被踢)时失效该 employee 的所有缓存 token,含被踢的旧 token。
+    /// 逐 key 调 `cache.invalidate`(确定性即时),不用 moka 的 `invalidate_entries_if` —
+    /// 后者按内部量化时间戳惰性失效,登录与踢人间隔很短时不生效,不适合安全失效。
+    pub async fn invalidate_employee(&self, employee_id: i64) {
+        if let Some((_, keys)) = self.emp_keys.remove(&employee_id) {
+            for k in keys {
+                self.cache.invalidate(&k).await;
+            }
+        }
+    }
+
+    /// 记录 employee 当前 token 的 cache key(去重 + 每员工上限),供 invalidate_employee 反查。
+    /// 仅在写缓存(login 预填 / verify 回填)的冷路径调用,不碰 authenticate 命中热路径。
+    fn record_employee_key(&self, employee_id: i64, key: String) {
+        const MAX_KEYS_PER_EMPLOYEE: usize = 16;
+        let mut entry = self.emp_keys.entry(employee_id).or_default();
+        let keys = entry.value_mut();
+        if !keys.contains(&key) {
+            keys.push(key);
+            if keys.len() > MAX_KEYS_PER_EMPLOYEE {
+                keys.remove(0);
+            }
+        }
+    }
+
+    /// 测试辅助:强制跑完 moka 惰性失效后,判断 token 是否仍在缓存。跨模块测试(push)用。
+    #[cfg(test)]
+    pub(crate) async fn is_cached_for_test(&self, token: &str) -> bool {
+        self.cache.run_pending_tasks().await;
+        self.cache.get(&cache_key(token)).await.is_some()
     }
 }
 
+/// cache key:token 的完整 SHA-256 十六进制。
+/// 不截断 —— 截断到前 8 字节(64bit)存在 token 碰撞返回他人 UserCtx 的身份冒用风险。
+/// 仍 hash 而非存明文,避免 token 原文驻留内存。
 fn cache_key(token: &str) -> String {
-    let digest = Sha256::digest(token.as_bytes());
-    hex::encode(&digest[..8])
+    hex::encode(Sha256::digest(token.as_bytes()))
 }
 
 // ─── HubSvc ────────────────────────────────────────────────────────────────
@@ -228,6 +275,13 @@ pub struct HubSvc {
     pub auth: Arc<TokenAuthenticator>,
     /// Hub.Forward 的 method → HTTP path 映射(env-driven)。
     pub routes: DownstreamRoutes,
+    /// 通知流 clientId(notify/pull 请求体用)。固定 `rh_wxchat`。
+    pub client_id: String,
+    /// notify/pull 补偿拉取配置(来自 Config)。
+    pub notify_pull_enabled: bool,
+    pub notify_pull_page_size: u32,
+    pub notify_pull_max_iters: u32,
+    pub notify_pull_budget_ms: u64,
 }
 
 impl HubSvc {
@@ -246,6 +300,122 @@ impl HubSvc {
             .ok_or_else(|| Status::unauthenticated("missing bearer"))?
             .0
             .clone())
+    }
+
+    /// 缺口补偿:从业务端 outbox 同步分页拉取 `notify_seq > since` 的批次,幂等写回本地
+    /// event log(复用 push 的 `convert_batch_to_rows`)。
+    ///
+    /// 返回 `true` = 已完整补齐(服务端 `has_more=false` 自然结束);
+    /// `false` = 失败 / 超时间预算 / 超迭代上限 / 游标不前进 → 调用方置 `resync_required=true`
+    /// 让客户端走 REST 全量兜底。受 `notify_pull_budget_ms` + `notify_pull_max_iters` 双重约束,
+    /// 绝不在重连风暴下挂死 subscribe。
+    async fn backfill_from_outbox(
+        &self,
+        client_token: &str,
+        employee_id: i64,
+        since: u64,
+        reason: &str,
+    ) -> bool {
+        use crate::downstream::NotifyPullReq;
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        let deadline = std::time::Instant::now()
+            + std::time::Duration::from_millis(self.notify_pull_budget_ms);
+        let mut start = since + 1;
+
+        for iter in 0..self.notify_pull_max_iters {
+            if std::time::Instant::now() >= deadline {
+                tracing::warn!(
+                    employee_id,
+                    start,
+                    "notify_pull over budget; aborting backfill"
+                );
+                return false;
+            }
+            let request_id = format!("PULL_{employee_id}_{since}_{iter}");
+            let resp = match self
+                .downstream
+                .notify_pull(
+                    client_token,
+                    NotifyPullReq {
+                        client_id: &self.client_id,
+                        employee_id,
+                        notify_seq_list: None,
+                        start_notify_seq: Some(start),
+                        end_notify_seq: None,
+                        limit: self.notify_pull_page_size,
+                        request_id: &request_id,
+                        reason,
+                        trace_id: &request_id,
+                    },
+                )
+                .await
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::warn!(employee_id, error = %e, "notify_pull request failed; aborting backfill");
+                    return false;
+                }
+            };
+
+            // 写回:payload 与 §6.3 push body 同构 → 复用 PushBatchIn + convert_batch_to_rows。
+            // missing_notify_seq_list 不算失败(被关键词过滤的消息不占 notifySeq,是合法空洞)。
+            let mut max_seq_seen = start.saturating_sub(1);
+            for b in &resp.batches {
+                max_seq_seen = max_seq_seen.max(b.notify_seq);
+                match serde_json::from_value::<crate::push::PushBatchIn>(b.payload.clone()) {
+                    Ok(pb) => match crate::push::convert_batch_to_rows(&pb, now_ms) {
+                        Ok(c) => {
+                            if let Err(e) = self.events_log.insert_batch(c.rows).await {
+                                tracing::warn!(employee_id, error = %e, "backfill insert_batch failed");
+                                return false;
+                            }
+                        }
+                        Err(idx) => tracing::warn!(
+                            employee_id,
+                            notify_seq = b.notify_seq,
+                            event_index = idx,
+                            "backfill batch has empty eventType; skipped"
+                        ),
+                    },
+                    Err(e) => tracing::warn!(
+                        employee_id,
+                        notify_seq = b.notify_seq,
+                        error = %e,
+                        "backfill payload parse failed; skipped"
+                    ),
+                }
+            }
+
+            if !resp.has_more {
+                tracing::info!(
+                    employee_id,
+                    iters = iter + 1,
+                    "notify_pull backfill complete"
+                );
+                return true;
+            }
+            // 推进游标;服务端没给 next 或没前进则中止,避免死循环。
+            let next = resp.next_start_notify_seq.unwrap_or(max_seq_seen + 1);
+            if next <= start {
+                tracing::warn!(
+                    employee_id,
+                    start,
+                    next,
+                    "notify_pull cursor not advancing; aborting"
+                );
+                return false;
+            }
+            start = next;
+        }
+        tracing::warn!(
+            employee_id,
+            max_iters = self.notify_pull_max_iters,
+            "notify_pull hit max iters; backfill incomplete"
+        );
+        false
     }
 }
 
@@ -308,6 +478,8 @@ impl Hub for HubSvc {
         req: Request<SubscribeRequest>,
     ) -> Result<Response<Self::SubscribeStream>, Status> {
         let ctx = self.authenticate(&req).await?;
+        // notify/pull 缺口补偿透传同一客户端 token(在 into_inner 消费 req 前抓取)。
+        let client_token = self.bearer(&req)?;
         let inner = req.into_inner();
         tracing::Span::current().record("employee_id", ctx.employee_id);
         tracing::Span::current().record("device_id", inner.device_id.as_str());
@@ -340,18 +512,47 @@ impl Hub for HubSvc {
         let (earliest_result, query_result) = tokio::join!(earliest_fut, query_fut);
 
         let earliest = earliest_result.map_err(|e| Status::from(RelayError::from(e)))?;
-        let (mut resync_required, mut resync_reason) = if since > 0 {
-            match earliest {
-                Some((min_seq, _)) if (min_seq as u64) > since + 1 => {
-                    (true, "since out of retention window".to_string())
-                }
-                _ => (false, String::new()),
+        let initial_rows = query_result.map_err(|e| Status::from(RelayError::from(e)))?;
+
+        // 缺口判定:since>0 且(日志全空[全损 / 换机]或最早 seq 已跳过 since+1[窗口缺口])。
+        // earliest=None && since>0 是过去的静默丢失盲区 —— 现在也判为缺口,触发补偿。
+        let earliest_seq = earliest.map(|(s, _)| s as u64);
+        let needs_pull = since > 0 && earliest_seq.map(|min| min > since + 1).unwrap_or(true);
+
+        let mut resync_required = false;
+        let mut resync_reason = String::new();
+
+        // 缺口 → 同步预算化向业务端 outbox 补偿拉取(notify/pull)。补齐后重查日志续点;
+        // 失败/超预算/关闭 → 置 resync_required 让客户端走 REST 全量兜底(永不静默丢)。
+        let mut rows = if needs_pull {
+            let reason_code = if earliest_seq.is_none() {
+                "RELAY_LOG_MISSING"
+            } else {
+                "CLIENT_GAP_REPLAY"
+            };
+            let pulled_ok = if self.notify_pull_enabled {
+                self.backfill_from_outbox(&client_token, ctx.employee_id, since, reason_code)
+                    .await
+            } else {
+                false
+            };
+            if !pulled_ok {
+                resync_required = true;
+                resync_reason = if self.notify_pull_enabled {
+                    "notify_pull backfill incomplete; resync via recentFriends/history".to_string()
+                } else {
+                    "notify_pull disabled; resync via recentFriends/history".to_string()
+                };
             }
+            // 不论补偿是否完整,都以重查结果回放(补回的部分能直接续点)。
+            self.events_log
+                .query_since(ctx.employee_id, since as i64, REPLAY_LIMIT + 1)
+                .await
+                .map_err(|e| Status::from(RelayError::from(e)))?
         } else {
-            (false, String::new())
+            initial_rows
         };
 
-        let mut rows = query_result.map_err(|e| Status::from(RelayError::from(e)))?;
         let more_available = rows.len() as i64 > REPLAY_LIMIT;
         if more_available {
             rows.truncate(REPLAY_LIMIT as usize);
@@ -488,7 +689,7 @@ impl Hub for HubSvc {
                 &self.routes,
                 &r.method,
                 ctx.employee_id,
-                &r.body_json,
+                r.body_json,
                 &r.query,
                 &client_token,
             )
@@ -593,6 +794,11 @@ mod tests {
             downstream: downstream.clone(),
             auth: Arc::new(TokenAuthenticator::new(downstream)),
             routes: crate::config::DownstreamRoutes::default_for_test(),
+            client_id: "rh_wxchat".into(),
+            notify_pull_enabled: true,
+            notify_pull_page_size: 100,
+            notify_pull_max_iters: 50,
+            notify_pull_budget_ms: 4000,
         }
     }
 
@@ -726,6 +932,45 @@ mod tests {
         let auth = TokenAuthenticator::new(downstream);
         let _ = auth.authenticate("tok-X").await.unwrap();
         let _ = auth.authenticate("tok-X").await.unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn authenticator_invalidate_forces_reverify() {
+        let mock = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path(VERIFY_PATH))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(envelope_ok_json(serde_json::json!({
+                    "employeeId": 7, "username": "", "nickName": "", "mobile": "", "channel": ""
+                }))),
+            )
+            .expect(2) // invalidate 后第二次必须回源
+            .mount(&mock)
+            .await;
+        let downstream =
+            Arc::new(crate::downstream::DownstreamClient::new_with_defaults(&mock.uri()).unwrap());
+        let auth = TokenAuthenticator::new(downstream);
+        let _ = auth.authenticate("tok-inv").await.unwrap();
+        assert!(auth.is_cached_for_test("tok-inv").await);
+        auth.invalidate("tok-inv").await;
+        assert!(!auth.is_cached_for_test("tok-inv").await);
+        let _ = auth.authenticate("tok-inv").await.unwrap(); // 回源(verify 第 2 次)
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn authenticator_invalidate_employee_evicts_only_that_employee() {
+        let mock = MockServer::start().await;
+        mount_verify_token(&mock, "tok-emp7", 7, "dev").await;
+        mount_verify_token(&mock, "tok-emp8", 8, "dev").await;
+        let downstream =
+            Arc::new(crate::downstream::DownstreamClient::new_with_defaults(&mock.uri()).unwrap());
+        let auth = TokenAuthenticator::new(downstream);
+        assert_eq!(auth.authenticate("tok-emp7").await.unwrap().employee_id, 7);
+        assert_eq!(auth.authenticate("tok-emp8").await.unwrap().employee_id, 8);
+        auth.invalidate_employee(7).await;
+        // emp7 的 token 被逐 key 失效;emp8 不受影响
+        assert!(!auth.is_cached_for_test("tok-emp7").await);
+        assert!(auth.is_cached_for_test("tok-emp8").await);
     }
 
     #[tokio::test(flavor = "multi_thread")]

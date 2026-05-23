@@ -53,6 +53,10 @@ pub struct Config {
     pub path_verify_token: String,
     /// logout 路径(env `RELAY_PATH_LOGOUT`,默认 `/auth/logout`)。
     pub path_logout: String,
+    /// notify/pull 通知补偿拉取路径(env `RELAY_PATH_NOTIFY_PULL`,默认
+    /// `/wechat-business-app/rpc/v1/wecomAggregate/notify/pull`)。relay→业务端内部 RPC,
+    /// 客户端禁止经 Forward 触达,故独立字段而非进 DownstreamRoutes。
+    pub path_notify_pull: String,
     /// OAuth2 Basic client id(env `RELAY_OAUTH_CLIENT_ID`,默认 `rh_wxchat`)。
     pub oauth_client_id: String,
     /// OAuth2 Basic client secret(env `RELAY_OAUTH_CLIENT_SECRET`,默认 `rh_wxchat`)。
@@ -64,6 +68,17 @@ pub struct Config {
     /// TokenAuthenticator moka cache 最大条目数。env `RELAY_AUTH_CACHE_MAX_ENTRIES`,默认 10000。
     /// 高 QPS / 大量不同 token 场景调高;受限内存场景调低。
     pub auth_cache_max_entries: u64,
+    /// notify/pull 补偿拉取总开关(env `RELAY_NOTIFY_PULL_ENABLED`,默认 true)。
+    /// 关闭后 subscribe 检测到缺口直接置 resync_required=true,让客户端走 REST 全量兜底。
+    pub notify_pull_enabled: bool,
+    /// 单次 notify/pull 范围拉取最大条数(env `RELAY_NOTIFY_PULL_PAGE_SIZE`,默认 100)。
+    /// 读取时夹到 1..=200(规范 §6.4 单次 ≤200)。
+    pub notify_pull_page_size: u32,
+    /// subscribe catch-up 循环最大迭代次数(env `RELAY_NOTIFY_PULL_MAX_ITERS`,默认 50)。
+    pub notify_pull_max_iters: u32,
+    /// subscribe catch-up 同步拉取的时间预算 ms(env `RELAY_NOTIFY_PULL_BUDGET_MS`,默认 4000)。
+    /// 超预算则停止拉取并置 resync_required=true。validate() 拒 0。
+    pub notify_pull_budget_ms: u64,
 }
 
 /// `Hub.Forward(method, body_json)` 时,relay 用这张表把 method 转成 (HTTP verb, 业务后台路径)。
@@ -265,6 +280,9 @@ impl Config {
             }),
             path_logout: std::env::var("RELAY_PATH_LOGOUT")
                 .unwrap_or_else(|_| "/auth/logout".into()),
+            path_notify_pull: std::env::var("RELAY_PATH_NOTIFY_PULL").unwrap_or_else(|_| {
+                "/wechat-business-app/rpc/v1/wecomAggregate/notify/pull".into()
+            }),
             oauth_client_id: std::env::var("RELAY_OAUTH_CLIENT_ID")
                 .unwrap_or_else(|_| "rh_wxchat".into()),
             // F2 安全:secret 可走 *_FILE 路径,生产推荐;直填仅 dev 用
@@ -306,6 +324,23 @@ impl Config {
                 .and_then(|s| s.parse().ok())
                 .filter(|n: &u64| *n > 0)
                 .unwrap_or(10_000),
+            notify_pull_enabled: std::env::var("RELAY_NOTIFY_PULL_ENABLED")
+                .map(|v| v != "false" && v != "0")
+                .unwrap_or(true),
+            notify_pull_page_size: std::env::var("RELAY_NOTIFY_PULL_PAGE_SIZE")
+                .ok()
+                .and_then(|s| s.parse::<u32>().ok())
+                .map(|n| n.clamp(1, 200))
+                .unwrap_or(100),
+            notify_pull_max_iters: std::env::var("RELAY_NOTIFY_PULL_MAX_ITERS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .filter(|n: &u32| *n > 0)
+                .unwrap_or(50),
+            notify_pull_budget_ms: std::env::var("RELAY_NOTIFY_PULL_BUDGET_MS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(4000),
         })
     }
 
@@ -340,6 +375,11 @@ impl Config {
         }
         if self.event_retention_days == 0 {
             errors.push("RELAY_EVENT_RETENTION_DAYS 不能为 0(否则 GC 启动即清空所有事件)".into());
+        }
+        if self.notify_pull_budget_ms == 0 {
+            errors.push(
+                "RELAY_NOTIFY_PULL_BUDGET_MS 不能为 0(否则补偿拉取永远超预算,等于禁用)".into(),
+            );
         }
         if self.allowed_client_ids.is_empty() {
             errors.push("RELAY_ALLOWED_CLIENT_IDS 不能为空 — 否则没有任何 client 能 push".into());
@@ -381,6 +421,7 @@ impl Config {
              \x20  path_login            = {}\n\
              \x20  path_verify_token     = {}\n\
              \x20  path_logout           = {}\n\
+             \x20  path_notify_pull      = {}\n\
              \x20  oauth_client_id       = {}\n\
              \x20  oauth_client_secret   = {}\n\
              \x20  tls                   = {}\n\
@@ -389,6 +430,10 @@ impl Config {
              \x20  force_close_grace_ms  = {}\n\
              \x20  allowed_client_ids    = {:?}\n\
              \x20  auth_cache_max_entries= {}\n\
+             \x20  notify_pull_enabled   = {}\n\
+             \x20  notify_pull_page_size = {}\n\
+             \x20  notify_pull_max_iters = {}\n\
+             \x20  notify_pull_budget_ms = {}\n\
              \x20  log.dir               = {}\n\
              \x20  log.file_prefix       = {}\n\
              \x20  log.stdout            = {:?}\n\
@@ -402,6 +447,7 @@ impl Config {
             self.path_login,
             self.path_verify_token,
             self.path_logout,
+            self.path_notify_pull,
             self.oauth_client_id,
             Redacted(&self.oauth_client_secret),
             tls,
@@ -410,6 +456,10 @@ impl Config {
             self.force_close_grace_ms,
             self.allowed_client_ids,
             self.auth_cache_max_entries,
+            self.notify_pull_enabled,
+            self.notify_pull_page_size,
+            self.notify_pull_max_iters,
+            self.notify_pull_budget_ms,
             self.log.dir.display(),
             self.log.file_prefix,
             self.log.stdout,
@@ -549,6 +599,11 @@ mod tests {
             "RELAY_TLS_KEY_PATH",
             "RELAY_PUSH_MAX_BODY_BYTES",
             "RELAY_EVENT_RETENTION_DAYS",
+            "RELAY_PATH_NOTIFY_PULL",
+            "RELAY_NOTIFY_PULL_ENABLED",
+            "RELAY_NOTIFY_PULL_PAGE_SIZE",
+            "RELAY_NOTIFY_PULL_MAX_ITERS",
+            "RELAY_NOTIFY_PULL_BUDGET_MS",
         ] {
             std::env::remove_var(k);
         }
@@ -879,6 +934,67 @@ mod tests {
         let err = Config::from_env().unwrap_err();
         match err {
             ConfigError::ValidationFailed(m) => assert!(m.contains("RELAY_EVENT_RETENTION_DAYS")),
+            other => panic!("wrong: {other:?}"),
+        }
+        clear_all();
+    }
+
+    #[test]
+    fn notify_pull_defaults_apply() {
+        let _g = ENV_LOCK.lock();
+        clear_all();
+        set_required();
+        let cfg = Config::from_env().unwrap();
+        assert_eq!(
+            cfg.path_notify_pull,
+            "/wechat-business-app/rpc/v1/wecomAggregate/notify/pull"
+        );
+        assert!(cfg.notify_pull_enabled);
+        assert_eq!(cfg.notify_pull_page_size, 100);
+        assert_eq!(cfg.notify_pull_max_iters, 50);
+        assert_eq!(cfg.notify_pull_budget_ms, 4000);
+        clear_all();
+    }
+
+    #[test]
+    fn notify_pull_overrides_and_clamps() {
+        let _g = ENV_LOCK.lock();
+        clear_all();
+        set_required();
+        std::env::set_var("RELAY_PATH_NOTIFY_PULL", "/custom/pull");
+        std::env::set_var("RELAY_NOTIFY_PULL_ENABLED", "false");
+        std::env::set_var("RELAY_NOTIFY_PULL_PAGE_SIZE", "999"); // 夹到 200
+        std::env::set_var("RELAY_NOTIFY_PULL_MAX_ITERS", "10");
+        std::env::set_var("RELAY_NOTIFY_PULL_BUDGET_MS", "2000");
+        let cfg = Config::from_env().unwrap();
+        assert_eq!(cfg.path_notify_pull, "/custom/pull");
+        assert!(!cfg.notify_pull_enabled);
+        assert_eq!(cfg.notify_pull_page_size, 200);
+        assert_eq!(cfg.notify_pull_max_iters, 10);
+        assert_eq!(cfg.notify_pull_budget_ms, 2000);
+        clear_all();
+    }
+
+    #[test]
+    fn notify_pull_page_size_zero_clamps_to_one() {
+        let _g = ENV_LOCK.lock();
+        clear_all();
+        set_required();
+        std::env::set_var("RELAY_NOTIFY_PULL_PAGE_SIZE", "0");
+        let cfg = Config::from_env().unwrap();
+        assert_eq!(cfg.notify_pull_page_size, 1);
+        clear_all();
+    }
+
+    #[test]
+    fn validate_rejects_zero_notify_pull_budget() {
+        let _g = ENV_LOCK.lock();
+        clear_all();
+        set_required();
+        std::env::set_var("RELAY_NOTIFY_PULL_BUDGET_MS", "0");
+        let err = Config::from_env().unwrap_err();
+        match err {
+            ConfigError::ValidationFailed(m) => assert!(m.contains("RELAY_NOTIFY_PULL_BUDGET_MS")),
             other => panic!("wrong: {other:?}"),
         }
         clear_all();

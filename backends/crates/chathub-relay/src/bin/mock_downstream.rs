@@ -484,6 +484,10 @@ async fn main() -> anyhow::Result<()> {
             "/wechat-business-app/wecom-cs/v1/wecomAggregate/session/markRead",
             post(mark_read),
         )
+        .route(
+            "/wechat-business-app/rpc/v1/wecomAggregate/notify/pull",
+            post(notify_pull),
+        )
         .layer(axum::middleware::from_fn(dump_http))
         .with_state(state.clone());
 
@@ -1348,6 +1352,77 @@ fn generate_message_pool(
 }
 
 // ─── helpers ──────────────────────────────────────────────────────────────
+
+// ─── notify/pull(POST,Bearer + JSON body)──────────────────────────────────
+// 合成 outbox:list 模式回 list 中每个 seq;range 模式回 [start, start+2] 三条。
+// 仅供手动 e2e:停 relay、删 relay.db、重启后客户端 Subscribe 可观察到补偿回放。
+
+#[derive(Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+struct NotifyPullReq {
+    #[serde(default)]
+    client_id: String,
+    employee_id: i64,
+    #[serde(default)]
+    start_notify_seq: Option<u64>,
+    #[serde(default)]
+    notify_seq_list: Vec<u64>,
+}
+
+async fn notify_pull(headers: HeaderMap, Json(req): Json<NotifyPullReq>) -> impl IntoResponse {
+    if !has_bearer(&headers) {
+        return (StatusCode::UNAUTHORIZED, "missing Bearer").into_response();
+    }
+    let client_id = if req.client_id.is_empty() {
+        "rh_wxchat".to_string()
+    } else {
+        req.client_id.clone()
+    };
+    let seqs: Vec<u64> = if !req.notify_seq_list.is_empty() {
+        req.notify_seq_list.clone()
+    } else if let Some(start) = req.start_notify_seq {
+        (start..start + 3).collect()
+    } else {
+        Vec::new()
+    };
+    let batches: Vec<serde_json::Value> = seqs
+        .iter()
+        .map(|&seq| {
+            let batch_id = format!("{client_id}:{}:{seq}", req.employee_id);
+            serde_json::json!({
+                "notifySeq": seq,
+                "batchId": batch_id,
+                "batchTime": "2026-05-17 11:28:00",
+                "sendStatus": 1,
+                "payload": {
+                    "notifySeq": seq,
+                    "clientId": client_id,
+                    "employeeId": req.employee_id,
+                    "batchId": batch_id,
+                    "batchTime": "2026-05-17 11:28:00",
+                    "events": [{
+                        "eventType": "MESSAGE_UPSERT",
+                        "eventReason": "SYNC_MSG_COMPENSATED",
+                        "conversationId": "C_MOCK_PULL",
+                        "message": {
+                            "localMessageId": format!("LM_PULL_{seq}"),
+                            "contentText": format!("backfilled {seq}")
+                        }
+                    }]
+                }
+            })
+        })
+        .collect();
+    envelope_ok(serde_json::json!({
+        "accepted": true,
+        "clientId": client_id,
+        "employeeId": req.employee_id,
+        "batches": batches,
+        "missingNotifySeqList": [],
+        "hasMore": false
+    }))
+    .into_response()
+}
 
 fn has_bearer(headers: &HeaderMap) -> bool {
     headers

@@ -44,7 +44,30 @@ pub struct RelayHarness {
     _axum: JoinHandle<()>,
 }
 
+/// notify/pull 补偿拉取的测试配置(对应 HubSvc 的 4 个 knob)。
+pub struct PullCfg {
+    pub enabled: bool,
+    pub page_size: u32,
+    pub max_iters: u32,
+    pub budget_ms: u64,
+}
+
+impl Default for PullCfg {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            page_size: 100,
+            max_iters: 50,
+            budget_ms: 4000,
+        }
+    }
+}
+
 pub async fn spawn_relay() -> RelayHarness {
+    spawn_relay_with(PullCfg::default()).await
+}
+
+pub async fn spawn_relay_with(pull: PullCfg) -> RelayHarness {
     let downstream = MockServer::start().await;
     let tmp = tempfile::tempdir().unwrap();
     let db = tmp.path().join("relay.db");
@@ -64,6 +87,11 @@ pub async fn spawn_relay() -> RelayHarness {
         downstream: dn_client.clone(),
         auth: auth.clone(),
         routes: chathub_relay::config::DownstreamRoutes::default_for_test(),
+        client_id: "rh_wxchat".into(),
+        notify_pull_enabled: pull.enabled,
+        notify_pull_page_size: pull.page_size,
+        notify_pull_max_iters: pull.max_iters,
+        notify_pull_budget_ms: pull.budget_ms,
     };
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -87,6 +115,7 @@ pub async fn spawn_relay() -> RelayHarness {
         force_close_grace_ms: 50,
         allowed_client_ids: vec!["rh_wxchat".into()],
         max_body_bytes: 1024 * 1024,
+        auth: auth.clone(),
     };
     let push_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let push_addr = push_listener.local_addr().unwrap();
@@ -109,6 +138,66 @@ pub async fn spawn_relay() -> RelayHarness {
         _tonic: tonic_h,
         _axum: axum_h,
     }
+}
+
+/// 在业务后台 mock 上挂 notify/pull,返回 `seqs` 对应的批次(单页,hasMore=false)。
+/// 每条 batch 的 payload 是合法的 §6.3 push body(单 MESSAGE_UPSERT)。
+pub async fn mount_notify_pull(mock: &MockServer, employee_id: i64, seqs: &[u64]) {
+    let batches: Vec<serde_json::Value> = seqs
+        .iter()
+        .map(|&seq| {
+            let batch_id = format!("rh_wxchat:{employee_id}:{seq}");
+            serde_json::json!({
+                "notifySeq": seq,
+                "batchId": batch_id,
+                "batchTime": "2026-05-17 11:28:00",
+                "sendStatus": 1,
+                "payload": {
+                    "notifySeq": seq,
+                    "clientId": "rh_wxchat",
+                    "employeeId": employee_id,
+                    "batchId": batch_id,
+                    "batchTime": "2026-05-17 11:28:00",
+                    "events": [{
+                        "eventType": "MESSAGE_UPSERT",
+                        "eventReason": "SYNC_MSG_COMPENSATED",
+                        "conversationId": format!("c-{seq}"),
+                        "message": { "localMessageId": format!("LM_{seq}"), "contentText": format!("m{seq}") }
+                    }]
+                }
+            })
+        })
+        .collect();
+    Mock::given(method("POST"))
+        .and(path(
+            "/wechat-business-app/rpc/v1/wecomAggregate/notify/pull",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "code": 1,
+            "serviceCode": "",
+            "msg": "成功",
+            "data": {
+                "accepted": true,
+                "clientId": "rh_wxchat",
+                "employeeId": employee_id,
+                "batches": batches,
+                "missingNotifySeqList": [],
+                "hasMore": false
+            }
+        })))
+        .mount(mock)
+        .await;
+}
+
+/// 在业务后台 mock 上挂 notify/pull,直接返回指定 HTTP 状态码(测失败回退)。
+pub async fn mount_notify_pull_status(mock: &MockServer, status: u16) {
+    Mock::given(method("POST"))
+        .and(path(
+            "/wechat-business-app/rpc/v1/wecomAggregate/notify/pull",
+        ))
+        .respond_with(ResponseTemplate::new(status))
+        .mount(mock)
+        .await;
 }
 
 /// 在业务后台 mock 上挂一条 verifyToken,返回带 employeeId 的连接身份。
