@@ -89,22 +89,37 @@ jobs:
 
       - name: tauri build
         env:
+          # 编译期烘进客户端的 relay 地址(chathub-net/build.rs)。repo Variable，
+          # 不是 secret：地址本就会进二进制。缺它则 build.rs 回落到 relay.example.com 占位串。
+          CHATHUB_RELAY_URL: ${{ vars.CHATHUB_RELAY_URL }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: pnpm tauri build --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${CHATHUB_RELAY_URL:-}" ]; then
+            echo "::error::CHATHUB_RELAY_URL 未设置（缺 repo Variable）— 否则客户端烘进占位地址 relay.example.com，发出去的包连不上 relay。请在仓库 Settings → Variables 新建 CHATHUB_RELAY_URL"
+            exit 1
+          fi
+          pnpm tauri build --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
 
       - name: list bundle dir (diagnostic)
         shell: bash
         run: |
           set -euo pipefail
-          BD="backends/target/${{ matrix.target }}/release/bundle"
-          echo "::group::bundle tree at $BD"
-          if [ -d "$BD" ]; then
-            ls -laR "$BD"
-          else
-            echo "(no bundle dir produced)"
+          # workspace 改造后 tauri 产物落在仓库根 target/；改造前在 backends/target/。
+          # 两处都查(同 server job 的探测思路)，避免路径假设再次失效。
+          BD=""
+          for d in "target/${{ matrix.target }}/release/bundle" \
+                   "backends/target/${{ matrix.target }}/release/bundle"; do
+            if [ -d "$d" ]; then BD="$d"; break; fi
+          done
+          if [ -z "$BD" ]; then
+            echo "::error::no bundle dir produced (looked in target/ and backends/target/)"
             exit 1
           fi
+          echo "::group::bundle tree at $BD"
+          ls -laR "$BD"
           echo "::endgroup::"
 
       - name: collect platform artifacts
@@ -113,7 +128,16 @@ jobs:
           set -euo pipefail
           OUT="staging/${{ matrix.label }}"
           mkdir -p "$OUT"
-          BD="backends/target/${{ matrix.target }}/release/bundle"
+          # 同 diagnostic：tauri bundle 可能落在仓库根 target/ 或 backends/target/，两处都查。
+          BD=""
+          for d in "target/${{ matrix.target }}/release/bundle" \
+                   "backends/target/${{ matrix.target }}/release/bundle"; do
+            if [ -d "$d" ]; then BD="$d"; break; fi
+          done
+          if [ -z "$BD" ]; then
+            echo "::error::no bundle dir produced (looked in target/ and backends/target/)"
+            exit 1
+          fi
           # 用 find -exec 而不是 glob，避免任何文件名静默 miss。
           # macOS：*.dmg、*.app.tar.gz(.sig)
           # Windows：*-setup.exe(.sig)（Tauri 2 默认模式直接签 .exe，不再产 .nsis.zip）
@@ -239,8 +263,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          BASE="${OSS_BUNDLE_BASE_URL:-https://REPLACE-ME.oss-cn-hangzhou.aliyuncs.com/releases}"
-          if [ "$BASE" = "https://REPLACE-ME.oss-cn-hangzhou.aliyuncs.com/releases" ]; then
+          BASE="${OSS_BUNDLE_BASE_URL:-https://jdd-rh-test1.oss-cn-zhangjiakou.aliyuncs.com/chathub-releases}"
+          if [ "$BASE" = "https://jdd-rh-test1.oss-cn-zhangjiakou.aliyuncs.com/chathub-releases" ]; then
             echo "::warning::OSS_BUNDLE_BASE_URL not set as repo Variable; using placeholder. Patch latest.json before upload, or set the Variable and rerun."
           fi
           node scripts/make-latest-json.mjs release-staging "$BASE"
