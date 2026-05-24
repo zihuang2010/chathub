@@ -510,10 +510,47 @@ html[data-os="mac"] #app-shell {
   }
 }
 
+/* Title-bar ambient orbs — three soft, heavily-blurred glows that drift mostly
+   horizontally (the bar is only 40px tall, so vertical travel is tiny). Periods
+   26/30/38s are decorrelated so the motion never visibly loops. */
+@keyframes chTitleOrbA {
+  0%,
+  100% {
+    transform: translate(0, 0);
+  }
+
+  50% {
+    transform: translate(40px, 6px);
+  }
+}
+
+@keyframes chTitleOrbB {
+  0%,
+  100% {
+    transform: translate(0, 0);
+  }
+
+  50% {
+    transform: translate(-52px, -5px);
+  }
+}
+
+@keyframes chTitleOrbC {
+  0%,
+  100% {
+    transform: translate(0, 0);
+  }
+
+  50% {
+    transform: translate(34px, 7px);
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
-  /* Keep the halos as static colored backdrops — still adds depth without
+  /* Keep the halos/orbs as static colored backdrops — still adds depth without
      drifting motion. */
-  [style*="chSidebarHalo"] {
+  [style*="chSidebarHalo"],
+  [style*="chTitleOrb"] {
     animation: none !important;
   }
 }

@@ -818,7 +818,7 @@ pub fn run() {
             app.manage(guard);
             info!(?log_dir, "tracing initialised");
 
-            // 按显示器分辨率自适应窗口:取屏幕逻辑尺寸 80%,clamp 到 [min, 上限],居中后再显示。
+            // 按显示器分辨率自适应窗口:取屏幕逻辑尺寸 70%,clamp 到 [min, 上限],居中后再显示。
             // config 里窗口设为 visible:false,在此调好尺寸再 show(),避免先弹出默认尺寸再缩放的闪烁。
             if let Some(window) = app.get_webview_window("main") {
                 if let Ok(Some(monitor)) = window.current_monitor() {
@@ -826,8 +826,8 @@ pub fn run() {
                     let screen = monitor.size(); // 物理像素
                     let sw = screen.width as f64 / scale; // → 逻辑像素
                     let sh = screen.height as f64 / scale;
-                    let w = (sw * 0.8).clamp(860.0, 1600.0);
-                    let h = (sh * 0.8).clamp(600.0, 1100.0);
+                    let w = (sw * 0.7).clamp(860.0, 1360.0);
+                    let h = (sh * 0.9).clamp(600.0, 900.0);
                     let _ = window.set_size(LogicalSize::new(w, h));
                     let _ = window.center();
                 }

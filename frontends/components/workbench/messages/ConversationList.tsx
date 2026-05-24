@@ -302,7 +302,7 @@ const FilterToolbar = memo(function FilterToolbar({
   ];
 
   return (
-    <div className="flex h-9 min-w-0 items-center gap-1 text-wb-3xs font-medium text-workbench-text-secondary">
+    <div className="text-wb-3xs flex h-9 min-w-0 items-center gap-1 font-medium text-workbench-text-secondary">
       <div
         role="tablist"
         aria-label={STRINGS.conversationList.statusTabsLabel}
@@ -449,7 +449,7 @@ const ConversationItem = memo(function ConversationItem({
       <div className="min-w-0 pr-11 pt-px">
         <div className="flex min-w-0 items-center gap-1.5">
           <span className="truncate text-wb-xs font-medium text-workbench-text">{name}</span>
-          <span className="shrink-0 rounded px-1 py-px text-wb-3xs font-medium text-workbench-wechat-text">
+          <span className="text-wb-3xs shrink-0 rounded px-1 py-px font-medium text-workbench-wechat-text">
             {STRINGS.header.fromWeChat}
           </span>
         </div>
@@ -476,8 +476,8 @@ const ConversationItem = memo(function ConversationItem({
             </>
           )}
         </div>
-        <div className="mt-px flex min-w-0 items-center gap-1.5 text-wb-3xs">
-          <span className="shrink-0 font-medium text-workbench-text-muted">
+        <div className="mt-px flex min-w-0 items-center gap-1.5 text-wb-4xs">
+          <span className="shrink-0 font-semibold text-workbench-text-muted">
             {STRINGS.conversationList.fromShort}
           </span>
           <span className="min-w-0 truncate font-medium text-workbench-text-secondary">
@@ -487,7 +487,7 @@ const ConversationItem = memo(function ConversationItem({
       </div>
       {/* 时间槽位:w-11 右对齐。置顶信号已上移到行右上角折角(见上方 isPinned
           元素),这里只剩时间文本。 */}
-      <span className="absolute right-3 top-2.5 w-11 text-right text-wb-3xs text-workbench-text-disabled">
+      <span className="text-wb-3xs absolute right-3 top-2.5 w-11 text-right text-workbench-text-disabled">
         <span className="wb-time">{time}</span>
       </span>
       {isMuted ? (

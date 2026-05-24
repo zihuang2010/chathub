@@ -105,7 +105,7 @@ export default {
       fontSize: {
         // Workbench type scale — eliminates half-pixel arbitrary values.
         "wb-4xs": ["10px", { lineHeight: "1.5" }],
-        "wb-3xs": ["11px", { lineHeight: "1.5" }],
+        config: ["11px", { lineHeight: "1.5" }],
         "wb-2xs": ["12px", { lineHeight: "1.55" }],
         "wb-xs": ["13px", { lineHeight: "1.65" }],
         "wb-sm": ["14px", { lineHeight: "1.55" }],

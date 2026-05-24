@@ -470,16 +470,28 @@ function FormCard(p: FormCardProps) {
           </button>
         </div>
 
-        {p.errorMsg && (
+        {/* 错误提示 + 按钮包在无 gap 的子容器里:错误用 grid 高度(0fr↔1fr)+ 淡入动画
+            平滑展开/收起,替代原来从无到有硬插入——避免插入瞬间把按钮往下顶的布局抖动。
+            收起时高度与 margin 归零、不占文档流,布局与无错误时完全一致。 */}
+        <div className="flex flex-col">
           <div
-            role="alert"
-            className="rounded-md border border-[#FECACA] bg-[#FEF2F2] px-3 py-2 text-[12.5px] text-[#B91C1C]"
+            className={cn(
+              "grid transition-all duration-300 ease-out",
+              p.errorMsg ? "mb-4 grid-rows-[1fr] opacity-100" : "grid-rows-[0fr] opacity-0",
+            )}
           >
-            {p.errorMsg}
+            <div className="overflow-hidden">
+              <div
+                role="alert"
+                className="rounded-md border border-[#FECACA] bg-[#FEF2F2] px-3 py-2 text-[12.5px] text-[#B91C1C]"
+              >
+                {p.errorMsg}
+              </div>
+            </div>
           </div>
-        )}
 
-        <SubmitButton disabled={!p.canSubmit || p.loading} loading={p.loading} />
+          <SubmitButton disabled={!p.canSubmit || p.loading} loading={p.loading} />
+        </div>
 
         <div className="mt-1 text-center text-[12.5px]" style={{ color: COLOR_SUBTITLE }}>
           还没有账号？

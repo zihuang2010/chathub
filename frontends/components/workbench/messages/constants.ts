@@ -7,7 +7,7 @@ export const COMPOSER_MIN_HEIGHT = 184;
 export const COMPOSER_MAX_HEIGHT = 360;
 
 // Page-level layout
-export const CONVERSATION_LIST_DEFAULT_WIDTH = 316;
+export const CONVERSATION_LIST_DEFAULT_WIDTH = 260;
 export const CONVERSATION_LIST_MIN_WIDTH = 260;
 export const CONVERSATION_LIST_MAX_WIDTH = 460;
 export const CUSTOMER_DETAILS_WIDTH = 324;

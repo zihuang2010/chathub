@@ -65,6 +65,57 @@ export function TitleBar({ tone = "transparent" }: TitleBarProps) {
   );
 }
 
+// ─── Ambient backdrop: three soft drifting orbs ──────────────────────────────
+
+// 顶栏只有 40px 高,在右侧拖拽区散放一排小气泡(浅蓝/白、大小相间、轻微柔边),缓慢
+// 横向漂移营造"动态"。pointer-events-none + aria-hidden 保证不挡拖拽区与窗口按钮
+// (它们以 relative z-10 绘制在其上);仅毛玻璃态渲染,避免 splash 透明态露出圆。
+// prefers-reduced-motion 下由 index.css 自动静止为纯色圆点。
+//
+// 关键约束:顶栏毛玻璃叠在 #F1F5F9 上算出的颜色 ≈ #E2EDF8,正是下方 WorkbenchPanel
+// 外层底色 —— 二者刻意一致才让"顶栏↔内容"无缝。气泡都贴顶摆放、不触 40px 底边,底部
+// 再加一道轻渐隐兜底,保证底边那条恒为纯 #E2EDF8,不复现色差缝。气泡集中在右侧、避开
+// 左侧交通灯。
+function TitleBarBackdrop({ visible, rounded = false }: { visible: boolean; rounded?: boolean }) {
+  if (!visible) return null;
+  const fadeMask = "linear-gradient(to bottom, #000 80%, transparent 98%)";
+  return (
+    <div
+      aria-hidden
+      className={cn(
+        "pointer-events-none absolute inset-0 z-0 overflow-hidden",
+        rounded && "rounded-t-[10px]",
+      )}
+      style={{ maskImage: fadeMask, WebkitMaskImage: fadeMask }}
+    >
+      <span
+        className="absolute left-[24%] top-[7px] size-[13px] rounded-full bg-white/80 blur-[1.5px]"
+        style={{ animation: "chTitleOrbA 30s ease-in-out infinite" }}
+      />
+      <span
+        className="absolute left-[36%] top-[17px] size-[9px] rounded-full bg-[#BCD3F1]/60 blur-[1.5px]"
+        style={{ animation: "chTitleOrbC 27s ease-in-out infinite" }}
+      />
+      <span
+        className="bg-[#C6DAF2]/58 absolute left-[50%] top-[6px] size-[17px] rounded-full blur-[2px]"
+        style={{ animation: "chTitleOrbB 40s ease-in-out infinite" }}
+      />
+      <span
+        className="absolute left-[63%] top-[18px] size-[8px] rounded-full bg-white/70 blur-[1.5px]"
+        style={{ animation: "chTitleOrbA 35s ease-in-out infinite" }}
+      />
+      <span
+        className="bg-[#BCD3F1]/62 absolute left-[75%] top-[9px] size-[12px] rounded-full blur-[1.5px]"
+        style={{ animation: "chTitleOrbC 31s ease-in-out infinite" }}
+      />
+      <span
+        className="absolute right-[7%] top-[15px] size-[11px] rounded-full bg-[#C6DAF2]/60 blur-[1.5px]"
+        style={{ animation: "chTitleOrbB 44s ease-in-out infinite" }}
+      />
+    </div>
+  );
+}
+
 // ─── macOS layout ───────────────────────────────────────────────────────────
 
 function MacTitleBar({ controls, tone }: { controls: WindowControls; tone: Tone }) {
@@ -84,7 +135,8 @@ function MacTitleBar({ controls, tone }: { controls: WindowControls; tone: Tone 
         ...(blurred ? FROSTED_GLASS_STYLE : { background: "transparent" }),
       }}
     >
-      <div className="group flex items-center gap-[8px] pl-[14px]">
+      <TitleBarBackdrop visible={blurred} rounded />
+      <div className="group relative z-10 flex items-center gap-[8px] pl-[14px]">
         <TrafficLight color="#ff5f57" symbol="×" ariaLabel="关闭" onClick={controls.onClose} />
         <TrafficLight color="#ffbd2e" symbol="–" ariaLabel="最小化" onClick={controls.onMinimize} />
         <TrafficLight
@@ -144,9 +196,10 @@ function WindowsTitleBar({ controls, tone }: { controls: WindowControls; tone: T
         ...(blurred ? FROSTED_GLASS_STYLE : { background: "transparent" }),
       }}
     >
+      <TitleBarBackdrop visible={blurred} />
       {/* drag region — no app-name text */}
-      <div data-tauri-drag-region className="h-full flex-1" aria-hidden />
-      <div className="flex h-full items-stretch">
+      <div data-tauri-drag-region className="relative z-10 h-full flex-1" aria-hidden />
+      <div className="relative z-10 flex h-full items-stretch">
         <ControlButton onClick={controls.onMinimize} aria-label="最小化" title="最小化">
           <MinimizeIcon />
         </ControlButton>

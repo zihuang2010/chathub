@@ -26,7 +26,7 @@ export const STRINGS = {
     statusAll: "全部",
     statusUnread: "未读",
     statusMentioned: "@我",
-    fromShort: "来自",
+    fromShort: "来自: ",
     noConversation: "暂无匹配会话",
     accountFilterTitle: "按账号筛选",
     statusTabsLabel: "会话状态筛选",
