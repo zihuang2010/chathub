@@ -1,88 +1,77 @@
 ---
 name: storage
-description: "Skill for the Storage area of chathub. 39 symbols across 7 files."
+description: "Skill for the Storage area of chathub. 21 symbols across 4 files."
 ---
 
 # Storage
 
-39 symbols | 7 files | Cohesion: 75%
+21 symbols | 4 files | Cohesion: 86%
 
 ## When to Use
 
 - Working with code in `backends/`
-- Understanding how app, query_since, with_capacity work
+- Understanding how new, insert_batch, query_since work
 - Modifying storage-related functionality
 
 ## Key Files
 
-| File                                                        | Symbols                                                                                        |
-| ----------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
-| `backends/crates/chathub-relay/src/storage/events.rs`       | query_since, cleanup_older_than, row, event_log_cleanup_deletes_old_rows_up_to_limit, new (+9) |
-| `backends/crates/chathub-relay/src/push.rs`                 | app, make_state, body, post, healthz_returns_200 (+8)                                          |
-| `backends/crates/chathub-relay/src/main.rs`                 | main, now_ms, wait_for_shutdown_signal, init_tracing                                           |
-| `backends/crates/chathub-relay/src/storage/mod.rs`          | open, pool, open_leaves_only_hub_events_after_migrations, reopen_is_idempotent                 |
-| `backends/crates/chathub-state/src/pool.rs`                 | pool, in_memory_pool_applies_all_migrations                                                    |
-| `backends/crates/chathub-relay/src/hub_service.rs`          | with_capacity                                                                                  |
-| `frontends/components/workbench/messages/ChatArea.test.tsx` | get                                                                                            |
+| File                                                        | Symbols                                                                        |
+| ----------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| `backends/crates/chathub-relay/src/storage/events.rs`       | new, insert_batch, query_since, earliest_for, cleanup_older_than (+9)          |
+| `backends/crates/chathub-relay/src/storage/mod.rs`          | open, pool, open_leaves_only_hub_events_after_migrations, reopen_is_idempotent |
+| `backends/crates/chathub-state/src/pool.rs`                 | pool, in_memory_pool_applies_all_migrations                                    |
+| `frontends/components/workbench/messages/ChatArea.test.tsx` | get                                                                            |
 
 ## Entry Points
 
 Start here when exploring this area:
 
-- **`app`** (Function) — `backends/crates/chathub-relay/src/push.rs:44`
+- **`new`** (Function) — `backends/crates/chathub-relay/src/storage/events.rs:33`
+- **`insert_batch`** (Function) — `backends/crates/chathub-relay/src/storage/events.rs:39`
 - **`query_since`** (Function) — `backends/crates/chathub-relay/src/storage/events.rs:86`
-- **`with_capacity`** (Function) — `backends/crates/chathub-relay/src/hub_service.rs:132`
+- **`earliest_for`** (Function) — `backends/crates/chathub-relay/src/storage/events.rs:138`
 - **`cleanup_older_than`** (Function) — `backends/crates/chathub-relay/src/storage/events.rs:162`
-- **`open`** (Function) — `backends/crates/chathub-relay/src/storage/mod.rs:42`
 
 ## Key Symbols
 
-| Symbol                                        | Type     | File                                                  | Line |
-| --------------------------------------------- | -------- | ----------------------------------------------------- | ---- |
-| `app`                                         | Function | `backends/crates/chathub-relay/src/push.rs`           | 44   |
-| `query_since`                                 | Function | `backends/crates/chathub-relay/src/storage/events.rs` | 86   |
-| `with_capacity`                               | Function | `backends/crates/chathub-relay/src/hub_service.rs`    | 132  |
-| `cleanup_older_than`                          | Function | `backends/crates/chathub-relay/src/storage/events.rs` | 162  |
-| `open`                                        | Function | `backends/crates/chathub-relay/src/storage/mod.rs`    | 42   |
-| `pool`                                        | Function | `backends/crates/chathub-relay/src/storage/mod.rs`    | 88   |
-| `pool`                                        | Function | `backends/crates/chathub-state/src/pool.rs`           | 36   |
-| `new`                                         | Function | `backends/crates/chathub-relay/src/storage/events.rs` | 33   |
-| `earliest_for`                                | Function | `backends/crates/chathub-relay/src/storage/events.rs` | 138  |
-| `insert_batch`                                | Function | `backends/crates/chathub-relay/src/storage/events.rs` | 39   |
-| `make_state`                                  | Function | `backends/crates/chathub-relay/src/push.rs`           | 301  |
-| `body`                                        | Function | `backends/crates/chathub-relay/src/push.rs`           | 316  |
-| `post`                                        | Function | `backends/crates/chathub-relay/src/push.rs`           | 328  |
-| `healthz_returns_200`                         | Function | `backends/crates/chathub-relay/src/push.rs`           | 352  |
-| `push_happy_path_persists_message_upsert`     | Function | `backends/crates/chathub-relay/src/push.rs`           | 367  |
-| `push_auth_failure_returns_401`               | Function | `backends/crates/chathub-relay/src/push.rs`           | 394  |
-| `push_unknown_client_id_returns_403`          | Function | `backends/crates/chathub-relay/src/push.rs`           | 410  |
-| `push_empty_events_returns_400`               | Function | `backends/crates/chathub-relay/src/push.rs`           | 422  |
-| `push_idempotent_on_duplicate_notify_seq`     | Function | `backends/crates/chathub-relay/src/push.rs`           | 429  |
-| `push_force_close_evicts_streams_after_grace` | Function | `backends/crates/chathub-relay/src/push.rs`           | 449  |
+| Symbol                                                          | Type     | File                                                  | Line |
+| --------------------------------------------------------------- | -------- | ----------------------------------------------------- | ---- |
+| `new`                                                           | Function | `backends/crates/chathub-relay/src/storage/events.rs` | 33   |
+| `insert_batch`                                                  | Function | `backends/crates/chathub-relay/src/storage/events.rs` | 39   |
+| `query_since`                                                   | Function | `backends/crates/chathub-relay/src/storage/events.rs` | 86   |
+| `earliest_for`                                                  | Function | `backends/crates/chathub-relay/src/storage/events.rs` | 138  |
+| `cleanup_older_than`                                            | Function | `backends/crates/chathub-relay/src/storage/events.rs` | 162  |
+| `open`                                                          | Function | `backends/crates/chathub-relay/src/storage/mod.rs`    | 42   |
+| `pool`                                                          | Function | `backends/crates/chathub-relay/src/storage/mod.rs`    | 88   |
+| `pool`                                                          | Function | `backends/crates/chathub-state/src/pool.rs`           | 36   |
+| `make_log`                                                      | Function | `backends/crates/chathub-relay/src/storage/events.rs` | 189  |
+| `row`                                                           | Function | `backends/crates/chathub-relay/src/storage/events.rs` | 197  |
+| `event_log_insert_batch_returns_inserted_count`                 | Function | `backends/crates/chathub-relay/src/storage/events.rs` | 217  |
+| `event_log_insert_batch_is_idempotent_on_duplicate_primary_key` | Function | `backends/crates/chathub-relay/src/storage/events.rs` | 230  |
+| `event_log_query_since_returns_ordered_events`                  | Function | `backends/crates/chathub-relay/src/storage/events.rs` | 251  |
+| `event_log_query_since_includes_batch_internal_order`           | Function | `backends/crates/chathub-relay/src/storage/events.rs` | 269  |
+| `event_log_isolates_per_employee`                               | Function | `backends/crates/chathub-relay/src/storage/events.rs` | 284  |
+| `event_log_earliest_for_returns_min_notify_seq`                 | Function | `backends/crates/chathub-relay/src/storage/events.rs` | 298  |
+| `event_log_cleanup_deletes_old_rows_up_to_limit`                | Function | `backends/crates/chathub-relay/src/storage/events.rs` | 314  |
+| `open_leaves_only_hub_events_after_migrations`                  | Function | `backends/crates/chathub-relay/src/storage/mod.rs`    | 98   |
+| `reopen_is_idempotent`                                          | Function | `backends/crates/chathub-relay/src/storage/mod.rs`    | 130  |
+| `in_memory_pool_applies_all_migrations`                         | Function | `backends/crates/chathub-state/src/pool.rs`           | 84   |
 
 ## Execution Flows
 
-| Flow                                                             | Type            | Steps |
-| ---------------------------------------------------------------- | --------------- | ----- |
-| `Push_happy_path_persists_message_upsert → PushState`            | intra_community | 3     |
-| `Push_idempotent_on_duplicate_notify_seq → PushState`            | intra_community | 3     |
-| `Push_force_close_evicts_streams_after_grace → PushState`        | intra_community | 3     |
-| `Push_fanout_delivers_to_registered_employee_stream → PushState` | intra_community | 3     |
-| `Push_unknown_event_type_persisted_by_default → PushState`       | intra_community | 3     |
-| `Event_log_cleanup_deletes_old_rows_up_to_limit → New`           | cross_community | 3     |
-| `Event_log_cleanup_deletes_old_rows_up_to_limit → EventRow`      | intra_community | 3     |
-| `Push_auth_failure_returns_401 → PushState`                      | intra_community | 3     |
-| `Push_empty_events_returns_400 → PushState`                      | intra_community | 3     |
+| Flow                                                        | Type            | Steps |
+| ----------------------------------------------------------- | --------------- | ----- |
+| `Event_log_cleanup_deletes_old_rows_up_to_limit → New`      | intra_community | 3     |
+| `Event_log_cleanup_deletes_old_rows_up_to_limit → EventRow` | intra_community | 3     |
 
 ## Connected Areas
 
-| Area       | Connections |
-| ---------- | ----------- |
-| Cluster_94 | 3 calls     |
-| Cluster_6  | 1 calls     |
+| Area      | Connections |
+| --------- | ----------- |
+| Cluster_6 | 1 calls     |
 
 ## How to Explore
 
-1. `gitnexus_context({name: "app"})` — see callers and callees
+1. `gitnexus_context({name: "new"})` — see callers and callees
 2. `gitnexus_query({query: "storage"})` — find related execution flows
 3. Read key files listed above for implementation details

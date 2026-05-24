@@ -69,8 +69,8 @@ Start here when exploring this area:
 | ------------------------------ | --------------- | ----- |
 | `HandleExport → StartOfDay`    | cross_community | 6     |
 | `HandleExport → ParseStamp`    | cross_community | 6     |
+| `RenderRowContent → Cn`        | cross_community | 6     |
 | `HandleExport → Pad`           | cross_community | 5     |
-| `ChatArea → Cn`                | cross_community | 5     |
 | `ConversationList → Cn`        | cross_community | 5     |
 | `CustomerDetails → Cn`         | cross_community | 5     |
 | `AccountsPage → Cn`            | cross_community | 4     |

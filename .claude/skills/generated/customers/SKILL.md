@@ -10,7 +10,7 @@ description: "Skill for the Customers area of chathub. 93 symbols across 20 file
 ## When to Use
 
 - Working with code in `frontends/`
-- Understanding how useCustomerStore, showToast, ToastViewport work
+- Understanding how useCustomerStore, maybeLoadOlderHistory, handleUserScroll work
 - Modifying customers-related functionality
 
 ## Key Files
@@ -33,35 +33,35 @@ description: "Skill for the Customers area of chathub. 93 symbols across 20 file
 Start here when exploring this area:
 
 - **`useCustomerStore`** (Function) — `frontends/components/workbench/customers/useCustomerStore.ts:23`
+- **`maybeLoadOlderHistory`** (Function) — `frontends/components/workbench/messages/hooks/useScrollController.ts:137`
+- **`handleUserScroll`** (Function) — `frontends/components/workbench/messages/hooks/useScrollController.ts:174`
 - **`showToast`** (Function) — `frontends/components/ui/toast.tsx:33`
 - **`ToastViewport`** (Function) — `frontends/components/ui/toast.tsx:64`
-- **`handleRefresh`** (Function) — `frontends/components/workbench/accounts/AccountsPage.tsx:39`
-- **`CustomersPage`** (Function) — `frontends/components/workbench/customers/CustomersPage.tsx:34`
 
 ## Key Symbols
 
-| Symbol                   | Type     | File                                                               | Line |
-| ------------------------ | -------- | ------------------------------------------------------------------ | ---- |
-| `useCustomerStore`       | Function | `frontends/components/workbench/customers/useCustomerStore.ts`     | 23   |
-| `showToast`              | Function | `frontends/components/ui/toast.tsx`                                | 33   |
-| `ToastViewport`          | Function | `frontends/components/ui/toast.tsx`                                | 64   |
-| `handleRefresh`          | Function | `frontends/components/workbench/accounts/AccountsPage.tsx`         | 39   |
-| `CustomersPage`          | Function | `frontends/components/workbench/customers/CustomersPage.tsx`       | 34   |
-| `handleToggleStar`       | Function | `frontends/components/workbench/customers/CustomersPage.tsx`       | 180  |
-| `handleOpenChat`         | Function | `frontends/components/workbench/customers/CustomersPage.tsx`       | 221  |
-| `handleBulkApplyTagDiff` | Function | `frontends/components/workbench/customers/CustomersPage.tsx`       | 236  |
-| `handleBulkReassign`     | Function | `frontends/components/workbench/customers/CustomersPage.tsx`       | 244  |
-| `handleBulkToggleStar`   | Function | `frontends/components/workbench/customers/CustomersPage.tsx`       | 252  |
-| `handleToggleView`       | Function | `frontends/components/workbench/customers/CustomersPage.tsx`       | 278  |
-| `handleRefresh`          | Function | `frontends/components/workbench/customers/CustomersPage.tsx`       | 281  |
-| `handleEditCustomer`     | Function | `frontends/components/workbench/customers/CustomersPage.tsx`       | 286  |
-| `handleRowMore`          | Function | `frontends/components/workbench/customers/CustomersPage.tsx`       | 289  |
-| `maybeLoadOlderHistory`  | Function | `frontends/components/workbench/messages/ChatArea.tsx`             | 301  |
-| `handleUserScroll`       | Function | `frontends/components/workbench/messages/ChatArea.tsx`             | 342  |
-| `handleCopy`             | Function | `frontends/components/workbench/messages/MessageContextMenu.tsx`   | 29   |
-| `CustomerDetailPanel`    | Function | `frontends/components/workbench/customers/CustomerDetailPanel.tsx` | 35   |
-| `CustomerTimeline`       | Function | `frontends/components/workbench/customers/CustomerTimeline.tsx`    | 10   |
-| `toAccountsCsv`          | Function | `frontends/components/workbench/accounts/utils.ts`                 | 149  |
+| Symbol                   | Type     | File                                                                   | Line |
+| ------------------------ | -------- | ---------------------------------------------------------------------- | ---- |
+| `useCustomerStore`       | Function | `frontends/components/workbench/customers/useCustomerStore.ts`         | 23   |
+| `maybeLoadOlderHistory`  | Function | `frontends/components/workbench/messages/hooks/useScrollController.ts` | 137  |
+| `handleUserScroll`       | Function | `frontends/components/workbench/messages/hooks/useScrollController.ts` | 174  |
+| `showToast`              | Function | `frontends/components/ui/toast.tsx`                                    | 33   |
+| `ToastViewport`          | Function | `frontends/components/ui/toast.tsx`                                    | 64   |
+| `handleRefresh`          | Function | `frontends/components/workbench/accounts/AccountsPage.tsx`             | 39   |
+| `CustomersPage`          | Function | `frontends/components/workbench/customers/CustomersPage.tsx`           | 34   |
+| `handleToggleStar`       | Function | `frontends/components/workbench/customers/CustomersPage.tsx`           | 180  |
+| `handleOpenChat`         | Function | `frontends/components/workbench/customers/CustomersPage.tsx`           | 221  |
+| `handleBulkApplyTagDiff` | Function | `frontends/components/workbench/customers/CustomersPage.tsx`           | 236  |
+| `handleBulkReassign`     | Function | `frontends/components/workbench/customers/CustomersPage.tsx`           | 244  |
+| `handleBulkToggleStar`   | Function | `frontends/components/workbench/customers/CustomersPage.tsx`           | 252  |
+| `handleToggleView`       | Function | `frontends/components/workbench/customers/CustomersPage.tsx`           | 278  |
+| `handleRefresh`          | Function | `frontends/components/workbench/customers/CustomersPage.tsx`           | 281  |
+| `handleEditCustomer`     | Function | `frontends/components/workbench/customers/CustomersPage.tsx`           | 286  |
+| `handleRowMore`          | Function | `frontends/components/workbench/customers/CustomersPage.tsx`           | 289  |
+| `handleCopy`             | Function | `frontends/components/workbench/messages/MessageContextMenu.tsx`       | 29   |
+| `CustomerDetailPanel`    | Function | `frontends/components/workbench/customers/CustomerDetailPanel.tsx`     | 35   |
+| `CustomerTimeline`       | Function | `frontends/components/workbench/customers/CustomerTimeline.tsx`        | 10   |
+| `toAccountsCsv`          | Function | `frontends/components/workbench/accounts/utils.ts`                     | 149  |
 
 ## Execution Flows
 
@@ -72,18 +72,19 @@ Start here when exploring this area:
 | `HandleExport → ParseStamp`    | cross_community | 6     |
 | `CustomersPage → ErrorMessage` | cross_community | 5     |
 | `HandleExport → Pad`           | cross_community | 5     |
-| `HandleUserScroll → Emit`      | intra_community | 5     |
 | `CustomersPage → Subscribe`    | cross_community | 4     |
 | `CustomersPage → ScopeKey`     | cross_community | 4     |
 | `CustomersPage → Emit`         | intra_community | 4     |
 | `HandleExport → Emit`          | cross_community | 4     |
+| `HandleExport → GetStatusMeta` | cross_community | 4     |
 
 ## Connected Areas
 
 | Area     | Connections |
 | -------- | ----------- |
 | Accounts | 19 calls    |
-| Messages | 5 calls     |
+| Messages | 4 calls     |
+| Data     | 1 calls     |
 
 ## How to Explore
 

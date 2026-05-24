@@ -5,7 +5,7 @@ description: "Skill for the Cluster_35 area of chathub. 13 symbols across 2 file
 
 # Cluster_35
 
-13 symbols | 2 files | Cohesion: 75%
+13 symbols | 2 files | Cohesion: 74%
 
 ## When to Use
 
@@ -24,28 +24,28 @@ description: "Skill for the Cluster_35 area of chathub. 13 symbols across 2 file
 
 Start here when exploring this area:
 
-- **`new`** (Function) — `backends/crates/chathub-net/src/message_event.rs:107`
-- **`apply_push_batch`** (Function) — `backends/crates/chathub-net/src/message_event.rs:122`
-- **`upsert_window`** (Function) — `backends/crates/chathub-state/src/messages.rs:181`
-- **`get_window`** (Function) — `backends/crates/chathub-state/src/messages.rs:224`
+- **`new`** (Function) — `backends/crates/chathub-net/src/message_event.rs:113`
+- **`apply_push_batch`** (Function) — `backends/crates/chathub-net/src/message_event.rs:128`
+- **`upsert_window`** (Function) — `backends/crates/chathub-state/src/messages.rs:281`
+- **`get_window`** (Function) — `backends/crates/chathub-state/src/messages.rs:324`
 
 ## Key Symbols
 
 | Symbol                                             | Type     | File                                               | Line |
 | -------------------------------------------------- | -------- | -------------------------------------------------- | ---- |
-| `new`                                              | Function | `backends/crates/chathub-net/src/message_event.rs` | 107  |
-| `apply_push_batch`                                 | Function | `backends/crates/chathub-net/src/message_event.rs` | 122  |
-| `upsert_window`                                    | Function | `backends/crates/chathub-state/src/messages.rs`    | 181  |
-| `get_window`                                       | Function | `backends/crates/chathub-state/src/messages.rs`    | 224  |
-| `applier_with_store`                               | Function | `backends/crates/chathub-net/src/message_event.rs` | 347  |
-| `batch`                                            | Function | `backends/crates/chathub-net/src/message_event.rs` | 365  |
-| `seed_window`                                      | Function | `backends/crates/chathub-net/src/message_event.rs` | 377  |
-| `hot_conversation_inserts_bubble_and_emits_notice` | Function | `backends/crates/chathub-net/src/message_event.rs` | 395  |
-| `cold_conversation_skips_no_orphan`                | Function | `backends/crates/chathub-net/src/message_event.rs` | 419  |
-| `send_confirmed_updates_same_bubble_not_duplicate` | Function | `backends/crates/chathub-net/src/message_event.rs` | 431  |
-| `non_message_event_is_noop`                        | Function | `backends/crates/chathub-net/src/message_event.rs` | 451  |
-| `window_upsert_get_round_trip`                     | Function | `backends/crates/chathub-state/src/messages.rs`    | 508  |
-| `touch_accessed_updates_only_existing`             | Function | `backends/crates/chathub-state/src/messages.rs`    | 522  |
+| `new`                                              | Function | `backends/crates/chathub-net/src/message_event.rs` | 113  |
+| `apply_push_batch`                                 | Function | `backends/crates/chathub-net/src/message_event.rs` | 128  |
+| `upsert_window`                                    | Function | `backends/crates/chathub-state/src/messages.rs`    | 281  |
+| `get_window`                                       | Function | `backends/crates/chathub-state/src/messages.rs`    | 324  |
+| `applier_with_store`                               | Function | `backends/crates/chathub-net/src/message_event.rs` | 374  |
+| `batch`                                            | Function | `backends/crates/chathub-net/src/message_event.rs` | 396  |
+| `seed_window`                                      | Function | `backends/crates/chathub-net/src/message_event.rs` | 408  |
+| `hot_conversation_inserts_bubble_and_emits_notice` | Function | `backends/crates/chathub-net/src/message_event.rs` | 426  |
+| `cold_conversation_skips_no_orphan`                | Function | `backends/crates/chathub-net/src/message_event.rs` | 456  |
+| `send_confirmed_updates_same_bubble_not_duplicate` | Function | `backends/crates/chathub-net/src/message_event.rs` | 474  |
+| `non_message_event_is_noop`                        | Function | `backends/crates/chathub-net/src/message_event.rs` | 501  |
+| `window_upsert_get_round_trip`                     | Function | `backends/crates/chathub-state/src/messages.rs`    | 612  |
+| `touch_accessed_updates_only_existing`             | Function | `backends/crates/chathub-state/src/messages.rs`    | 678  |
 
 ## Execution Flows
 
@@ -66,7 +66,7 @@ Start here when exploring this area:
 
 | Area        | Connections |
 | ----------- | ----------- |
-| Cluster_108 | 6 calls     |
+| Cluster_110 | 6 calls     |
 | Cluster_6   | 3 calls     |
 | Build\_     | 1 calls     |
 | Cluster_33  | 1 calls     |

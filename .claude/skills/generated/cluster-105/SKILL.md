@@ -1,9 +1,9 @@
 ---
-name: cluster-103
-description: "Skill for the Cluster_103 area of chathub. 20 symbols across 2 files."
+name: cluster-105
+description: "Skill for the Cluster_105 area of chathub. 20 symbols across 2 files."
 ---
 
-# Cluster_103
+# Cluster_105
 
 20 symbols | 2 files | Cohesion: 89%
 
@@ -11,7 +11,7 @@ description: "Skill for the Cluster_103 area of chathub. 20 symbols across 2 fil
 
 - Working with code in `backends/`
 - Understanding how new, read_for_employee, replace_all_for_employee work
-- Modifying cluster_103-related functionality
+- Modifying cluster_105-related functionality
 
 ## Key Files
 
@@ -51,9 +51,9 @@ Start here when exploring this area:
 | `watermark_monotonic_upsert`                           | Function | `backends/crates/chathub-state/src/account_cache.rs` | 393  |
 | `watermark_isolated_per_client_and_employee`           | Function | `backends/crates/chathub-state/src/account_cache.rs` | 403  |
 | `clear_for_employee_wipes_both_cache_and_watermark`    | Function | `backends/crates/chathub-state/src/account_cache.rs` | 416  |
-| `list_accounts`                                        | Function | `backends/src/lib.rs`                                | 179  |
-| `item_to_row`                                          | Function | `backends/src/lib.rs`                                | 224  |
-| `filter_rows`                                          | Function | `backends/src/lib.rs`                                | 251  |
+| `list_accounts`                                        | Function | `backends/src/lib.rs`                                | 190  |
+| `item_to_row`                                          | Function | `backends/src/lib.rs`                                | 235  |
+| `filter_rows`                                          | Function | `backends/src/lib.rs`                                | 262  |
 
 ## Execution Flows
 
@@ -77,5 +77,5 @@ Start here when exploring this area:
 ## How to Explore
 
 1. `gitnexus_context({name: "new"})` — see callers and callees
-2. `gitnexus_query({query: "cluster_103"})` — find related execution flows
+2. `gitnexus_query({query: "cluster_105"})` — find related execution flows
 3. Read key files listed above for implementation details

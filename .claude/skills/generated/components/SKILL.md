@@ -1,11 +1,11 @@
 ---
 name: components
-description: "Skill for the Components area of chathub. 50 symbols across 10 files."
+description: "Skill for the Components area of chathub. 52 symbols across 11 files."
 ---
 
 # Components
 
-50 symbols | 10 files | Cohesion: 79%
+52 symbols | 11 files | Cohesion: 78%
 
 ## When to Use
 
@@ -17,7 +17,7 @@ description: "Skill for the Components area of chathub. 50 symbols across 10 fil
 
 | File                                           | Symbols                                                                                            |
 | ---------------------------------------------- | -------------------------------------------------------------------------------------------------- |
-| `frontends/components/TitleBar.tsx`            | WindowsTitleBar, ControlButton, MinimizeIcon, MaximizeIcon, RestoreIcon (+9)                       |
+| `frontends/components/TitleBar.tsx`            | WindowsTitleBar, ControlButton, MinimizeIcon, MaximizeIcon, RestoreIcon (+10)                      |
 | `frontends/components/Splash.tsx`              | BottomScene, CityBuildings, Waves, PaperPlane, Splash (+6)                                         |
 | `frontends/components/Login.tsx`               | Login, Backdrop, BottomWaves, FormCard, Tabs (+5)                                                  |
 | `frontends/components/WindowResizeEdges.tsx`   | startManualResize, WindowResizeEdges, handlePointerDown, ResizeHandle, findScrollableAncestor (+2) |
@@ -26,7 +26,7 @@ description: "Skill for the Components area of chathub. 50 symbols across 10 fil
 | `frontends/lib/updater.ts`                     | checkForAppUpdates                                                                                 |
 | `frontends/App.tsx`                            | App                                                                                                |
 | `frontends/components/illustrations/waves.tsx` | DriftingWave                                                                                       |
-| `frontends/components/ui/button.tsx`           | Button                                                                                             |
+| `frontends/lib/platform.ts`                    | detectWindows11                                                                                    |
 
 ## Entry Points
 
@@ -50,6 +50,7 @@ Start here when exploring this area:
 | `handlePointerDown`  | Function | `frontends/components/WindowResizeEdges.tsx`   | 236  |
 | `Login`              | Function | `frontends/components/Login.tsx`               | 121  |
 | `DriftingWave`       | Function | `frontends/components/illustrations/waves.tsx` | 18   |
+| `detectWindows11`    | Function | `frontends/lib/platform.ts`                    | 16   |
 | `Splash`             | Function | `frontends/components/Splash.tsx`              | 141  |
 | `TitleBar`           | Function | `frontends/components/TitleBar.tsx`            | 20   |
 | `setup`              | Function | `frontends/components/TitleBar.tsx`            | 26   |
@@ -61,28 +62,27 @@ Start here when exploring this area:
 | `isTauriRuntime`     | Function | `frontends/lib/useWindowMaxSize.ts`            | 3    |
 | `App`                | Function | `frontends/App.tsx`                            | 29   |
 | `startManualResize`  | Function | `frontends/components/WindowResizeEdges.tsx`   | 104  |
-| `ResizeHandle`       | Function | `frontends/components/WindowResizeEdges.tsx`   | 271  |
 
 ## Execution Flows
 
-| Flow                        | Type            | Steps |
-| --------------------------- | --------------- | ----- |
-| `Login → PopIn`             | cross_community | 5     |
-| `Login → DropShadow`        | cross_community | 5     |
-| `Login → TypingDot`         | cross_community | 5     |
-| `Login → SatelliteRing`     | cross_community | 5     |
-| `App → ScopeMatches`        | cross_community | 4     |
-| `Splash → PopIn`            | cross_community | 4     |
-| `Splash → DropShadow`       | cross_community | 4     |
-| `Splash → SatelliteRing`    | cross_community | 4     |
-| `Splash → TypingDot`        | cross_community | 4     |
-| `Login → IllustrationHalos` | cross_community | 4     |
+| Flow                       | Type            | Steps |
+| -------------------------- | --------------- | ----- |
+| `Login → PopIn`            | cross_community | 5     |
+| `Login → DropShadow`       | cross_community | 5     |
+| `Login → TypingDot`        | cross_community | 5     |
+| `Login → SatelliteRing`    | cross_community | 5     |
+| `Workbench → DriftingWave` | cross_community | 4     |
+| `App → ScopeMatches`       | cross_community | 4     |
+| `Splash → PopIn`           | cross_community | 4     |
+| `Splash → DropShadow`      | cross_community | 4     |
+| `Splash → SatelliteRing`   | cross_community | 4     |
+| `Splash → TypingDot`       | cross_community | 4     |
 
 ## Connected Areas
 
 | Area          | Connections |
 | ------------- | ----------- |
-| Accounts      | 5 calls     |
+| Accounts      | 7 calls     |
 | Messages      | 2 calls     |
 | Illustrations | 2 calls     |
 | Data          | 1 calls     |
