@@ -48,9 +48,15 @@ export function useHubSyncStatus(): UseHubSyncStatusResult {
       } catch {
         // hub_state 命令未就绪时静默
       }
-      unlisten = await listen<HubConnectionState>("hub:connection", (event) => {
+      const un = await listen<HubConnectionState>("hub:connection", (event) => {
         if (!cancelled) setConnectionState(event.payload);
       });
+      // await 期间组件可能已卸载:cleanup 早于此处赋值会空跑,导致监听器悬挂永不取消。
+      if (cancelled) {
+        un();
+        return;
+      }
+      unlisten = un;
     })();
     return () => {
       cancelled = true;
@@ -64,7 +70,7 @@ export function useHubSyncStatus(): UseHubSyncStatusResult {
     let cancelled = false;
     let resyncTimer: number | undefined;
     void (async () => {
-      unlisten = await listen<ChangeNotice>("hub:change", (event) => {
+      const un = await listen<ChangeNotice>("hub:change", (event) => {
         if (cancelled) return;
         setLastEventAt(Date.now());
         if (event.payload.source === "resync") {
@@ -75,6 +81,12 @@ export function useHubSyncStatus(): UseHubSyncStatusResult {
           }, RESYNC_INDICATOR_MS);
         }
       });
+      // await 期间组件可能已卸载:cleanup 早于此处赋值会空跑,导致监听器悬挂永不取消。
+      if (cancelled) {
+        un();
+        return;
+      }
+      unlisten = un;
     })();
     return () => {
       cancelled = true;
@@ -89,7 +101,7 @@ export function useHubSyncStatus(): UseHubSyncStatusResult {
     let cancelled = false;
     let timer: number | undefined;
     void (async () => {
-      unlisten = await listen("hub:resync", () => {
+      const un = await listen("hub:resync", () => {
         if (cancelled) return;
         setResyncing(true);
         if (timer !== undefined) window.clearTimeout(timer);
@@ -97,6 +109,12 @@ export function useHubSyncStatus(): UseHubSyncStatusResult {
           if (!cancelled) setResyncing(false);
         }, RESYNC_INDICATOR_MS);
       });
+      // await 期间组件可能已卸载:cleanup 早于此处赋值会空跑,导致监听器悬挂永不取消。
+      if (cancelled) {
+        un();
+        return;
+      }
+      unlisten = un;
     })();
     return () => {
       cancelled = true;

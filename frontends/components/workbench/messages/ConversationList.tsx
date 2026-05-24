@@ -413,7 +413,7 @@ const ConversationItem = memo(function ConversationItem({
       type="button"
       onClick={() => onSelect(id)}
       className={cn(
-        "focus-ring group relative grid w-full grid-cols-[44px_minmax(0,1fr)] items-start gap-3 overflow-hidden rounded-xl px-3 py-1.5 text-left transition-colors duration-100",
+        "focus-ring group relative grid w-full grid-cols-[44px_minmax(0,1fr)] items-start gap-3 overflow-hidden rounded-md px-3 py-1.5 text-left transition-colors duration-100",
         // 置顶视觉用右上角折角(corner-fold,见下方 isPinned 元素)表达;行本体
         // 只保留选中/默认两态。overflow-hidden + rounded-xl 让折角外角顺着行圆角
         // 被 clip,斜边保持锐利。ConversationAvatar.pinned prop 保留供搜索结果复用。

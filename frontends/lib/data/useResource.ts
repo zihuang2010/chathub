@@ -210,16 +210,26 @@ export function useResource<T>(opts: UseResourceOptions<T>): UseResourceResult<T
   useEffect(() => {
     if (!enabled || !refetchOnFocus) return;
     let unlisten: (() => void) | undefined;
+    let cancelled = false;
     void (async () => {
       const win = getCurrentWindow();
-      unlisten = await win.onFocusChanged(({ payload: focused }) => {
+      const un = await win.onFocusChanged(({ payload: focused }) => {
         if (!focused) return;
         if (Date.now() - lastRefreshAtRef.current > FOCUS_REFETCH_THRESHOLD_MS) {
           void doFetch();
         }
       });
+      // await 期间组件可能已卸载:cleanup 早于此处赋值会空跑,导致监听器悬挂永不取消。
+      if (cancelled) {
+        un();
+        return;
+      }
+      unlisten = un;
     })();
-    return () => unlisten?.();
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
   }, [enabled, refetchOnFocus, doFetch]);
 
   // hub:connection 状态订阅
@@ -234,9 +244,15 @@ export function useResource<T>(opts: UseResourceOptions<T>): UseResourceResult<T
       } catch {
         // 命令未就绪时静默
       }
-      unlisten = await listen<HubConnectionState>("hub:connection", (event) => {
+      const un = await listen<HubConnectionState>("hub:connection", (event) => {
         setConnectionState(event.payload);
       });
+      // await 期间组件可能已卸载:cleanup 早于此处赋值会空跑,导致监听器悬挂永不取消。
+      if (cancelled) {
+        un();
+        return;
+      }
+      unlisten = un;
     })();
     return () => {
       cancelled = true;
