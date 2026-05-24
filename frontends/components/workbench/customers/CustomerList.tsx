@@ -1,14 +1,20 @@
-import { memo, useMemo } from "react";
+import { memo, useCallback, useMemo, useRef } from "react";
+import { useVirtualizer } from "@tanstack/react-virtual";
 
 import type { Account } from "@/lib/types/account";
 import type { Customer } from "@/lib/types/customer";
 
 import { BulkActionsBar } from "./BulkActionsBar";
 import { WorkbenchScrollArea } from "../messages/WorkbenchScrollArea";
+import { ROW_HEIGHT } from "./constants";
 import { CustomerListHeader } from "./CustomerListHeader";
 import { CustomerListRow } from "./CustomerListRow";
 import { CustomersPagination } from "./CustomersPagination";
 import { STRINGS } from "./strings";
+
+// 列表表头 sticky 常驻在滚动视口内(CustomerListHeader 是 h-8 = 32px),虚拟化时行的
+// 偏移量要扣掉这段表头高度,故作为 virtualizer 的 scrollMargin。
+const LIST_HEADER_HEIGHT = 32;
 
 interface CustomerListProps {
   /** 当前页的行(cursor keyset 分页,单页展示)。 */
@@ -97,6 +103,25 @@ export const CustomerList = memo(function CustomerList({
     return map;
   }, [accounts]);
 
+  // 行虚拟化:行高固定 ROW_HEIGHT,单页最多 100 行也只渲染可见窗口 + overscan,避免整页
+  // DOM 驻留撑高渲染内存(与消息区 ChatArea 同一 TanStack Virtual 方案)。
+  const scrollElRef = useRef<HTMLDivElement | null>(null);
+  // callback ref 忽略 null(旧视口卸载时 React 会回传 null),保持 ref 始终指向当前视口。
+  const setScrollEl = useCallback((node: HTMLDivElement | null) => {
+    if (node) scrollElRef.current = node;
+  }, []);
+  // React Compiler 无法 memo useVirtualizer 返回的函数(会 stale),故对本组件跳过自动 memo;
+  // 组件本身已用 memo() 包裹、虚拟化后重渲极轻量,无影响。
+  // eslint-disable-next-line react-hooks/incompatible-library
+  const rowVirtualizer = useVirtualizer({
+    count: customers.length,
+    getScrollElement: () => scrollElRef.current,
+    estimateSize: () => ROW_HEIGHT,
+    overscan: 10,
+    getItemKey: (index) => customers[index].id,
+    scrollMargin: LIST_HEADER_HEIGHT,
+  });
+
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       {multiSelectActive && (
@@ -123,6 +148,7 @@ export const CustomerList = memo(function CustomerList({
       ) : (
         <>
           <WorkbenchScrollArea
+            scrollRef={setScrollEl}
             className="flex-1"
             viewportClassName="px-0"
             contentClassName="flex flex-col"
@@ -135,13 +161,27 @@ export const CustomerList = memo(function CustomerList({
                 allSelectedInView && multiSelectActive ? onClearSelection : onSelectAllInView
               }
             />
-            <ul role="listbox" aria-label="客户列表" className="flex flex-col">
-              {customers.map((customer) => {
+            {/* 虚拟化:ul 撑出全量高度(getTotalSize),仅渲染可见行 + overscan;行用 translateY
+                绝对定位,偏移扣掉 scrollMargin(表头 32px)使第一行紧贴表头之下。 */}
+            <ul
+              role="listbox"
+              aria-label="客户列表"
+              className="relative w-full"
+              style={{ height: rowVirtualizer.getTotalSize() }}
+            >
+              {rowVirtualizer.getVirtualItems().map((vi) => {
+                const customer = customers[vi.index];
                 const account = customer.accountId ? accountMap.get(customer.accountId) : undefined;
+                const isLast = vi.index === customers.length - 1;
                 return (
                   <li
                     key={customer.id}
-                    className="border-b border-workbench-line-subtle last:border-b-0"
+                    data-index={vi.index}
+                    ref={rowVirtualizer.measureElement}
+                    className={`absolute left-0 top-0 w-full ${
+                      isLast ? "" : "border-b border-workbench-line-subtle"
+                    }`}
+                    style={{ transform: `translateY(${vi.start - LIST_HEADER_HEIGHT}px)` }}
                   >
                     <CustomerListRow
                       customer={customer}

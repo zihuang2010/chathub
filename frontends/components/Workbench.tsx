@@ -1,6 +1,5 @@
 import { useCallback, useState } from "react";
 import type { ReactNode } from "react";
-import { motion } from "framer-motion";
 
 import { PlaceholderPage } from "@/components/workbench/PlaceholderPage";
 import { Sidebar } from "@/components/workbench/Sidebar";
@@ -9,7 +8,7 @@ import { AccountsPage } from "@/components/workbench/accounts/AccountsPage";
 import { CustomersPage } from "@/components/workbench/customers/CustomersPage";
 import { MessagesPage } from "@/components/workbench/messages/MessagesPage";
 import { useAccounts } from "@/lib/api/useAccounts";
-import { FONT_BODY, TRANSITION_DURATIONS, TRANSITION_EASE } from "@/lib/theme";
+import { FONT_BODY } from "@/lib/theme";
 
 export function Workbench() {
   const [section, setSection] = useState<Section>("messages");
@@ -44,11 +43,10 @@ export function Workbench() {
         collapsed={sidebarCollapsed}
         onToggleCollapsed={() => setSidebarCollapsed((collapsed) => !collapsed)}
       />
-      {/* 所有 section 常驻挂载,通过 opacity 切换可见性。这样切走再回来:
-          - 选中会话 / 滚动位置 / 草稿 全部保留(状态在自己组件里)
-          - 数据已加载,不会出现"MOCK fallback → 真数据"的气泡闪烁
-          - 内存代价:同时挂三个页面的 hook 订阅。chat workbench 单用户场景可接受。
-          仅当前 section 接收交互(pointer-events / inert),其它三个 opacity:0 静默。 */}
+      {/* 所有 section 常驻挂载(保留选中会话 / 滚动位置 / 草稿等组件内状态,切走再回来不闪、
+          不重拉)。但非激活页用 content-visibility:hidden 让 WebKit 跳过其内容的布局/绘制/合成
+          并释放这部分渲染内存——只有当前页真正参与渲染,避免三整页同时驻留渲染树把「页面」内存
+          撑到几百 MB。仅当前 section 接收交互(pointer-events),其它 aria-hidden 静默。 */}
       <div className="relative flex min-w-0 flex-1">
         <SectionLayer active={section === "messages"}>
           <MessagesPage accounts={accountsState.accounts} />
@@ -76,20 +74,20 @@ export function Workbench() {
 
 function SectionLayer({ active, children }: { active: boolean; children: ReactNode }) {
   return (
-    <motion.div
+    <div
       className="absolute inset-0 flex"
-      initial={false}
-      animate={{ opacity: active ? 1 : 0 }}
-      transition={{
-        duration: TRANSITION_DURATIONS.quick / 1000,
-        ease: TRANSITION_EASE,
+      // 非激活页 content-visibility:hidden —— WebKit 跳过其内容的布局/绘制/合成并可释放渲染
+      // 内存,同时保留 DOM 与 React 状态(切回秒恢复,滚动位置不丢)。激活页正常渲染。
+      // 不再用 framer-motion 的 opacity 淡入淡出:淡入淡出会把整窗子树提升为合成层并在每次切换
+      // 全面重绘,正是「页面」内存峰值的来源;改为直接硬切(状态/滚动/草稿仍保留)。
+      // 非 active 层不吃事件、aria-hidden 让读屏忽略。
+      style={{
+        contentVisibility: active ? "visible" : "hidden",
+        pointerEvents: active ? "auto" : "none",
       }}
-      // 非 active 层不吃事件、不可达。aria-hidden 让 screen reader 忽略;
-      // pointer-events:none 防止 click 穿透/被遮挡误触。
-      style={{ pointerEvents: active ? "auto" : "none" }}
       aria-hidden={!active}
     >
       {children}
-    </motion.div>
+    </div>
   );
 }
