@@ -26,10 +26,11 @@ interface CustomersHeaderProps {
 export const CustomersHeader = memo(function CustomersHeader(props: CustomersHeaderProps) {
   return (
     <header className="flex flex-col border-b border-workbench-line bg-workbench-surface">
-      <div className="flex items-center border-b border-workbench-line-subtle px-4 py-4">
+      <div className="border-b border-workbench-line-subtle px-4 py-4">
         <h1 className="text-[16px] font-semibold leading-tight text-workbench-text">
           {STRINGS.page.title}
         </h1>
+        <p className="mt-1 text-[12px] text-workbench-text-muted">{STRINGS.page.subtitle}</p>
       </div>
       <CustomersFilterBar
         searchTerm={props.searchTerm}
