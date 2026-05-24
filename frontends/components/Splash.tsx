@@ -10,7 +10,9 @@ import {
   buildWavePath,
   type Satellite,
 } from "@/components/illustrations";
+import { isWindows } from "@/lib/platform";
 import { FONT_BODY } from "@/lib/theme";
+import { cn } from "@/lib/utils";
 
 interface SplashProps {
   onReady?: () => void;
@@ -297,7 +299,12 @@ function Features() {
 function VersionBadge() {
   return (
     <div
-      className="absolute right-6 top-5 z-10 flex items-center gap-2"
+      // Windows 的最小化/最大化/关闭按钮在右上角(约 138px 宽),与徽标同处一角会重叠;
+      // 故在 Windows 上把徽标右偏移量加大到 150px 让出按钮区。macOS 按钮在左上角,不冲突。
+      className={cn(
+        "absolute top-5 z-10 flex items-center gap-2",
+        isWindows ? "right-[150px]" : "right-6",
+      )}
       style={{ animation: "chFadeUp 700ms 100ms backwards ease-out" }}
     >
       <span

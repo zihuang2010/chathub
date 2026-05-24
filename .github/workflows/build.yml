@@ -241,8 +241,69 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  # Windows 版 relay + mock(供 Windows 本地联调)。上面的 server job 用 cross,
+  # 其工具链是 Linux-musl 专用、无法目标 Windows,故单列一个 windows-latest 原生
+  # cargo build 任务。产物随 release 包一同上传(make-latest-json 用固定平台表,
+  # 不读这个目录,所以不影响 updater)。
+  server-windows:
+    needs: verify
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: . -> target
+          key: server-windows-x86_64
+
+      - name: build relay + mock (windows-msvc)
+        shell: bash
+        run: |
+          cargo build --release --locked --target x86_64-pc-windows-msvc \
+            -p chathub-relay --bin chathub-relay --bin chathub-mock-downstream
+
+      - name: package binaries + checksums
+        shell: bash
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+          TRIPLE: x86_64-pc-windows-msvc
+          LABEL: server-windows-x86_64
+        run: |
+          set -euo pipefail
+          OUT="staging/${LABEL}"
+          mkdir -p "$OUT"
+          # 同 server job:产物可能落仓库根 target/ 或 backends/target/,两处都查。
+          locate_bin() {
+            local bin="$1" d
+            for d in "target/${TRIPLE}/release" "backends/target/${TRIPLE}/release"; do
+              if [ -f "$d/$bin" ]; then printf '%s\n' "$d/$bin"; return 0; fi
+            done
+            return 1
+          }
+          for bin in chathub-relay chathub-mock-downstream; do
+            src="$(locate_bin "${bin}.exe")" \
+              || { echo "::error::missing built binary: ${bin}.exe (looked in target/ and backends/target/)"; exit 1; }
+            tar -C "$(dirname "$src")" -czf "$OUT/${bin}-${VERSION}-${TRIPLE}.tar.gz" "${bin}.exe"
+          done
+          ( cd "$OUT" && sha256sum *.tar.gz > SHA256SUMS )
+          echo "::group::collected artifacts in $OUT"
+          ls -la "$OUT"
+          cat "$OUT/SHA256SUMS"
+          echo "::endgroup::"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: server-windows-x86_64
+          path: staging/server-windows-x86_64
+          if-no-files-found: error
+          retention-days: 7
+
   package:
-    needs: [verify, build, server]
+    needs: [verify, build, server, server-windows]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
