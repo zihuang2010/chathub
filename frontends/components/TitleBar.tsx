@@ -1,7 +1,7 @@
 import { useEffect, useState, type ButtonHTMLAttributes, type ReactNode } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
-import { isMac } from "@/lib/platform";
+import { detectWindows11, isMac } from "@/lib/platform";
 import { FROSTED_GLASS_STYLE } from "@/lib/theme";
 import { cn } from "@/lib/utils";
 
@@ -188,6 +188,20 @@ function TrafficLight({ color, symbol, ariaLabel, onClick }: TrafficLightProps) 
 
 function WindowsTitleBar({ controls, tone }: { controls: WindowControls; tone: Tone }) {
   const blurred = tone === "blue";
+  // 关闭按钮 hover 红区分系统版本:Win10 #e81123(亮)/ Win11 #c42b1c(暗)。
+  // 检测异步返回(几毫秒,远早于用户 hover),默认 false 即先按 Win10 取值。
+  // 两个字面量都静态出现在源码里,保证 Tailwind JIT 都能生成对应类。
+  const [isWin11, setIsWin11] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    void detectWindows11().then((v) => {
+      if (alive) setIsWin11(v);
+    });
+    return () => {
+      alive = false;
+    };
+  }, []);
+  const closeHover = isWin11 ? "hover:bg-[#c42b1c]" : "hover:bg-[#e81123]";
   return (
     <header
       className="absolute inset-x-0 top-0 z-[100] flex h-10 select-none items-center justify-between"
@@ -210,7 +224,13 @@ function WindowsTitleBar({ controls, tone }: { controls: WindowControls; tone: T
         >
           {controls.maximized ? <RestoreIcon /> : <MaximizeIcon />}
         </ControlButton>
-        <ControlButton onClick={controls.onClose} aria-label="关闭" title="关闭" variant="close">
+        <ControlButton
+          onClick={controls.onClose}
+          aria-label="关闭"
+          title="关闭"
+          variant="close"
+          className={closeHover}
+        >
           <CloseIcon />
         </ControlButton>
       </div>
@@ -229,8 +249,8 @@ function ControlButton({ children, variant = "default", className, ...rest }: Co
       type="button"
       data-tauri-drag-region="false"
       className={cn(
-        "flex h-full w-[46px] items-center justify-center text-[#3b5470] transition-colors",
-        variant === "close" ? "hover:bg-[#e81123] hover:text-white" : "hover:bg-black/5",
+        "flex h-full w-[46px] items-center justify-center text-[#1a1a1a] transition-colors",
+        variant === "close" ? "hover:text-white" : "hover:bg-black/10",
         className,
       )}
       {...rest}

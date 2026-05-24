@@ -304,11 +304,9 @@ html[data-os="mac"] #app-shell {
  * list, chat history, customer panel, placeholder pages) has a light, narrow
  * scrollbar that matches the soft enterprise feel.
  */
-* {
-  scrollbar-width: thin;
-  scrollbar-color: hsl(var(--wb-thumb)) transparent;
-}
-
+/* 故意不设标准属性 scrollbar-width/scrollbar-color:新版 WebKit(Safari 18.2+)下
+ * 它们一旦为非 auto 就会让下面整套 ::-webkit-scrollbar 失效,回落成带 track/边线的
+ * 原生细滚动条(生产环境表现)。Tauri 仅 WebKit,无需 Firefox 兼容,故只用私有伪元素。 */
 *::-webkit-scrollbar {
   width: 6px;
   height: 6px;
