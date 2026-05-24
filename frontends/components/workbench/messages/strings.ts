@@ -21,6 +21,18 @@ export const STRINGS = {
   conversationList: {
     searchPlaceholder: "搜索客户/账号",
     searchPlaceholderCompact: "搜索客户",
+    /** 客户搜索框占位(只按名字搜客户)。 */
+    contactSearchPlaceholder: "搜索客户",
+    /** 搜索下拉的分组标题。 */
+    contactGroup: "联系人",
+    /** 搜索下拉:正在请求 list_friends。 */
+    contactSearching: "搜索中…",
+    /** 搜索下拉:无匹配客户。 */
+    contactEmpty: "未找到客户",
+    /** 清空搜索框的无障碍标签。 */
+    clearSearch: "清空搜索",
+    /** 点击的客户从未建过会话(入站模型无法主动发起)时的提示。 */
+    noConversationForCustomer: "该客户暂无会话记录",
     filter: "筛选",
     accountFallback: "全部账号",
     statusAll: "全部",

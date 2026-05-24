@@ -1,15 +1,16 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { ReactNode } from "react";
-import { BellOff, ChevronDown, Menu, Search } from "lucide-react";
+import { memo, useCallback, useMemo, useRef, useState } from "react";
+import { BellOff, ChevronDown, Menu } from "lucide-react";
 import * as ContextMenu from "@radix-ui/react-context-menu";
 import { useVirtualizer } from "@tanstack/react-virtual";
 
 import type { Account } from "@/lib/types/account";
+import type { WecomFriend } from "@/lib/api/customers";
 import { cn } from "@/lib/utils";
 
 import { AccountDropdown } from "./AccountDropdown";
 import { ConversationAvatar } from "./Avatar";
 import type { Conversation } from "./data";
+import { MessagesContactSearch } from "./MessagesContactSearch";
 import { STRINGS } from "./strings";
 import { extractAccountOperator } from "./utils";
 import { WorkbenchScrollArea, type ScrollMetrics } from "./WorkbenchScrollArea";
@@ -31,17 +32,16 @@ interface ConversationListProps {
   accounts: readonly Account[];
   selectedAccount: string | null;
   onAccountChange: (account: string | null) => void;
-  /** 搜索框右边的辅助 slot,目前用于挂同步状态色点。 */
-  syncSlot?: ReactNode;
   /** 滚动到底加载更老会话(默认列表续页 / 筛选态续页,由父级按当前态分派)。
    *  是否真的还有更多由父级 hook 内部 cursor/hasMore 自守(到底即 no-op),这里不再重复 gate。
    *  不传 = 不分页(退化为只展示传入的 conversations,与历史行为一致)。 */
   onLoadMore?: () => void;
   /** 分页请求 in-flight,期间不重复触发 onLoadMore。 */
   loading?: boolean;
-  /** 搜索条件变化上报(每次按键 / 切 status tab 即时上报,防抖由父级负责)。
-   *  query 为 trim 后的关键词,onlyUnread 来自 "未读" tab。不传 = 仅本地子串过滤。 */
-  onSearchChange?: (query: string, onlyUnread: boolean) => void;
+  /** 搜索下拉里点击某个客户:父级解析「客户 → 会话」并打开。 */
+  onOpenCustomer: (friend: WecomFriend) => void;
+  /** 搜索框清空:父级据此退出 filtered 态(若有)回默认列表。 */
+  onClearSearch: () => void;
 }
 
 export const ConversationList = memo(function ConversationList({
@@ -55,47 +55,31 @@ export const ConversationList = memo(function ConversationList({
   accounts,
   selectedAccount,
   onAccountChange,
-  syncSlot,
   onLoadMore,
   loading,
-  onSearchChange,
+  onOpenCustomer,
+  onClearSearch,
 }: ConversationListProps) {
   const [statusTab, setStatusTab] = useState<StatusTab>("all");
-  const [searchQuery, setSearchQuery] = useState("");
   const [accountPickerOpen, setAccountPickerOpen] = useState(false);
-  const isCompact = width < 300;
 
-  // 搜索条件即时上报父级:本地子串过滤(下方 filteredConversations)给 0 延迟反馈,
-  // 父级防抖后调 searchRemote 把"已加载窗口之外"的匹配补进来。onSearchChange 未传时
-  // 退化为纯本地过滤(历史行为)。"未读" tab → onlyUnread;"mentioned" 无远端语义不映射。
-  useEffect(() => {
-    onSearchChange?.(searchQuery.trim(), statusTab === "unread");
-  }, [searchQuery, statusTab, onSearchChange]);
-
-  // 账号过滤不在前端做:后端 list_recent_friends(accountFilter) 已按账号过滤,
-  // conversations 始终只含当前账号的行。切账号时 useResource 会保留上一账号的 stale
-  // 数据直到新 cache 到达;若这里再按 selectedAccount 过滤,stale 行会被全部滤空 →
-  // 切换瞬间闪一帧"暂无匹配会话"。去掉后是 stale-while-revalidate,旧列表平滑换新。
+  // 顶部搜索框已改为「搜客户 → 下拉 → 点击打开会话」(MessagesContactSearch),不再就地过滤会话
+  // 列表。这里只按 status tab(未读)过滤;账号过滤由后端 list_recent_friends(accountFilter)
+  // 负责(切账号时 stale-while-revalidate,前端不再二次过滤以免闪空)。
   const filteredConversations = useMemo(() => {
-    const normalizedQuery = searchQuery.trim().toLowerCase();
-    return conversations.filter((conversation) => {
-      if (statusTab === "unread" && conversation.unread <= 0) return false;
-      if (!normalizedQuery) return true;
-      return [conversation.name, conversation.account, conversation.preview].some((value) =>
-        value.toLowerCase().includes(normalizedQuery),
-      );
-    });
-  }, [conversations, searchQuery, statusTab]);
+    if (statusTab !== "unread") return conversations;
+    return conversations.filter((conversation) => conversation.unread > 0);
+  }, [conversations, statusTab]);
 
   return (
     <div className="flex h-full shrink-0 flex-col bg-workbench-surface" style={{ width }}>
       <div className="flex flex-col gap-2 px-3 pb-1.5 pt-3">
-        <div className="flex items-center gap-2">
-          <div className="min-w-0 flex-1">
-            <SearchBar value={searchQuery} onChange={setSearchQuery} compact={isCompact} />
-          </div>
-          {syncSlot}
-        </div>
+        <MessagesContactSearch
+          accounts={accounts}
+          selectedAccount={selectedAccount}
+          onOpenCustomer={onOpenCustomer}
+          onClear={onClearSearch}
+        />
         <FilterToolbar
           statusTab={statusTab}
           onStatusChange={setStatusTab}
@@ -247,33 +231,7 @@ const VirtualizedList = memo(function VirtualizedList({
   );
 });
 
-// ─── Search and secondary filters ───────────────────────────────────────────
-
-const SearchBar = memo(function SearchBar({
-  value,
-  onChange,
-  compact,
-}: {
-  value: string;
-  onChange: (value: string) => void;
-  compact: boolean;
-}) {
-  return (
-    <div className="flex h-9 items-center gap-2 rounded-lg border border-workbench-line bg-workbench-surface px-2.5 text-workbench-text-muted transition-colors focus-within:border-workbench-accent/40 focus-within:ring-2 focus-within:ring-workbench-accent/20">
-      <Search size={15} className="shrink-0" />
-      <input
-        value={value}
-        onChange={(event) => onChange(event.currentTarget.value)}
-        placeholder={
-          compact
-            ? STRINGS.conversationList.searchPlaceholderCompact
-            : STRINGS.conversationList.searchPlaceholder
-        }
-        className="min-w-0 flex-1 bg-transparent text-wb-2xs font-medium text-workbench-text focus:outline-none"
-      />
-    </div>
-  );
-});
+// ─── Secondary filters ──────────────────────────────────────────────────────
 
 const FilterToolbar = memo(function FilterToolbar({
   statusTab,

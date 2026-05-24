@@ -3,9 +3,10 @@ import type { KeyboardEvent, PointerEvent as ReactPointerEvent } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import { ErrorBoundary } from "@/components/ErrorBoundary";
-import { ToastViewport } from "@/components/ui/toast";
+import { ToastViewport, showToast } from "@/components/ui/toast";
 import { WorkbenchPanel } from "@/components/workbench/WorkbenchPanel";
 import type { Account } from "@/lib/types/account";
+import type { WecomFriend } from "@/lib/api/customers";
 import { useRecentFriends, type RecentFriendListEntry } from "@/lib/api/useRecentFriends";
 import { sendMessage } from "@/lib/api/messageHistory";
 import { appReady } from "@/lib/data/appReady";
@@ -420,33 +421,58 @@ export function MessagesPage({ accounts }: MessagesPageProps) {
     [conversation?.account, conversations],
   );
 
-  // ─── 远端搜索接线 ───────────────────────────────────────────────────────
-  // ConversationList 即时上报搜索条件 → 这里防抖 300ms 后调 searchRemote(把已加载窗口
-  // 之外的匹配补进来);清空关键词回默认列表(exitFilter)。searchActiveRef 防 mount /
-  // 切 tab 时的空关键词误触发 exitFilter(exitFilter 会 force 远端刷新)。
-  const searchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const searchActiveRef = useRef(false);
-  const handleSearchChange = useCallback(
-    (query: string, onlyUnread: boolean) => {
-      if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
-      searchDebounceRef.current = setTimeout(() => {
-        if (query) {
-          searchActiveRef.current = true;
-          void searchRemote({ externalName: query, onlyUnread });
-        } else if (searchActiveRef.current) {
-          searchActiveRef.current = false;
-          void exitFilter();
-        }
-      }, 300);
+  // ─── 搜索客户 → 打开会话 ─────────────────────────────────────────────────
+  // 顶部搜索框(MessagesContactSearch)直接搜 list_friends(全部客户),点击某客户后由这里把
+  // 消息页定位到对应会话。WecomFriend 不带 conversationId,故:
+  //   ① 先在已加载最近会话(recentEntries)里按 (account, externalUserId) 命中 → 直接选中;
+  //   ② 未命中则用现有 searchRemote 把匹配会话拉进 filtered,由下方 effect 精确选中;
+  //   ③ filtered 回来仍无匹配 = 该客户从未建过会话(入站模型无法主动发起)→ toast + 退出筛选。
+  const pendingOpenRef = useRef<{ wecomAccountId: string; externalUserId: string } | null>(null);
+  const handleOpenCustomer = useCallback(
+    (friend: WecomFriend) => {
+      const hit = recentEntries.find(
+        (e) =>
+          e.wecomAccountId === friend.wecomAccountId && e.externalUserId === friend.externalUserId,
+      );
+      if (hit) {
+        pendingOpenRef.current = null;
+        if (filtered !== null) void exitFilter();
+        setSelectedId(hit.conversationId);
+        if (hit.hasUnread || hit.unreadCount > 0) void markReadRecent(hit.conversationId);
+        return;
+      }
+      pendingOpenRef.current = {
+        wecomAccountId: friend.wecomAccountId,
+        externalUserId: friend.externalUserId,
+      };
+      void searchRemote({ externalName: friend.externalName });
     },
-    [searchRemote, exitFilter],
+    [recentEntries, filtered, exitFilter, searchRemote, markReadRecent],
   );
-  useEffect(
-    () => () => {
-      if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
-    },
-    [],
-  );
+
+  // searchRemote 落地(filtered 更新)后,按 pending 客户精确匹配会话并选中;无匹配则提示。
+  useEffect(() => {
+    const pending = pendingOpenRef.current;
+    if (!pending || filtered === null) return;
+    const match = filtered.find(
+      (e) =>
+        e.wecomAccountId === pending.wecomAccountId && e.externalUserId === pending.externalUserId,
+    );
+    pendingOpenRef.current = null;
+    if (match) {
+      setSelectedId(match.conversationId);
+      if (match.hasUnread || match.unreadCount > 0) void markReadRecent(match.conversationId);
+    } else {
+      showToast(STRINGS.conversationList.noConversationForCustomer, { type: "info" });
+      void exitFilter();
+    }
+  }, [filtered, exitFilter, markReadRecent]);
+
+  // 搜索框清空:若处于 filtered 态则退出回默认列表。
+  const handleClearSearch = useCallback(() => {
+    pendingOpenRef.current = null;
+    if (filtered !== null) void exitFilter();
+  }, [filtered, exitFilter]);
 
   // 滚动到底分派:筛选态翻 filtered 续页,否则翻默认列表续页。loading 同源切换防重入;
   // 是否到底由 hook 内部 cursor/hasMore 自守(loadMore/loadMoreFiltered 到底即 no-op)。
@@ -481,7 +507,8 @@ export function MessagesPage({ accounts }: MessagesPageProps) {
           accounts={accounts}
           selectedAccount={selectedAccount}
           onAccountChange={handleAccountChange}
-          onSearchChange={handleSearchChange}
+          onOpenCustomer={handleOpenCustomer}
+          onClearSearch={handleClearSearch}
           onLoadMore={handleLoadMore}
           loading={listLoading}
         />
