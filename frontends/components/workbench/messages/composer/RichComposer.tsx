@@ -49,6 +49,12 @@ export function RichComposer({
   const justComposedRef = useRef(false);
 
   const editor = useEditor({
+    // 切会话时父组件按 conversation.id key 重挂载本组件 → 每次切换都销毁+重建编辑器。
+    // 默认 immediatelyRender:true 会在 React render 阶段创建视图并用 flushSync 刷新
+    // node-view/portal;React 19 + StrictMode 下会报 "flushSync ... while rendering"
+    // 并中断刷新,旧编辑器的 fiber/portal/contenteditable DOM 未被完整回收 → 每切一次
+    // 泄漏一个编辑器实例。置 false 把首次渲染推迟到 effect(commit 后),切换得以干净卸载。
+    immediatelyRender: false,
     // 切会话时父组件按 conversation.id key 重挂载本组件,新 editor 实例需自动 focus
     // 到末尾,这样用户切到新会话可以直接打字,不必先点输入区。
     autofocus: "end",
