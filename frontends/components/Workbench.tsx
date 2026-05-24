@@ -8,7 +8,9 @@ import { AccountsPage } from "@/components/workbench/accounts/AccountsPage";
 import { CustomersPage } from "@/components/workbench/customers/CustomersPage";
 import { MessagesPage } from "@/components/workbench/messages/MessagesPage";
 import { useAccounts } from "@/lib/api/useAccounts";
+import { isWindows } from "@/lib/platform";
 import { FONT_BODY } from "@/lib/theme";
+import { cn } from "@/lib/utils";
 
 export function Workbench() {
   const [section, setSection] = useState<Section>("messages");
@@ -30,11 +32,16 @@ export function Workbench() {
 
   return (
     <div
-      // Bounded explicitly to the area BELOW the 40px title bar (`top-10`) and
-      // the bottom edge (`bottom-0`). This guarantees the workbench cannot
-      // exceed the viewport height — children with `h-full` resolve against
-      // this exact box, never extending below the visible area.
-      className="absolute inset-x-0 bottom-0 top-10 flex select-none overflow-hidden bg-[#F1F5F9] text-[#1F2937]"
+      // 显式约束在窗口可视区内(bottom-0),children 的 h-full 都对齐这个盒子。
+      // 顶部偏移按平台分:
+      // - macOS:顶栏 40px 内左侧是交通灯,左栏从 40px 起(top-10)正好让头像避开它们。
+      // - Windows:窗口控件在右上角,顶栏左半是空白拖拽区。若仍 top-10,左栏头像会凭空
+      //   下沉 40px、左上一块空着显得不和谐。故工作台顶到 top-0、左栏铺满全高把头像顶上去,
+      //   右侧内容再各自留出 40px 顶栏空间(见 SectionLayer)。
+      className={cn(
+        "absolute inset-x-0 bottom-0 flex select-none overflow-hidden bg-[#F1F5F9] text-[#1F2937]",
+        isWindows ? "top-0" : "top-10",
+      )}
       style={{ fontFamily: FONT_BODY }}
     >
       <Sidebar
@@ -75,7 +82,9 @@ export function Workbench() {
 function SectionLayer({ active, children }: { active: boolean; children: ReactNode }) {
   return (
     <div
-      className="absolute inset-0 flex"
+      // Windows 下工作台顶到 top-0(见外层注释),右侧每页要自留 40px 给顶栏(拖拽区+控件),
+      // 否则搜索框/会话列表/聊天头会钻到顶栏下被遮。macOS 维持 inset-0(顶栏已在工作台之上)。
+      className={cn("absolute inset-x-0 bottom-0 flex", isWindows ? "top-10" : "top-0")}
       // 非激活页 content-visibility:hidden —— WebKit 跳过其内容的布局/绘制/合成并可释放渲染
       // 内存,同时保留 DOM 与 React 状态(切回秒恢复,滚动位置不丢)。激活页正常渲染。
       // 不再用 framer-motion 的 opacity 淡入淡出:淡入淡出会把整窗子树提升为合成层并在每次切换

@@ -5,6 +5,7 @@ import { DriftingWave } from "@/components/illustrations";
 import { useCurrentProfile } from "@/lib/data/useCurrentProfile";
 import { useHubSyncStatus } from "@/lib/data/useHubSyncStatus";
 import type { HubConnectionState } from "@/lib/data/useResource";
+import { isWindows } from "@/lib/platform";
 import { FROSTED_GLASS_STYLE, WORKBENCH_BLUE, WORKBENCH_NAV_TEXT } from "@/lib/theme";
 import { cn } from "@/lib/utils";
 
@@ -73,7 +74,11 @@ export const Sidebar = memo(function Sidebar({
         // 默认按 DOM 顺序堆叠会被后面的兄弟节点遮住。rounded-bl-[10px] 仍留在
         // aside 上，因为 backdrop-filter 自带 stacking context，圆角必须由它
         // 的元素本身承担。
-        "relative z-10 flex h-full shrink-0 select-none flex-col overflow-visible rounded-bl-[10px] transition-[width] duration-200 ease-out",
+        "relative flex h-full shrink-0 select-none flex-col overflow-visible rounded-bl-[10px] transition-[width] duration-200 ease-out",
+        // Windows:工作台顶到 top-0(见 Workbench),左栏要盖在 z-100 顶栏左半之上——顶栏控件
+        // 在右上角,左半只是空拖拽区,两者又共用同款毛玻璃,覆盖处无缝;这样头像才能露在顶部
+        // 40px 内,补上"左上空白"。macOS 维持 z-10(顶栏整条在工作台之上,左栏不需上浮)。
+        isWindows ? "z-[101]" : "z-10",
         collapsed ? "w-16" : "w-36",
       )}
       style={{

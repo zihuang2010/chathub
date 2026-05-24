@@ -3,7 +3,7 @@
 export const STRINGS = {
   page: {
     title: "客户管理",
-    subtitle: "管理你账号下的所有客户",
+    subtitle: "管理您企业微信账号下的所有客户",
   },
   tabs: {
     all: "全部客户",
