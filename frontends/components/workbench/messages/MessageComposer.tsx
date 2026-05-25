@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ChangeEvent, KeyboardEvent, PointerEvent as ReactPointerEvent } from "react";
 import * as Popover from "@radix-ui/react-popover";
 import { invoke, isTauri } from "@tauri-apps/api/core";
@@ -34,7 +34,13 @@ import { EmojiPicker } from "./EmojiPicker";
 import type { ReplyTarget } from "./MessageBubble";
 import { QuickRepliesPanel } from "./QuickRepliesPanel";
 import { STRINGS } from "./strings";
-import { clearDraft, flushDraftToBackend, useDraft, useFileAttachments } from "./useDraftStore";
+import {
+  clearDraft,
+  flushDraftToBackend,
+  getDraft,
+  useDraft,
+  useFileAttachments,
+} from "./useDraftStore";
 import { formatFileSize } from "./utils";
 
 interface MessageComposerProps {
@@ -160,14 +166,30 @@ export function MessageComposer({
   }, [onHeightChange]);
 
   // 草稿"切走才更新会话列表":输入过程中只写本地(useDraftStore debounce),不动
-  // 后端。本组件按 conversation.id 重挂载,cleanup 触发即"切到了别的接待人",此刻
-  // 把草稿刷到后端 → 会话列表才出现 "[草稿]" 样式并按 localDraftAtMs 重排。
-  // flushDraftToBackend 对非 dirty 会话是 no-op,故初次挂载 / StrictMode 双挂不会
-  // 误把刚打开的会话标成草稿态。
+  // 后端。本 effect 依赖 conversationId,其 cleanup 在 conversationId 变化(切到别的接待人)
+  // 或卸载时以**旧** id 触发,此刻把旧会话草稿刷到后端 → 会话列表才出现 "[草稿]" 样式并按
+  // localDraftAtMs 重排。flushDraftToBackend 对非 dirty 会话是 no-op,故初次挂载 / StrictMode
+  // 双挂不会误把刚打开的会话标成草稿态。
   useEffect(() => {
     return () => {
       flushDraftToBackend(conversationId);
     };
+  }, [conversationId]);
+
+  // 持久化编辑器:过去靠 ChatArea 的 key={conversation.id} 让本组件每次切会话整块重挂 →
+  // 重建整个 TipTap/ProseMirror 编辑器(本 UI 单次开销最大的对象),频繁切换接待列表时是
+  // JS 堆锯齿上涨与切换卡顿的主因。现编辑器跨会话常驻,切会话时把新会话草稿载入同一实例并
+  // 聚焦末尾——等价于原重挂时 `content=draft + autofocus:"end"` 的可见行为,但零编辑器重建。
+  // 用 layout effect 在绘制前换内容,避免新会话标题下短暂残留旧会话草稿文本的闪帧。setContent
+  // 沿用 submitDraft 写法不 emitUpdate(TipTap v3 默认),不会把内容回写 store。上一会话的草稿
+  // 已由输入时的 onChange 实时写入 store、并由上面的 cleanup 刷到后端,故此处只读取新会话草稿。
+  const prevConversationIdRef = useRef(conversationId);
+  useLayoutEffect(() => {
+    if (prevConversationIdRef.current === conversationId) return;
+    const editor = editorRef.current;
+    if (!editor) return; // 编辑器尚未就绪(极早期):本次跳过,下次切换再载入最新会话
+    prevConversationIdRef.current = conversationId;
+    editor.chain().setContent(getDraft(conversationId)).focus("end").run();
   }, [conversationId]);
 
   // ─── Attachment helpers ────────────────────────────────────────────────────

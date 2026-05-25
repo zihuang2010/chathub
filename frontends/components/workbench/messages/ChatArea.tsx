@@ -178,10 +178,10 @@ export const ChatArea = memo(function ChatArea({
         selectedAccount={selectedAccount}
         onAccountChange={onAccountChange}
       />
-      {/* 消息区**不加 key**:这里若用 key={conversation.id} 会与下方 MessageComposer 的同 key
-          成为同父兄弟节点 → React 重复 key、渲染错乱(气泡重叠/叠加)。消息区无需整块重挂——
-          useScrollController 常驻 ChatArea、按 conversation.id 依赖重跑切会话 snap;内层列表按
-          item.id 重渲;WorkbenchScrollArea 视口持久、MutationObserver 检测内容变更重绑。 */}
+      {/* 消息区与下方 MessageComposer 都不加 key:整块重挂没有必要,反而会重建编辑器/视口。
+          切会话由 useScrollController(常驻 ChatArea、按 conversation.id 依赖重跑 snap)、内层列表
+          (按 item.id 重渲)、WorkbenchScrollArea(视口持久、MutationObserver 检测内容变更重绑)
+          各自处理;MessageComposer 改为持久化编辑器,切会话载入新草稿而非重建(见下)。 */}
       <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
         {loading && localMessages.length === 0 ? (
           <ChatLoadingState />
@@ -298,8 +298,11 @@ export const ChatArea = memo(function ChatArea({
       {!loading && !error && localMessages.length > 0 && unreadAbove > 0 && (
         <UnreadAbovePill count={unreadAbove} onClick={scrollToUnread} />
       )}
+      {/* 不加 key:原先 key={conversation.id} 会在每次切会话整块重挂 MessageComposer →
+          重建整个 TipTap/ProseMirror 编辑器(本 UI 单次开销最大的对象),是频繁切换接待列表时
+          JS 堆锯齿上涨与切换卡顿的主因。改为持久化:编辑器跨会话常驻,切会话由 MessageComposer
+          内部 layout effect 载入新会话草稿 + 重聚焦,行为等价但零编辑器重建。 */}
       <MessageComposer
-        key={conversation.id}
         conversationId={conversation.id}
         height={composerHeight}
         onHeightChange={setComposerHeight}
