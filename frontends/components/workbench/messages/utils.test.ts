@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 
 import { buildMessageParts } from "./data";
 import type { Message, MessageAttachment, MessageBlock } from "./data";
-import { isSafeUrl, messageReplyPreview } from "./utils";
+import { afterEach } from "vitest";
+
+import { isSafeUrl, messageReplyPreview, thumbWidth } from "./utils";
 
 function makeMessage(
   partial: Omit<Partial<Message>, "parts"> & {
@@ -126,5 +128,46 @@ describe("isSafeUrl", () => {
     expect(isSafeUrl(undefined, "link")).toBe(false);
     expect(isSafeUrl("", "image")).toBe(false);
     expect(isSafeUrl("   ", "link")).toBe(false);
+  });
+});
+
+// 缩略图宽度的 DPR 自适应 + 封顶逻辑(「切会话 + 滑动图片历史」内存优化里唯一可在 jsdom
+// faithful 验证的部分:它决定 webview 解码位图的面积 = 内存大头)。锁死:低分屏取显示宽(省内存)、
+// 视网膜维持历史 384(画质不变)、任何情况封顶 384(永不比旧硬编码更耗内存)。overscan / 虚拟化
+// 阈值的内存收益依赖真实布局,jsdom 无法复现,不在此测。
+describe("thumbWidth:DPR 自适应缩略图宽(封顶 384)", () => {
+  const setDpr = (v: number) =>
+    Object.defineProperty(window, "devicePixelRatio", { configurable: true, value: v });
+  afterEach(() => setDpr(1)); // jsdom 默认 1,复位避免污染其他用例
+
+  it("低分屏(1×):取显示宽,解码位图最小", () => {
+    setDpr(1);
+    expect(thumbWidth(192)).toBe(192); // 192 盒(独立图 / 附件图)
+    expect(thumbWidth(260)).toBe(260); // 内联图(max-w 260)
+  });
+
+  it("视网膜(2×):与旧硬编码 384 一致,画质不变", () => {
+    setDpr(2);
+    expect(thumbWidth(192)).toBe(384); // 192×2
+    expect(thumbWidth(260)).toBe(384); // 260×2=520 → 封顶 384
+  });
+
+  it("超高 dpr(3×):dpr 系数上限 2,再被 384 总封顶", () => {
+    setDpr(3);
+    expect(thumbWidth(192)).toBe(384);
+    expect(thumbWidth(260)).toBe(384);
+  });
+
+  it("中等 dpr(1.5×,常见于 Windows):按比例缩,仍不超 384", () => {
+    setDpr(1.5);
+    expect(thumbWidth(192)).toBe(288); // 192×1.5
+    expect(thumbWidth(260)).toBe(384); // 260×1.5=390 → 封顶 384
+  });
+
+  it("任何 cssWidth 都不超过 384(永不比旧固定值更耗内存)", () => {
+    setDpr(2);
+    for (const w of [192, 260, 300, 400]) {
+      expect(thumbWidth(w)).toBeLessThanOrEqual(384);
+    }
   });
 });

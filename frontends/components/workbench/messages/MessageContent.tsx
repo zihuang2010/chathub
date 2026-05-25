@@ -6,7 +6,7 @@ import { cn } from "@/lib/utils";
 
 import type { MessagePart } from "./data";
 import { STRINGS } from "./strings";
-import { formatFileSize, formatRichText, isSafeUrl } from "./utils";
+import { formatFileSize, formatRichText, isSafeUrl, thumbWidth } from "./utils";
 
 type ImagePart = Extract<MessagePart, { kind: "image" }>;
 type FilePart = Extract<MessagePart, { kind: "file" }>;
@@ -84,7 +84,7 @@ function ImageAttachment({ part }: { part: ImagePart }) {
       className="focus-ring inline-block max-w-full overflow-hidden rounded-xl border border-workbench-line bg-workbench-surface p-1 shadow-wb-bubble transition-colors hover:bg-workbench-surface-subtle"
     >
       <MessageImage
-        src={cachedImageSrc(part.url, 384)}
+        src={cachedImageSrc(part.url, thumbWidth(192))}
         alt={STRINGS.attachment.imageAlt(part.name)}
         imgClassName="block h-full w-full rounded-lg object-cover"
       />
@@ -244,7 +244,7 @@ function InlineImage({ part }: { part: ImagePart }) {
       className="focus-ring mx-1 inline-block overflow-hidden rounded-lg align-middle ring-1 ring-workbench-line transition-shadow hover:ring-workbench-accent"
     >
       <img
-        src={cachedImageSrc(part.url, 384)}
+        src={cachedImageSrc(part.url, thumbWidth(260))}
         alt={part.name ?? STRINGS.attachment.image}
         loading="lazy"
         className="block max-h-[200px] max-w-[260px] object-contain"
@@ -264,7 +264,7 @@ function ImageStandalone({ part }: { part: ImagePart }) {
       className="focus-ring inline-block max-w-full overflow-hidden rounded-xl border border-workbench-line bg-workbench-surface p-1 shadow-wb-bubble transition-colors hover:bg-workbench-surface-subtle"
     >
       <MessageImage
-        src={cachedImageSrc(part.url, 384)}
+        src={cachedImageSrc(part.url, thumbWidth(192))}
         alt={STRINGS.attachment.imageAlt(part.name)}
         imgClassName="block h-full w-full rounded-lg object-cover"
       />

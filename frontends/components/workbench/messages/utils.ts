@@ -247,6 +247,15 @@ export function formatFileSize(bytes?: number): string {
   return `${i === 0 ? n : n.toFixed(1)} ${units[i]}`;
 }
 
+// 缩略图请求宽度:按 CSS 显示宽 × 设备像素比(高分屏上限 2×),并封顶在历史固定值 384px。
+// → 视网膜屏(dpr≥2)仍取 cssWidth×2(对 192 盒即 384,画质与此前一致);低分屏(如 Windows
+//   1× / 1.25×)据此降到接近显示宽,webview 解码的位图随面积平方下降(1× 时约为原 1/4),
+//   直接削减「切会话 + 滑动图片历史」时的解码内存峰值。封顶 384 保证任何情况都不比此前更耗内存。
+export function thumbWidth(cssWidth: number): number {
+  const dpr = typeof window !== "undefined" ? window.devicePixelRatio || 1 : 1;
+  return Math.min(384, Math.round(cssWidth * Math.min(dpr, 2)));
+}
+
 // Avatar palette used when an entity (e.g. Customer) has no `avatarColor` on
 // its data record. Hashing the id keeps the colour stable across renders.
 // Values are CSS color expressions referencing tokens in index.css, so the

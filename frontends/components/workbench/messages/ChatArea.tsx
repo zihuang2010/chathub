@@ -126,7 +126,10 @@ export const ChatArea = memo(function ChatArea({
   });
 
   // Stage 3.2 消息区虚拟化:仅长会话(>阈值)启用,短会话/测试走原全量渲染(零结构变化、测试保持绿)。
-  const VIRTUALIZE_THRESHOLD = 50;
+  // 阈值 50→20:中等长度会话(20~50 条)也启用虚拟化,避免一次性把几十条消息(含图片)全渲染进
+  // DOM —— 图片历史里"同时存活的 <img> = 同时解码的位图"是内存大头,提前虚拟化把它压到可视窗口量级。
+  // 现有测试用例消息数都 <20,仍走全量渲染分支,保持绿。
+  const VIRTUALIZE_THRESHOLD = 20;
   const shouldVirtualize = timelineItems.length > VIRTUALIZE_THRESHOLD;
   // 虚拟器与滚动视口(WorkbenchScrollArea)都常驻、跨会话持久(消息区不再按会话重挂),
   // 故无「实例持久 vs 视口重挂」错配。getItemKey 按消息 id 缓存测量,杜绝跨会话按 index 串台。
@@ -148,7 +151,9 @@ export const ChatArea = memo(function ChatArea({
       if (parts.some((p) => p.kind === "video")) return 212; // aspect-video w-64 缩略图
       return 72; // 文本/文件/语音:单行气泡 ≈ 44 + 行距
     },
-    overscan: 10,
+    // overscan 10→5:屏外预渲染的行数减半。图片历史里每个屏外预渲染的图片行都会被解码,
+    // 减半即少解码约一屏外缓冲区的图片(省下数 MB 峰值);代价是极快速滑动时偶有一瞬空白行。
+    overscan: 5,
     getItemKey: (index) => timelineItems[index].id,
   });
 
