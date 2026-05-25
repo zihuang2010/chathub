@@ -43,3 +43,7 @@ Thumbs.db
 
 # Local push-message.sh runtime state (notifySeq / per-conversation unread counters)
 scripts/.push-*
+
+# relay 运行时 SQLite 库(WAL 三件套:.db/.db-shm/.db-wal)。
+# 上线靠启动迁移自动建表,开发库不应提交。
+relay.db*
