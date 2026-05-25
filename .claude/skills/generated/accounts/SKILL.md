@@ -71,12 +71,12 @@ Start here when exploring this area:
 | `HandleExport → ParseStamp`    | cross_community | 6     |
 | `RenderRowContent → Cn`        | cross_community | 6     |
 | `HandleExport → Pad`           | cross_community | 5     |
-| `ConversationList → Cn`        | cross_community | 5     |
 | `CustomerDetails → Cn`         | cross_community | 5     |
 | `AccountsPage → Cn`            | cross_community | 4     |
 | `HandleExport → GetStatusMeta` | cross_community | 4     |
-| `CustomerList → Cn`            | cross_community | 4     |
 | `Workbench → Cn`               | cross_community | 4     |
+| `CustomerList → Cn`            | cross_community | 4     |
+| `AccountCard → GetInitials`    | intra_community | 4     |
 
 ## Connected Areas
 

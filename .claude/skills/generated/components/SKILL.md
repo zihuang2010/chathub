@@ -1,16 +1,16 @@
 ---
 name: components
-description: "Skill for the Components area of chathub. 52 symbols across 11 files."
+description: "Skill for the Components area of chathub. 49 symbols across 10 files."
 ---
 
 # Components
 
-52 symbols | 11 files | Cohesion: 78%
+49 symbols | 10 files | Cohesion: 75%
 
 ## When to Use
 
 - Working with code in `frontends/`
-- Understanding how useMessagesReady, checkForAppUpdates, useWindowMaxSize work
+- Understanding how detectWindows11, Splash, DriftingWave work
 - Modifying components-related functionality
 
 ## Key Files
@@ -18,50 +18,50 @@ description: "Skill for the Components area of chathub. 52 symbols across 11 fil
 | File                                           | Symbols                                                                                            |
 | ---------------------------------------------- | -------------------------------------------------------------------------------------------------- |
 | `frontends/components/TitleBar.tsx`            | WindowsTitleBar, ControlButton, MinimizeIcon, MaximizeIcon, RestoreIcon (+10)                      |
-| `frontends/components/Splash.tsx`              | BottomScene, CityBuildings, Waves, PaperPlane, Splash (+6)                                         |
-| `frontends/components/Login.tsx`               | Login, Backdrop, BottomWaves, FormCard, Tabs (+5)                                                  |
+| `frontends/components/Splash.tsx`              | Splash, Spinner, Features, VersionBadge, BrandStrip (+6)                                           |
+| `frontends/components/Login.tsx`               | FormCard, Tabs, Field, Checkbox, SubmitButton (+5)                                                 |
 | `frontends/components/WindowResizeEdges.tsx`   | startManualResize, WindowResizeEdges, handlePointerDown, ResizeHandle, findScrollableAncestor (+2) |
-| `frontends/lib/useWindowMaxSize.ts`            | isTauriRuntime, useWindowMaxSize, applyMaxSize                                                     |
+| `frontends/lib/platform.ts`                    | detectWindows11                                                                                    |
+| `frontends/components/ui/button.tsx`           | Button                                                                                             |
+| `frontends/components/illustrations/waves.tsx` | DriftingWave                                                                                       |
 | `frontends/lib/data/appReady.ts`               | useMessagesReady                                                                                   |
 | `frontends/lib/updater.ts`                     | checkForAppUpdates                                                                                 |
 | `frontends/App.tsx`                            | App                                                                                                |
-| `frontends/components/illustrations/waves.tsx` | DriftingWave                                                                                       |
-| `frontends/lib/platform.ts`                    | detectWindows11                                                                                    |
 
 ## Entry Points
 
 Start here when exploring this area:
 
+- **`detectWindows11`** (Function) — `frontends/lib/platform.ts:16`
+- **`Splash`** (Function) — `frontends/components/Splash.tsx:143`
+- **`DriftingWave`** (Function) — `frontends/components/illustrations/waves.tsx:18`
 - **`useMessagesReady`** (Function) — `frontends/lib/data/appReady.ts:57`
 - **`checkForAppUpdates`** (Function) — `frontends/lib/updater.ts:3`
-- **`useWindowMaxSize`** (Function) — `frontends/lib/useWindowMaxSize.ts:14`
-- **`applyMaxSize`** (Function) — `frontends/lib/useWindowMaxSize.ts:21`
-- **`WindowResizeEdges`** (Function) — `frontends/components/WindowResizeEdges.tsx:233`
 
 ## Key Symbols
 
 | Symbol               | Type     | File                                           | Line |
 | -------------------- | -------- | ---------------------------------------------- | ---- |
+| `detectWindows11`    | Function | `frontends/lib/platform.ts`                    | 16   |
+| `Splash`             | Function | `frontends/components/Splash.tsx`              | 143  |
+| `DriftingWave`       | Function | `frontends/components/illustrations/waves.tsx` | 18   |
 | `useMessagesReady`   | Function | `frontends/lib/data/appReady.ts`               | 57   |
 | `checkForAppUpdates` | Function | `frontends/lib/updater.ts`                     | 3    |
-| `useWindowMaxSize`   | Function | `frontends/lib/useWindowMaxSize.ts`            | 14   |
-| `applyMaxSize`       | Function | `frontends/lib/useWindowMaxSize.ts`            | 21   |
-| `WindowResizeEdges`  | Function | `frontends/components/WindowResizeEdges.tsx`   | 233  |
-| `handlePointerDown`  | Function | `frontends/components/WindowResizeEdges.tsx`   | 236  |
 | `Login`              | Function | `frontends/components/Login.tsx`               | 121  |
-| `DriftingWave`       | Function | `frontends/components/illustrations/waves.tsx` | 18   |
-| `detectWindows11`    | Function | `frontends/lib/platform.ts`                    | 16   |
-| `Splash`             | Function | `frontends/components/Splash.tsx`              | 141  |
 | `TitleBar`           | Function | `frontends/components/TitleBar.tsx`            | 20   |
 | `setup`              | Function | `frontends/components/TitleBar.tsx`            | 26   |
 | `safeWindow`         | Function | `frontends/components/TitleBar.tsx`            | 45   |
 | `onMinimize`         | Function | `frontends/components/TitleBar.tsx`            | 55   |
 | `onToggleMaximize`   | Function | `frontends/components/TitleBar.tsx`            | 56   |
 | `onClose`            | Function | `frontends/components/TitleBar.tsx`            | 57   |
+| `WindowResizeEdges`  | Function | `frontends/components/WindowResizeEdges.tsx`   | 233  |
+| `handlePointerDown`  | Function | `frontends/components/WindowResizeEdges.tsx`   | 236  |
 | `handleSubmit`       | Function | `frontends/components/Login.tsx`               | 136  |
-| `isTauriRuntime`     | Function | `frontends/lib/useWindowMaxSize.ts`            | 3    |
-| `App`                | Function | `frontends/App.tsx`                            | 29   |
-| `startManualResize`  | Function | `frontends/components/WindowResizeEdges.tsx`   | 104  |
+| `WindowsTitleBar`    | Function | `frontends/components/TitleBar.tsx`            | 188  |
+| `ControlButton`      | Function | `frontends/components/TitleBar.tsx`            | 245  |
+| `MinimizeIcon`       | Function | `frontends/components/TitleBar.tsx`            | 262  |
+| `MaximizeIcon`       | Function | `frontends/components/TitleBar.tsx`            | 270  |
+| `RestoreIcon`        | Function | `frontends/components/TitleBar.tsx`            | 278  |
 
 ## Execution Flows
 
@@ -82,13 +82,14 @@ Start here when exploring this area:
 
 | Area          | Connections |
 | ------------- | ----------- |
-| Accounts      | 7 calls     |
+| Accounts      | 8 calls     |
 | Messages      | 2 calls     |
 | Illustrations | 2 calls     |
 | Data          | 1 calls     |
+| Cluster_188   | 1 calls     |
 
 ## How to Explore
 
-1. `gitnexus_context({name: "useMessagesReady"})` — see callers and callees
+1. `gitnexus_context({name: "detectWindows11"})` — see callers and callees
 2. `gitnexus_query({query: "components"})` — find related execution flows
 3. Read key files listed above for implementation details

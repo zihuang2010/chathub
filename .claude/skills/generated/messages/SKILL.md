@@ -1,11 +1,11 @@
 ---
 name: messages
-description: "Skill for the Messages area of chathub. 214 symbols across 49 files."
+description: "Skill for the Messages area of chathub. 225 symbols across 54 files."
 ---
 
 # Messages
 
-214 symbols | 49 files | Cohesion: 80%
+225 symbols | 54 files | Cohesion: 79%
 
 ## When to Use
 
@@ -65,29 +65,29 @@ Start here when exploring this area:
 
 ## Execution Flows
 
-| Flow                                 | Type            | Steps |
-| ------------------------------------ | --------------- | ----- |
-| `Main → SafeWindow`                  | cross_community | 6     |
-| `Main → StripNode`                   | cross_community | 6     |
-| `RenderRowContent → IsSameLocalDay`  | cross_community | 6     |
-| `RenderRowContent → Cn`              | cross_community | 6     |
-| `ConversationList → PickAvatarColor` | cross_community | 6     |
-| `MessagesPage → ErrorMessage`        | cross_community | 5     |
-| `ChatArea → IsSameLocalDay`          | cross_community | 5     |
-| `ChatArea → PartTypePlaceholder`     | cross_community | 5     |
-| `ChatArea → PickAvatarColor`         | cross_community | 5     |
-| `LoadMore → AttachmentToPart`        | cross_community | 5     |
+| Flow                                      | Type            | Steps |
+| ----------------------------------------- | --------------- | ----- |
+| `CustomersPage → ScopeMatches`            | cross_community | 6     |
+| `MessagesContactSearch → ScopeMatches`    | cross_community | 6     |
+| `MessagesContactSearch → PickAvatarColor` | cross_community | 6     |
+| `Main → SafeWindow`                       | cross_community | 6     |
+| `Main → StripNode`                        | cross_community | 6     |
+| `RenderRowContent → IsSameLocalDay`       | cross_community | 6     |
+| `RenderRowContent → Cn`                   | cross_community | 6     |
+| `MessagesPage → ErrorMessage`             | cross_community | 5     |
+| `CustomersPage → ErrorMessage`            | cross_community | 5     |
+| `ChatArea → IsSameLocalDay`               | cross_community | 5     |
 
 ## Connected Areas
 
 | Area       | Connections |
 | ---------- | ----------- |
-| Accounts   | 27 calls    |
-| Customers  | 4 calls     |
-| Data       | 2 calls     |
+| Accounts   | 31 calls    |
+| Customers  | 5 calls     |
+| Data       | 3 calls     |
+| Store      | 2 calls     |
+| Api        | 2 calls     |
 | Workbench  | 1 calls     |
-| Api        | 1 calls     |
-| Store      | 1 calls     |
 | Components | 1 calls     |
 
 ## How to Explore

@@ -62,6 +62,7 @@ Start here when exploring this area:
 
 | Flow                                  | Type            | Steps |
 | ------------------------------------- | --------------- | ----- |
+| `ConversationList → Subscribe`        | cross_community | 5     |
 | `MessagesPage → Subscribe`            | cross_community | 4     |
 | `MessagesPage → UseCurrentEmployeeId` | cross_community | 4     |
 | `MessagesPage → UseChatStore`         | cross_community | 4     |
@@ -70,10 +71,10 @@ Start here when exploring this area:
 
 ## Connected Areas
 
-| Area | Connections |
-| ---- | ----------- |
-| Data | 1 calls     |
-| Api  | 1 calls     |
+| Area     | Connections |
+| -------- | ----------- |
+| Messages | 1 calls     |
+| Api      | 1 calls     |
 
 ## How to Explore
 

@@ -29,7 +29,7 @@ Start here when exploring this area:
 - **`useCurrentProfile`** (Function) — `frontends/lib/data/useCurrentProfile.ts:13`
 - **`useHubSyncStatus`** (Function) — `frontends/lib/data/useHubSyncStatus.ts:32`
 - **`un`** (Function) — `frontends/lib/data/useHubSyncStatus.ts:50`
-- **`Sidebar`** (Function) — `frontends/components/workbench/Sidebar.tsx:61`
+- **`Sidebar`** (Function) — `frontends/components/workbench/Sidebar.tsx:62`
 
 ## Key Symbols
 
@@ -38,16 +38,16 @@ Start here when exploring this area:
 | `useCurrentProfile` | Function | `frontends/lib/data/useCurrentProfile.ts`         | 13   |
 | `useHubSyncStatus`  | Function | `frontends/lib/data/useHubSyncStatus.ts`          | 32   |
 | `un`                | Function | `frontends/lib/data/useHubSyncStatus.ts`          | 50   |
-| `Sidebar`           | Function | `frontends/components/workbench/Sidebar.tsx`      | 61   |
-| `initialOf`         | Function | `frontends/components/workbench/Sidebar.tsx`      | 32   |
-| `onlineStatus`      | Function | `frontends/components/workbench/Sidebar.tsx`      | 38   |
-| `UserBadge`         | Function | `frontends/components/workbench/Sidebar.tsx`      | 208  |
-| `AvatarMark`        | Function | `frontends/components/workbench/Sidebar.tsx`      | 245  |
+| `Sidebar`           | Function | `frontends/components/workbench/Sidebar.tsx`      | 62   |
+| `initialOf`         | Function | `frontends/components/workbench/Sidebar.tsx`      | 33   |
+| `onlineStatus`      | Function | `frontends/components/workbench/Sidebar.tsx`      | 39   |
+| `UserBadge`         | Function | `frontends/components/workbench/Sidebar.tsx`      | 213  |
+| `AvatarMark`        | Function | `frontends/components/workbench/Sidebar.tsx`      | 250  |
 | `renderSidebar`     | Function | `frontends/components/workbench/Sidebar.test.tsx` | 49   |
-| `broadWavePath`     | Function | `frontends/components/workbench/Sidebar.tsx`      | 22   |
-| `SidebarBackdrop`   | Function | `frontends/components/workbench/Sidebar.tsx`      | 138  |
-| `EdgeHandle`        | Function | `frontends/components/workbench/Sidebar.tsx`      | 281  |
-| `NavButton`         | Function | `frontends/components/workbench/Sidebar.tsx`      | 313  |
+| `broadWavePath`     | Function | `frontends/components/workbench/Sidebar.tsx`      | 23   |
+| `SidebarBackdrop`   | Function | `frontends/components/workbench/Sidebar.tsx`      | 143  |
+| `EdgeHandle`        | Function | `frontends/components/workbench/Sidebar.tsx`      | 286  |
+| `NavButton`         | Function | `frontends/components/workbench/Sidebar.tsx`      | 318  |
 
 ## Execution Flows
 

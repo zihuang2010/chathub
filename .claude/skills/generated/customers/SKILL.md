@@ -5,7 +5,7 @@ description: "Skill for the Customers area of chathub. 93 symbols across 20 file
 
 # Customers
 
-93 symbols | 20 files | Cohesion: 75%
+93 symbols | 20 files | Cohesion: 74%
 
 ## When to Use
 
@@ -23,7 +23,7 @@ description: "Skill for the Customers area of chathub. 93 symbols across 20 file
 | `frontends/components/workbench/customers/AccountPicker.tsx`       | AccountPicker, SearchBox, Group, Row, Footer (+3)                                                |
 | `frontends/components/workbench/customers/BulkActionsBar.tsx`      | BulkActionsBar, ActionButton, TagPickerPopover, reset, togglePick (+2)                           |
 | `frontends/components/ui/toast.tsx`                                | emit, dismiss, showToast, useToasts, ToastViewport (+1)                                          |
-| `frontends/components/workbench/customers/CustomerListRow.tsx`     | CustomerListRow, formatLastContact, pad, GenderIcon, RowIconButton (+1)                          |
+| `frontends/components/workbench/customers/CustomerListRow.tsx`     | formatLastContact, pad, CustomerListRow, GenderIcon, RowIconButton (+1)                          |
 | `frontends/components/workbench/customers/CustomerList.tsx`        | CustomerList, ListStatus, EmptyList, FilteredEmpty                                               |
 | `frontends/components/workbench/accounts/AccountsPage.tsx`         | handleRefresh, handleBind, handleExport                                                          |
 | `frontends/components/workbench/accounts/utils.ts`                 | pick, escapeCsvField, toAccountsCsv                                                              |
@@ -83,8 +83,7 @@ Start here when exploring this area:
 | Area     | Connections |
 | -------- | ----------- |
 | Accounts | 19 calls    |
-| Messages | 4 calls     |
-| Data     | 1 calls     |
+| Messages | 5 calls     |
 
 ## How to Explore
 

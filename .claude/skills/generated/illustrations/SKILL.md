@@ -44,9 +44,9 @@ Start here when exploring this area:
 | `BrandPanel`        | Function | `frontends/components/Login.tsx`                    | 234  |
 | `BrandIllustration` | Function | `frontends/components/Login.tsx`                    | 273  |
 | `IllustrationHalos` | Function | `frontends/components/Login.tsx`                    | 327  |
-| `Illustration`      | Function | `frontends/components/Splash.tsx`                   | 200  |
-| `Halos`             | Function | `frontends/components/Splash.tsx`                   | 219  |
-| `FloatDot`          | Function | `frontends/components/Splash.tsx`                   | 462  |
+| `Illustration`      | Function | `frontends/components/Splash.tsx`                   | 202  |
+| `Halos`             | Function | `frontends/components/Splash.tsx`                   | 221  |
+| `FloatDot`          | Function | `frontends/components/Splash.tsx`                   | 469  |
 | `popIn`             | Function | `frontends/components/illustrations/bubbles.tsx`    | 21   |
 | `dropShadow`        | Function | `frontends/components/illustrations/bubbles.tsx`    | 24   |
 | `typingDot`         | Function | `frontends/components/illustrations/bubbles.tsx`    | 29   |

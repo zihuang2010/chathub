@@ -141,7 +141,7 @@ describe("MessageContent blocks path", () => {
 });
 
 describe("MessageImage layout-shift + error fallback", () => {
-  it("renders a min-sized container + opacity-0 img + skeleton in loading state", () => {
+  it("renders a fixed-size container + opacity-0 img + skeleton in loading state", () => {
     const { container } = renderContent({
       blocks: [{ type: "image", url: "https://e.example/img.png" }],
     });
@@ -149,8 +149,8 @@ describe("MessageImage layout-shift + error fallback", () => {
     expect(img).not.toBeNull();
     // img stays opacity-0 until onLoad fires — 杜绝 broken-icon 闪现。
     expect(img?.className).toContain("opacity-0");
-    // min-h-32 / min-w-32 锁住容器尺寸,避免加载完成时的 layout shift。
-    const sizedContainer = container.querySelector("span.min-h-32.min-w-32");
+    // 固定缩略图盒(h-48 w-48)尺寸与加载态无关,任何阶段零位移(消抖)。
+    const sizedContainer = container.querySelector("span.h-48.w-48");
     expect(sizedContainer).not.toBeNull();
     // 骨架 overlay 存在。
     const skeleton = container.querySelector("span.animate-pulse");

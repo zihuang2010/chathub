@@ -1,4 +1,4 @@
-import { Fragment, useState } from "react";
+import { Fragment, useLayoutEffect, useRef, useState } from "react";
 import { Download, FileText, ImageOff, Play } from "lucide-react";
 
 import { cn } from "@/lib/utils";
@@ -85,7 +85,7 @@ function ImageAttachment({ part }: { part: ImagePart }) {
       <MessageImage
         src={part.url}
         alt={STRINGS.attachment.imageAlt(part.name)}
-        imgClassName="block max-h-72 max-w-full rounded-lg object-contain"
+        imgClassName="block h-full w-full rounded-lg object-cover"
       />
     </a>
   );
@@ -265,7 +265,7 @@ function ImageStandalone({ part }: { part: ImagePart }) {
       <MessageImage
         src={part.url}
         alt={STRINGS.attachment.imageAlt(part.name)}
-        imgClassName="block max-h-72 max-w-full rounded-lg object-contain"
+        imgClassName="block h-full w-full rounded-lg object-cover"
       />
     </a>
   );
@@ -274,17 +274,18 @@ function ImageStandalone({ part }: { part: ImagePart }) {
 // ─── 异步图片加载封装 ─────────────────────────────────────────────────────
 //
 // 解决两类闪烁:
-//   A. layout shift: `<img>` 在 load 前 0×0,load(成功/失败)后才撑高,导致整列气泡
-//      位移。外层 span 用 `min-h/min-w` 把这帧空间提前占住,从 128 起步而非 0。
-//   B. broken-icon 闪现: src 失败时浏览器自带的 broken-icon 出现时机不可控,且在
-//      AnimatePresence fade-in 同一时间窗内,放大视觉跳变。改用本地 state +
-//      onLoad / onError 自管显隐:加载中渲染骨架,失败用稳定的"图片加载失败"卡片
-//      替代浏览器默认 UI。
+//   A. layout shift(抖动): 服务端图片在加载前未知尺寸,若按自然高度撑开,load 完成
+//      会把下方气泡顶下去、多图先后加载各撑一次 → 整列抖动。这里改用**固定缩略图盒**
+//      (h-48 w-48 方形 + object-cover 裁切): 盒子尺寸与加载态无关,任何阶段零位移。
+//      代价是高窄/宽扁图被裁切,换取切会话/首屏的绝对稳定(IM 列表常见取舍)。
+//   B. broken-icon 闪现: src 失败时浏览器自带的 broken-icon 出现时机不可控。改用本地
+//      state + onLoad / onError 自管显隐:加载中渲染骨架,失败用稳定的"图片加载失败"
+//      卡片替代浏览器默认 UI,同样占满固定盒、不改变布局。
 //
-// 渲染态:
-//   loading → 128×128 骨架 + 隐形 img(还在 loading,不参与可见层)
-//   loaded  → img 撑到自然尺寸(<= max-h-72),骨架移除
-//   error   → 直接换 128×128 失败卡片,img 卸载,杜绝 broken-icon 偶现
+// 渲染态(盒子恒为 192×192,三态同尺寸):
+//   loading → 骨架 overlay + 隐形 img(opacity-0,占位但不可见)
+//   loaded  → img object-cover 填满固定盒,骨架移除
+//   error   → 失败卡片填满固定盒,img 卸载,杜绝 broken-icon 偶现
 
 interface MessageImageProps {
   src: string;
@@ -306,12 +307,24 @@ function MessageImage({ src, alt, imgClassName }: MessageImageProps) {
     setState(isSafeUrl(src, "image") ? "loading" : "error");
   }
 
+  // 切到"看过的会话"时,图片已在浏览器缓存里:<img> 一挂载就 complete,onLoad 仍走
+  // 异步微任务,于是先画一帧 loading 骨架(灰色 pulse + opacity-0)再 pop 出图 ——
+  // 这就是"切到含图会话闪一下"的真因。useLayoutEffect 在 paint 前同步把已就绪的缓存图
+  // 标为 loaded,骨架那一帧不会被画出。naturalWidth>0 既精确判定缓存命中,又兜住 jsdom
+  // (不真实解码、complete 可能为 true 但 naturalWidth 恒为 0)→ 测试里的 loading 态不变。
+  const imgRef = useRef<HTMLImageElement | null>(null);
+  useLayoutEffect(() => {
+    if (state !== "loading") return;
+    const img = imgRef.current;
+    if (img && img.complete && img.naturalWidth > 0) setState("loaded");
+  }, [src, state]);
+
   if (state === "error") {
     return (
       <span
         role="img"
         aria-label={STRINGS.attachment.imageLoadFailed}
-        className="grid h-32 w-32 place-items-center rounded-lg bg-workbench-surface-soft text-wb-3xs text-workbench-text-muted"
+        className="text-wb-3xs grid h-48 w-48 place-items-center rounded-lg bg-workbench-surface-soft text-workbench-text-muted"
       >
         <span className="flex flex-col items-center gap-1.5">
           <ImageOff size={22} strokeWidth={1.5} aria-hidden />
@@ -322,8 +335,9 @@ function MessageImage({ src, alt, imgClassName }: MessageImageProps) {
   }
 
   return (
-    <span className="relative inline-block min-h-32 min-w-32">
+    <span className="relative inline-block h-48 w-48">
       <img
+        ref={imgRef}
         src={src}
         alt={alt}
         loading="lazy"
