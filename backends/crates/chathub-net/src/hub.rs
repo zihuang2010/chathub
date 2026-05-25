@@ -178,6 +178,28 @@ impl HubClient {
         })
     }
 
+    /// 拉取单个外部联系人的好友详情。POST body 透传 `{ wecomAccountId, externalUserId, isForceRefresh }`。
+    /// 不入库,临时拉取(同 fetch_message_history 语义)。`is_force_refresh=true` 打破一天一次的自动刷新限制。
+    pub async fn friend_detail(
+        &self,
+        req: FriendDetailRequest,
+    ) -> Result<WecomFriendDetail, AuthError> {
+        let body = serde_json::to_vec(&req).map_err(|e| AuthError::Internal {
+            message: format!("friend_detail serialize: {e}"),
+        })?;
+        let resp = self.forward("friend_detail", body).await?;
+        if resp.http_status != 200 {
+            return Err(AuthError::Internal {
+                message: format!("friend_detail returned http {}", resp.http_status),
+            });
+        }
+        serde_json::from_slice::<WecomFriendDetail>(&resp.body_json).map_err(|e| {
+            AuthError::Internal {
+                message: format!("friend_detail JSON parse: {e}"),
+            }
+        })
+    }
+
     /// 拉取"接待好友列表"(消息页的最近会话列表)。POST body 透传:
     ///   `{ size, cursor, externalName, externalMobile, wecomAccountId, onlyUnread }`
     /// 服务端按 `last_message_time` 倒序 + 游标分页;响应自带 `last_message_*` 快照
@@ -473,6 +495,82 @@ pub struct ListFriendsResp {
     pub records: Vec<WecomFriend>,
     pub has_more: bool,
     pub next_cursor: String,
+}
+
+// ─── friend_detail typed contract ───────────────────────────────────────────
+
+/// 好友详情入参。`is_force_refresh=true` 打破一天一次的自动刷新限制。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FriendDetailRequest {
+    pub wecom_account_id: String,
+    pub external_user_id: String,
+    pub is_force_refresh: bool,
+}
+
+/// 客户标签快照(对应 `follow_user.tags`)。
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FriendTag {
+    #[serde(default)]
+    pub group_name: String,
+    #[serde(default)]
+    pub tag_name: String,
+}
+
+/// 好友详情(2xx envelope.data 形态)。除 external_user_id / sync_status / gmt_modified_time
+/// 三个必填外,其余字段服务端按需返回,故一律 `#[serde(default)]` 容忍缺省。
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WecomFriendDetail {
+    pub external_user_id: String,
+    #[serde(default)]
+    pub external_name: String,
+    #[serde(default)]
+    pub external_position: String,
+    #[serde(default)]
+    pub external_avatar: String,
+    #[serde(default)]
+    pub external_corp_name: String,
+    #[serde(default)]
+    pub external_corp_full_name: String,
+    #[serde(default)]
+    pub external_type: i32,
+    #[serde(default)]
+    pub external_gender: i32,
+    /// 按权限脱敏
+    #[serde(default)]
+    pub external_mobile: String,
+    #[serde(default)]
+    pub follow_remark: String,
+    #[serde(default)]
+    pub follow_description: String,
+    #[serde(default)]
+    pub remark_corp_name: String,
+    #[serde(default)]
+    pub add_time: String,
+    #[serde(default)]
+    pub add_way: i32,
+    #[serde(default)]
+    pub follow_state: String,
+    #[serde(default)]
+    pub wechat_channels_nickname: String,
+    #[serde(default)]
+    pub wechat_channels_source: i32,
+    #[serde(default)]
+    pub last_sync_time: String,
+    /// 0 未同步,1 成功,2 失败
+    pub sync_status: i32,
+    #[serde(default)]
+    pub remark_mobiles: Vec<String>,
+    #[serde(default)]
+    pub tags: Vec<FriendTag>,
+    #[serde(default)]
+    pub oper_userid: String,
+    #[serde(default)]
+    pub sync_fail_reason: Option<String>,
+    /// 好友资料主表最近修改时间
+    pub gmt_modified_time: String,
 }
 
 // ─── list_recent_friends typed contract ─────────────────────────────────────

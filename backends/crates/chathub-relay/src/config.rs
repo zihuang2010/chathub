@@ -148,6 +148,12 @@ const DEFAULT_ROUTES: &[(&str, HttpMethod, &str, &str)] = &[
         "RELAY_PATH_LIST_FRIENDS",
     ),
     (
+        "friend_detail",
+        HttpMethod::Post,
+        "/wechat-business-app/wecom-cs/v1/wecomAggregate/friend/detail",
+        "RELAY_PATH_FRIEND_DETAIL",
+    ),
+    (
         "list_recent_friends",
         HttpMethod::Post,
         "/wechat-business-app/wecom-cs/v1/wecomAggregate/session/recentFriends",
@@ -585,6 +591,7 @@ mod tests {
             "RELAY_PATH_SEND_MESSAGE",
             "RELAY_PATH_LIST_ACCOUNTS",
             "RELAY_PATH_LIST_FRIENDS",
+            "RELAY_PATH_FRIEND_DETAIL",
             "RELAY_PATH_LIST_RECENT_FRIENDS",
             "RELAY_PATH_LOGIN",
             "RELAY_PATH_VERIFY_TOKEN",

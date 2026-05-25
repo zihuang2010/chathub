@@ -1,0 +1,116 @@
+import { act, renderHook } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+import type { Message } from "@/components/workbench/messages/data";
+import { useChatStore } from "@/components/workbench/messages/store/chatStore";
+
+import { useMessageHistory } from "./useMessageHistory";
+import {
+  adaptHistoryRecords,
+  type HistoryMessage,
+  loadConversationMessages,
+} from "./messageHistory";
+
+// changeBus / employeeId / IPC 全部 mock:本测聚焦「loading 派生语义」,不验真实订阅与网络。
+vi.mock("@/lib/data/changeBus", () => ({
+  changeBus: { subscribe: vi.fn(() => () => undefined) },
+}));
+vi.mock("@/lib/data/useCurrentEmployeeId", () => ({
+  useCurrentEmployeeId: () => "emp-1",
+}));
+vi.mock("./messageHistory", () => ({
+  loadConversationMessages: vi.fn(),
+  loadOlderMessages: vi.fn(),
+  adaptHistoryRecords: vi.fn(),
+}));
+
+const loadMock = vi.mocked(loadConversationMessages);
+const adaptMock = vi.mocked(adaptHistoryRecords);
+
+const READY = { wecomAccountId: "acct-1", externalUserId: "user-1" } as const;
+
+function msg(id: string): Message {
+  return {
+    id,
+    conversationId: "c1",
+    direction: "in",
+    text: id,
+    sentAt: "2026-05-25T00:00:00.000Z",
+    parts: [{ kind: "text", text: id }],
+  };
+}
+
+function flush() {
+  return act(async () => {
+    await new Promise((r) => setTimeout(r, 0));
+  });
+}
+
+beforeEach(() => {
+  adaptMock.mockImplementation((records) => records as unknown as Message[]);
+});
+
+afterEach(() => {
+  useChatStore.getState().reset();
+  vi.clearAllMocks();
+});
+
+describe("useMessageHistory loading 派生(防开场空态闪帧)", () => {
+  it("冷会话首帧(ready 但 slice 未建立)返回 loading=true —— 否则 ChatArea 会先画一帧「暂无消息」空态", async () => {
+    loadMock.mockResolvedValue({ records: [], hasMoreOlder: false });
+
+    // 逐帧记录:renders[0] 是 effect 跑(readCache 置 loading)之前的首次渲染值。
+    // 没有本次修复时,首帧 slice=undefined → loading=false → 空态闪帧。
+    const renders: Array<{ loading: boolean; len: number }> = [];
+    await act(async () => {
+      renderHook(() => {
+        const r = useMessageHistory({ ...READY, conversationId: "c-cold" });
+        renders.push({ loading: r.loading, len: r.messages.length });
+        return r;
+      });
+    });
+
+    expect(renders[0]).toEqual({ loading: true, len: 0 });
+  });
+
+  it("账号/用户缺失(无法拉取)时首帧 loading=false —— 空态如实展示,不卡死骨架", () => {
+    const renders: Array<{ loading: boolean }> = [];
+    renderHook(() => {
+      const r = useMessageHistory({
+        wecomAccountId: "",
+        externalUserId: "",
+        conversationId: "c1",
+      });
+      renders.push({ loading: r.loading });
+      return r;
+    });
+
+    expect(renders[0].loading).toBe(false);
+    expect(loadMock).not.toHaveBeenCalled();
+  });
+
+  it("拉取完成且确无消息 → loading=false,messages=[] —— 空态此时才合理展示(未过度修复成永久骨架)", async () => {
+    loadMock.mockResolvedValue({ records: [], hasMoreOlder: false });
+
+    const { result } = renderHook(() => useMessageHistory({ ...READY, conversationId: "c-empty" }));
+    await flush();
+
+    expect(result.current.loading).toBe(false);
+    expect(result.current.messages).toEqual([]);
+  });
+
+  it("拉取完成且有消息 → loading=false,messages 收敛进权威列表", async () => {
+    // adaptHistoryRecords 被 mock 成原样透传(见 beforeEach),故这里直接塞 Message 作记录,
+    // 仅在类型层转成 HistoryMessage[] 以满足 loadConversationMessages 的返回契约。
+    loadMock.mockResolvedValue({
+      records: [msg("m1"), msg("m2")] as unknown as HistoryMessage[],
+      hasMoreOlder: false,
+    });
+
+    const { result } = renderHook(() => useMessageHistory({ ...READY, conversationId: "c1" }));
+    await flush();
+
+    expect(result.current.loading).toBe(false);
+    expect(result.current.messages.map((m) => m.id)).toEqual(["m1", "m2"]);
+  });
+});

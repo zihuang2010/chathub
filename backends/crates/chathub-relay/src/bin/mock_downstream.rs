@@ -16,6 +16,8 @@
 //!                                            Bearer <token> → 返账号列表
 //!     POST /wechat-business-app/wecom-cs/v1/wecomAggregate/account/listFriends
 //!                                            Bearer <token> + JSON body → 返多账号好友分页
+//!     POST /wechat-business-app/wecom-cs/v1/wecomAggregate/friend/detail
+//!                                            Bearer <token> + JSON body → 返单个好友详情
 //!     POST /wechat-business-app/wecom-cs/v1/wecomAggregate/session/recentFriends
 //!                                            Bearer <token> + JSON body → 返接待列表(cursor 分页)
 //!     POST /wechat-business-app/wecom-cs/v1/wecomAggregate/session/markRead
@@ -206,6 +208,55 @@ struct ListFriendsResp {
     records: Vec<MockFriend>,
     has_more: bool,
     next_cursor: String,
+}
+
+// ─── friend/detail 请求/响应(POST,Bearer + JSON body)───────────────────────
+
+#[derive(Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+struct FriendDetailReq {
+    wecom_account_id: String,
+    external_user_id: String,
+    /// mock 无缓存,强制刷新无副作用;其值仍由 dump 中间件打印到 stdout 供联调观察。
+    #[serde(default)]
+    #[allow(dead_code)]
+    is_force_refresh: bool,
+}
+
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+struct MockFriendTag {
+    group_name: String,
+    tag_name: String,
+}
+
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+struct MockFriendDetail {
+    external_user_id: String,
+    external_name: String,
+    external_position: String,
+    external_avatar: String,
+    external_corp_name: String,
+    external_corp_full_name: String,
+    external_type: i32,
+    external_gender: i32,
+    external_mobile: String,
+    follow_remark: String,
+    follow_description: String,
+    remark_corp_name: String,
+    add_time: String,
+    add_way: i32,
+    follow_state: String,
+    wechat_channels_nickname: String,
+    wechat_channels_source: i32,
+    last_sync_time: String,
+    sync_status: i32,
+    remark_mobiles: Vec<String>,
+    tags: Vec<MockFriendTag>,
+    oper_userid: String,
+    sync_fail_reason: Option<String>,
+    gmt_modified_time: String,
 }
 
 // ─── session/recentFriends 请求/响应(POST,cursor 分页)──────────────────────
@@ -464,6 +515,10 @@ async fn main() -> anyhow::Result<()> {
         .route(
             "/wechat-business-app/wecom-cs/v1/wecomAggregate/account/listFriends",
             post(list_friends),
+        )
+        .route(
+            "/wechat-business-app/wecom-cs/v1/wecomAggregate/friend/detail",
+            post(friend_detail),
         )
         .route(
             "/wechat-business-app/wecom-cs/v1/wecomAggregate/session/recentFriends",
@@ -816,6 +871,108 @@ async fn list_friends(
         records: all,
         has_more,
         next_cursor,
+    })
+    .into_response()
+}
+
+// ─── friend/detail(POST,Bearer + JSON body)────────────────────────────────
+
+/// 好友详情 handler。复用 `generate_friends` 按 externalUserId 命中那条 friend(保证与 listFriends
+/// 列表数据一致),在其基础上补详情专有字段(tags / remarkMobiles / syncStatus / gmtModifiedTime 等)。
+/// 命中下标 i 用于复算 seed,确定性派生标签快照与备注手机号。
+async fn friend_detail(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(req): Json<FriendDetailReq>,
+) -> impl IntoResponse {
+    if !has_bearer(&headers) {
+        return (StatusCode::UNAUTHORIZED, "missing Bearer").into_response();
+    }
+    if req.wecom_account_id.is_empty() || req.external_user_id.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            "wecomAccountId / externalUserId required",
+        )
+            .into_response();
+    }
+
+    // 在该账号的 mock 好友池里按 externalUserId 命中,顺带拿到下标 i 复算 seed。
+    let hit = generate_friends(&req.wecom_account_id, state.friends_per_account)
+        .into_iter()
+        .enumerate()
+        .find(|(_, f)| f.external_user_id == req.external_user_id);
+
+    let (i, f) = match hit {
+        Some(v) => v,
+        // 联调下命中率高;命中不到返回业务错(envelope code != 1),前端走错误态。
+        None => {
+            return Json(Envelope {
+                code: 0,
+                service_code: "NOT_FOUND".into(),
+                msg: "好友不存在".into(),
+                data: serde_json::Value::Null,
+            })
+            .into_response();
+        }
+    };
+
+    let seed = mock_hash(&req.wecom_account_id, i);
+    // 标签快照:确定性派生 2~3 条。
+    const TAG_POOL: &[(&str, &str)] = &[
+        ("客户等级", "重点客户"),
+        ("行业", "互联网"),
+        ("阶段", "意向"),
+        ("来源", "活动"),
+        ("服务", "已签约"),
+    ];
+    let tag_count = 2 + (seed % 2) as usize; // 2 或 3
+    let tags: Vec<MockFriendTag> = (0..tag_count)
+        .map(|k| {
+            let (g, t) = TAG_POOL[(((seed >> (k * 4)) as usize).wrapping_add(k)) % TAG_POOL.len()];
+            MockFriendTag {
+                group_name: g.to_string(),
+                tag_name: t.to_string(),
+            }
+        })
+        .collect();
+    // 备注手机号:确定性派生 0~2 个(未脱敏,模拟有权限可见)。
+    let mobile_count = ((seed >> 20) % 3) as usize;
+    let remark_mobiles: Vec<String> = (0..mobile_count)
+        .map(|k| {
+            format!(
+                "13{}{:08}",
+                (seed >> (k * 8)) % 10,
+                (seed >> 4) % 100_000_000
+            )
+        })
+        .collect();
+    let now = now_local_yyyy_mm_dd_hh_mm_ss();
+
+    envelope_ok(MockFriendDetail {
+        external_user_id: f.external_user_id,
+        external_name: f.external_name,
+        external_position: f.external_position,
+        external_avatar: f.external_avatar,
+        external_corp_name: f.external_corp_name,
+        external_corp_full_name: f.external_corp_full_name,
+        external_type: f.external_type,
+        external_gender: f.external_gender,
+        external_mobile: f.external_mobile,
+        follow_remark: f.follow_remark,
+        follow_description: f.follow_description,
+        remark_corp_name: f.remark_corp_name,
+        add_time: f.add_time,
+        add_way: f.add_way,
+        follow_state: f.follow_state,
+        wechat_channels_nickname: f.wechat_channels_nickname,
+        wechat_channels_source: f.wechat_channels_source,
+        last_sync_time: now.clone(),
+        sync_status: 1,
+        remark_mobiles,
+        tags,
+        oper_userid: req.wecom_account_id.clone(),
+        sync_fail_reason: None,
+        gmt_modified_time: now,
     })
     .into_response()
 }

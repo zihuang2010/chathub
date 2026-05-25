@@ -1,5 +1,5 @@
 import { memo, useState } from "react";
-import { Copy, Mars, MoreHorizontal, Phone, Star, Venus } from "lucide-react";
+import { Copy, Mars, MoreHorizontal, Phone, RefreshCw, Star, Venus } from "lucide-react";
 
 import type { Account } from "@/lib/types/account";
 import type { Customer } from "@/lib/types/customer";
@@ -31,6 +31,10 @@ interface CustomerDetailPanelProps {
   onToggleStar: () => void;
   onOpenChat: (customerId: string) => void;
   onEditCustomer: (customerId: string) => void;
+  /** 强制刷新客户详情(isForceRefresh=true)。 */
+  onRefresh?: () => void;
+  /** 详情拉取中:刷新按钮禁用 + 图标旋转。 */
+  refreshing?: boolean;
 }
 
 export const CustomerDetailPanel = memo(function CustomerDetailPanel({
@@ -43,6 +47,8 @@ export const CustomerDetailPanel = memo(function CustomerDetailPanel({
   onToggleStar,
   onOpenChat,
   onEditCustomer,
+  onRefresh,
+  refreshing,
 }: CustomerDetailPanelProps) {
   if (!customer) {
     return <EmptyDetail />;
@@ -60,6 +66,8 @@ export const CustomerDetailPanel = memo(function CustomerDetailPanel({
       onToggleStar={onToggleStar}
       onOpenChat={onOpenChat}
       onEditCustomer={onEditCustomer}
+      onRefresh={onRefresh}
+      refreshing={refreshing}
     />
   );
 });
@@ -87,6 +95,8 @@ function DetailBody({
   onToggleStar,
   onOpenChat,
   onEditCustomer,
+  onRefresh,
+  refreshing,
 }: {
   customer: Customer;
   account: Account | undefined;
@@ -97,6 +107,8 @@ function DetailBody({
   onToggleStar: () => void;
   onOpenChat: (id: string) => void;
   onEditCustomer: (id: string) => void;
+  onRefresh?: () => void;
+  refreshing?: boolean;
 }) {
   const [activeSubTab, setActiveSubTab] = useState<DetailTab>("info");
   const starred = Boolean(customer.starred);
@@ -112,7 +124,7 @@ function DetailBody({
 
   return (
     <aside style={{ width: DETAIL_PANEL_WIDTH }} className="flex h-full shrink-0 flex-col">
-      <DetailHeaderBar />
+      <DetailHeaderBar onRefresh={onRefresh} refreshing={refreshing} />
 
       <WorkbenchScrollArea
         className="flex-1"
@@ -156,10 +168,28 @@ function DetailBody({
   );
 }
 
-function DetailHeaderBar() {
+function DetailHeaderBar({
+  onRefresh,
+  refreshing,
+}: {
+  onRefresh?: () => void;
+  refreshing?: boolean;
+}) {
   return (
     <div className="flex h-10 shrink-0 items-center justify-between border-b border-workbench-line px-3">
       <span className="text-[13px] font-semibold text-workbench-text">{STRINGS.detail.title}</span>
+      {onRefresh && (
+        <button
+          type="button"
+          onClick={onRefresh}
+          disabled={refreshing}
+          aria-label={STRINGS.detail.refresh}
+          title={STRINGS.detail.refresh}
+          className="grid size-7 place-items-center rounded-md text-workbench-text-muted transition-colors hover:bg-workbench-surface-active hover:text-workbench-text disabled:opacity-50"
+        >
+          <RefreshCw size={14} className={cn(refreshing && "animate-spin")} />
+        </button>
+      )}
     </div>
   );
 }

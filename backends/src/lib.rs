@@ -8,10 +8,11 @@ use tracing::info;
 use chathub_net::{
     record_to_remote, row_to_history, AccountEventApplier, AuthApi, AuthError, AuthInterceptor,
     BackoffConfig, ChangeNotice, ChangeScope, ChangeTopic, ConnectionManager, ConnectionState,
-    FetchMessageHistoryRequest, FetchMessageHistoryResp, FriendEventApplier, HistoryMessage,
-    HubClient, ListAccountsFilter, ListAccountsItem, ListFriendsRequest, ListFriendsResp,
-    ListRecentFriendsRequest, ListRecentFriendsResp, LoggedOutReason, MarkReadRequest,
-    MessageEventApplier, MessageSync, RecentSessionEventApplier, SendMessageResp, TokenStore,
+    FetchMessageHistoryRequest, FetchMessageHistoryResp, FriendDetailRequest, FriendEventApplier,
+    HistoryMessage, HubClient, ListAccountsFilter, ListAccountsItem, ListFriendsRequest,
+    ListFriendsResp, ListRecentFriendsRequest, ListRecentFriendsResp, LoggedOutReason,
+    MarkReadRequest, MessageEventApplier, MessageSync, RecentSessionEventApplier, SendMessageResp,
+    TokenStore, WecomFriendDetail,
 };
 use chathub_proto::v1::UserProfile;
 use chathub_state::{
@@ -306,6 +307,26 @@ async fn list_friends(
         add_end_time: add_end_time.filter(|s| !s.is_empty()),
     };
     hub.list_friends(req).await
+}
+
+// ============================== friend/detail 好友详情 ==============================
+
+/// 拉取单个外部联系人的好友详情 —— 透传业务后台 `/wecomAggregate/friend/detail`。
+///
+/// 不入库,临时拉取。`is_force_refresh=true` 打破一天一次的自动刷新限制。
+#[tauri::command]
+async fn friend_detail(
+    hub: State<'_, HubClient>,
+    wecom_account_id: String,
+    external_user_id: String,
+    is_force_refresh: Option<bool>,
+) -> Result<WecomFriendDetail, AuthError> {
+    let req = FriendDetailRequest {
+        wecom_account_id,
+        external_user_id,
+        is_force_refresh: is_force_refresh.unwrap_or(false),
+    };
+    hub.friend_detail(req).await
 }
 
 // ============================== message/history 历史消息 ==============================
@@ -1043,7 +1064,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             greet, take_screenshot,
             login, logout, current_session,
-            hub_forward, hub_ack, hub_state, list_accounts, list_friends,
+            hub_forward, hub_ack, hub_state, list_accounts, list_friends, friend_detail,
             list_recent_friends, list_recent_friends_remote_page,
             set_conversation_pinned, set_conversation_draft, set_conversation_removed,
             set_conversation_muted, mark_conversation_read,

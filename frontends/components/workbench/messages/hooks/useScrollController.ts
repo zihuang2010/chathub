@@ -301,7 +301,11 @@ export function useScrollController({
   }, []);
 
   // New messages: auto-follow if at bottom, else bump the unread counter.
-  useEffect(() => {
+  // 用 useLayoutEffect 而非 useEffect:贴底跟随必须在浏览器绘制前完成。打开会话后台
+  // reconcile 补齐历史、或实时新消息追加时,localMessages 增长会先撑高内容;若在绘制后
+  // (useEffect)才把 scrollTop 拉到底,用户会看到新气泡先冒在视口上方、再跳到底部的
+  // 一帧抖动。改 layout effect 后在同一帧绘制前贴底,新气泡直接落在底部,无跳帧。
+  useLayoutEffect(() => {
     const previousCount = previousMessageCountRef.current;
     previousMessageCountRef.current = localMessages.length;
     if (historyPrependAppliedMessageCountRef.current === localMessages.length) {

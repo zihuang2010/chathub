@@ -76,7 +76,13 @@ export function useMessageHistory(opts: UseMessageHistoryOptions): UseMessageHis
   const messages = useMemo(() => selectTimeline(slice), [slice]);
   const hasMore = slice?.hasMore ?? false;
   const error = slice?.error ?? null;
-  const loading = slice?.loading ?? false;
+  // 冷会话首帧:slice 尚未建立(下面的 readCache effect 还没跑、loading 还没置位),
+  // 此时若如实返回 loading=false,ChatArea 会按"非加载且 0 条"先画一帧居中「暂无消息」
+  // 空态,readCache 再翻 loading=true 转顶部骨架,数据到达后气泡又贴底 —— 三段不同布局
+  // 位置在打开瞬间连跳,正是"气泡加载抖动"。故 ready 但 slice 未建立时一并视为加载中,
+  // 让首帧直接落在骨架,杜绝空态闪帧。ready=false(账号/用户缺失,不会发起拉取)时不计入,
+  // 空态如实展示。setLoading 一旦建立 slice,storeLoading 接力维持,无空窗。
+  const loading = (slice?.loading ?? false) || (ready && slice === undefined);
 
   // 切员工(A→B):清空 store,防上一员工消息驻留内存或串台。首次 null→A 的 settle 不清,
   // 否则会误清 readCache 已填充的消息(readCache 不依赖 employeeId,可能先于它就绪)。

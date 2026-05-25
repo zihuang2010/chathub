@@ -135,7 +135,19 @@ export const ChatArea = memo(function ChatArea({
     // 仅虚拟模式才把滚动元素交给虚拟器:否则虚拟器挂载时会 scrollTo initialOffset=0,
     // 覆盖 useScrollController 的 snap 置底(短会话/测试都会被波及)。返回 null 时虚拟器惰性。
     getScrollElement: () => (shouldVirtualize ? scrollElementRef.current : null),
-    estimateSize: () => 76,
+    // 按内容类型估高:打开会话置底时,虚拟器先按估算值算总高、据此置底,首帧后再
+    // measureElement 量真实高度并校正——估算与真实差得越多,这次校正越大,表现为
+    // "整列跳一下"。图片气泡用固定 192 缩略图盒(整行≈250),与旧的统一 76 差近 175px,
+    // 跳动最明显;纯文字行≈66,与 76 也差约 10px,长会话累计到可视区十几行同样可见。
+    // 按 kind 给出接近真实的估算,使可视区底部那批行首帧误差趋零,基本消除开场跳动。
+    estimateSize: (index) => {
+      const item = timelineItems[index];
+      if (item.type !== "message") return 64; // 日期/未读分隔条
+      const parts = item.message.parts;
+      if (parts.some((p) => p.kind === "image")) return 252; // 固定缩略图盒 + 气泡内边距 + 行距
+      if (parts.some((p) => p.kind === "video")) return 212; // aspect-video w-64 缩略图
+      return 72; // 文本/文件/语音:单行气泡 ≈ 44 + 行距
+    },
     overscan: 10,
     getItemKey: (index) => timelineItems[index].id,
   });

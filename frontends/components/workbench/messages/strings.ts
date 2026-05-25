@@ -169,6 +169,7 @@ export const STRINGS = {
     addTag: "添加标签",
     expandMore: "展开更多",
     fromAccountBadge: "来自账号",
+    refresh: "刷新客户资料",
     fields: {
       remark: "备注",
       phone: "手机",

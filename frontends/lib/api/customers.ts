@@ -135,3 +135,97 @@ function addWayToSource(way: number): string {
       return "未知渠道";
   }
 }
+
+// ─── friend/detail 好友详情 ──────────────────────────────────────────────────
+
+/** 客户标签快照单条(对应 `follow_user.tags`)。 */
+export interface FriendTag {
+  groupName: string;
+  tagName: string;
+}
+
+/**
+ * 好友详情(对应 Rust `WecomFriendDetail`)。比列表 `WecomFriend` 多出
+ * tags / remarkMobiles / syncStatus / operUserid / syncFailReason / gmtModifiedTime 等字段。
+ * 注意:详情出参**不含** `wecomAccountId`(入参才有),归属账号由调用方传入。
+ */
+export interface WecomFriendDetail {
+  externalUserId: string;
+  externalName: string;
+  externalPosition: string;
+  externalAvatar: string;
+  externalCorpName: string;
+  externalCorpFullName: string;
+  /** 1=微信用户,2=企微用户 */
+  externalType: number;
+  /** 0=未知 1=男 2=女 */
+  externalGender: number;
+  /** 按权限脱敏 */
+  externalMobile: string;
+  followRemark: string;
+  followDescription: string;
+  remarkCorpName: string;
+  /** `yyyy-MM-dd HH:mm:ss` */
+  addTime: string;
+  addWay: number;
+  followState: string;
+  wechatChannelsNickname: string;
+  wechatChannelsSource: number;
+  lastSyncTime: string;
+  /** 0 未同步,1 成功,2 失败 */
+  syncStatus: number;
+  remarkMobiles: string[];
+  tags: FriendTag[];
+  operUserid: string;
+  syncFailReason: string | null;
+  gmtModifiedTime: string;
+}
+
+export interface FetchFriendDetailParams {
+  wecomAccountId: string;
+  externalUserId: string;
+  /** 为 true 时打破一天一次的自动刷新限制。 */
+  isForceRefresh?: boolean;
+}
+
+/** 拉取单个外部联系人的好友详情。Tauri 端透传到业务后台 `/wecomAggregate/friend/detail`。 */
+export async function fetchFriendDetail(
+  params: FetchFriendDetailParams,
+): Promise<WecomFriendDetail> {
+  return invoke<WecomFriendDetail>("friend_detail", {
+    wecomAccountId: params.wecomAccountId,
+    externalUserId: params.externalUserId,
+    isForceRefresh: params.isForceRefresh ?? false,
+  });
+}
+
+/**
+ * `WecomFriendDetail` → `Customer`(最小映射,沿用 `adaptFriendToCustomer` 同一套字段策略)。
+ * 标签快照取 `tags[].tagName`;备注优先 `followDescription`,回退 `followRemark`。
+ * `accountId` 详情不下发,由调用方经 `ctx.accountId` 传入(列表/会话侧已知归属账号)。
+ */
+export function adaptFriendDetailToCustomer(
+  detail: WecomFriendDetail,
+  ctx: { accountName: string; accountId?: string },
+): Customer {
+  const gender: CustomerGender | undefined =
+    detail.externalGender === 1 ? "male" : detail.externalGender === 2 ? "female" : undefined;
+  return {
+    id: detail.externalUserId,
+    name: detail.externalName || "(未命名)",
+    channel: detail.externalType === 2 ? "企微" : "微信",
+    account: ctx.accountName,
+    accountId: ctx.accountId,
+    tags: (detail.tags ?? []).map((t) => t.tagName),
+    remark: detail.followDescription || detail.followRemark || "",
+    phone: detail.externalMobile,
+    weChat: detail.externalUserId,
+    company: detail.externalCorpName || detail.remarkCorpName || "—",
+    source: addWayToSource(detail.addWay),
+    addedAt: detail.addTime,
+    follower: "",
+    starred: false,
+    lastContactAt: null,
+    gender,
+  };
+}

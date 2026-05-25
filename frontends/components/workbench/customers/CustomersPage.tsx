@@ -3,7 +3,8 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { ToastViewport, showToast } from "@/components/ui/toast";
 import { WorkbenchPanel } from "@/components/workbench/WorkbenchPanel";
-import { adaptFriendToCustomer } from "@/lib/api/customers";
+import { adaptFriendDetailToCustomer, adaptFriendToCustomer } from "@/lib/api/customers";
+import { useFriendDetail } from "@/lib/api/useFriendDetail";
 import { useFriends } from "@/lib/api/useFriends";
 import type { Account } from "@/lib/types/account";
 
@@ -130,6 +131,34 @@ export function CustomersPage({
   const activeAccount = activeCustomer?.accountId
     ? accounts.find((a) => a.id === activeCustomer.accountId)
     : undefined;
+
+  // 选中客户的好友详情:按 (accountId, externalUserId=id) 拉取,刷新按钮走强制刷新。
+  const {
+    detail: activeDetail,
+    loading: detailLoading,
+    refresh: refreshDetail,
+  } = useFriendDetail(activeCustomer?.accountId, activeCustomer?.id);
+  const handleRefreshDetail = useCallback(() => {
+    void refreshDetail(true);
+  }, [refreshDetail]);
+
+  // 详情到达后,仅覆盖只读展示字段;starred / tags 仍由 store 负责本地交互,不被覆盖。
+  const panelCustomer = useMemo(() => {
+    if (!activeCustomer) return null;
+    if (!activeDetail) return activeCustomer;
+    const d = adaptFriendDetailToCustomer(activeDetail, {
+      accountName: activeCustomer.account,
+      accountId: activeCustomer.accountId,
+    });
+    return {
+      ...activeCustomer,
+      remark: d.remark,
+      phone: d.phone,
+      company: d.company,
+      source: d.source,
+      addedAt: d.addedAt,
+    };
+  }, [activeCustomer, activeDetail]);
 
   const recentMessages = useMemo(() => {
     if (!activeCustomer) return [];
@@ -345,7 +374,7 @@ export function CustomersPage({
             </div>
             <div className="overflow-hidden rounded-lg border border-workbench-line bg-workbench-surface shadow-wb-card">
               <CustomerDetailPanel
-                customer={activeCustomer}
+                customer={panelCustomer}
                 account={activeAccount}
                 recentMessages={recentMessages}
                 onPatch={handlePatch}
@@ -356,6 +385,8 @@ export function CustomersPage({
                 }}
                 onOpenChat={handleOpenChat}
                 onEditCustomer={handleEditCustomer}
+                onRefresh={handleRefreshDetail}
+                refreshing={detailLoading}
               />
             </div>
           </div>

@@ -101,6 +101,7 @@ export const STRINGS = {
   },
   detail: {
     title: "客户详情",
+    refresh: "刷新客户详情",
     sectionTags: "标签",
     sectionNote: "备注",
     sectionContact: "联系方式",

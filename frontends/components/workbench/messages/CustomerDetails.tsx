@@ -1,5 +1,5 @@
 import { memo, useState } from "react";
-import { Plus } from "lucide-react";
+import { Plus, RefreshCw } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 
@@ -17,14 +17,20 @@ const TABS: { value: DetailsTab; label: string }[] = [
 ];
 
 interface CustomerDetailsProps {
-  /** 客户档案数据;真实接口对接前传 null,profile tab 走"未对接"空态。 */
+  /** 客户档案数据;为 null 时 profile tab 走加载/空态。 */
   customer: Customer | null;
   quickReplies: QuickReply[];
+  /** 强制刷新客户详情(isForceRefresh=true)。 */
+  onRefresh?: () => void;
+  /** 详情拉取中:刷新按钮禁用 + 图标旋转。 */
+  refreshing?: boolean;
 }
 
 export const CustomerDetails = memo(function CustomerDetails({
   customer,
   quickReplies,
+  onRefresh,
+  refreshing,
 }: CustomerDetailsProps) {
   const [tab, setTab] = useState<DetailsTab>("profile");
 
@@ -39,7 +45,12 @@ export const CustomerDetails = memo(function CustomerDetails({
       >
         {tab === "profile" &&
           (customer ? (
-            <ProfileTab customer={customer} quickReplies={quickReplies} />
+            <ProfileTab
+              customer={customer}
+              quickReplies={quickReplies}
+              onRefresh={onRefresh}
+              refreshing={refreshing}
+            />
           ) : (
             <EmptyTab text={STRINGS.empty.loading} />
           ))}
@@ -97,13 +108,17 @@ function Tabs({ value, onChange }: { value: DetailsTab; onChange: (t: DetailsTab
 function ProfileTab({
   customer,
   quickReplies,
+  onRefresh,
+  refreshing,
 }: {
   customer: Customer;
   quickReplies: QuickReply[];
+  onRefresh?: () => void;
+  refreshing?: boolean;
 }) {
   return (
     <div className="flex flex-col gap-4 p-4 pb-6">
-      <ProfileHeader customer={customer} />
+      <ProfileHeader customer={customer} onRefresh={onRefresh} refreshing={refreshing} />
       <TagsRow tags={customer.tags} />
       <DetailList customer={customer} />
       <button type="button" className="self-start text-wb-2xs font-medium text-workbench-accent">
@@ -115,7 +130,15 @@ function ProfileTab({
   );
 }
 
-function ProfileHeader({ customer }: { customer: Customer }) {
+function ProfileHeader({
+  customer,
+  onRefresh,
+  refreshing,
+}: {
+  customer: Customer;
+  onRefresh?: () => void;
+  refreshing?: boolean;
+}) {
   return (
     <div className="flex items-center gap-2.5">
       <div
@@ -127,18 +150,30 @@ function ProfileHeader({ customer }: { customer: Customer }) {
           backgroundImage: `url(${pickCustomerAvatarImage(customer.name)})`,
         }}
       />
-      <div className="flex flex-col gap-0.5">
+      <div className="flex min-w-0 flex-col gap-0.5">
         <div className="flex items-center gap-1.5">
           <span className="text-wb-sm font-semibold text-workbench-text">{customer.name}</span>
           <span className="text-wb-2xs text-workbench-text-muted">@ {customer.channel}</span>
         </div>
-        <div className="flex items-center gap-1.5 text-wb-3xs text-workbench-text-secondary">
+        <div className="text-wb-3xs flex items-center gap-1.5 text-workbench-text-secondary">
           <span className="truncate">{customer.account}</span>
-          <span className="rounded-sm bg-workbench-surface-active px-1.5 py-0.5 text-wb-3xs font-medium text-workbench-accent">
+          <span className="text-wb-3xs rounded-sm bg-workbench-surface-active px-1.5 py-0.5 font-medium text-workbench-accent">
             {STRINGS.customerDetails.fromAccountBadge}
           </span>
         </div>
       </div>
+      {onRefresh && (
+        <button
+          type="button"
+          onClick={onRefresh}
+          disabled={refreshing}
+          aria-label={STRINGS.customerDetails.refresh}
+          title={STRINGS.customerDetails.refresh}
+          className="focus-ring ml-auto grid size-7 shrink-0 place-items-center rounded-md text-workbench-text-muted transition-colors hover:bg-workbench-surface-active hover:text-workbench-text disabled:opacity-50"
+        >
+          <RefreshCw size={14} className={cn(refreshing && "animate-spin")} />
+        </button>
+      )}
     </div>
   );
 }
@@ -152,7 +187,7 @@ function TagsRow({ tags }: { tags: string[] }) {
       {tags.map((t) => (
         <span
           key={t}
-          className="rounded-full bg-workbench-surface-active px-1.5 py-0.5 text-wb-3xs font-medium text-workbench-accent"
+          className="text-wb-3xs rounded-full bg-workbench-surface-active px-1.5 py-0.5 font-medium text-workbench-accent"
         >
           {t}
         </span>

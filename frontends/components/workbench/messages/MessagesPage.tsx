@@ -6,7 +6,8 @@ import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { ToastViewport, showToast } from "@/components/ui/toast";
 import { WorkbenchPanel } from "@/components/workbench/WorkbenchPanel";
 import type { Account } from "@/lib/types/account";
-import type { WecomFriend } from "@/lib/api/customers";
+import { adaptFriendDetailToCustomer, type WecomFriend } from "@/lib/api/customers";
+import { useFriendDetail } from "@/lib/api/useFriendDetail";
 import { useRecentFriends, type RecentFriendListEntry } from "@/lib/api/useRecentFriends";
 import { sendMessage } from "@/lib/api/messageHistory";
 import { appReady } from "@/lib/data/appReady";
@@ -306,9 +307,23 @@ export function MessagesPage({ accounts }: MessagesPageProps) {
     wecomAccountId: selectedEntry?.wecomAccountId,
     externalUserId: selectedEntry?.externalUserId,
   });
-  // 客户详情真实接口(useCustomer)未落地;暂传 null,由 CustomerDetails 渲染空态。
-  // TODO(customer-details API): 接通后改成 useCustomer(conversationId)。
-  const customer = null;
+  // 客户资料:按选中会话归属的 (wecomAccountId, externalUserId) 拉好友详情。
+  // 两者缺一时 hook 不发请求、detail 为 null,CustomerDetails 渲染空态。
+  const {
+    detail: customerDetail,
+    loading: customerLoading,
+    refresh: refreshCustomer,
+  } = useFriendDetail(selectedEntry?.wecomAccountId, selectedEntry?.externalUserId);
+  const customer = useMemo(
+    () =>
+      customerDetail
+        ? adaptFriendDetailToCustomer(customerDetail, {
+            accountName: selectedEntry?.wecomName ?? "—",
+            accountId: selectedEntry?.wecomAccountId,
+          })
+        : null,
+    [customerDetail, selectedEntry],
+  );
 
   // 真发送(text-only):后端落库出站气泡 + 发 conversation-messages ChangeNotice,
   // useChatMessages 重读缓存把这条消息收敛进权威列表。缺会话归属(account/user)时静默忽略。
@@ -589,7 +604,12 @@ export function MessagesPage({ accounts }: MessagesPageProps) {
         // (CustomerDetails 对 customer=null 渲染空态),避免"会话恰好为空 →
         // 面板挂不上 → React 状态与窗口尺寸不同步"。
         <ErrorBoundary {...errorBoundaryProps}>
-          <CustomerDetails customer={customer} quickReplies={EMPTY_QUICK_REPLIES} />
+          <CustomerDetails
+            customer={customer}
+            quickReplies={EMPTY_QUICK_REPLIES}
+            onRefresh={() => void refreshCustomer(true)}
+            refreshing={customerLoading}
+          />
         </ErrorBoundary>
       )}
       <ToastViewport />
