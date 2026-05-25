@@ -655,6 +655,31 @@ async fn list_recent_friends_remote_page(
     Ok(resp)
 }
 
+/// 接待列表「本地深读」分页 —— 仅读本地行存的 offset 续页,零网络往返。
+/// 默认列表头部 top-200 由 `list_recent_friends` 秒开;滑过 200 行后调本命令从
+/// `offset` 起继续取本地行。返回行数 < `limit` 即本地到底(上层据此停止下拉)。
+/// 未登录返空 Vec 不报错(同 `list_recent_friends`,冷启动 / 登出期应是 0 行而非报错)。
+#[tauri::command]
+async fn list_recent_friends_local_page(
+    store: State<'_, RecentSessionsStore>,
+    auth_api: State<'_, Arc<AuthApi>>,
+    account_filter: Option<String>,
+    offset: usize,
+    limit: usize,
+) -> Result<Vec<RecentSessionRow>, AuthError> {
+    let employee_id = match auth_api.current_session().await? {
+        Some(p) => p.user_id,
+        None => return Ok(Vec::new()),
+    };
+    let filter = account_filter.filter(|s| !s.is_empty());
+    // 纵深防御:钳制单页 size,挡住被篡改的超大请求(前端固定 200)。
+    let limit = limit.clamp(1, RECENT_FRIENDS_LIST_LIMIT);
+    store
+        .list_page(&employee_id, filter, limit, offset)
+        .await
+        .map_err(|e| recents_internal_error("list_page", e))
+}
+
 /// 置顶 / 取消置顶。只动本地列(pinned/pinned_at_ms),严防远端列被覆盖。
 /// SQL 同时校验 employee_id,跨员工不可触发(防御 conversation_id 被恶意 / 错误传入)。
 /// 成功后 emit `recent_friends_changed`,让前端 refetch 默认列表拿到新顺序。
@@ -1156,7 +1181,7 @@ pub fn run() {
             greet, take_screenshot,
             login, logout, current_session,
             hub_forward, hub_ack, hub_state, list_accounts, list_friends, friend_detail,
-            list_recent_friends, list_recent_friends_remote_page,
+            list_recent_friends, list_recent_friends_remote_page, list_recent_friends_local_page,
             set_conversation_pinned, set_conversation_draft, set_conversation_removed,
             set_conversation_muted, mark_conversation_read,
             fetch_message_history,

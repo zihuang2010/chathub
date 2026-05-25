@@ -193,6 +193,57 @@ impl RecentSessionsStore {
         Ok(rows)
     }
 
+    /// 多键 ORDER BY 的 offset 分页读 —— 接待列表「本地深读」尾部专用。
+    /// 排序与 [`list_top`] **完全一致**(同 WHERE / 同 ORDER BY),仅多 `OFFSET`:
+    /// 头部 top-N 由 `list_top` 秒开,滑过 N 行后用本命令从 `offset` 起继续取本地行,
+    /// 零网络。返回行数 < `limit` 即本地已到底(供上层停止下拉)。
+    /// `employee_id` 强制过滤;`account_filter=None` 表示该员工全部账号合并。
+    pub async fn list_page(
+        &self,
+        employee_id: &str,
+        account_filter: Option<String>,
+        limit: usize,
+        offset: usize,
+    ) -> Result<Vec<RecentSessionRow>, StateError> {
+        let employee_id = employee_id.to_string();
+        let limit = limit as i64;
+        let offset = offset as i64;
+        let conn = self.pool.pool().get().await?;
+        let rows = conn
+            .interact(move |c| -> Result<Vec<RecentSessionRow>, StateError> {
+                // SQL 与 list_top 同构,仅末尾追加 OFFSET;排序一致保证头尾无缝衔接。
+                let sql = "\
+                    SELECT \
+                      conversation_id, wecom_account_id, employee_id, wecom_name, wecom_account, wecom_alias, \
+                      external_user_id, external_name, external_avatar, external_mobile, \
+                      last_local_message_id, last_message_type, last_message_direction, \
+                      last_send_status, last_message_summary, last_message_time_ms, \
+                      unread_count, has_unread, updated_at_ms, \
+                      pinned, pinned_at_ms, local_draft_at_ms, local_draft_text, \
+                      removed, removed_at_ms, muted, muted_at_ms, \
+                      last_message_sort_key_ms, gmt_modified_time \
+                    FROM hub_conversation_recents \
+                    WHERE employee_id = ?1 AND removed = 0 \
+                      AND (?2 IS NULL OR wecom_account_id = ?2) \
+                    ORDER BY \
+                      pinned DESC, \
+                      pinned_at_ms DESC, \
+                      MAX(last_message_time_ms, local_draft_at_ms) DESC, \
+                      last_message_time_ms DESC \
+                    LIMIT ?3 OFFSET ?4";
+                let mut stmt = c.prepare(sql)?;
+                let rows = stmt
+                    .query_map(
+                        rusqlite::params![employee_id, account_filter, limit, offset],
+                        map_row,
+                    )?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                Ok(rows)
+            })
+            .await??;
+        Ok(rows)
+    }
+
     /// 远端拉取批量 UPSERT —— 只写远端列与 updated_at_ms,本地列(pinned/pinned_at_ms/
     /// local_draft_at_ms)在 ON CONFLICT 时保持原值不动。
     /// `employee_id` 由每行携带(`RecentSessionRemote.employee_id`)。
@@ -798,6 +849,87 @@ mod tests {
         let b = store.list_top("u-B", None, 10).await.unwrap();
         assert_eq!(b.len(), 1);
         assert_eq!(b[0].conversation_id, "c2");
+    }
+
+    #[tokio::test]
+    async fn list_page_offset_slices_in_same_order_as_list_top() {
+        let pool = SqlitePool::in_memory().await.unwrap();
+        let store = RecentSessionsStore::new(pool);
+        // ts 递增 → 倒序为 c5,c4,c3,c2,c1
+        store
+            .upsert_remote_many(&[
+                sample_remote("c1", "wa-1", 100, 0),
+                sample_remote("c2", "wa-1", 200, 0),
+                sample_remote("c3", "wa-1", 300, 0),
+                sample_remote("c4", "wa-1", 400, 0),
+                sample_remote("c5", "wa-1", 500, 0),
+            ])
+            .await
+            .unwrap();
+        // offset=2 limit=2 → 跳过 c5,c4 → 取 c3,c2
+        let page = store.list_page(E, None, 2, 2).await.unwrap();
+        assert_eq!(page.len(), 2);
+        assert_eq!(page[0].conversation_id, "c3");
+        assert_eq!(page[1].conversation_id, "c2");
+        // 与 list_top 全量切片同序(头尾无缝衔接的前提)
+        let all = store.list_top(E, None, 10).await.unwrap();
+        assert_eq!(page[0].conversation_id, all[2].conversation_id);
+        assert_eq!(page[1].conversation_id, all[3].conversation_id);
+    }
+
+    #[tokio::test]
+    async fn list_page_past_end_returns_empty() {
+        let pool = SqlitePool::in_memory().await.unwrap();
+        let store = RecentSessionsStore::new(pool);
+        store
+            .upsert_remote_many(&[sample_remote("c1", "wa-1", 100, 0)])
+            .await
+            .unwrap();
+        // offset 越过末尾 → 空(上层据此判定「本地到底」,停止下拉)
+        let page = store.list_page(E, None, 200, 200).await.unwrap();
+        assert!(page.is_empty());
+    }
+
+    #[tokio::test]
+    async fn list_page_filters_by_account_and_employee() {
+        let pool = SqlitePool::in_memory().await.unwrap();
+        let store = RecentSessionsStore::new(pool);
+        store
+            .upsert_remote_many(&[
+                sample_remote_for("u-A", "c1", "wa-1", 100, 0),
+                sample_remote_for("u-A", "c2", "wa-2", 200, 0),
+                sample_remote_for("u-B", "c3", "wa-1", 300, 0),
+            ])
+            .await
+            .unwrap();
+        // 账号过滤:u-A 的 wa-1 仅 c1
+        let a_wa1 = store
+            .list_page("u-A", Some("wa-1".into()), 10, 0)
+            .await
+            .unwrap();
+        assert_eq!(a_wa1.len(), 1);
+        assert_eq!(a_wa1[0].conversation_id, "c1");
+        // employee 隔离:u-B 看不到 u-A
+        let b = store.list_page("u-B", None, 10, 0).await.unwrap();
+        assert_eq!(b.len(), 1);
+        assert_eq!(b[0].conversation_id, "c3");
+    }
+
+    #[tokio::test]
+    async fn list_page_excludes_removed() {
+        let pool = SqlitePool::in_memory().await.unwrap();
+        let store = RecentSessionsStore::new(pool);
+        store
+            .upsert_remote_many(&[
+                sample_remote("c1", "wa-1", 100, 0),
+                sample_remote("c2", "wa-1", 200, 0),
+            ])
+            .await
+            .unwrap();
+        store.set_removed(E, "c2", true).await.unwrap();
+        let page = store.list_page(E, None, 10, 0).await.unwrap();
+        assert_eq!(page.len(), 1);
+        assert_eq!(page[0].conversation_id, "c1");
     }
 
     #[tokio::test]

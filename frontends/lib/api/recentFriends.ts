@@ -127,9 +127,26 @@ export async function fetchRecentFriendsCache(
 }
 
 /**
+ * 接待列表「本地深读」分页 —— 仅读本地行存的 offset 续页,零网络往返。
+ * 头部 top-200 由 `fetchRecentFriendsCache` 秒开;滑过 200 行后从 `offset` 起继续取本地行。
+ * 返回行数 < `limit` 即本地到底(上层据此停止下拉)。
+ */
+export async function fetchRecentFriendsLocalPage(
+  accountFilter: string | null | undefined,
+  offset: number,
+  limit: number,
+): Promise<RecentFriendItem[]> {
+  return invoke<RecentFriendItem[]>("list_recent_friends_local_page", {
+    accountFilter: accountFilter || null,
+    offset,
+    limit,
+  });
+}
+
+/**
  * 拉一页远端数据。
  *   - `persist=true`(通常仅首页 cursor="")→ Tauri 端 UPSERT 到本地表 + emit `recent_friends_changed`。
- *   - `persist=false`(后续页 / 带筛选搜索)→ 仅透传响应,不写库不发事件。
+ *   - `persist=false`(带筛选搜索)→ 仅透传响应,不写库不发事件。
  */
 export async function fetchRecentFriendsPage(
   req: ListRecentFriendsRequest,

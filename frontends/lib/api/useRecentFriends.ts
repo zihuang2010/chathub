@@ -15,14 +15,16 @@
 //   - 静默探活 / focus refresh / hub:resync 全部由 useResource 集中处理
 //
 // 保留的本地 state:
-//   - remoteTailItems(loadMore 远端尾部 snapshot)
-//   - filtered + cursor / loading / hasMore(搜索态独立)
+//   - localTailItems(loadMore 本地深读尾部:滑过头部 cache 后的 offset 续页,零网络)
+//   - localExhausted(本地行存已读到底标志)
+//   - filtered + cursor / loading / hasMore(搜索态独立,仍走远端 cursor)
 //   - filteredQueryRef(区分默认/筛选模式)
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
   fetchRecentFriendsCache,
+  fetchRecentFriendsLocalPage,
   fetchRecentFriendsPage,
   markConversationRead,
   muteConversation,
@@ -39,6 +41,11 @@ import { useResource, type HubConnectionState } from "@/lib/data/useResource";
 export type { HubConnectionState };
 
 const DEFAULT_PAGE_SIZE = 20;
+
+// 头部 cache 上限(与后端 RECENT_FRIENDS_LIST_LIMIT=200 对齐):本地深读 offset 的起点。
+const HEAD_CACHE_LIMIT = 200;
+// 本地深读单页大小 —— 滑过头部后每次从本地行存多读这么多行(零网络往返)。
+const LOCAL_PAGE_SIZE = 200;
 
 // 远端首页刷新节流:同一 (employeeId, accountFilter) 在该窗口内只打一次 recentFriends 业务接口。
 // mount / 账号切换的自动刷新走节流;用户显式「刷新」与退出搜索走 force 绕过。
@@ -243,14 +250,11 @@ export function useRecentFriends(opts: UseRecentFriendsOptions): UseRecentFriend
   // `resource.data ?? []` 每次 render 创建新数组会让下游 useMemo 失效;用 useMemo 锁住引用。
   const cacheItems = useMemo(() => resource.data ?? [], [resource.data]);
 
-  // ─── 默认列表本地 state(远端尾部 snapshot + 加载状态)──────────────────
-  const [remoteTailItems, setRemoteTailItems] = useState<RecentFriendListEntry[]>([]);
-  const [defaultNextCursor, setDefaultNextCursor] = useState<string>("");
-  const [defaultHasMore, setDefaultHasMore] = useState(false);
-  // 是否已成功播种远端首页(cursor/hasMore 有意义)。与空 cursor 解耦:末页后端约定
-  // 返回 nextCursor="",若仍用 !defaultNextCursor 判"未播种"会把"已到底"误判成"重新播种",
-  // 导致 loadMore 反复回首页 → 接待列表下滑无限循环。用独立标志拆开二义。
-  const [defaultSeeded, setDefaultSeeded] = useState(false);
+  // ─── 默认列表本地深读尾部(头部 cache 由 useResource 管;滑过 200 行后从本地行存续页)──
+  // localTailItems = 头部 top-200 之后的本地行(offset 续页 append,零网络)。
+  // localExhausted = 本地行存已读到底(某页返回行数 < 一页);到底即停止下拉,不再联网。
+  const [localTailItems, setLocalTailItems] = useState<RecentFriendListEntry[]>([]);
+  const [localExhausted, setLocalExhausted] = useState(false);
   const [defaultLoading, setDefaultLoading] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
 
@@ -294,7 +298,7 @@ export function useRecentFriends(opts: UseRecentFriendsOptions): UseRecentFriend
       setDefaultLoading(true);
       setLocalError(null);
       try {
-        const resp = await fetchRecentFriendsPage(
+        await fetchRecentFriendsPage(
           {
             size: DEFAULT_PAGE_SIZE,
             cursor: "",
@@ -306,10 +310,9 @@ export function useRecentFriends(opts: UseRecentFriendsOptions): UseRecentFriend
           true,
         );
         if (seq !== reqSeqRef.current) return; // 已被更新请求接力,丢弃旧结果
-        setDefaultNextCursor(resp.nextCursor);
-        setDefaultHasMore(resp.hasMore);
-        setDefaultSeeded(true);
-        setRemoteTailItems([]);
+        // 远端首页对齐后 cacheItems(top-200)会刷到最新;本地深读尾部回到顶部状态重来。
+        setLocalTailItems([]);
+        setLocalExhausted(false);
         await resource.refresh();
       } catch (e) {
         if (seq !== reqSeqRef.current) return;
@@ -322,17 +325,14 @@ export function useRecentFriends(opts: UseRecentFriendsOptions): UseRecentFriend
     [accountFilter, employeeId, resource],
   );
 
-  // 切账号重置游标状态:cursor/hasMore/seeded/远端尾部都按账号维护,不重置会让新账号
-  // 复用旧账号 cursor + 旧账号 append 的尾部行(useResource 的 cacheItems 已按账号 scope,
-  // 但 remoteTailItems 不会自动换 scope)。在 render 期重置(而非 effect):切账号当帧即清,
-  // 不会让旧账号 loadMore 的尾部行(displayItems 合并 remoteTailItems)闪一帧再消失。
+  // 切账号重置本地深读尾部:localTail 按账号维护(useResource 的 cacheItems 已按账号 scope,
+  // 但 localTailItems 不会自动换 scope)。在 render 期重置(而非 effect):切账号当帧即清,
+  // 不会让旧账号深读的尾部行(items 合并 localTailItems)闪一帧再消失。
   const [prevAccountFilter, setPrevAccountFilter] = useState(accountFilter);
   if (accountFilter !== prevAccountFilter) {
     setPrevAccountFilter(accountFilter);
-    setDefaultSeeded(false);
-    setDefaultNextCursor("");
-    setDefaultHasMore(false);
-    setRemoteTailItems([]);
+    setLocalTailItems([]);
+    setLocalExhausted(false);
   }
 
   // 切员工/登出:清掉非当前 employeeId 的远端刷新时间戳。lastRemoteRefreshAt 是模块级 Map
@@ -373,58 +373,37 @@ export function useRecentFriends(opts: UseRecentFriendsOptions): UseRecentFriend
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [resource.resyncing]);
 
-  /** 滚动加载更多(默认列表)。走 persist=false,不写库;前端 append 后多键 reorder。 */
+  /** 滚动加载更多(默认列表)—— 本地深读:头部 top-200 之后从本地行存 offset 续页,零网络。
+   *  本地读到底(某页返回行数 < 一页)即永久 no-op,不再联网:本地表上限即全部可见数据。
+   *  offset = 头部 200 + 已 append 的尾部行数,与头部 cache 无缝衔接(排序同 list_top)。 */
   const loadMore = useCallback(async () => {
-    if (filteredQueryRef.current) return;
+    if (filteredQueryRef.current) return; // 搜索态走 loadMoreFiltered
     if (defaultLoading) return;
-    if (!defaultSeeded) {
-      // 首次下滚:cursor 未播种 → 先远端首页播种 cursor+hasMore,本次不翻页;
-      // 下次下滚用已播种 cursor 翻更老页。如此远端请求仅在用户下滚时发生,不在启动时。
-      // 用 !defaultSeeded(而非 !defaultNextCursor)判定:末页后端返回 nextCursor="",
-      // 旧逻辑会把它当"未播种"重新拉首页 → 永远到不了底的无限循环。
-      await refreshFirstPage(true);
-      return;
-    }
-    if (!defaultHasMore) return; // 已到底:永久 no-op,绝不回首页(修复无限循环根因)
+    if (localExhausted) return; // 本地到底:永久 no-op
     setDefaultLoading(true);
     setLocalError(null);
     try {
-      const resp = await fetchRecentFriendsPage(
-        {
-          size: DEFAULT_PAGE_SIZE,
-          cursor: defaultNextCursor,
-          externalName: "",
-          externalMobile: "",
-          wecomAccountId: accountFilter || "",
-          onlyUnread: false,
-        },
-        false,
-      );
-      setRemoteTailItems((prev) => [...prev, ...resp.records.map(fromRemoteRecord)]);
-      setDefaultNextCursor(resp.nextCursor);
-      setDefaultHasMore(resp.hasMore);
+      const offset = HEAD_CACHE_LIMIT + localTailItems.length;
+      const rows = await fetchRecentFriendsLocalPage(accountFilter, offset, LOCAL_PAGE_SIZE);
+      setLocalTailItems((prev) => [...prev, ...rows.map(fromCacheItem)]);
+      if (rows.length < LOCAL_PAGE_SIZE) setLocalExhausted(true);
     } catch (e) {
       setLocalError(errorMessage(e));
     } finally {
       setDefaultLoading(false);
     }
-  }, [
-    accountFilter,
-    defaultHasMore,
-    defaultLoading,
-    defaultNextCursor,
-    defaultSeeded,
-    refreshFirstPage,
-  ]);
+  }, [accountFilter, defaultLoading, localExhausted, localTailItems.length]);
 
   const refresh = useCallback(async () => {
     await refreshFirstPage(true);
   }, [refreshFirstPage]);
 
-  // 默认列表合成:cache(权威本地态)+ 远端尾部 snapshot,dedupe 后多键 reorder。
+  // 默认列表合成:本地深读尾部 + 头部 cache(权威本地态),dedupe 后多键 reorder。
+  // cacheItems 放末位:dedupeById 后者覆盖前者,故新消息冒泡进 top-200 时,cache 的最新
+  // 版本压过 localTail 的旧快照(避免尾部旧行覆盖头部权威态)。
   const items = useMemo(
-    () => multiKeySort(dedupeById([...cacheItems, ...remoteTailItems])),
-    [cacheItems, remoteTailItems],
+    () => multiKeySort(dedupeById([...localTailItems, ...cacheItems])),
+    [cacheItems, localTailItems],
   );
 
   // markRead 取快照时读实时 items,不入 markRead deps(保持回调引用稳定)。
@@ -594,7 +573,8 @@ export function useRecentFriends(opts: UseRecentFriendsOptions): UseRecentFriend
   return {
     items,
     defaultLoading,
-    defaultHasMore,
+    // 本地还没读到底就还能下拉;读到底即 false(本地表上限即全部可见数据)。
+    defaultHasMore: !localExhausted,
     loadMore,
     refresh,
     filtered,
