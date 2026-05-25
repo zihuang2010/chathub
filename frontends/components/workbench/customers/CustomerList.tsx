@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useMemo, useRef } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 
 import type { Account } from "@/lib/types/account";
@@ -6,15 +6,15 @@ import type { Customer } from "@/lib/types/customer";
 
 import { BulkActionsBar } from "./BulkActionsBar";
 import { WorkbenchScrollArea } from "../messages/WorkbenchScrollArea";
-import { CARD_MIN_WIDTH, type CardDensity } from "./constants";
+import { CARD_COLUMNS, type CardDensity } from "./constants";
 import { CustomerCard } from "./CustomerCard";
 import { CustomersPagination } from "./CustomersPagination";
 import { STRINGS } from "./strings";
 
 // ─── 卡片网格虚拟化 ───────────────────────────────────────────────────────────
 // 卡片网格用 @tanstack/react-virtual 按「行」虚拟化:每个虚拟项是一整行卡片,
-// 行内列数随容器宽度自适应(与原 CSS `auto-fill` 同公式)。只渲染可视行 + 上下
-// overscan,长列表(pageSize 最大 100)滚动时 DOM 节点恒定,不再一次性挂载全部卡片。
+// 行内列数由密度固定(CARD_COLUMNS,不随窗口宽度跳列;卡片等比缩放)。只渲染可视
+// 行 + 上下 overscan,长列表(pageSize 最大 100)滚动时 DOM 节点恒定,不再一次性挂载全部卡片。
 const CARD_GAP_PX = 10; // 列间距(对应原 gap-2.5)
 const ROW_GAP_PX = 10; // 行间距(对应原 gap-2.5),以行 wrapper 的 paddingBottom 实现
 const ESTIMATED_ROW_PX = 168; // 行高初始估值;measureElement 会按真实高度校正
@@ -200,42 +200,9 @@ const VirtualizedCardGrid = memo(function VirtualizedCardGrid({
     if (node) scrollRef.current = node;
   }, []);
 
-  // 容器内容宽度:用 ResizeObserver 实测(等于 viewport 去掉 padding/滚动条后的可用宽),
-  // 用来按 CSS auto-fill 同公式算每行列数。
-  //
-  // 内存泄漏防护(本次需求重点):
-  //   1. observer 只在 ref-callback 拿到真实节点时创建,节点 detach(传入 null)时立即
-  //      disconnect 并置空,绝不残留在已卸载的 DOM 上;
-  //   2. ref-callback 用 useCallback 固定引用,re-render 不会重复 new ResizeObserver;
-  //   3. 组件卸载再兜底 disconnect 一次,双保险。
-  const [containerWidth, setContainerWidth] = useState(0);
-  const resizeObserverRef = useRef<ResizeObserver | null>(null);
-  const setGridContainer = useCallback((node: HTMLDivElement | null) => {
-    resizeObserverRef.current?.disconnect();
-    resizeObserverRef.current = null;
-    if (!node) return;
-    const ro = new ResizeObserver((entries) => {
-      const w = entries[0]?.contentRect.width;
-      if (typeof w === "number") setContainerWidth(w);
-    });
-    ro.observe(node);
-    resizeObserverRef.current = ro;
-    setContainerWidth(node.clientWidth);
-  }, []);
-  useEffect(() => {
-    return () => {
-      resizeObserverRef.current?.disconnect();
-      resizeObserverRef.current = null;
-    };
-  }, []);
-
-  // 每行列数:与 `repeat(auto-fill, minmax(minW, 1fr))` 等价 ——
-  // floor((可用宽 + 间距) / (最小卡宽 + 间距)),至少 1 列。
-  const minWidth = CARD_MIN_WIDTH[density];
-  const columnCount = Math.max(
-    1,
-    Math.floor((containerWidth + CARD_GAP_PX) / (minWidth + CARD_GAP_PX)),
-  );
+  // 每行列数由密度固定(舒适 4 列 / 紧凑 5 列),不随窗口宽度跳列;
+  // 卡片用 `minmax(0, 1fr)` 平分容器宽,窗口缩放时等比变宽 / 变窄。
+  const columnCount = CARD_COLUMNS[density];
   const rowCount = Math.ceil(customers.length / columnCount);
 
   // useVirtualizer 返回的方法无法被 React Compiler 安全 memo,编译器会跳过对本组件的
@@ -262,7 +229,6 @@ const VirtualizedCardGrid = memo(function VirtualizedCardGrid({
       scrollRef={setScrollViewport}
     >
       <div
-        ref={setGridContainer}
         role="listbox"
         aria-label="客户列表"
         style={{ height: totalSize, position: "relative", width: "100%" }}

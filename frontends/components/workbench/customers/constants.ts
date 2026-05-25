@@ -47,12 +47,12 @@ export const SORT_OPTIONS: SortOption[] = [
 export type CardDensity = "comfortable" | "compact";
 
 /**
- * 卡片网格按 `repeat(auto-fill, minmax(N, 1fr))` 自适应列数；N 由密度决定。
- * 舒适 260px 在主区 ≈ 800px 时落 3 列（与设计稿一致），紧凑 208px 落 4 列。
+ * 卡片网格使用固定列数（不随窗口宽度跳列）；密度决定一行几个卡片。
+ * 舒适 4 列、紧凑 5 列；窗口缩放时卡片等比变宽 / 变窄，列数保持不变。
  */
-export const CARD_MIN_WIDTH: Record<CardDensity, number> = {
-  comfortable: 260,
-  compact: 208,
+export const CARD_COLUMNS: Record<CardDensity, number> = {
+  comfortable: 4,
+  compact: 5,
 };
 
 /** 默认卡片密度（对齐设计稿的 3 列舒适视图）。 */

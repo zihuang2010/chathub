@@ -75,7 +75,7 @@ export const CustomerCard = memo(function CustomerCard({
         }
       }}
       className={cn(
-        "group relative flex cursor-pointer flex-col rounded-xl border bg-workbench-surface p-3 transition-all",
+        "group relative flex cursor-pointer flex-col rounded-lg border bg-workbench-surface p-3 transition-all",
         "hover:shadow-wb-card focus-visible:outline-none",
         selected
           ? "border-workbench-accent ring-1 ring-workbench-accent"
@@ -89,7 +89,7 @@ export const CustomerCard = memo(function CustomerCard({
         <span
           aria-hidden
           className={cn(
-            "pointer-events-none absolute left-0 top-0 z-[1] inline-flex items-center rounded-br-lg rounded-tl-xl bg-workbench-accent px-2 py-0.5 text-[10.5px] font-medium text-white transition-opacity",
+            "pointer-events-none absolute left-0 top-0 z-[1] inline-flex items-center rounded-br-lg rounded-tl-lg bg-workbench-accent px-2 py-0.5 text-[10.5px] font-medium text-white transition-opacity",
             checkboxShown ? "opacity-0" : "opacity-100 group-hover:opacity-0",
           )}
         >
