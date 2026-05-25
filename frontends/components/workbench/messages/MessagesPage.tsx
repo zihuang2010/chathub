@@ -37,6 +37,11 @@ import { useDetailsWindow } from "./useDetailsWindow";
 // 通过 module-level 常量 + 不导出避免外部 mutation。
 const EMPTY_QUICK_REPLIES: QuickReply[] = [];
 const EMPTY_MENTION_CANDIDATES: Conversation[] = [];
+// 静态 props,hoist 到模块级避免每次 render 新建对象(被多个 ErrorBoundary 复用)。
+const ERROR_BOUNDARY_PROPS = {
+  title: STRINGS.errors.pageUnavailable,
+  retryLabel: STRINGS.errors.retry,
+};
 
 /**
  * 把后端最近会话条目适配成 ConversationList 现有 `Conversation` 形态。
@@ -497,11 +502,6 @@ export function MessagesPage({ accounts }: MessagesPageProps) {
     else void loadMore();
   }, [filtered, loadMore, loadMoreFiltered]);
 
-  const errorBoundaryProps = {
-    title: STRINGS.errors.pageUnavailable,
-    retryLabel: STRINGS.errors.retry,
-  };
-
   // 首屏数据门:本地 cache 还没读出来时渲染骨架,挡掉 ChatArea/CustomerDetails 拿空数据画一帧的闪烁。
   // initialFetched 单调向前(useResource 保证),后续切账号/refetch 不会再回退到 skeleton。
   if (!initialFetched) {
@@ -510,7 +510,7 @@ export function MessagesPage({ accounts }: MessagesPageProps) {
 
   return (
     <WorkbenchPanel panelRef={pageRef} className="relative">
-      <ErrorBoundary {...errorBoundaryProps}>
+      <ErrorBoundary {...ERROR_BOUNDARY_PROPS}>
         <ConversationList
           conversations={conversations}
           selectedId={selectedId}
@@ -571,7 +571,7 @@ export function MessagesPage({ accounts }: MessagesPageProps) {
         }
       >
         {conversation ? (
-          <ErrorBoundary {...errorBoundaryProps}>
+          <ErrorBoundary {...ERROR_BOUNDARY_PROPS}>
             <ChatArea
               conversation={conversation}
               messages={messages}
@@ -603,7 +603,7 @@ export function MessagesPage({ accounts }: MessagesPageProps) {
         // 面板挂载只看 detailsOpen,不再 && conversation:无选中会话也能展开
         // (CustomerDetails 对 customer=null 渲染空态),避免"会话恰好为空 →
         // 面板挂不上 → React 状态与窗口尺寸不同步"。
-        <ErrorBoundary {...errorBoundaryProps}>
+        <ErrorBoundary {...ERROR_BOUNDARY_PROPS}>
           <CustomerDetails
             customer={customer}
             quickReplies={EMPTY_QUICK_REPLIES}

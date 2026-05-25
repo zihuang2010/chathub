@@ -1,11 +1,11 @@
 ---
 name: api
-description: "Skill for the Api area of chathub. 50 symbols across 11 files."
+description: "Skill for the Api area of chathub. 57 symbols across 12 files."
 ---
 
 # Api
 
-50 symbols | 11 files | Cohesion: 97%
+57 symbols | 12 files | Cohesion: 95%
 
 ## When to Use
 
@@ -22,11 +22,11 @@ description: "Skill for the Api area of chathub. 50 symbols across 11 files."
 | `frontends/lib/api/accounts.ts`                              | hashSeed, lcg, deriveAccount, formatDateTime, p (+1)                                                         |
 | `frontends/lib/api/messageHistory.ts`                        | fetchMessageHistory, loadConversationMessages, loadOlderMessages, sendMessage, adaptHistoryRecords           |
 | `frontends/lib/api/useMessageHistory.ts`                     | errorMessage, readCache, unsubscribe, loadMore, retry                                                        |
+| `frontends/lib/api/customers.ts`                             | adaptFriendToCustomer, addWayToSource, adaptFriendDetailToCustomer, fetchFriendDetail, fetchFriends          |
 | `frontends/lib/api/invokeClient.ts`                          | invokeWithTimeout, InvokeTimeoutError, timer                                                                 |
-| `frontends/lib/api/customers.ts`                             | fetchFriends, adaptFriendToCustomer, addWayToSource                                                          |
-| `frontends/lib/api/useFriends.ts`                            | queryFn, nextPage                                                                                            |
-| `frontends/components/workbench/messages/MessagesPage.tsx`   | handleSendMessage                                                                                            |
-| `frontends/components/workbench/customers/CustomersPage.tsx` | adapted                                                                                                      |
+| `frontends/lib/api/useFriendDetail.ts`                       | useFriendDetail, fetchDetail, refresh                                                                        |
+| `frontends/components/workbench/messages/MessagesPage.tsx`   | handleSendMessage, customer                                                                                  |
+| `frontends/components/workbench/customers/CustomersPage.tsx` | adapted, panelCustomer                                                                                       |
 
 ## Entry Points
 
@@ -71,12 +71,12 @@ Start here when exploring this area:
 | `MessagesPage → FetchRecentFriendsPage` | cross_community | 4     |
 | `MessagesPage → ErrorMessage`           | cross_community | 4     |
 | `MessagesPage → Refresh`                | cross_community | 4     |
+| `MessagesPage → FetchFriendDetail`      | cross_community | 4     |
 | `LoadMore → ParseServerTimeToIso`       | cross_community | 4     |
 | `LoadMore → MapSendStatus`              | cross_community | 4     |
 | `LoadMore → InvokeWithTimeout`          | intra_community | 3     |
 | `LoadMore → FetchRecentFriendsPage`     | intra_community | 3     |
 | `LoadMore → ErrorMessage`               | intra_community | 3     |
-| `LoadMore → Refresh`                    | intra_community | 3     |
 
 ## Connected Areas
 

@@ -1,6 +1,6 @@
 import { memo, useState } from "react";
 import * as Popover from "@radix-ui/react-popover";
-import { Download, Star, Tag, UserCheck, X } from "lucide-react";
+import { CheckCheck, Download, Star, Tag, UserCheck, X } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 
@@ -11,7 +11,11 @@ interface BulkActionsBarProps {
   selectedCount: number;
   /** 当前选中客户中已被关注的占比，决定按钮的语义。 */
   allStarred: boolean;
+  /** 本页是否已全部选中，决定「全选本页 / 取消全选」语义。 */
+  allSelectedInView: boolean;
   knownTags: readonly string[];
+  /** 切换「全选本页」。卡片视图没有列头主 checkbox，全选入口收在批量栏里。 */
+  onToggleSelectAll: () => void;
   onApplyTagDiff: (diff: { addTags?: string[]; removeTags?: string[] }) => void;
   onReassign: (follower: string) => void;
   onToggleStar: () => void;
@@ -24,7 +28,9 @@ type TagMode = "add" | "remove";
 export const BulkActionsBar = memo(function BulkActionsBar({
   selectedCount,
   allStarred,
+  allSelectedInView,
   knownTags,
+  onToggleSelectAll,
   onApplyTagDiff,
   onReassign,
   onToggleStar,
@@ -41,6 +47,10 @@ export const BulkActionsBar = memo(function BulkActionsBar({
         {STRINGS.bulk.barTitle(selectedCount)}
       </span>
       <span aria-hidden className="h-4 w-px bg-workbench-line-strong" />
+
+      <ActionButton onClick={onToggleSelectAll} icon={<CheckCheck size={13} />}>
+        {allSelectedInView ? STRINGS.bulk.clearSelectionInView : STRINGS.bulk.selectAllInView}
+      </ActionButton>
 
       <TagPickerPopover knownTags={knownTags} onSubmit={(diff) => onApplyTagDiff(diff)} />
 

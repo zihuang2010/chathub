@@ -3,7 +3,7 @@
 #
 # 用法:
 #   scripts/run-relay-local.sh                    # 默认 debug 跑
-#   scripts/run-relay-local.sh --release          # 透传 cargo 参数
+#   scripts/run-relay-local.sh --profile release-server   # 优化构建跑(服务端 unwind,非 abort)
 #   RUST_LOG=trace scripts/run-relay-local.sh     # 覆盖日志级别
 #   RELAY_DOWNSTREAM_URL=http://x scripts/run-relay-local.sh   # 覆盖下游地址
 #

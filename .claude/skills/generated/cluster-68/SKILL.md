@@ -25,7 +25,7 @@ description: "Skill for the Cluster_68 area of chathub. 11 symbols across 3 file
 
 Start here when exploring this area:
 
-- **`default_for_test`** (Function) — `backends/crates/chathub-relay/src/config.rs:207`
+- **`default_for_test`** (Function) — `backends/crates/chathub-relay/src/config.rs:213`
 - **`new_with_defaults`** (Function) — `backends/crates/chathub-relay/src/downstream.rs:286`
 - **`forward`** (Function) — `backends/crates/chathub-relay/src/downstream.rs:602`
 - **`spawn_relay_with`** (Function) — `backends/crates/chathub-relay/tests/common/mod.rs:69`
@@ -34,7 +34,7 @@ Start here when exploring this area:
 
 | Symbol                                            | Type     | File                                                | Line |
 | ------------------------------------------------- | -------- | --------------------------------------------------- | ---- |
-| `default_for_test`                                | Function | `backends/crates/chathub-relay/src/config.rs`       | 207  |
+| `default_for_test`                                | Function | `backends/crates/chathub-relay/src/config.rs`       | 213  |
 | `new_with_defaults`                               | Function | `backends/crates/chathub-relay/src/downstream.rs`   | 286  |
 | `forward`                                         | Function | `backends/crates/chathub-relay/src/downstream.rs`   | 602  |
 | `spawn_relay_with`                                | Function | `backends/crates/chathub-relay/tests/common/mod.rs` | 69   |

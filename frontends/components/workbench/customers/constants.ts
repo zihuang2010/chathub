@@ -43,29 +43,23 @@ export const SORT_OPTIONS: SortOption[] = [
   { value: "follower", label: STRINGS.sort.follower },
 ];
 
-/** 列表行的固定高度（像素）。v6：72 → 56，向桌面客户端 CRM 对齐密度。 */
-export const ROW_HEIGHT = 56;
+/** 卡片视图的密度。comfortable=舒适（卡片更宽，列更少），compact=紧凑（卡片更窄，列更多）。 */
+export type CardDensity = "comfortable" | "compact";
 
 /**
- * 列表行 grid 模板（v7：客户名称 / 所属账号 / 来源 / 最近跟进 / 操作 都按实际
- * 内容压缩，给 1fr tags 列让位）。
- *
- * 从左至右：
- * 1) 32px  master checkbox / 单行 checkbox（保持手感）
- * 2) 144px 客户名称（avatar 28 + gap 8 + 两行文本）
- * 3) 128px 所属账号（公司名 + follower 副行）
- * 4) 1fr   标签列（彩色 chip，最少 120px，超出走 +N 溢出）
- * 5) 96px  来源 chip
- * 6) 124px 最近跟进（日期 16 字 tabular + follower 副行）
- * 7) 80px  操作（3 个 size-6 图标按钮）
- *
- * 主区可用宽度 = viewport − 280（详情面板）。固定列合 604px + tags(min 120) = 724
- * → 1280px 视口（主区 1000px）富余度更高，1fr tags ≈ 396px。
+ * 卡片网格按 `repeat(auto-fill, minmax(N, 1fr))` 自适应列数；N 由密度决定。
+ * 舒适 260px 在主区 ≈ 800px 时落 3 列（与设计稿一致），紧凑 208px 落 4 列。
  */
-export const ROW_GRID_TEMPLATE = "32px 144px 128px minmax(120px,1fr) 96px 124px 80px";
+export const CARD_MIN_WIDTH: Record<CardDensity, number> = {
+  comfortable: 260,
+  compact: 208,
+};
 
-/** 详情侧栏宽度（像素）。v7：324 → 280，让出 44px 给左侧列表呼吸。messages 页保留 324px。 */
-export const DETAIL_PANEL_WIDTH = 280;
+/** 默认卡片密度（对齐设计稿的 3 列舒适视图）。 */
+export const DEFAULT_CARD_DENSITY: CardDensity = "comfortable";
+
+/** 详情侧栏宽度（像素）。卡片视图详情信息更丰富，较列表版 280 加宽到 320。 */
+export const DETAIL_PANEL_WIDTH = 320;
 
 /** 「待跟进」判定：lastContactAt 超过多少小时未联系。 */
 export const FOLLOW_UP_HOURS_THRESHOLD = 72;
@@ -73,8 +67,8 @@ export const FOLLOW_UP_HOURS_THRESHOLD = 72;
 /** 「30 天未跟进」Tab 阈值。 */
 export const STALE_DAYS_THRESHOLD = 30;
 
-/** 列表行最多展示多少个标签，超过显示 +N。 */
-export const ROW_MAX_TAGS = 2;
+/** 卡片最多展示多少个标签，超过显示 +N。 */
+export const CARD_MAX_TAGS = 3;
 
 /** 备注未编辑态最多显示多少行后折叠。 */
 export const NOTE_COLLAPSE_LINES = 4;

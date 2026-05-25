@@ -65,7 +65,7 @@ Start here when exploring this area:
 
 | Area       | Connections |
 | ---------- | ----------- |
-| Accounts   | 5 calls     |
+| Customers  | 5 calls     |
 | Components | 1 calls     |
 
 ## How to Explore

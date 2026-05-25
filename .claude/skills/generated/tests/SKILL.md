@@ -1,11 +1,11 @@
 ---
 name: tests
-description: "Skill for the Tests area of chathub. 48 symbols across 10 files."
+description: "Skill for the Tests area of chathub. 49 symbols across 10 files."
 ---
 
 # Tests
 
-48 symbols | 10 files | Cohesion: 84%
+49 symbols | 10 files | Cohesion: 84%
 
 ## When to Use
 
@@ -22,7 +22,7 @@ description: "Skill for the Tests area of chathub. 48 symbols across 10 files."
 | `backends/crates/chathub-relay/tests/common/mod.rs`      | default, spawn_relay, mount_notify_pull, mount_notify_pull_status                                                                                                                                             |
 | `backends/crates/chathub-net/src/token.rs`               | logged_out_subscribe, login, logout                                                                                                                                                                           |
 | `backends/crates/chathub-net/tests/common/stub_relay.rs` | default, start_stub, start_stub_full                                                                                                                                                                          |
-| `backends/crates/chathub-net/src/hub.rs`                 | state_subscribe, stop                                                                                                                                                                                         |
+| `backends/crates/chathub-net/src/hub.rs`                 | new, state_subscribe, stop                                                                                                                                                                                    |
 | `backends/crates/chathub-net/tests/common/mod.rs`        | wait_for_state, push_event                                                                                                                                                                                    |
 | `backends/src/lib.rs`                                    | logout, hub_state                                                                                                                                                                                             |
 | `backends/crates/chathub-net/src/auth.rs`                | login, try_resume_session                                                                                                                                                                                     |
@@ -40,28 +40,28 @@ Start here when exploring this area:
 
 ## Key Symbols
 
-| Symbol                                 | Type     | File                                                     | Line |
-| -------------------------------------- | -------- | -------------------------------------------------------- | ---- |
-| `spawn_relay`                          | Function | `backends/crates/chathub-relay/tests/common/mod.rs`      | 65   |
-| `mount_notify_pull`                    | Function | `backends/crates/chathub-relay/tests/common/mod.rs`      | 144  |
-| `mount_notify_pull_status`             | Function | `backends/crates/chathub-relay/tests/common/mod.rs`      | 192  |
-| `logged_out_subscribe`                 | Function | `backends/crates/chathub-net/src/token.rs`               | 69   |
-| `login`                                | Function | `backends/crates/chathub-net/src/token.rs`               | 82   |
-| `logout`                               | Function | `backends/crates/chathub-net/src/token.rs`               | 145  |
-| `start_stub`                           | Function | `backends/crates/chathub-net/tests/common/stub_relay.rs` | 164  |
-| `start_stub_full`                      | Function | `backends/crates/chathub-net/tests/common/stub_relay.rs` | 169  |
-| `state_subscribe`                      | Function | `backends/crates/chathub-net/src/hub.rs`                 | 769  |
-| `stop`                                 | Function | `backends/crates/chathub-net/src/hub.rs`                 | 805  |
-| `wait_for_state`                       | Function | `backends/crates/chathub-net/tests/common/mod.rs`        | 14   |
-| `push_event`                           | Function | `backends/crates/chathub-net/tests/common/mod.rs`        | 40   |
-| `login`                                | Function | `backends/crates/chathub-net/src/auth.rs`                | 26   |
-| `try_resume_session`                   | Function | `backends/crates/chathub-net/src/auth.rs`                | 59   |
-| `default`                              | Function | `backends/crates/chathub-relay/tests/common/mod.rs`      | 55   |
-| `raw_channel`                          | Function | `backends/crates/chathub-relay/tests/relay_e2e.rs`       | 17   |
-| `hub_client`                           | Function | `backends/crates/chathub-relay/tests/relay_e2e.rs`       | 25   |
-| `do_push`                              | Function | `backends/crates/chathub-relay/tests/relay_e2e.rs`       | 45   |
-| `push_body`                            | Function | `backends/crates/chathub-relay/tests/relay_e2e.rs`       | 55   |
-| `fixture_self_test_healthz_returns_ok` | Function | `backends/crates/chathub-relay/tests/relay_e2e.rs`       | 67   |
+| Symbol                     | Type     | File                                                     | Line |
+| -------------------------- | -------- | -------------------------------------------------------- | ---- |
+| `spawn_relay`              | Function | `backends/crates/chathub-relay/tests/common/mod.rs`      | 65   |
+| `mount_notify_pull`        | Function | `backends/crates/chathub-relay/tests/common/mod.rs`      | 144  |
+| `mount_notify_pull_status` | Function | `backends/crates/chathub-relay/tests/common/mod.rs`      | 192  |
+| `logged_out_subscribe`     | Function | `backends/crates/chathub-net/src/token.rs`               | 69   |
+| `login`                    | Function | `backends/crates/chathub-net/src/token.rs`               | 82   |
+| `logout`                   | Function | `backends/crates/chathub-net/src/token.rs`               | 145  |
+| `start_stub`               | Function | `backends/crates/chathub-net/tests/common/stub_relay.rs` | 164  |
+| `start_stub_full`          | Function | `backends/crates/chathub-net/tests/common/stub_relay.rs` | 169  |
+| `new`                      | Function | `backends/crates/chathub-net/src/hub.rs`                 | 829  |
+| `state_subscribe`          | Function | `backends/crates/chathub-net/src/hub.rs`                 | 867  |
+| `stop`                     | Function | `backends/crates/chathub-net/src/hub.rs`                 | 903  |
+| `wait_for_state`           | Function | `backends/crates/chathub-net/tests/common/mod.rs`        | 14   |
+| `push_event`               | Function | `backends/crates/chathub-net/tests/common/mod.rs`        | 40   |
+| `login`                    | Function | `backends/crates/chathub-net/src/auth.rs`                | 26   |
+| `try_resume_session`       | Function | `backends/crates/chathub-net/src/auth.rs`                | 59   |
+| `default`                  | Function | `backends/crates/chathub-relay/tests/common/mod.rs`      | 55   |
+| `raw_channel`              | Function | `backends/crates/chathub-relay/tests/relay_e2e.rs`       | 17   |
+| `hub_client`               | Function | `backends/crates/chathub-relay/tests/relay_e2e.rs`       | 25   |
+| `do_push`                  | Function | `backends/crates/chathub-relay/tests/relay_e2e.rs`       | 45   |
+| `push_body`                | Function | `backends/crates/chathub-relay/tests/relay_e2e.rs`       | 55   |
 
 ## Connected Areas
 
@@ -70,9 +70,8 @@ Start here when exploring this area:
 | Build\_     | 6 calls     |
 | Cluster_6   | 3 calls     |
 | Cluster_68  | 2 calls     |
-| Cluster_29  | 1 calls     |
 | Cluster_35  | 1 calls     |
-| Cluster_110 | 1 calls     |
+| Cluster_111 | 1 calls     |
 | Storage     | 1 calls     |
 
 ## How to Explore

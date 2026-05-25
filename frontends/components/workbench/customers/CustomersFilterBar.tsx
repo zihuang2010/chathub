@@ -1,10 +1,11 @@
 import { memo, type ReactNode } from "react";
-import { Download, LayoutGrid, Search, X } from "lucide-react";
+import { Grid3x3, LayoutGrid, Search, X } from "lucide-react";
 
 import type { Account } from "@/lib/types/account";
 import { cn } from "@/lib/utils";
 
 import { AccountPicker } from "./AccountPicker";
+import type { CardDensity } from "./constants";
 import { STRINGS } from "./strings";
 
 interface CustomersFilterBarProps {
@@ -17,8 +18,9 @@ interface CustomersFilterBarProps {
   onClearAccounts: () => void;
 
   onReset: () => void;
-  onToggleView: () => void;
-  onExport: () => void;
+  /** 卡片网格密度 + 切换。对应右上角两个视图切换按钮。 */
+  density: CardDensity;
+  onDensityChange: (density: CardDensity) => void;
 }
 
 const EMPTY_ACCOUNT_COUNTS: Record<string, number> = {};
@@ -39,8 +41,8 @@ export const CustomersFilterBar = memo(function CustomersFilterBar({
   onToggleAccount,
   onClearAccounts,
   onReset,
-  onToggleView,
-  onExport,
+  density,
+  onDensityChange,
 }: CustomersFilterBarProps) {
   return (
     // 工具栏强制不换行 — 内容超容器时横向滚动(滚动条隐藏,Firefox/Webkit 都兼容)。
@@ -67,16 +69,68 @@ export const CustomersFilterBar = memo(function CustomersFilterBar({
 
       <span aria-hidden className="ml-auto" />
 
-      <IconActionButton ariaLabel={STRINGS.toolbar.viewToggle} onClick={onToggleView}>
-        <LayoutGrid size={14} />
-      </IconActionButton>
-
-      <IconActionButton ariaLabel={STRINGS.toolbar.export} onClick={onExport}>
-        <Download size={14} />
-      </IconActionButton>
+      <DensityToggle density={density} onChange={onDensityChange} />
     </div>
   );
 });
+
+/** 卡片密度切换段控（舒适 / 紧凑），对应设计稿右上角的两个视图按钮。 */
+function DensityToggle({
+  density,
+  onChange,
+}: {
+  density: CardDensity;
+  onChange: (density: CardDensity) => void;
+}) {
+  return (
+    <div className="inline-flex shrink-0 items-center gap-0.5 rounded-md border border-workbench-line bg-workbench-surface-subtle p-0.5">
+      <DensityButton
+        active={density === "comfortable"}
+        ariaLabel={STRINGS.toolbar.densityComfortable}
+        onClick={() => onChange("comfortable")}
+      >
+        <LayoutGrid size={15} />
+      </DensityButton>
+      <DensityButton
+        active={density === "compact"}
+        ariaLabel={STRINGS.toolbar.densityCompact}
+        onClick={() => onChange("compact")}
+      >
+        <Grid3x3 size={15} />
+      </DensityButton>
+    </div>
+  );
+}
+
+function DensityButton({
+  active,
+  ariaLabel,
+  onClick,
+  children,
+}: {
+  active: boolean;
+  ariaLabel: string;
+  onClick: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      aria-label={ariaLabel}
+      aria-pressed={active}
+      title={ariaLabel}
+      onClick={onClick}
+      className={cn(
+        "focus-ring grid size-8 place-items-center rounded transition-colors",
+        active
+          ? "bg-workbench-accent text-white shadow-wb-card-soft"
+          : "text-workbench-text-muted hover:bg-workbench-surface hover:text-workbench-text",
+      )}
+    >
+      {children}
+    </button>
+  );
+}
 
 function SearchInput({ value, onChange }: { value: string; onChange: (v: string) => void }) {
   const hasValue = value.length > 0;
@@ -107,30 +161,5 @@ function SearchInput({ value, onChange }: { value: string; onChange: (v: string)
         </button>
       )}
     </div>
-  );
-}
-
-function IconActionButton({
-  ariaLabel,
-  onClick,
-  children,
-}: {
-  ariaLabel: string;
-  onClick: () => void;
-  children: ReactNode;
-}) {
-  return (
-    <button
-      type="button"
-      aria-label={ariaLabel}
-      title={ariaLabel}
-      onClick={onClick}
-      className={cn(
-        "focus-ring grid size-9 shrink-0 place-items-center rounded-md border border-workbench-line bg-workbench-surface text-workbench-text-secondary transition-colors",
-        "hover:border-workbench-line-strong hover:bg-workbench-surface-subtle hover:text-workbench-text",
-      )}
-    >
-      {children}
-    </button>
   );
 }

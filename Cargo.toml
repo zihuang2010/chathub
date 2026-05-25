@@ -66,3 +66,13 @@ lto = "fat"             # 全程序优化,~5-10% 吞吐
 codegen-units = 1       # 单 codegen 单元,允许跨函数内联
 strip = "symbols"       # 二进制减小 ~30%
 panic = "abort"         # 移除展开代码,代码尺寸 -20% + L1 cache 命中略升
+
+# 服务端(relay / mock-downstream)专用 release profile。继承 release 的全部优化,仅把
+# panic 改回 unwind:常驻服务进程任一请求/任务 panic 时由 async 框架在 task 边界隔离
+# (该连接/请求出错,而非整进程 abort 无恢复)。桌面客户端仍走 [profile.release]
+# (panic=abort,二进制更小),二者互不影响。
+# 说明:Cargo 的 panic 设置是 profile 级、无法按 package 覆盖,故服务端另开 profile。
+# 构建:cargo/cross build --profile release-server -p chathub-relay
+[profile.release-server]
+inherits = "release"
+panic = "unwind"

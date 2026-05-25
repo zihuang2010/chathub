@@ -1,6 +1,7 @@
 import { Fragment, useLayoutEffect, useRef, useState } from "react";
 import { Download, FileText, ImageOff, Play } from "lucide-react";
 
+import { cachedImageSrc } from "@/lib/cachedImageSrc";
 import { cn } from "@/lib/utils";
 
 import type { MessagePart } from "./data";
@@ -83,7 +84,7 @@ function ImageAttachment({ part }: { part: ImagePart }) {
       className="focus-ring inline-block max-w-full overflow-hidden rounded-xl border border-workbench-line bg-workbench-surface p-1 shadow-wb-bubble transition-colors hover:bg-workbench-surface-subtle"
     >
       <MessageImage
-        src={part.url}
+        src={cachedImageSrc(part.url, 384)}
         alt={STRINGS.attachment.imageAlt(part.name)}
         imgClassName="block h-full w-full rounded-lg object-cover"
       />
@@ -243,7 +244,7 @@ function InlineImage({ part }: { part: ImagePart }) {
       className="focus-ring mx-1 inline-block overflow-hidden rounded-lg align-middle ring-1 ring-workbench-line transition-shadow hover:ring-workbench-accent"
     >
       <img
-        src={part.url}
+        src={cachedImageSrc(part.url, 384)}
         alt={part.name ?? STRINGS.attachment.image}
         loading="lazy"
         className="block max-h-[200px] max-w-[260px] object-contain"
@@ -263,7 +264,7 @@ function ImageStandalone({ part }: { part: ImagePart }) {
       className="focus-ring inline-block max-w-full overflow-hidden rounded-xl border border-workbench-line bg-workbench-surface p-1 shadow-wb-bubble transition-colors hover:bg-workbench-surface-subtle"
     >
       <MessageImage
-        src={part.url}
+        src={cachedImageSrc(part.url, 384)}
         alt={STRINGS.attachment.imageAlt(part.name)}
         imgClassName="block h-full w-full rounded-lg object-cover"
       />

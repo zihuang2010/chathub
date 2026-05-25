@@ -2,6 +2,8 @@ import { useState } from "react";
 
 import { cn } from "@/lib/utils";
 
+import { cachedImageSrc } from "@/lib/cachedImageSrc";
+
 /**
  * 列表行 / 详情面板共用的客户头像组件。优先渲染 `public/avatars/` 下的真人头像
  * （5 张轮转 + 客户 id 决定性 seed），加载失败 fallback 到 letter-tile。
@@ -16,6 +18,8 @@ interface CustomerAvatarProps {
   /** 头像直径（像素）；点尺寸按比例缩放。 */
   size?: number;
   online?: boolean;
+  /** 真实远程头像 URL（生产取自 external_avatar）；无则回退打包 mock 头像、再回退首字母色块。 */
+  photoUrl?: string;
 }
 
 export function CustomerAvatar({
@@ -24,16 +28,21 @@ export function CustomerAvatar({
   colorToken,
   size = 32,
   online,
+  photoUrl,
 }: CustomerAvatarProps) {
   const [imgFailed, setImgFailed] = useState(false);
-  const photoUrl = pickPhotoUrl(customerId);
+  // 优先真实远程头像(经磁盘缩略图缓存,size*2 适配高分屏);无则回退打包 mock 头像(dev),
+  // 再无走首字母色块。
+  const src =
+    (photoUrl ? cachedImageSrc(photoUrl, Math.round(size * 2)) : undefined) ??
+    pickPhotoUrl(customerId);
   const dotSize = Math.max(8, Math.round(size * 0.28));
 
   return (
     <div className="relative shrink-0" style={{ width: size, height: size }}>
-      {photoUrl && !imgFailed ? (
+      {src && !imgFailed ? (
         <img
-          src={photoUrl}
+          src={src}
           alt=""
           loading="lazy"
           onError={() => setImgFailed(true)}

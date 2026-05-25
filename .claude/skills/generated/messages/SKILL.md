@@ -1,11 +1,11 @@
 ---
 name: messages
-description: "Skill for the Messages area of chathub. 225 symbols across 54 files."
+description: "Skill for the Messages area of chathub. 208 symbols across 50 files."
 ---
 
 # Messages
 
-225 symbols | 54 files | Cohesion: 79%
+208 symbols | 50 files | Cohesion: 81%
 
 ## When to Use
 
@@ -15,18 +15,18 @@ description: "Skill for the Messages area of chathub. 225 symbols across 54 file
 
 ## Key Files
 
-| File                                                              | Symbols                                                                                                      |
-| ----------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
-| `frontends/components/workbench/messages/useDraftStore.ts`        | useDraft, useFileAttachments, scheduleWrite, touchLRU, emit (+25)                                            |
-| `frontends/components/workbench/messages/utils.ts`                | formatMessageTime, formatMessageDateTime, collectMatches, formatRichText, isSafeUrl (+9)                     |
-| `frontends/components/workbench/messages/MessageBubble.tsx`       | DateDivider, UnreadDivider, messageAriaText, MessageBubble, RecalledLine (+8)                                |
-| `frontends/components/workbench/messages/MessageComposer.tsx`     | clampComposerHeight, MessageComposer, insertImageFiles, handleImagePicker, removePendingFileAttachment (+7)  |
-| `frontends/components/workbench/messages/MessageContent.tsx`      | MessageContent, PartCard, ImageAttachment, FileAttachment, VoiceAttachment (+7)                              |
-| `frontends/components/workbench/messages/MessagesPage.tsx`        | MessagesPage, formatRelativeTime, clampField, adaptEntryToConversation, extractDraftPreview (+6)             |
-| `frontends/components/workbench/messages/AccountDropdown.tsx`     | AccountDropdown, handleSelect, SearchBox, Group, AllAccountsRow (+4)                                         |
-| `frontends/components/workbench/messages/useDetailsWindow.ts`     | useDetailsWindow, waitForLayoutFrame, closeDetailsWithWindowResize, lockCurrentChatWidth, toggleDetails (+3) |
-| `frontends/components/workbench/messages/CustomerDetails.tsx`     | ProfileHeader, CustomerDetails, Tabs, ProfileTab, TagsRow (+2)                                               |
-| `frontends/components/workbench/messages/composer/docToBlocks.ts` | flushText, visit, blocksToDoc, currentContent, startNewParagraph (+1)                                        |
+| File                                                              | Symbols                                                                                                     |
+| ----------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| `frontends/components/workbench/messages/useDraftStore.ts`        | useDraft, useFileAttachments, scheduleWrite, touchLRU, emit (+25)                                           |
+| `frontends/components/workbench/messages/MessageBubble.tsx`       | DateDivider, UnreadDivider, messageAriaText, MessageBubble, RecalledLine (+8)                               |
+| `frontends/components/workbench/messages/utils.ts`                | formatMessageTime, formatMessageDateTime, collectMatches, formatRichText, isSafeUrl (+8)                    |
+| `frontends/components/workbench/messages/MessageComposer.tsx`     | clampComposerHeight, MessageComposer, insertImageFiles, handleImagePicker, removePendingFileAttachment (+7) |
+| `frontends/components/workbench/messages/MessageContent.tsx`      | MessageContent, PartCard, ImageAttachment, FileAttachment, VoiceAttachment (+7)                             |
+| `frontends/components/workbench/messages/MessagesPage.tsx`        | formatRelativeTime, clampField, adaptEntryToConversation, extractDraftPreview, extractTextFromNode (+5)     |
+| `frontends/components/workbench/messages/AccountDropdown.tsx`     | AccountDropdown, handleSelect, SearchBox, Group, AllAccountsRow (+4)                                        |
+| `frontends/components/workbench/messages/useDetailsWindow.ts`     | waitForLayoutFrame, closeDetailsWithWindowResize, lockCurrentChatWidth, toggleDetails, isTauriRuntime (+2)  |
+| `frontends/components/workbench/messages/composer/docToBlocks.ts` | flushText, visit, blocksToDoc, currentContent, startNewParagraph (+1)                                       |
+| `frontends/components/workbench/messages/useComposerPrefs.ts`     | useComposerPrefs, loadComposerPrefs, saveComposerPrefs, onStorage, setSilent (+1)                           |
 
 ## Entry Points
 
@@ -82,12 +82,13 @@ Start here when exploring this area:
 
 | Area       | Connections |
 | ---------- | ----------- |
-| Accounts   | 31 calls    |
-| Customers  | 5 calls     |
+| Customers  | 25 calls    |
+| Tests      | 4 calls     |
 | Data       | 3 calls     |
-| Store      | 2 calls     |
 | Api        | 2 calls     |
-| Workbench  | 1 calls     |
+| Cluster_60 | 1 calls     |
+| Build\_    | 1 calls     |
+| Store      | 1 calls     |
 | Components | 1 calls     |
 
 ## How to Explore

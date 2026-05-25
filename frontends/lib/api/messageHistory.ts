@@ -186,7 +186,8 @@ function historyAttachmentToMessage(a: HistoryAttachment): MessageAttachment {
         : "file";
   return {
     type: kind,
-    url: `mediaproxy://${a.mediaId}`, // 占位,后续接资源代理
+    // 媒体默认走 OSS 链接(mediaId 即 OSS https URL);图片渲染侧再经 cachedImageSrc 走磁盘缓存。
+    url: a.mediaId,
     name: a.fileName,
     sizeBytes: a.fileSize,
   };

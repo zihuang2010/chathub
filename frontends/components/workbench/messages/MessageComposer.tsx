@@ -346,8 +346,13 @@ export function MessageComposer({
       fileAttachments.length > 0 ? [...fileAttachments] : undefined,
       replyDraft?.id,
     );
-    // 清空 store 中的待发送附件;blob URL 的 ownership 已交给 MessageBubble,
-    // 故只删 store entry,不在此处 revoke。
+    // 释放已发送文件附件的 blob URL。下游不会再消费它:MessageContent 的 FileAttachment
+    // 用 isSafeUrl(url, "link") 校验下载链接,blob: 不在 link 白名单 → href 恒为 undefined;
+    // 且 setFileAttachments([]) 删 entry 时并不 revoke。不在此 revoke 会让底层 File(常达
+    // 几十 MB)随每次发送永久驻留进程内存。
+    for (const a of fileAttachments) {
+      if (a.url.startsWith("blob:")) URL.revokeObjectURL(a.url);
+    }
     setPendingFileAttachments([]);
     // Reset draft (sets EMPTY_DOC in the store).
     clearDraft(conversationId);
@@ -541,7 +546,7 @@ export function MessageComposer({
           />
           <span
             className={cn(
-              "wb-num ml-2 inline-flex items-center gap-2 text-wb-3xs font-medium text-workbench-text-muted",
+              "wb-num text-wb-3xs ml-2 inline-flex items-center gap-2 font-medium text-workbench-text-muted",
               nearLimit && !overLimit && "text-workbench-warning",
               overLimit && "text-workbench-danger",
             )}
@@ -619,7 +624,7 @@ const ReplyPreview = memo(function ReplyPreview({
         className="mt-0.5 w-[2px] shrink-0 self-stretch rounded-full bg-workbench-accent/40"
       />
       <div className="min-w-0 flex-1 leading-snug">
-        <div className="truncate text-wb-3xs text-workbench-text-secondary">
+        <div className="text-wb-3xs truncate text-workbench-text-secondary">
           {draft.senderName}：
         </div>
         <div className="truncate text-wb-2xs text-workbench-text-muted">{draft.text}</div>

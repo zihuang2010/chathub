@@ -1,71 +1,79 @@
 import { memo, useState } from "react";
-import { Copy, Mars, MoreHorizontal, Phone, RefreshCw, Star, Venus } from "lucide-react";
+import * as Popover from "@radix-ui/react-popover";
+import {
+  Copy,
+  Mars,
+  MessageCircle,
+  MoreHorizontal,
+  Pencil,
+  Phone,
+  Plus,
+  RefreshCw,
+  Star,
+  Venus,
+  X,
+} from "lucide-react";
 
-import type { Account } from "@/lib/types/account";
-import type { Customer } from "@/lib/types/customer";
+import type { Account, AccountStatus } from "@/lib/types/account";
+import type { Customer, CustomerTimelineEntry } from "@/lib/types/customer";
 import { showToast } from "@/components/ui/toast";
 import { cn } from "@/lib/utils";
 
 import { WorkbenchScrollArea } from "../messages/WorkbenchScrollArea";
 import { CustomerAvatar } from "./CustomerAvatar";
-import { CustomerTimeline } from "./CustomerTimeline";
-import { tagColorClass } from "./tagColor";
-import {
-  DETAIL_PANEL_WIDTH,
-  DETAIL_TAB_OPTIONS,
-  RECENT_MESSAGE_LIMIT,
-  type DetailTab,
-} from "./constants";
-import type { CustomerRecentMessage } from "./data";
-import { isKeyCustomer } from "./customerLabels";
+import { DETAIL_PANEL_WIDTH, TIMELINE_LIMIT } from "./constants";
+import { TAG_PRESETS } from "./data";
 import { STRINGS } from "./strings";
-import { formatRelativeTime } from "./utils";
+import { tagColorClass } from "./tagColor";
 
 interface CustomerDetailPanelProps {
   customer: Customer | null;
   account: Account | undefined;
-  recentMessages: readonly CustomerRecentMessage[];
-  onPatch: (patch: Partial<Customer>) => void;
-  onAddTag: (tag: string) => void;
-  onRemoveTag: (tag: string) => void;
   onToggleStar: () => void;
   onOpenChat: (customerId: string) => void;
+  onCall: (customerId: string) => void;
   onEditCustomer: (customerId: string) => void;
-  /** 强制刷新客户详情(isForceRefresh=true)。 */
+  onMore: (customerId: string) => void;
+  onAddTag: (tag: string) => void;
+  onRemoveTag: (tag: string) => void;
+  onSeeMoreRecords: (customerId: string) => void;
+  /** 强制刷新客户详情（isForceRefresh=true）。 */
   onRefresh?: () => void;
-  /** 详情拉取中:刷新按钮禁用 + 图标旋转。 */
+  /** 详情拉取中：刷新按钮禁用 + 图标旋转。 */
   refreshing?: boolean;
 }
 
 export const CustomerDetailPanel = memo(function CustomerDetailPanel({
   customer,
   account,
-  recentMessages,
-  onPatch,
-  onAddTag,
-  onRemoveTag,
   onToggleStar,
   onOpenChat,
+  onCall,
   onEditCustomer,
+  onMore,
+  onAddTag,
+  onRemoveTag,
+  onSeeMoreRecords,
   onRefresh,
   refreshing,
 }: CustomerDetailPanelProps) {
   if (!customer) {
     return <EmptyDetail />;
   }
-  // key 让客户切换时 DetailBody 重新挂载，自然重置编辑态/草稿，避免在 effect 中同步重置 state。
+  // key 让客户切换时 DetailBody 重新挂载，自然重置「添加标签」popover 等本地态。
   return (
     <DetailBody
       key={customer.id}
       customer={customer}
       account={account}
-      recentMessages={recentMessages}
-      onPatch={onPatch}
-      onAddTag={onAddTag}
-      onRemoveTag={onRemoveTag}
       onToggleStar={onToggleStar}
       onOpenChat={onOpenChat}
+      onCall={onCall}
       onEditCustomer={onEditCustomer}
+      onMore={onMore}
+      onAddTag={onAddTag}
+      onRemoveTag={onRemoveTag}
+      onSeeMoreRecords={onSeeMoreRecords}
       onRefresh={onRefresh}
       refreshing={refreshing}
     />
@@ -89,38 +97,37 @@ function EmptyDetail() {
 function DetailBody({
   customer,
   account,
-  recentMessages,
-  onAddTag,
-  onRemoveTag,
   onToggleStar,
   onOpenChat,
+  onCall,
   onEditCustomer,
+  onMore,
+  onAddTag,
+  onRemoveTag,
+  onSeeMoreRecords,
   onRefresh,
   refreshing,
 }: {
   customer: Customer;
   account: Account | undefined;
-  recentMessages: readonly CustomerRecentMessage[];
-  onPatch: (patch: Partial<Customer>) => void;
-  onAddTag: (tag: string) => void;
-  onRemoveTag: (tag: string) => void;
   onToggleStar: () => void;
   onOpenChat: (id: string) => void;
+  onCall: (id: string) => void;
   onEditCustomer: (id: string) => void;
+  onMore: (id: string) => void;
+  onAddTag: (tag: string) => void;
+  onRemoveTag: (tag: string) => void;
+  onSeeMoreRecords: (id: string) => void;
   onRefresh?: () => void;
   refreshing?: boolean;
 }) {
-  const [activeSubTab, setActiveSubTab] = useState<DetailTab>("info");
   const starred = Boolean(customer.starred);
   const handleCopy = (label: string, value: string) => {
-    if (!navigator?.clipboard) return;
+    if (!value || !navigator?.clipboard) return;
     void navigator.clipboard.writeText(value).then(() => {
       showToast(`${label}已复制`, { type: "success" });
     });
   };
-  // 引用 onAddTag/onRemoveTag 让 lint 满意；客户标签编辑入口将在「编辑客户」弹窗中实现。
-  void onAddTag;
-  void onRemoveTag;
 
   return (
     <aside style={{ width: DETAIL_PANEL_WIDTH }} className="flex h-full shrink-0 flex-col">
@@ -129,41 +136,33 @@ function DetailBody({
       <WorkbenchScrollArea
         className="flex-1"
         viewportClassName="px-0"
-        contentClassName="flex flex-col gap-2 p-3 pb-3"
+        contentClassName="flex flex-col gap-4 p-4"
       >
         <ProfileHeader
           customer={customer}
           account={account}
           starred={starred}
           onToggleStar={onToggleStar}
+          onMore={() => onMore(customer.id)}
         />
 
-        <DetailSubTabs active={activeSubTab} onChange={setActiveSubTab} />
+        <QuickActions
+          onStartChat={() => onOpenChat(customer.id)}
+          onCall={() => onCall(customer.id)}
+          onEdit={() => onEditCustomer(customer.id)}
+          onMore={() => onMore(customer.id)}
+        />
 
-        {activeSubTab === "info" ? (
-          <InfoTabContent customer={customer} onCopy={handleCopy} />
-        ) : (
-          <TimelineTab customer={customer} />
-        )}
+        <CustomerInfoSection customer={customer} account={account} onCopy={handleCopy} />
 
-        {activeSubTab === "info" && (
-          <>
-            <ContactInfoSection customer={customer} account={account} />
+        <TagsSection tags={customer.tags} onAddTag={onAddTag} onRemoveTag={onRemoveTag} />
 
-            {recentMessages.length > 0 && (
-              <RecentMessagesSection
-                messages={recentMessages.slice(0, RECENT_MESSAGE_LIMIT)}
-                onSeeAll={() => onOpenChat(customer.id)}
-              />
-            )}
-          </>
-        )}
+        <FollowUpSection
+          entries={customer.timeline}
+          follower={account?.ownerName || customer.follower}
+          onSeeMore={() => onSeeMoreRecords(customer.id)}
+        />
       </WorkbenchScrollArea>
-
-      <FooterActions
-        onStartChat={() => onOpenChat(customer.id)}
-        onEdit={() => onEditCustomer(customer.id)}
-      />
     </aside>
   );
 }
@@ -176,8 +175,8 @@ function DetailHeaderBar({
   refreshing?: boolean;
 }) {
   return (
-    <div className="flex h-10 shrink-0 items-center justify-between border-b border-workbench-line px-3">
-      <span className="text-[13px] font-semibold text-workbench-text">{STRINGS.detail.title}</span>
+    <div className="flex h-12 shrink-0 items-center justify-between border-b border-workbench-line px-4">
+      <span className="text-[14px] font-semibold text-workbench-text">{STRINGS.detail.title}</span>
       {onRefresh && (
         <button
           type="button"
@@ -187,7 +186,7 @@ function DetailHeaderBar({
           title={STRINGS.detail.refresh}
           className="grid size-7 place-items-center rounded-md text-workbench-text-muted transition-colors hover:bg-workbench-surface-active hover:text-workbench-text disabled:opacity-50"
         >
-          <RefreshCw size={14} className={cn(refreshing && "animate-spin")} />
+          <RefreshCw size={15} className={cn(refreshing && "animate-spin")} />
         </button>
       )}
     </div>
@@ -199,102 +198,400 @@ function ProfileHeader({
   account,
   starred,
   onToggleStar,
+  onMore,
 }: {
   customer: Customer;
   account: Account | undefined;
   starred: boolean;
   onToggleStar: () => void;
+  onMore: () => void;
 }) {
   const colorToken = account?.colorToken ?? 1;
-  const isKey = isKeyCustomer(customer);
+  const status = statusMeta(account?.status);
   return (
-    <div className="flex flex-col gap-1.5">
-      <div className="flex items-start gap-2">
-        <CustomerAvatar
-          customerId={customer.id}
-          name={customer.name}
-          colorToken={colorToken}
-          size={36}
-          online={account?.status === "online"}
-        />
-        <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-          <div className="flex items-center gap-1.5">
-            <span className="truncate text-[14px] font-semibold text-workbench-text">
-              {customer.name}
-            </span>
-            <GenderIcon gender={customer.gender} />
-          </div>
-          {customer.company && (
-            <div className="flex flex-wrap items-center gap-1.5">
-              <span className="truncate text-[12px] text-workbench-text-secondary">
-                {customer.company}
-              </span>
-              {isKey && (
-                <span className="inline-flex items-center rounded bg-blue-50 px-1.5 py-0.5 text-[11px] font-medium text-blue-700 ring-1 ring-blue-100">
-                  {STRINGS.detail.keyCustomerChip}
-                </span>
-              )}
-            </div>
-          )}
+    <div className="flex items-start gap-3">
+      <CustomerAvatar
+        customerId={customer.id}
+        name={customer.name}
+        photoUrl={customer.avatarUrl}
+        colorToken={colorToken}
+        size={52}
+        online={account?.status === "online"}
+      />
+      <div className="flex min-w-0 flex-1 flex-col gap-1.5 pt-0.5">
+        <div className="flex items-center gap-1.5">
+          <span className="truncate text-[16px] font-semibold text-workbench-text">
+            {customer.name}
+          </span>
+          <GenderIcon gender={customer.gender} />
         </div>
-        <div className="flex shrink-0 items-center gap-0.5">
-          <HeaderIconButton
-            ariaLabel={starred ? STRINGS.rowMore.unstar : STRINGS.rowMore.star}
-            onClick={onToggleStar}
-            active={starred}
-          >
-            <Star
-              size={14}
-              fill={starred ? "currentColor" : "none"}
-              className={starred ? "text-workbench-warning" : undefined}
-            />
-          </HeaderIconButton>
-          <HeaderIconButton ariaLabel={STRINGS.detail.actions.more}>
-            <MoreHorizontal size={14} />
-          </HeaderIconButton>
+        <div className="flex items-center gap-1.5">
+          <span aria-hidden className={cn("size-1.5 rounded-full", status.dotClass)} />
+          <span className="text-[12px] text-workbench-text-secondary">{status.text}</span>
         </div>
       </div>
-
-      {/* 头部 KV 三行：归属账号 / 客户来源 / 客户标签。统一样式，避免再用一组卡片。 */}
-      <dl className="grid grid-cols-[auto_minmax(0,1fr)] items-start gap-x-2 gap-y-1 text-[12px]">
-        {account && (
-          <>
-            <dt className="text-workbench-text-muted">{STRINGS.detail.fields.account}：</dt>
-            <dd className="min-w-0 truncate text-workbench-text">
-              {account.name}
-              {account.ownerName ? ` · ${account.ownerName}` : ""}
-            </dd>
-          </>
-        )}
-        {customer.source && (
-          <>
-            <dt className="text-workbench-text-muted">{STRINGS.detail.fields.source}：</dt>
-            <dd className="min-w-0 truncate text-workbench-text">{customer.source}</dd>
-          </>
-        )}
-        {customer.tags.length > 0 && (
-          <>
-            <dt className="pt-0.5 text-workbench-text-muted">{STRINGS.detail.fields.tags}：</dt>
-            <dd className="flex min-w-0 flex-wrap items-center gap-1">
-              {customer.tags.map((tag) => (
-                <span
-                  key={tag}
-                  className={`inline-flex max-w-full items-center truncate whitespace-nowrap rounded px-1.5 py-0.5 text-[11.5px] font-medium ${tagColorClass(tag)}`}
-                >
-                  {tag}
-                </span>
-              ))}
-            </dd>
-          </>
-        )}
-      </dl>
+      <div className="flex shrink-0 items-center gap-0.5">
+        <HeaderIconButton
+          ariaLabel={starred ? STRINGS.rowMore.unstar : STRINGS.rowMore.star}
+          onClick={onToggleStar}
+          active={starred}
+        >
+          <Star
+            size={16}
+            fill={starred ? "currentColor" : "none"}
+            className={starred ? "text-workbench-warning" : undefined}
+          />
+        </HeaderIconButton>
+        <HeaderIconButton ariaLabel={STRINGS.detail.actions.moreActions} onClick={onMore}>
+          <MoreHorizontal size={16} />
+        </HeaderIconButton>
+      </div>
     </div>
   );
 }
 
+function QuickActions({
+  onStartChat,
+  onCall,
+  onEdit,
+  onMore,
+}: {
+  onStartChat: () => void;
+  onCall: () => void;
+  onEdit: () => void;
+  onMore: () => void;
+}) {
+  return (
+    <div className="grid grid-cols-4 gap-1">
+      <QuickAction
+        label={STRINGS.detail.actions.startChat}
+        onClick={onStartChat}
+        circleClass="bg-blue-50 text-blue-600 group-hover/qa:bg-blue-100"
+      >
+        <MessageCircle size={18} />
+      </QuickAction>
+      <QuickAction
+        label={STRINGS.detail.actions.callContact}
+        onClick={onCall}
+        circleClass="bg-emerald-50 text-emerald-600 group-hover/qa:bg-emerald-100"
+      >
+        <Phone size={18} />
+      </QuickAction>
+      <QuickAction
+        label={STRINGS.detail.actions.editCustomer}
+        onClick={onEdit}
+        circleClass="bg-amber-50 text-amber-600 group-hover/qa:bg-amber-100"
+      >
+        <Pencil size={18} />
+      </QuickAction>
+      <QuickAction
+        label={STRINGS.detail.actions.moreActions}
+        onClick={onMore}
+        circleClass="bg-slate-100 text-slate-500 group-hover/qa:bg-slate-200"
+      >
+        <MoreHorizontal size={18} />
+      </QuickAction>
+    </div>
+  );
+}
+
+function QuickAction({
+  label,
+  onClick,
+  circleClass,
+  children,
+}: {
+  label: string;
+  onClick: () => void;
+  circleClass: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-label={label}
+      title={label}
+      className="focus-ring group/qa flex flex-col items-center gap-1.5 rounded-lg py-1"
+    >
+      <span
+        className={cn(
+          "grid size-11 place-items-center rounded-full transition-colors",
+          circleClass,
+        )}
+      >
+        {children}
+      </span>
+      <span className="text-[11px] text-workbench-text-secondary">{label}</span>
+    </button>
+  );
+}
+
+function CustomerInfoSection({
+  customer,
+  account,
+  onCopy,
+}: {
+  customer: Customer;
+  account: Account | undefined;
+  onCopy: (label: string, value: string) => void;
+}) {
+  const f = STRINGS.detail.fields;
+  const accountValue = account
+    ? account.ownerName
+      ? `${account.name} · ${account.ownerName}`
+      : account.name
+    : customer.account;
+  return (
+    <section className="flex flex-col gap-2.5">
+      <h3 className="text-[13px] font-semibold text-workbench-text">
+        {STRINGS.detail.sectionCustomerInfo}
+      </h3>
+      <dl className="flex flex-col gap-2.5 text-[12px]">
+        <InfoRow
+          label={f.phone}
+          value={customer.phone}
+          numeric
+          onCopy={() => onCopy(f.phone, customer.phone)}
+        />
+        <InfoRow
+          label={f.weChat}
+          value={customer.weChat}
+          onCopy={() => onCopy(f.weChat, customer.weChat)}
+        />
+        <InfoRow label={f.company} value={customer.company} />
+        <InfoRow label={f.source} value={customer.source} />
+        <InfoRow label={f.account} value={accountValue} />
+      </dl>
+    </section>
+  );
+}
+
+function InfoRow({
+  label,
+  value,
+  numeric,
+  onCopy,
+}: {
+  label: string;
+  value: string;
+  numeric?: boolean;
+  onCopy?: () => void;
+}) {
+  const hasValue = Boolean(value && value !== "—");
+  return (
+    <div className="grid grid-cols-[68px_minmax(0,1fr)_auto] items-center gap-x-2">
+      <dt className="whitespace-nowrap text-workbench-text-muted">{label}</dt>
+      <dd className={cn("min-w-0 truncate text-workbench-text", numeric && "wb-num tabular-nums")}>
+        {hasValue ? value : "—"}
+      </dd>
+      {onCopy && hasValue ? (
+        <button
+          type="button"
+          onClick={onCopy}
+          aria-label={`复制 ${label}`}
+          title={`复制 ${label}`}
+          className="focus-ring grid size-6 place-items-center rounded text-workbench-text-muted hover:bg-workbench-surface-subtle hover:text-workbench-text"
+        >
+          <Copy size={13} />
+        </button>
+      ) : (
+        <span aria-hidden />
+      )}
+    </div>
+  );
+}
+
+function TagsSection({
+  tags,
+  onAddTag,
+  onRemoveTag,
+}: {
+  tags: readonly string[];
+  onAddTag: (tag: string) => void;
+  onRemoveTag: (tag: string) => void;
+}) {
+  return (
+    <section className="flex flex-col gap-2.5">
+      <h3 className="text-[13px] font-semibold text-workbench-text">
+        {STRINGS.detail.sectionCustomerTags}
+      </h3>
+      <div className="flex flex-wrap items-center gap-1.5">
+        {tags.map((tag) => (
+          <span
+            key={tag}
+            className={cn(
+              "group/tag inline-flex max-w-full items-center gap-0.5 rounded px-1.5 py-0.5 text-[11.5px] font-medium",
+              tagColorClass(tag),
+            )}
+          >
+            <span className="truncate">{tag}</span>
+            <button
+              type="button"
+              onClick={() => onRemoveTag(tag)}
+              aria-label={`移除标签 ${tag}`}
+              className="focus-ring -mr-0.5 grid size-3.5 place-items-center rounded-full opacity-60 transition-opacity hover:opacity-100"
+            >
+              <X size={10} />
+            </button>
+          </span>
+        ))}
+        <AddTagPopover existing={tags} onAddTag={onAddTag} />
+      </div>
+    </section>
+  );
+}
+
+function AddTagPopover({
+  existing,
+  onAddTag,
+}: {
+  existing: readonly string[];
+  onAddTag: (tag: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [draft, setDraft] = useState("");
+  const existingFolded = new Set(existing.map((t) => t.toLocaleLowerCase()));
+  const presets = TAG_PRESETS.filter((t) => !existingFolded.has(t.toLocaleLowerCase()));
+
+  const commit = (tag: string) => {
+    const value = tag.trim();
+    if (!value) return;
+    if (existingFolded.has(value.toLocaleLowerCase())) return;
+    onAddTag(value);
+    setDraft("");
+    setOpen(false);
+  };
+
+  return (
+    <Popover.Root
+      open={open}
+      onOpenChange={(next) => {
+        setOpen(next);
+        if (!next) setDraft("");
+      }}
+    >
+      <Popover.Trigger asChild>
+        <button
+          type="button"
+          aria-label={STRINGS.detail.addTagShort}
+          title={STRINGS.detail.addTagShort}
+          className="focus-ring inline-flex h-[22px] items-center gap-0.5 rounded border border-dashed border-workbench-line px-1.5 text-[11.5px] text-workbench-text-muted transition-colors hover:border-workbench-accent hover:text-workbench-accent"
+        >
+          <Plus size={12} />
+        </button>
+      </Popover.Trigger>
+      <Popover.Portal>
+        <Popover.Content
+          align="start"
+          sideOffset={6}
+          className="z-30 w-[220px] rounded-lg border border-workbench-line bg-workbench-surface p-2.5 shadow-wb-popover-strong outline-none"
+        >
+          <div className="mb-2 text-[12px] font-semibold text-workbench-text">
+            {STRINGS.detail.addTagShort}
+          </div>
+          <input
+            autoFocus
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                commit(draft);
+              }
+            }}
+            placeholder={STRINGS.detail.addTagPlaceholder}
+            className="focus-ring h-8 w-full rounded-md border border-workbench-line bg-workbench-surface-subtle px-2 text-[12px] text-workbench-text placeholder:text-workbench-text-muted focus:border-workbench-accent focus:bg-workbench-surface"
+          />
+          {presets.length > 0 && (
+            <div className="mt-2 flex flex-wrap gap-1">
+              {presets.map((tag) => (
+                <button
+                  key={tag}
+                  type="button"
+                  onClick={() => commit(tag)}
+                  className="rounded-full border border-workbench-line bg-workbench-surface px-2 py-0.5 text-[11px] text-workbench-text-secondary transition-colors hover:border-workbench-accent hover:text-workbench-accent"
+                >
+                  {tag}
+                </button>
+              ))}
+            </div>
+          )}
+        </Popover.Content>
+      </Popover.Portal>
+    </Popover.Root>
+  );
+}
+
+function FollowUpSection({
+  entries,
+  follower,
+  onSeeMore,
+}: {
+  entries: readonly CustomerTimelineEntry[] | undefined;
+  follower: string;
+  onSeeMore: () => void;
+}) {
+  const list = (entries ?? []).slice(0, TIMELINE_LIMIT);
+  return (
+    <section className="flex flex-col gap-2.5">
+      <h3 className="text-[13px] font-semibold text-workbench-text">
+        {STRINGS.detail.sectionFollowUp}
+      </h3>
+      {list.length === 0 ? (
+        <p className="text-[12px] text-workbench-text-muted">{STRINGS.detail.emptyFollowUp}</p>
+      ) : (
+        <>
+          <ol className="flex flex-col">
+            {list.map((entry, idx) => {
+              const isLast = idx === list.length - 1;
+              return (
+                <li key={`${entry.at}-${idx}`} className="flex gap-2.5">
+                  <div className="flex flex-col items-center">
+                    <span
+                      aria-hidden
+                      className={cn(
+                        "mt-1 size-2 shrink-0 rounded-full",
+                        idx === 0 ? "bg-emerald-500" : "bg-workbench-accent",
+                      )}
+                    />
+                    {!isLast && <span aria-hidden className="w-px flex-1 bg-workbench-line" />}
+                  </div>
+                  <div className={cn("min-w-0 flex-1", isLast ? "pb-0" : "pb-3")}>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="wb-num truncate text-[12px] tabular-nums text-workbench-text">
+                        {entry.at}
+                      </span>
+                      {follower && (
+                        <span className="shrink-0 text-[11px] text-workbench-text-muted">
+                          {follower}
+                        </span>
+                      )}
+                    </div>
+                    <p className="mt-0.5 text-[12px] leading-relaxed text-workbench-text-secondary">
+                      {entry.text}
+                    </p>
+                  </div>
+                </li>
+              );
+            })}
+          </ol>
+          <button
+            type="button"
+            onClick={onSeeMore}
+            className="focus-ring self-start text-[12px] font-medium text-workbench-accent hover:underline"
+          >
+            {STRINGS.detail.seeMoreRecords}
+          </button>
+        </>
+      )}
+    </section>
+  );
+}
+
 function GenderIcon({ gender }: { gender?: "male" | "female" }) {
-  if (gender === "male") return <Mars size={13} className="shrink-0 text-blue-500" />;
-  if (gender === "female") return <Venus size={13} className="shrink-0 text-pink-500" />;
+  if (gender === "male") return <Mars size={14} className="shrink-0 text-blue-500" />;
+  if (gender === "female") return <Venus size={14} className="shrink-0 text-pink-500" />;
   return null;
 }
 
@@ -322,232 +619,10 @@ function HeaderIconButton({
   );
 }
 
-function DetailSubTabs({
-  active,
-  onChange,
-}: {
-  active: DetailTab;
-  onChange: (tab: DetailTab) => void;
-}) {
-  return (
-    <nav
-      role="tablist"
-      aria-label="客户详情视图"
-      className="-mx-3 flex min-w-0 gap-3 overflow-x-auto border-b border-workbench-line px-3"
-    >
-      {DETAIL_TAB_OPTIONS.map((tab) => {
-        const selected = tab.value === active;
-        return (
-          <button
-            key={tab.value}
-            role="tab"
-            type="button"
-            aria-selected={selected}
-            onClick={() => onChange(tab.value)}
-            className={cn(
-              "focus-ring relative inline-flex h-8 shrink-0 items-center text-[12px] transition-colors",
-              selected
-                ? "font-semibold text-workbench-text"
-                : "text-workbench-text-secondary hover:text-workbench-text",
-            )}
-          >
-            <span>{tab.label}</span>
-            {selected && (
-              <span
-                aria-hidden
-                className="absolute inset-x-0 bottom-0 h-[2px] rounded-t bg-workbench-accent"
-              />
-            )}
-          </button>
-        );
-      })}
-    </nav>
-  );
-}
-
-function InfoTabContent({
-  customer,
-  onCopy,
-}: {
-  customer: Customer;
-  onCopy: (label: string, value: string) => void;
-}) {
-  const f = STRINGS.detail.fields;
-  return (
-    <dl className="flex flex-col gap-1.5 text-[12px]">
-      <FieldRow
-        label={f.phone}
-        value={customer.phone}
-        numeric
-        leadingIcon={<Phone size={12} className="text-workbench-text-muted" />}
-      />
-      <FieldRow
-        label={f.weChat}
-        value={customer.weChat}
-        copyable
-        onCopy={() => onCopy(f.weChat, customer.weChat)}
-      />
-      {customer.industry && <FieldRow label={f.industry} value={customer.industry} />}
-      <FieldRow label={f.company} value={customer.company} />
-      {customer.region && <FieldRow label={f.region} value={customer.region} />}
-      {customer.address && <FieldRow label={f.address} value={customer.address} />}
-      {customer.remark && (
-        <FieldRow label={STRINGS.detail.sectionNote} value={customer.remark} multiline />
-      )}
-    </dl>
-  );
-}
-
-function FieldRow({
-  label,
-  value,
-  numeric,
-  copyable,
-  multiline,
-  leadingIcon,
-  onCopy,
-}: {
-  label: string;
-  value: React.ReactNode;
-  numeric?: boolean;
-  copyable?: boolean;
-  multiline?: boolean;
-  leadingIcon?: React.ReactNode;
-  onCopy?: () => void;
-}) {
-  return (
-    <div className="grid grid-cols-[80px_minmax(0,1fr)_auto] items-start gap-x-3">
-      <dt className="whitespace-nowrap pt-0.5 text-workbench-text-muted">{label}</dt>
-      <dd
-        className={cn(
-          "flex min-w-0 items-start gap-1.5 text-workbench-text",
-          multiline ? "leading-relaxed" : "truncate",
-        )}
-      >
-        {leadingIcon}
-        <span
-          className={cn(
-            "min-w-0",
-            multiline ? "whitespace-pre-wrap break-words" : "truncate",
-            numeric && "wb-num font-numeric tabular-nums",
-          )}
-        >
-          {value || "—"}
-        </span>
-      </dd>
-      {copyable && onCopy ? (
-        <button
-          type="button"
-          onClick={onCopy}
-          aria-label={`复制 ${label}`}
-          className="focus-ring grid size-6 place-items-center rounded text-workbench-text-muted hover:bg-workbench-surface-subtle hover:text-workbench-text"
-        >
-          <Copy size={12} />
-        </button>
-      ) : (
-        <span aria-hidden />
-      )}
-    </div>
-  );
-}
-
-function TimelineTab({ customer }: { customer: Customer }) {
-  return (
-    <div className="flex flex-col gap-1.5">
-      <h3 className="text-[12px] font-semibold text-workbench-text">
-        {STRINGS.detail.sectionTimeline}
-      </h3>
-      <CustomerTimeline entries={customer.timeline} />
-    </div>
-  );
-}
-
-function ContactInfoSection({
-  customer,
-  account,
-}: {
-  customer: Customer;
-  account: Account | undefined;
-}) {
-  return (
-    <section className="flex flex-col gap-1.5 border-t border-workbench-line-subtle pt-2">
-      <h3 className="text-[12px] font-semibold text-workbench-text">
-        {STRINGS.detail.sectionContactInfo}
-      </h3>
-      <dl className="flex flex-col gap-1.5 text-[12px]">
-        <FieldRow label={STRINGS.detail.fields.follower} value={customer.follower} />
-        <FieldRow label={STRINGS.detail.fields.addedAt} value={customer.addedAt} numeric />
-        {account && <FieldRow label={STRINGS.detail.fields.account} value={account.name} />}
-      </dl>
-    </section>
-  );
-}
-
-function RecentMessagesSection({
-  messages,
-  onSeeAll,
-}: {
-  messages: readonly CustomerRecentMessage[];
-  onSeeAll: () => void;
-}) {
-  return (
-    <section className="flex flex-col gap-1.5 border-t border-workbench-line-subtle pt-2">
-      <div className="flex items-center justify-between">
-        <h3 className="text-[12px] font-semibold text-workbench-text">
-          {STRINGS.detail.sectionRecentMessages}
-        </h3>
-        <button
-          type="button"
-          onClick={onSeeAll}
-          className="text-wb-3xs font-medium text-workbench-accent hover:underline"
-        >
-          {STRINGS.detail.seeAllMessages}
-        </button>
-      </div>
-      <ul className="flex flex-col gap-1.5">
-        {messages.map((m, idx) => (
-          <li
-            key={`${m.sentAt}-${idx}`}
-            className="rounded-lg border border-workbench-line bg-workbench-surface-subtle px-2.5 py-1.5 text-[11.5px] leading-relaxed text-workbench-text-secondary"
-          >
-            <span
-              className={cn(
-                "mr-1 font-medium",
-                m.direction === "out" ? "text-workbench-accent" : "text-workbench-text",
-              )}
-            >
-              {m.direction === "out" ? "我" : "对方"}：
-            </span>
-            <span>{m.text}</span>
-            <div className="mt-0.5 text-wb-3xs text-workbench-text-muted">
-              {formatRelativeTime(m.sentAt)}
-            </div>
-          </li>
-        ))}
-      </ul>
-    </section>
-  );
-}
-
-function FooterActions({ onStartChat, onEdit }: { onStartChat: () => void; onEdit: () => void }) {
-  // v5：回退到 2 按钮，与 image 11 原型一致 — 发起会话 primary（蓝）+ 编辑客户 outline。
-  // 跟进记录 仍作为详情面板顶部的 5 个 sub-tab 之一。
-  return (
-    <div className="flex flex-shrink-0 gap-2 border-t border-workbench-line px-3 py-2.5">
-      <button
-        type="button"
-        onClick={onStartChat}
-        className="focus-ring inline-flex h-8 flex-1 items-center justify-center rounded-md bg-workbench-accent px-3 text-[12.5px] font-medium text-workbench-surface transition-colors hover:bg-workbench-accent-hover"
-      >
-        {STRINGS.detail.actions.startChat}
-      </button>
-      <button
-        type="button"
-        onClick={onEdit}
-        className="focus-ring inline-flex h-8 flex-1 items-center justify-center rounded-md border border-workbench-line bg-workbench-surface px-3 text-[12.5px] text-workbench-text transition-colors hover:border-workbench-line-strong hover:bg-workbench-surface-subtle"
-      >
-        {STRINGS.detail.actions.editCustomer}
-      </button>
-    </div>
-  );
+function statusMeta(status?: AccountStatus): { text: string; dotClass: string } {
+  if (status === "online")
+    return { text: STRINGS.detail.status.online, dotClass: "bg-emerald-500" };
+  if (status === "abnormal")
+    return { text: STRINGS.detail.status.abnormal, dotClass: "bg-amber-500" };
+  return { text: STRINGS.detail.status.offline, dotClass: "bg-slate-300" };
 }

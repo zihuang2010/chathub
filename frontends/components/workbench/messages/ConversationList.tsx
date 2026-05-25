@@ -233,6 +233,13 @@ const VirtualizedList = memo(function VirtualizedList({
 
 // ─── Secondary filters ──────────────────────────────────────────────────────
 
+// 静态配置,hoist 到模块级避免每次 render 新建数组(STRINGS 本就是模块级常量)。
+const STATUS_TABS: { value: StatusTab; label: string }[] = [
+  { value: "all", label: STRINGS.conversationList.statusAll },
+  { value: "unread", label: STRINGS.conversationList.statusUnread },
+  { value: "mentioned", label: STRINGS.conversationList.statusMentioned },
+];
+
 const FilterToolbar = memo(function FilterToolbar({
   statusTab,
   onStatusChange,
@@ -253,11 +260,6 @@ const FilterToolbar = memo(function FilterToolbar({
   const accountLabel = selectedAccount
     ? extractAccountOperator(selectedAccount)
     : STRINGS.conversationList.accountFallback;
-  const statusTabs: { value: StatusTab; label: string }[] = [
-    { value: "all", label: STRINGS.conversationList.statusAll },
-    { value: "unread", label: STRINGS.conversationList.statusUnread },
-    { value: "mentioned", label: STRINGS.conversationList.statusMentioned },
-  ];
 
   return (
     <div className="text-wb-3xs flex h-9 min-w-0 items-center gap-1 font-medium text-workbench-text-secondary">
@@ -296,7 +298,7 @@ const FilterToolbar = memo(function FilterToolbar({
             />
           </button>
         </AccountDropdown>
-        {statusTabs.map((tab) => {
+        {STATUS_TABS.map((tab) => {
           const active = tab.value === statusTab;
           return (
             <button

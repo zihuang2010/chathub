@@ -8,11 +8,10 @@ import { useFriendDetail } from "@/lib/api/useFriendDetail";
 import { useFriends } from "@/lib/api/useFriends";
 import type { Account } from "@/lib/types/account";
 
-import { DEFAULT_PAGE_SIZE } from "./constants";
+import { DEFAULT_CARD_DENSITY, DEFAULT_PAGE_SIZE, type CardDensity } from "./constants";
 import { CustomerDetailPanel } from "./CustomerDetailPanel";
 import { CustomerList } from "./CustomerList";
 import { CustomersHeader } from "./CustomersHeader";
-import { MOCK_RECENT_MESSAGES } from "./data";
 import { downloadCsv, toCsv } from "./utils";
 import { useCustomerSelection } from "./useCustomerSelection";
 import { useCustomerStore } from "./useCustomerStore";
@@ -60,8 +59,14 @@ export function CustomersPage({
 
   // cursor keyset 分页 + 前端页缓存。账号集 / externalId / pageSize 变化 → 重置 cursor 从首页重拉。
   const [pageSize, setPageSize] = useState<number>(DEFAULT_PAGE_SIZE);
-  const { friends, loading, error, page, canPrev, canNext, prevPage, nextPage, refresh } =
-    useFriends(apiAccountIds, { externalId }, pageSize);
+  const { friends, loading, error, page, canPrev, canNext, prevPage, nextPage } = useFriends(
+    apiAccountIds,
+    { externalId },
+    pageSize,
+  );
+
+  // 卡片网格密度（舒适 / 紧凑），对应头部右上角两个视图切换按钮。
+  const [density, setDensity] = useState<CardDensity>(DEFAULT_CARD_DENSITY);
 
   useEffect(() => {
     if (error) showToast(`加载客户列表失败: ${error}`, { type: "error" });
@@ -160,11 +165,6 @@ export function CustomersPage({
     };
   }, [activeCustomer, activeDetail]);
 
-  const recentMessages = useMemo(() => {
-    if (!activeCustomer) return [];
-    return MOCK_RECENT_MESSAGES.filter((m) => m.customerId === activeCustomer.id);
-  }, [activeCustomer]);
-
   // ── 账号筛选 ─────────────────────────────────────────────────────────────
   const toggleAccount = useCallback((id: string) => {
     setSelectedAccountIds((prev) => {
@@ -240,17 +240,17 @@ export function CustomersPage({
     [activeCustomer, store],
   );
 
-  const handlePatch = useCallback(
-    (patch: Parameters<typeof store.patchCustomer>[1]) => {
-      if (!activeCustomer) return;
-      store.patchCustomer(activeCustomer.id, patch);
-    },
-    [activeCustomer, store],
-  );
-
   const handleOpenChat = useCallback((customerId: string) => {
     showToast(`将打开与该客户的会话(${customerId})`, { type: "info" });
   }, []);
+
+  const handleCall = useCallback(
+    (customerId: string) => {
+      const phone = store.customers.find((c) => c.id === customerId)?.phone;
+      showToast(STRINGS.toasts.callStub(phone || "—"), { type: "info" });
+    },
+    [store.customers],
+  );
 
   // ── 批量动作 ─────────────────────────────────────────────────────────────
   const selectedIdsArray = useMemo(
@@ -305,19 +305,14 @@ export function CustomersPage({
     setSelectedAccountIds(EMPTY_ACCOUNTS_SET);
   }, []);
 
-  const handleToggleView = useCallback(() => {
-    showToast(STRINGS.toasts.viewToggleStub, { type: "info" });
-  }, []);
-  const handleRefresh = useCallback(() => {
-    void refresh();
-    showToast("已刷新客户列表", { type: "info" });
-  }, [refresh]);
-
   const handleEditCustomer = useCallback((id: string) => {
     showToast(`将打开客户编辑面板(${id})`, { type: "info" });
   }, []);
-  const handleRowMore = useCallback((id: string) => {
-    showToast(`更多操作菜单(${id})`, { type: "info" });
+  const handleRowMore = useCallback(() => {
+    showToast(STRINGS.toasts.moreActionsStub, { type: "info" });
+  }, []);
+  const handleSeeMoreRecords = useCallback(() => {
+    showToast(STRINGS.toasts.seeMoreRecordsStub, { type: "info" });
   }, []);
 
   return (
@@ -332,8 +327,8 @@ export function CustomersPage({
             onToggleAccount={toggleAccount}
             onClearAccounts={clearAccounts}
             onReset={handleClearFilters}
-            onToggleView={handleToggleView}
-            onExport={handleRefresh}
+            density={density}
+            onDensityChange={setDensity}
           />
 
           <div className="flex min-h-0 flex-1 gap-2 overflow-hidden bg-workbench-surface-subtle p-2">
@@ -344,6 +339,7 @@ export function CustomersPage({
                 loading={loading}
                 accounts={accounts}
                 activeCustomerId={activeCustomerId}
+                density={density}
                 page={page}
                 pageSize={pageSize}
                 canPrev={canPrev}
@@ -366,8 +362,8 @@ export function CustomersPage({
                 onBulkToggleStar={handleBulkToggleStar}
                 onExport={handleBulkExport}
                 onOpenChat={handleOpenChat}
-                onEditCustomer={handleEditCustomer}
-                onMoreRowAction={handleRowMore}
+                onCall={handleCall}
+                onMore={handleRowMore}
                 hasActiveFilters={hasActiveFilters}
                 onClearFilters={handleClearFilters}
               />
@@ -376,15 +372,16 @@ export function CustomersPage({
               <CustomerDetailPanel
                 customer={panelCustomer}
                 account={activeAccount}
-                recentMessages={recentMessages}
-                onPatch={handlePatch}
                 onAddTag={handleAddTag}
                 onRemoveTag={handleRemoveTag}
                 onToggleStar={() => {
                   if (activeCustomer) handleToggleStar(activeCustomer.id);
                 }}
                 onOpenChat={handleOpenChat}
+                onCall={handleCall}
                 onEditCustomer={handleEditCustomer}
+                onMore={handleRowMore}
+                onSeeMoreRecords={handleSeeMoreRecords}
                 onRefresh={handleRefreshDetail}
                 refreshing={detailLoading}
               />

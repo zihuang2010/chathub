@@ -36,4 +36,8 @@ chathub-state = { path = "crates/chathub-state" }
 chathub-net   = { path = "crates/chathub-net" }
 uuid = { workspace = true }
 tokio = { workspace = true }
+# 远程图片磁盘缩略图缓存(image_cache 模块 + cachedimg:// 协议)
+reqwest = { workspace = true }
+sha2 = { workspace = true }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif"] }
 

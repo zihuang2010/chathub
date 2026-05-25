@@ -1,3 +1,4 @@
+mod image_cache;
 mod logging;
 
 use serde::Serialize;
@@ -832,6 +833,14 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        // 远程图片(头像/消息图)缓存协议:前端 <img src="cachedimg://localhost/?w=&u=">
+        // → 命中读盘 / 未命中下载并缩略图落盘。CPU 与网络都在 handler 内的 async/blocking 完成。
+        .register_asynchronous_uri_scheme_protocol("cachedimg", |ctx, request, responder| {
+            let app = ctx.app_handle().clone();
+            tauri::async_runtime::spawn(async move {
+                responder.respond(image_cache::serve(&app, request).await);
+            });
+        })
         .setup(|app| {
             let log_dir = app.path().app_log_dir()?;
             let guard = logging::init(&log_dir)
@@ -858,6 +867,10 @@ pub fn run() {
             // ---- Plan 2:接入 chathub-net auth 链路 ----
             let app_data = app.path().app_data_dir()?;
             let app_handle = app.handle().clone();
+
+            // 远程图片磁盘缩略图缓存(cachedimg:// 协议消费它)。独立于 SQLite 领域库,纯磁盘文件。
+            let img_cache_dir = app.path().app_cache_dir()?.join("img-cache");
+            app.manage(Arc::new(image_cache::ImageCache::new(img_cache_dir)));
 
             // tauri::async_runtime::block_on 在 setup 同步完成 SQLite 与 endpoint 初始化。
             // setup 闭包本身不在 async 上下文,block_on 安全可用。

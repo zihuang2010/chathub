@@ -185,6 +185,9 @@ export function isSafeUrl(url: string | undefined, kind: "link" | "image"): bool
   if (kind === "image") {
     if (proto === "blob") return true;
     if (proto === "data" && /^data:image\//i.test(value)) return true;
+    // cachedimg:本地图片缓存自定义协议(由 cachedImageSrc 生成,macOS/Linux 形态),
+    // 前缀固定、非外部可注入,放行;Windows 形态是 http://cachedimg.localhost,已被 http 放行。
+    if (proto === "cachedimg") return true;
   }
   return false;
 }

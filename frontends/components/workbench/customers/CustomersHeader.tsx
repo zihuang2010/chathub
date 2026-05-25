@@ -2,6 +2,7 @@ import { memo } from "react";
 
 import type { Account } from "@/lib/types/account";
 
+import type { CardDensity } from "./constants";
 import { CustomersFilterBar } from "./CustomersFilterBar";
 import { STRINGS } from "./strings";
 
@@ -15,8 +16,8 @@ interface CustomersHeaderProps {
   onClearAccounts: () => void;
 
   onReset: () => void;
-  onToggleView: () => void;
-  onExport: () => void;
+  density: CardDensity;
+  onDensityChange: (density: CardDensity) => void;
 }
 
 /**
@@ -40,8 +41,8 @@ export const CustomersHeader = memo(function CustomersHeader(props: CustomersHea
         onToggleAccount={props.onToggleAccount}
         onClearAccounts={props.onClearAccounts}
         onReset={props.onReset}
-        onToggleView={props.onToggleView}
-        onExport={props.onExport}
+        density={props.density}
+        onDensityChange={props.onDensityChange}
       />
     </header>
   );

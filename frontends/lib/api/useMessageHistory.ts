@@ -28,6 +28,12 @@ import { adaptHistoryRecords, loadConversationMessages, loadOlderMessages } from
 
 const DEFAULT_PAGE_SIZE = 20;
 
+// 单会话在内存中保留的消息条数上限。新消息到达时 readCache 的整窗 replaceAuthoritative 会把
+// 切片塌缩回最近一页,但「安静会话 + 持续上滚翻历史」不会触发塌缩,切片 order/byId 只增不减。
+// 故为「向上翻更旧页」封顶:到顶即停止继续拉取——既不丢已展示数据,也不破坏滚动锚定(本 hook
+// 无向下翻页,裁剪尾部会造成下滑空洞,因此选择停止增长而非裁剪)。
+const MAX_MESSAGES_IN_MEMORY = 500;
+
 export interface UseMessageHistoryOptions {
   wecomAccountId: string;
   externalUserId: string;
@@ -187,6 +193,9 @@ export function useMessageHistory(opts: UseMessageHistoryOptions): UseMessageHis
 
   const loadMore = useCallback(async () => {
     if (!ready || !hasMore || loading || loadingOlderRef.current || readingRef.current) return;
+    // 已达单会话内存上限:停止继续向上加载更旧页,防止安静会话被无限上滚撑爆内存。
+    const loadedCount = useChatStore.getState().conversations[conversationId]?.order.length ?? 0;
+    if (loadedCount >= MAX_MESSAGES_IN_MEMORY) return;
     loadingOlderRef.current = true;
     const requestKey = conversationId;
     useChatStore.getState().setLoading(requestKey, true);

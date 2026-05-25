@@ -47,6 +47,8 @@ export interface Customer {
   // ── 客户管理页新增字段（messages mock 不填也合法）─────────────────────────
   /** 与 Account.id 关联；新代码筛选/分组按这个走。 */
   accountId?: string;
+  /** 客户头像远程 URL（生产取自 external_avatar）；经 cachedImageSrc 走磁盘缩略图缓存显示。 */
+  avatarUrl?: string;
   /** 是否被当前用户星标关注。 */
   starred?: boolean;
   /** 最近一次往来消息的 ISO 时间；为 null 表示从未会话过。 */

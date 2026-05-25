@@ -201,7 +201,7 @@ jobs:
 
       - name: build relay + mock (static musl)
         run: |
-          cross build --release --locked --target ${{ matrix.target }} \
+          cross build --profile release-server --locked --target ${{ matrix.target }} \
             -p chathub-relay --bin chathub-relay --bin chathub-mock-downstream
 
       - name: package binaries + checksums
@@ -218,7 +218,7 @@ jobs:
           # 但为防 tauri 那种 backends/target 解析差异，两处都查，缺则报错。
           locate_bin() {
             local bin="$1" d
-            for d in "target/${TRIPLE}/release" "backends/target/${TRIPLE}/release"; do
+            for d in "target/${TRIPLE}/release-server" "backends/target/${TRIPLE}/release-server"; do
               if [ -x "$d/$bin" ]; then printf '%s\n' "$d/$bin"; return 0; fi
             done
             return 1
@@ -263,7 +263,7 @@ jobs:
       - name: build relay + mock (windows-msvc)
         shell: bash
         run: |
-          cargo build --release --locked --target x86_64-pc-windows-msvc \
+          cargo build --profile release-server --locked --target x86_64-pc-windows-msvc \
             -p chathub-relay --bin chathub-relay --bin chathub-mock-downstream
 
       - name: package binaries + checksums
@@ -279,7 +279,7 @@ jobs:
           # 同 server job:产物可能落仓库根 target/ 或 backends/target/,两处都查。
           locate_bin() {
             local bin="$1" d
-            for d in "target/${TRIPLE}/release" "backends/target/${TRIPLE}/release"; do
+            for d in "target/${TRIPLE}/release-server" "backends/target/${TRIPLE}/release-server"; do
               if [ -f "$d/$bin" ]; then printf '%s\n' "$d/$bin"; return 0; fi
             done
             return 1
