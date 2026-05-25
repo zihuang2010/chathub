@@ -1,12 +1,12 @@
-//! AccountCacheStore:企微账号列表的本地 SQLite 镜像 + 账号事件水位。
+//! AccountCacheStore:企微账号列表的本地 SQLite 镜像。
 //!
 //! 设计要点:
 //!   - 全量拉取(首次登录 / `resync_required` / 用户手动刷新)走 `replace_all_for_employee`;
 //!     单 employee 范围内 DELETE + 批量 INSERT,事务内完成,无中间态。
 //!   - 增量事件(`ACCOUNT_BINDING_CHANGE` 的 4 个 reason)走 `apply_binding`,
 //!     每个 reason 对应一种 SQL 动作。INSERT OR REPLACE / UPDATE / 不存在行的 DELETE 都自然幂等。
-//!   - 水位(`hub_wecom_account_watermark`)走 `advance_watermark`,套 [`crate::NotifySeqStore`] 的
-//!     "取大不取小" UPSERT 套路,应对 relay redelivery。
+//!   - 连接级续点水位统一由 [`crate::NotifySeqStore`](`hub_settings.notify_seq`)负责,
+//!     本 store 不再维护 per-resource 水位。
 //!
 //! 命名:内部字段 `employee_id`(= `UserProfile.user_id`,同一个 String)。
 
@@ -172,75 +172,15 @@ impl AccountCacheStore {
         Ok(())
     }
 
-    /// 推进水位:`UPSERT` "取大不取小",应对 relay redelivery 同 notify_seq 多次到。
-    /// 套路同 [`crate::NotifySeqStore::upsert_if_greater`]。
-    pub async fn advance_watermark(
-        &self,
-        client_id: &str,
-        employee_id: &str,
-        notify_seq: u64,
-    ) -> Result<(), StateError> {
-        let client_id = client_id.to_string();
-        let employee_id = employee_id.to_string();
-        let now = now_unix_ms();
-        let conn = self.pool.pool().get().await?;
-        conn.interact(move |c| -> Result<(), StateError> {
-            c.execute(
-                "INSERT INTO hub_wecom_account_watermark (client_id, employee_id, last_seq, updated_at_ms) \
-                 VALUES (?1, ?2, ?3, ?4) \
-                 ON CONFLICT(client_id, employee_id) DO UPDATE SET \
-                   last_seq = CASE WHEN excluded.last_seq > last_seq THEN excluded.last_seq ELSE last_seq END, \
-                   updated_at_ms = excluded.updated_at_ms",
-                rusqlite::params![client_id, employee_id, notify_seq as i64, now],
-            )?;
-            Ok(())
-        })
-        .await??;
-        Ok(())
-    }
-
-    /// 读水位(未写过返 0)。
-    pub async fn get_watermark(
-        &self,
-        client_id: &str,
-        employee_id: &str,
-    ) -> Result<u64, StateError> {
-        let client_id = client_id.to_string();
-        let employee_id = employee_id.to_string();
-        let conn = self.pool.pool().get().await?;
-        let seq = conn
-            .interact(move |c| -> Result<u64, StateError> {
-                let res: rusqlite::Result<i64> = c.query_row(
-                    "SELECT last_seq FROM hub_wecom_account_watermark \
-                     WHERE client_id = ?1 AND employee_id = ?2",
-                    rusqlite::params![client_id, employee_id],
-                    |r| r.get(0),
-                );
-                match res {
-                    Ok(v) => Ok(v as u64),
-                    Err(rusqlite::Error::QueryReturnedNoRows) => Ok(0),
-                    Err(e) => Err(e.into()),
-                }
-            })
-            .await??;
-        Ok(seq)
-    }
-
     /// 单 employee 范围清账号缓存(用于切账号场景;`SessionStore::clear` 是全表清,这是细粒度版)。
     pub async fn clear_for_employee(&self, employee_id: &str) -> Result<(), StateError> {
         let employee_id = employee_id.to_string();
         let conn = self.pool.pool().get().await?;
         conn.interact(move |c| -> Result<(), StateError> {
-            let tx = c.transaction()?;
-            tx.execute(
+            c.execute(
                 "DELETE FROM hub_wecom_accounts WHERE employee_id = ?1",
                 rusqlite::params![employee_id],
             )?;
-            tx.execute(
-                "DELETE FROM hub_wecom_account_watermark WHERE employee_id = ?1",
-                rusqlite::params![employee_id],
-            )?;
-            tx.commit()?;
             Ok(())
         })
         .await??;
@@ -391,39 +331,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn watermark_monotonic_upsert() {
-        let pool = SqlitePool::in_memory().await.unwrap();
-        let store = AccountCacheStore::new(pool);
-        store.advance_watermark("c1", "u-1", 10).await.unwrap();
-        store.advance_watermark("c1", "u-1", 5).await.unwrap(); // 取大不取小,被吞
-        store.advance_watermark("c1", "u-1", 20).await.unwrap();
-        assert_eq!(store.get_watermark("c1", "u-1").await.unwrap(), 20);
-    }
-
-    #[tokio::test]
-    async fn watermark_isolated_per_client_and_employee() {
-        let pool = SqlitePool::in_memory().await.unwrap();
-        let store = AccountCacheStore::new(pool);
-        store.advance_watermark("c1", "u-1", 100).await.unwrap();
-        store.advance_watermark("c2", "u-1", 50).await.unwrap();
-        store.advance_watermark("c1", "u-2", 30).await.unwrap();
-        assert_eq!(store.get_watermark("c1", "u-1").await.unwrap(), 100);
-        assert_eq!(store.get_watermark("c2", "u-1").await.unwrap(), 50);
-        assert_eq!(store.get_watermark("c1", "u-2").await.unwrap(), 30);
-        assert_eq!(store.get_watermark("c1", "u-unknown").await.unwrap(), 0);
-    }
-
-    #[tokio::test]
-    async fn clear_for_employee_wipes_both_cache_and_watermark() {
+    async fn clear_for_employee_wipes_cache() {
         let pool = SqlitePool::in_memory().await.unwrap();
         let store = AccountCacheStore::new(pool);
         store
             .replace_all_for_employee("u-1", &[sample_row("wa-1", "u-1", "alpha", 1)])
             .await
             .unwrap();
-        store.advance_watermark("c1", "u-1", 42).await.unwrap();
         store.clear_for_employee("u-1").await.unwrap();
         assert!(store.read_for_employee("u-1").await.unwrap().is_empty());
-        assert_eq!(store.get_watermark("c1", "u-1").await.unwrap(), 0);
     }
 }

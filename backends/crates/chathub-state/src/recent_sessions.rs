@@ -1,6 +1,6 @@
 //! RecentSessionsStore:session/recentFriends 接待好友列表的本地"头部热缓存"。
 //!
-//! 设计要点(对照 `friends_cache.rs`):
+//! 设计要点:
 //!
 //! - **行存**:conversation_id 为 PK,每行同时承载远端 17 字段 + 客户端 3 个本地列。
 //!   - V7 引入 `employee_id` 列(非 PK,加索引),防御性隔离:多 employee 切换 +
@@ -569,60 +569,6 @@ impl RecentSessionsStore {
         self.trim(employee_id, max, max).await
     }
 
-    /// 推进水位:UPSERT "取大不取小"(模板抄自 V6 friends watermark)。
-    pub async fn advance_watermark(
-        &self,
-        client_id: &str,
-        employee_id: &str,
-        notify_seq: u64,
-    ) -> Result<(), StateError> {
-        let client_id = client_id.to_string();
-        let employee_id = employee_id.to_string();
-        let seq = notify_seq as i64;
-        let now = now_unix_ms();
-        let conn = self.pool.pool().get().await?;
-        conn.interact(move |c| -> Result<(), StateError> {
-            c.execute(
-                "INSERT INTO hub_recent_session_watermark (client_id, employee_id, last_seq, updated_at_ms) \
-                 VALUES (?1, ?2, ?3, ?4) \
-                 ON CONFLICT(client_id, employee_id) DO UPDATE SET \
-                   last_seq = CASE WHEN excluded.last_seq > last_seq THEN excluded.last_seq ELSE last_seq END, \
-                   updated_at_ms = excluded.updated_at_ms",
-                rusqlite::params![client_id, employee_id, seq, now],
-            )?;
-            Ok(())
-        })
-        .await??;
-        Ok(())
-    }
-
-    /// 读水位(未写过返 0)。
-    pub async fn get_watermark(
-        &self,
-        client_id: &str,
-        employee_id: &str,
-    ) -> Result<u64, StateError> {
-        let client_id = client_id.to_string();
-        let employee_id = employee_id.to_string();
-        let conn = self.pool.pool().get().await?;
-        let seq = conn
-            .interact(move |c| -> Result<u64, StateError> {
-                let res: rusqlite::Result<i64> = c.query_row(
-                    "SELECT last_seq FROM hub_recent_session_watermark \
-                     WHERE client_id = ?1 AND employee_id = ?2",
-                    rusqlite::params![client_id, employee_id],
-                    |r| r.get(0),
-                );
-                match res {
-                    Ok(v) => Ok(v as u64),
-                    Err(rusqlite::Error::QueryReturnedNoRows) => Ok(0),
-                    Err(e) => Err(e.into()),
-                }
-            })
-            .await??;
-        Ok(seq)
-    }
-
     /// 清空指定员工的本地缓存(登出 / 切员工时调)。
     /// V7 起按 employee_id 精确 DELETE,不再 TRUNCATE 整表 —— 异常退出后下次登录另一
     /// employee 也不会污染对方数据(读路径 WHERE employee_id 也作兜底)。
@@ -630,16 +576,10 @@ impl RecentSessionsStore {
         let employee_id = employee_id.to_string();
         let conn = self.pool.pool().get().await?;
         conn.interact(move |c| -> Result<(), StateError> {
-            let tx = c.transaction()?;
-            tx.execute(
+            c.execute(
                 "DELETE FROM hub_conversation_recents WHERE employee_id = ?1",
                 rusqlite::params![employee_id],
             )?;
-            tx.execute(
-                "DELETE FROM hub_recent_session_watermark WHERE employee_id = ?1",
-                rusqlite::params![employee_id],
-            )?;
-            tx.commit()?;
             Ok(())
         })
         .await??;
@@ -1147,17 +1087,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn watermark_monotonic_upsert() {
-        let pool = SqlitePool::in_memory().await.unwrap();
-        let store = RecentSessionsStore::new(pool);
-        store.advance_watermark("c1", "u-1", 10).await.unwrap();
-        store.advance_watermark("c1", "u-1", 5).await.unwrap(); // 取大不取小,被吞
-        store.advance_watermark("c1", "u-1", 20).await.unwrap();
-        assert_eq!(store.get_watermark("c1", "u-1").await.unwrap(), 20);
-        assert_eq!(store.get_watermark("c1", "u-unknown").await.unwrap(), 0);
-    }
-
-    #[tokio::test]
     async fn upsert_one_is_idempotent() {
         let pool = SqlitePool::in_memory().await.unwrap();
         let store = RecentSessionsStore::new(pool);
@@ -1570,15 +1499,11 @@ mod tests {
             ])
             .await
             .unwrap();
-        store.advance_watermark("cli", "u-A", 42).await.unwrap();
-        store.advance_watermark("cli", "u-B", 99).await.unwrap();
         store.clear_for_employee("u-A").await.unwrap();
         // u-A 数据全清
         assert!(store.list_top("u-A", None, 10).await.unwrap().is_empty());
-        assert_eq!(store.get_watermark("cli", "u-A").await.unwrap(), 0);
         // u-B 数据完全不动
         assert_eq!(store.list_top("u-B", None, 10).await.unwrap().len(), 1);
-        assert_eq!(store.get_watermark("cli", "u-B").await.unwrap(), 99);
     }
 
     #[tokio::test]

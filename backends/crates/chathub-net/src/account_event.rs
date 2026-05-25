@@ -10,8 +10,8 @@
 //! `AccountCacheStore::replace_all_for_employee`。这样后台 payload 慢慢补齐过程中,
 //! 客户端不会因此停摆 —— 数据最终一致,只是多一次远程往返。
 //!
-//! 幂等性:`AccountCacheStore::apply_binding` 内 SQL 都自然幂等;watermark 走"取大不取小"。
-//! 同 notify_seq 重投不会重复处理。
+//! 幂等性:`AccountCacheStore::apply_binding` 内 SQL 都自然幂等(INSERT OR REPLACE / UPDATE /
+//! DELETE),同 notify_seq 重投不会产生副作用。连接级续点由 NotifySeqStore 负责。
 
 use crate::change_notice::{ChangeNotice, ChangeScope, ChangeTopic};
 use crate::error::AuthError;
@@ -51,8 +51,7 @@ impl AccountEventApplier {
     ///   1. 解析 `events_json` 数组;
     ///   2. 逐条按 `eventType` + `eventReason` 分发到 `BindingAction` 或 fallback;
     ///   3. 任一 fallback 触发后,**当前 employee** 走一次全量 `list_accounts` 替换缓存;
-    ///   4. watermark 推进(无论 applied 还是 fallback,确保不重处理);
-    ///   5. 广播 `AccountChanged`(applied 或 fallback 任一发生)。
+    ///   4. 广播 `AccountChanged`(applied 或 fallback 任一发生)。
     pub async fn apply_push_batch(&self, batch: &PushBatchOut) {
         let employee_id_str = batch.employee_id.to_string();
 
@@ -110,14 +109,6 @@ impl AccountEventApplier {
             if let Err(e) = self.fallback_full_refetch(&employee_id_str).await {
                 warn!(target: "chathub_net::account_event", ?e, "fallback list_accounts failed");
             }
-        }
-
-        if let Err(e) = self
-            .cache_store
-            .advance_watermark(&batch.client_id, &employee_id_str, batch.notify_seq)
-            .await
-        {
-            warn!(target: "chathub_net::account_event", ?e, "advance_watermark failed");
         }
 
         // C6 单发:ChangeNotice 是唯一通道。

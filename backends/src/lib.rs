@@ -17,9 +17,9 @@ use chathub_net::{
 };
 use chathub_proto::v1::UserProfile;
 use chathub_state::{
-    AccountCacheStore, FriendsStore, LocalTokenStore, MessagesStore, NotifySeqStore,
-    RecentSessionRow, RecentSessionsStore, SessionStore, SqlitePool, WecomAccountRow,
-    MESSAGE_HOT_CONVERSATIONS_LIMIT, RECENT_SESSIONS_GLOBAL_LIMIT,
+    AccountCacheStore, LocalTokenStore, MessagesStore, NotifySeqStore, QuickRepliesStore,
+    QuickReplyRow, RecentSessionRow, RecentSessionsStore, SessionStore, SqlitePool,
+    WecomAccountRow, MESSAGE_HOT_CONVERSATIONS_LIMIT, RECENT_SESSIONS_GLOBAL_LIMIT,
     RECENT_SESSIONS_PER_ACCOUNT_LIMIT,
 };
 use std::time::{Duration, Instant};
@@ -825,6 +825,86 @@ async fn set_conversation_draft(
     Ok(())
 }
 
+// ============================== 快捷回复(纯客户端本地表) ==============================
+
+fn quick_replies_err(op: &'static str, e: impl std::fmt::Display) -> AuthError {
+    tracing::error!(target: "chathub::quick_replies", op, error = %e, "quick_replies command failed");
+    AuthError::Internal {
+        message: format!("快捷回复操作失败: {op}"),
+    }
+}
+
+/// 列出当前登录员工的全部快捷回复(本地表,按 sort_order 升序)。
+#[tauri::command]
+async fn list_quick_replies(
+    store: State<'_, QuickRepliesStore>,
+    auth_api: State<'_, Arc<AuthApi>>,
+) -> Result<Vec<QuickReplyRow>, AuthError> {
+    let profile = auth_api
+        .current_session()
+        .await?
+        .ok_or(AuthError::Unauthenticated)?;
+    store
+        .list_for_employee(&profile.user_id)
+        .await
+        .map_err(|e| quick_replies_err("list", e))
+}
+
+/// 新建一条快捷回复。`id` 由前端生成(crypto.randomUUID)。
+#[tauri::command]
+async fn create_quick_reply(
+    store: State<'_, QuickRepliesStore>,
+    auth_api: State<'_, Arc<AuthApi>>,
+    id: String,
+    title: String,
+    content: String,
+) -> Result<(), AuthError> {
+    let profile = auth_api
+        .current_session()
+        .await?
+        .ok_or(AuthError::Unauthenticated)?;
+    store
+        .create(&profile.user_id, &id, &title, &content)
+        .await
+        .map_err(|e| quick_replies_err("create", e))
+}
+
+/// 修改一条快捷回复的标题 / 正文。
+#[tauri::command]
+async fn update_quick_reply(
+    store: State<'_, QuickRepliesStore>,
+    auth_api: State<'_, Arc<AuthApi>>,
+    id: String,
+    title: String,
+    content: String,
+) -> Result<(), AuthError> {
+    let profile = auth_api
+        .current_session()
+        .await?
+        .ok_or(AuthError::Unauthenticated)?;
+    store
+        .update(&profile.user_id, &id, &title, &content)
+        .await
+        .map_err(|e| quick_replies_err("update", e))
+}
+
+/// 删除一条快捷回复。
+#[tauri::command]
+async fn delete_quick_reply(
+    store: State<'_, QuickRepliesStore>,
+    auth_api: State<'_, Arc<AuthApi>>,
+    id: String,
+) -> Result<(), AuthError> {
+    let profile = auth_api
+        .current_session()
+        .await?
+        .ok_or(AuthError::Unauthenticated)?;
+    store
+        .delete(&profile.user_id, &id)
+        .await
+        .map_err(|e| quick_replies_err("delete", e))
+}
+
 // ============================== run() ==============================
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -874,16 +954,16 @@ pub fn run() {
 
             // tauri::async_runtime::block_on 在 setup 同步完成 SQLite 与 endpoint 初始化。
             // setup 闭包本身不在 async 上下文,block_on 安全可用。
-            let (auth_api, hub_client, conn_manager, account_cache, recents_store, messages_store, message_sync, change_notice_tx) = tauri::async_runtime::block_on(async {
+            let (auth_api, hub_client, conn_manager, account_cache, recents_store, messages_store, quick_replies_store, message_sync, change_notice_tx) = tauri::async_runtime::block_on(async {
                 std::fs::create_dir_all(&app_data).ok();
                 let pool = SqlitePool::open(app_data.join("state.sqlite"))
                     .await.map_err(|e| e.to_string())?;
                 let session_store = SessionStore::new(pool.clone());
                 let notify_seq_store = NotifySeqStore::new(pool.clone());
                 let account_cache = AccountCacheStore::new(pool.clone());
-                let friends_store = FriendsStore::new(pool.clone());
                 let recents_store = RecentSessionsStore::new(pool.clone());
                 let messages_store = MessagesStore::new(pool.clone());
+                let quick_replies_store = QuickRepliesStore::new(pool.clone());
                 let local_store = LocalTokenStore::new(pool);
                 // device_id 从本地 SQLite 取(首次启动生成),不再用 macOS 钥匙串。
                 let device_id = local_store.ensure_device_id()
@@ -909,11 +989,8 @@ pub fn run() {
                     hub_client.clone(),
                     change_notice_tx.clone(),
                 ));
-                // 阶段 2:Subscribe 流里 FRIEND_* 事件 → 推进 watermark + broadcast(无本地行存)。
-                let friend_applier = Arc::new(FriendEventApplier::new(
-                    friends_store,
-                    change_notice_tx.clone(),
-                ));
+                // 阶段 2:Subscribe 流里 FRIEND_* 事件 → broadcast(无本地行存、无 per-resource 水位)。
+                let friend_applier = Arc::new(FriendEventApplier::new(change_notice_tx.clone()));
                 // 阶段 3:Subscribe 流里 MESSAGE_UPSERT / SESSION_SUMMARY_UPSERT → RecentSessionsStore + broadcast。
                 let recent_applier = Arc::new(RecentSessionEventApplier::new(
                     recents_store.clone(),
@@ -940,7 +1017,7 @@ pub fn run() {
                     change_notice_tx.clone(),
                 ));
                 let auth_api = AuthApi::new(token_store, session_store);
-                Ok::<_, String>((auth_api, hub_client, conn_manager, account_cache, recents_store, messages_store, message_sync, change_notice_tx))
+                Ok::<_, String>((auth_api, hub_client, conn_manager, account_cache, recents_store, messages_store, quick_replies_store, message_sync, change_notice_tx))
             }).map_err(Box::<dyn std::error::Error>::from)?;
             let auth_api = Arc::new(auth_api);
             app.manage(Arc::clone(&auth_api));
@@ -949,6 +1026,7 @@ pub fn run() {
             app.manage(account_cache);
             app.manage(recents_store);
             app.manage(messages_store);
+            app.manage(quick_replies_store);
             app.manage(message_sync);
             // change_notice_tx 也 manage 一份,Tauri 命令(pin/draft 等)用它直接发 LocalCommand 通知
             app.manage(change_notice_tx);
@@ -1083,6 +1161,7 @@ pub fn run() {
             set_conversation_muted, mark_conversation_read,
             fetch_message_history,
             load_conversation_messages, load_older_messages, send_message,
+            list_quick_replies, create_quick_reply, update_quick_reply, delete_quick_reply,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

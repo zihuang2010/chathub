@@ -69,16 +69,15 @@ impl SessionStore {
         Ok(profile)
     }
 
-    /// 登出 / 切账号时清空当前 session 镜像 + 账号缓存 + 账号水位。
-    /// 账号缓存与水位由 `AccountCacheStore` 管,但 SessionStore::clear() 一起清
-    /// 是登出语义的自然一部分 —— 三件事必须原子完成。
+    /// 登出 / 切账号时清空当前 session 镜像 + 账号缓存。
+    /// 账号缓存由 `AccountCacheStore` 管,但 SessionStore::clear() 一起清
+    /// 是登出语义的自然一部分 —— 两件事必须原子完成。
     pub async fn clear(&self) -> Result<(), StateError> {
         let conn = self.pool.pool().get().await?;
         conn.interact(|c| -> Result<(), rusqlite::Error> {
             let tx = c.transaction()?;
             tx.execute("DELETE FROM hub_current_session", [])?;
             tx.execute("DELETE FROM hub_wecom_accounts", [])?;
-            tx.execute("DELETE FROM hub_wecom_account_watermark", [])?;
             tx.commit()?;
             Ok(())
         })
@@ -129,7 +128,7 @@ mod tests {
         assert!(store.read_current().await.unwrap().is_none());
     }
 
-    // clear() 同时清 wecom_accounts + wecom_account_watermark 的行为
-    // 在 `account_cache::tests` 里通过 AccountCacheStore 高层 API 校验,
-    // 避免在这里手插 SQL(deadpool-sqlite + ":memory:" 多 conn 状态不共享)。
+    // clear() 同时清 wecom_accounts 的行为在 `account_cache::tests` 里通过
+    // AccountCacheStore 高层 API 校验,避免在这里手插 SQL
+    // (deadpool-sqlite + ":memory:" 多 conn 状态不共享)。
 }

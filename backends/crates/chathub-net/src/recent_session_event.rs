@@ -158,17 +158,6 @@ impl RecentSessionEventApplier {
             }
         }
 
-        if let Err(e) = self
-            .store
-            .advance_watermark(&batch.client_id, &employee_id_str, batch.notify_seq)
-            .await
-        {
-            warn!(
-                target: "chathub_net::recent_session_event",
-                ?e, "advance_watermark failed"
-            );
-        }
-
         // C6 单发:ChangeNotice 唯一通道。
         // 策略:fallback 时 BulkInvalidate(前端最好整体重拉);否则 Upsert。
         // 单 account 批 → scope 带 account_id(精准 match);多 account → scope 不带。
