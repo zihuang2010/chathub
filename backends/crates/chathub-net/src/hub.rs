@@ -487,7 +487,10 @@ pub struct WecomFriend {
     pub add_way: i32,
     pub follow_state: String,
     pub wechat_channels_nickname: String,
-    pub wechat_channels_source: i32,
+    /// 视频号来源:业务后台可能下发 `null`(非视频号好友),故用 Option 容忍
+    /// null/缺省(serde 对 `i32` 直接撞 `null` 会报 invalid type)。
+    #[serde(default)]
+    pub wechat_channels_source: Option<i32>,
     pub last_sync_time: String,
     pub sync_status: i32,
 }
@@ -561,8 +564,9 @@ pub struct WecomFriendDetail {
     pub follow_state: String,
     #[serde(default)]
     pub wechat_channels_nickname: String,
+    /// 视频号来源:业务后台可能下发 `null`,用 Option 容忍(同列表 `WecomFriend`)。
     #[serde(default)]
-    pub wechat_channels_source: i32,
+    pub wechat_channels_source: Option<i32>,
     #[serde(default)]
     pub last_sync_time: String,
     /// 0 未同步,1 成功,2 失败
@@ -1250,6 +1254,42 @@ mod tests {
             json.contains(r#""wecomAccountIds":["acct-1"]"#),
             "got {json}"
         );
+    }
+
+    #[test]
+    fn list_friends_resp_tolerates_null_wechat_channels_source() {
+        // 回归:业务后台对非视频号好友下发 `wechatChannelsSource: null`,
+        // 旧 i32 字段会报 "invalid type: null, expected i32",整页 records 丢弃。
+        // 现改 Option<i32> 后 null → None,反序列化成功。
+        let raw = r#"{
+            "records": [{
+                "wecomAccountId": "wjt",
+                "externalUserId": "wmITqmBgAAdphngtNF824Zq9TCcmGTYA",
+                "externalName": "Tom",
+                "externalPosition": "",
+                "externalAvatar": "",
+                "externalCorpName": "",
+                "externalCorpFullName": "",
+                "externalType": 1,
+                "externalGender": 1,
+                "externalMobile": "",
+                "followRemark": "Tom",
+                "followDescription": "",
+                "remarkCorpName": "",
+                "addTime": "2026-04-29 14:03:45",
+                "addWay": 1,
+                "followState": "S1|JDLY202511141729028875",
+                "wechatChannelsNickname": "",
+                "wechatChannelsSource": null,
+                "lastSyncTime": "2026-05-26 10:31:52",
+                "syncStatus": 1
+            }],
+            "hasMore": false,
+            "nextCursor": ""
+        }"#;
+        let resp: ListFriendsResp = serde_json::from_str(raw).expect("null source 应被容忍");
+        assert_eq!(resp.records.len(), 1);
+        assert_eq!(resp.records[0].wechat_channels_source, None);
     }
 
     #[test]

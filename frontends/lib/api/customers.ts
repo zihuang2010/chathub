@@ -18,6 +18,8 @@ import type { Customer, CustomerGender } from "@/lib/types/customer";
 export interface WecomFriend {
   /** 归属账号 ID。 */
   wecomAccountId: string;
+  /** 归属账号(负责人)显示名。业务后台尚未下发,暂为可选,缺失时 UI 兜底默认值。 */
+  wecomAccountName?: string;
   externalUserId: string;
   externalName: string;
   externalPosition: string;
@@ -38,7 +40,8 @@ export interface WecomFriend {
   addWay: number;
   followState: string;
   wechatChannelsNickname: string;
-  wechatChannelsSource: number;
+  /** 视频号来源;业务后台对非视频号好友可能下发 null。 */
+  wechatChannelsSource: number | null;
   lastSyncTime: string;
   syncStatus: number;
 }
@@ -107,7 +110,7 @@ export function adaptFriendToCustomer(friend: WecomFriend, ctx: { accountName: s
     company: friend.externalCorpName || friend.remarkCorpName || "—",
     source: addWayToSource(friend.addWay),
     addedAt: friend.addTime,
-    follower: "",
+    follower: friend.wecomAccountName ?? "",
     starred: false,
     lastContactAt: null,
     gender,
@@ -171,7 +174,8 @@ export interface WecomFriendDetail {
   addWay: number;
   followState: string;
   wechatChannelsNickname: string;
-  wechatChannelsSource: number;
+  /** 视频号来源;业务后台对非视频号好友可能下发 null。 */
+  wechatChannelsSource: number | null;
   lastSyncTime: string;
   /** 0 未同步,1 成功,2 失败 */
   syncStatus: number;

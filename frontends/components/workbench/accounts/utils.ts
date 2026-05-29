@@ -132,8 +132,8 @@ export function getCityLabel(account: Pick<Account, "city" | "name">): string {
 
 const CSV_COLUMNS: ReadonlyArray<{ key: string; label: string; pick: (a: Account) => string }> = [
   { key: "name", label: "账号名称", pick: (a) => a.name },
-  { key: "owner", label: "负责人", pick: (a) => a.ownerName ?? "" },
-  { key: "enterprise", label: "所属企业", pick: (a) => a.enterprise ?? "" },
+  { key: "alias", label: "别名", pick: (a) => a.wecomAlias ?? "" },
+  { key: "position", label: "岗位", pick: (a) => a.position || "员工" },
   { key: "status", label: "状态", pick: (a) => getStatusMeta(a.status).pillLabel },
   { key: "customerCount", label: "客户数", pick: (a) => String(a.customerCount ?? 0) },
   { key: "sessionCount", label: "会话数", pick: (a) => String(a.sessionCount ?? 0) },

@@ -66,22 +66,9 @@ export function AccountsPage({ accountsState, onOpenInCustomers }: AccountsPageP
             />
 
             <AccountsToolbar
-              searchTerm={view.searchTerm}
-              onSearchChange={view.setSearchTerm}
               statusSet={view.statusSet}
               toggleStatus={view.toggleStatus}
               clearStatus={view.clearStatus}
-              enterpriseSet={view.enterpriseSet}
-              toggleEnterprise={view.toggleEnterprise}
-              clearEnterprise={view.clearEnterprise}
-              enterpriseOptions={view.enterpriseOptions}
-              ownerSet={view.ownerSet}
-              toggleOwner={view.toggleOwner}
-              clearOwner={view.clearOwner}
-              ownerOptions={view.ownerOptions}
-              dateRange={view.dateRange}
-              setDateRange={view.setDateRange}
-              clearDateRange={view.clearDateRange}
               hasActiveFilters={view.hasActiveFilters}
               onReset={view.reset}
               viewMode={view.viewMode}
@@ -100,8 +87,8 @@ export function AccountsPage({ accountsState, onOpenInCustomers }: AccountsPageP
                 <FilteredEmpty onReset={view.reset} />
               ) : view.viewMode === "grid" ? (
                 <div
-                  className="grid gap-4"
-                  style={{ gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))" }}
+                  className="grid gap-3"
+                  style={{ gridTemplateColumns: "repeat(auto-fill, minmax(264px, 1fr))" }}
                 >
                   {view.pageRows.map((row) => (
                     <AccountCard key={row.id} account={row} onOpen={onOpenInCustomers} />
@@ -230,7 +217,7 @@ function FilteredEmpty({ onReset }: { onReset: () => void }) {
     <div className="flex h-[280px] flex-col items-center justify-center gap-3 px-6 text-center">
       <p className="text-[14px] font-medium text-workbench-text">没有匹配的账号</p>
       <p className="max-w-[280px] text-[12px] text-workbench-text-muted">
-        当前的搜索 / 状态 / 企业 / 负责人 / 日期 筛选条件下没有结果。
+        当前的账号状态筛选条件下没有结果。
       </p>
       <button
         type="button"

@@ -50,10 +50,24 @@ export const STRINGS = {
     /** 重点客户角标。 */
     keyBadge: "重点客户",
     recentFollow: "最近跟进",
-    addedAt: "添加",
+    addedAt: "添加时间",
+    /** 卡片底部「添加时间」标签（列表行仍用更短的 addedAt）。 */
+    addedAtTime: "添加时间",
     chat: "发起会话",
     call: "电话联系",
     more: "更多操作",
+    /** 负责人前缀（底部）。 */
+    owner: "负责人",
+    /** 企业名称缺失时的默认占位。 */
+    companyFallback: "暂无企业",
+    /** 手机号缺失时的默认占位。 */
+    phoneFallback: "暂无手机号",
+    /** 负责人缺失时的默认占位。 */
+    followerFallback: "未填写",
+    /** 企业名称无障碍标签。 */
+    companyAria: "企业名称",
+    /** 手机号无障碍标签。 */
+    phoneAria: "手机号",
     select: (name: string) => `选择 ${name}`,
   },
   accountChips: {

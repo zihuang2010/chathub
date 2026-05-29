@@ -20,6 +20,10 @@ export interface Account {
   lastActiveAt?: string;
 
   // ── 账号管理页扩展字段（全部 optional，customers 页不依赖） ───────────
+  /** 企微别名/备注名（真后端 wecomAlias）；账号卡片第二行展示。 */
+  wecomAlias?: string;
+  /** 职位（真后端 position）；账号卡片第三行展示。 */
+  position?: string;
   /** 方形头像里展示的两字城市标签，如"北京"、"杭州"。 */
   city?: string;
   /** 所属企业全称，如"北京科技有限公司"。 */

@@ -858,6 +858,8 @@ impl DownstreamClient {
         let url = format!("{}{}", base, spec.path);
         let started = Instant::now();
 
+        // 排查辅助(debug 级):出站请求全文(method/url/query/body),核对实际发给
+        // 业务后台的参数(如 list_friends 的 wecomAccountIds)。默认 chathub_relay=debug 可见。
         tracing::debug!(
             target: "chathub_relay::downstream",
             method,
@@ -866,6 +868,8 @@ impl DownstreamClient {
             employee_id,
             body_len = body.len(),
             query_len = query.len(),
+            query = ?query,
+            req_body = %String::from_utf8_lossy(&body),
             "forward request",
         );
 
@@ -946,6 +950,14 @@ impl DownstreamClient {
             return Err(RelayError::Internal);
         }
 
+        // 排查辅助(debug 级):响应体全文(截断 4000 字符,避免大列表刷屏)。
+        tracing::debug!(
+            target: "chathub_relay::downstream",
+            method,
+            status = status.as_u16(),
+            resp_body = %String::from_utf8_lossy(&body).chars().take(4000).collect::<String>(),
+            "forward response body",
+        );
         if status.is_success() {
             tracing::info!(
                 target: "chathub_relay::downstream",

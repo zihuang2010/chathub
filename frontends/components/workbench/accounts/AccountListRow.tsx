@@ -74,14 +74,14 @@ export const AccountListRow = memo(function AccountListRow({
         )}
       </div>
 
-      {/* 负责人 */}
+      {/* 别名 */}
       <span className="truncate text-[12px] text-workbench-text-secondary">
-        {account.ownerName ?? "—"}
+        {account.wecomAlias ?? "—"}
       </span>
 
-      {/* 企业 */}
+      {/* 岗位 */}
       <span className="truncate text-[12px] text-workbench-text-secondary">
-        {account.enterprise ?? "—"}
+        {account.position || "员工"}
       </span>
 
       {/* 客户数 / 会话数 */}

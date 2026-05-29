@@ -1,5 +1,5 @@
 import { memo } from "react";
-import { Mars, MessageCircle, MoreHorizontal, Phone, Venus } from "lucide-react";
+import { Building2, Mars, MessageCircle, MoreHorizontal, Phone, Venus } from "lucide-react";
 
 import type { Account } from "@/lib/types/account";
 import type { Customer } from "@/lib/types/customer";
@@ -24,8 +24,9 @@ interface CustomerRowProps {
 }
 
 /**
- * 客户列表行（列表视图）。横向排布：
- *   [多选框] 头像 + 姓名/性别·公司 …… 手机号 · 归属账号 · 添加时间 …… 会话 / 更多
+ * 客户列表行（列表视图）。横向排布（列随窗口宽度从右往左逐步显隐）：
+ *   [多选框] 头像 + 姓名/性别 · [渠道] · [企业] · [手机号] · [来源] · [归属账号] · [添加时间] · 会话/更多
+ * 企业列在窄屏（< md）隐藏时回落到姓名下的副标题，避免信息丢失。
  * 与卡片视图共用一份 Customer 数据，仅展示形态不同；操作按钮按设计只保留「会话」。
  */
 export const CustomerRow = memo(function CustomerRow({
@@ -40,9 +41,10 @@ export const CustomerRow = memo(function CustomerRow({
   onOpenChat,
   onMore,
 }: CustomerRowProps) {
-  const subtitle = [customer.company, account?.ownerName || customer.follower]
-    .filter((v) => v && v !== "—")
-    .join(" · ");
+  // 企业 / 手机号 / 归属账号统一兜底（空串、适配层占位 "—" 都视为缺失）。
+  const company = cleanValue(customer.company);
+  const phone = cleanValue(customer.phone);
+  const accountName = cleanValue(customer.account);
   const addedAt = formatDateTime(customer.addedAt);
   const checkboxShown = multiSelectActive || multiSelected;
 
@@ -93,7 +95,7 @@ export const CustomerRow = memo(function CustomerRow({
         online={account?.status === "online"}
       />
 
-      {/* 姓名 / 性别 + 公司·负责人 */}
+      {/* 姓名 / 性别（企业在窄屏回落到此处的副标题） */}
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-1">
           <span className="truncate text-[13.5px] font-semibold text-workbench-text">
@@ -101,28 +103,49 @@ export const CustomerRow = memo(function CustomerRow({
           </span>
           <GenderIcon gender={customer.gender} />
         </div>
-        {subtitle && (
-          <div className="mt-0.5 truncate text-[12px] text-workbench-text-muted">{subtitle}</div>
-        )}
+        <div className="mt-0.5 truncate text-[11.5px] text-workbench-text-secondary md:hidden">
+          {company ?? STRINGS.card.companyFallback}
+        </div>
+      </div>
+
+      {/* 渠道（微信 / 企微） */}
+      <ChannelBadge channel={customer.channel} className="hidden shrink-0 sm:inline-flex" />
+
+      {/* 企业名称（独立列） */}
+      <div className="hidden w-[150px] shrink-0 items-center gap-1.5 text-[11px] md:flex">
+        <Building2 size={13} className="shrink-0 text-workbench-text-secondary" />
+        <span
+          className={cn(
+            "truncate",
+            company ? "text-workbench-text-secondary" : "text-workbench-text-secondary",
+          )}
+        >
+          {company ?? STRINGS.card.companyFallback}
+        </span>
       </div>
 
       {/* 手机号 */}
-      <div className="hidden w-[120px] shrink-0 items-center gap-1.5 text-[12.5px] text-workbench-text-secondary sm:flex">
-        {customer.phone && (
-          <>
-            <Phone size={13} className="shrink-0 text-workbench-text-muted" />
-            <span className="wb-num truncate tabular-nums">{customer.phone}</span>
-          </>
+      <div className="hidden w-[118px] shrink-0 items-center gap-1.5 text-[11px] text-workbench-text-secondary lg:flex">
+        <Phone size={13} className="shrink-0 text-workbench-text-secondary" />
+        {phone ? (
+          <span className="wb-num truncate tabular-nums">{phone}</span>
+        ) : (
+          <span className="text-workbench-text-secondary">{STRINGS.card.phoneFallback}</span>
         )}
       </div>
 
+      {/* 添加来源 */}
+      <div className="hidden w-[92px] shrink-0 truncate text-[11px] text-workbench-text-secondary 2xl:block">
+        {customer.source}
+      </div>
+
       {/* 归属账号 */}
-      <div className="hidden w-[120px] shrink-0 truncate text-[12px] text-workbench-text-muted lg:block">
-        {customer.account && customer.account !== "—" ? customer.account : ""}
+      <div className="hidden w-[110px] shrink-0 truncate text-[11px] text-workbench-text-secondary xl:block">
+        {accountName ?? ""}
       </div>
 
       {/* 添加时间 */}
-      <div className="hidden w-[120px] shrink-0 text-[11px] text-workbench-text-muted xl:block">
+      <div className="hidden w-[124px] shrink-0 text-[11px] text-workbench-text-secondary xl:block">
         {addedAt ? (
           <span className="wb-num tabular-nums">
             {STRINGS.card.addedAt} {addedAt}
@@ -168,6 +191,34 @@ function GenderIcon({ gender }: { gender?: "male" | "female" }) {
   if (gender === "female")
     return <Venus size={12} className="shrink-0 text-pink-500" aria-label="女" />;
   return null;
+}
+
+/** 归一缺失值：空串 / 纯空白 / 适配层占位 "—" 一律视为「无」，返回 null。 */
+function cleanValue(v: string | null | undefined): string | null {
+  const s = (v ?? "").trim();
+  return s && s !== "—" ? s : null;
+}
+
+/** 渠道徽标：微信=绿、企微=蓝；其余沿用中性灰。 */
+function ChannelBadge({ channel, className }: { channel: string; className?: string }) {
+  if (!channel) return null;
+  const tone =
+    channel === "微信"
+      ? "bg-emerald-50 text-emerald-600 ring-emerald-200/60"
+      : channel === "企微"
+        ? "bg-blue-50 text-blue-600 ring-blue-200/60"
+        : "bg-slate-100 text-slate-500 ring-slate-200/60";
+  return (
+    <span
+      className={cn(
+        "items-center whitespace-nowrap rounded px-1.5 py-0.5 text-[11px] font-medium ring-1 ring-inset",
+        tone,
+        className,
+      )}
+    >
+      {channel}
+    </span>
+  );
 }
 
 function RowIconButton({

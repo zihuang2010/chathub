@@ -1,5 +1,5 @@
 import { memo } from "react";
-import { Mars, MessageCircle, MoreHorizontal, Phone, Venus } from "lucide-react";
+import { Building2, Mars, MessageCircle, MoreHorizontal, Phone, Venus } from "lucide-react";
 
 import type { Account } from "@/lib/types/account";
 import type { Customer } from "@/lib/types/customer";
@@ -29,12 +29,14 @@ interface CustomerCardProps {
 
 /**
  * 客户卡片（替代旧的列表行）。布局自上而下：
- *   头像(在线点) + 姓名/性别 + 公司·负责人  ……  右上「更多」
- *   手机号
+ *   头像(在线点) + 姓名/性别  ……  右上「更多」
+ *   🏢 企业名称（缺省「暂无企业」）
+ *   📞 手机号（缺省「暂无手机号」）            会话圆形按钮
  *   标签 chips(+N)
  *   ── 分隔 ──
- *   最近跟进/添加时间      会话 / 电话 圆形按钮
+ *   负责人 · 最近跟进/添加时间
  *
+ * 企业名称 / 手机号 / 负责人 缺失时一律显示灰色默认占位，不留空白。
  * 左上角：重点客户角标（浏览态）与多选 checkbox（hover / 多选态）互斥显示。
  */
 export const CustomerCard = memo(function CustomerCard({
@@ -52,10 +54,11 @@ export const CustomerCard = memo(function CustomerCard({
   const visibleTags = customer.tags.slice(0, CARD_MAX_TAGS);
   const overflowTags = customer.tags.length - visibleTags.length;
   const isKey = isKeyCustomer(customer);
-  const subtitle = [customer.company, account?.ownerName || customer.follower]
-    .filter((v) => v && v !== "—")
-    .join(" · ");
-  const footerMeta = formatCardMeta(customer);
+  // 企业名称 / 手机号 / 负责人 统一兜底：空串、"—" 都视为缺失，回退到默认占位。
+  const company = cleanValue(customer.company);
+  const phone = cleanValue(customer.phone);
+  const owner = cleanValue(customer.follower);
+  const addedAt = formatDateTime(customer.addedAt);
 
   // checkbox：多选态常显；否则 hover 才显。重点角标在 checkbox 出现时让位。
   const checkboxShown = multiSelectActive || multiSelected;
@@ -73,7 +76,7 @@ export const CustomerCard = memo(function CustomerCard({
         }
       }}
       className={cn(
-        "group relative flex cursor-pointer flex-col rounded-lg border bg-workbench-surface p-2.5 transition-all",
+        "group relative flex cursor-pointer flex-col rounded-lg border bg-workbench-surface p-2 transition-all",
         "hover:shadow-wb-card focus-visible:outline-none",
         selected
           ? "border-workbench-accent ring-1 ring-workbench-accent"
@@ -128,9 +131,10 @@ export const CustomerCard = memo(function CustomerCard({
             </span>
             <GenderIcon gender={customer.gender} />
           </div>
-          {subtitle && (
-            <div className="mt-0.5 truncate text-[12px] text-workbench-text-muted">{subtitle}</div>
-          )}
+          {/* 负责人（接口字段 wecomAccountName，缺失显示「未填写」） */}
+          <div className="mt-0.5 truncate text-[11px] text-workbench-text-secondary">
+            {STRINGS.card.owner} {owner ?? STRINGS.card.followerFallback}
+          </div>
         </div>
         <RowIconButton
           ariaLabel={STRINGS.card.more}
@@ -143,31 +147,38 @@ export const CustomerCard = memo(function CustomerCard({
         </RowIconButton>
       </div>
 
-      {/* 手机号 + 会话入口 */}
-      <div className="mt-1 flex items-center gap-1.5 text-[12.5px] text-workbench-text-secondary">
-        {customer.phone ? (
-          <>
-            <Phone size={13} className="shrink-0 text-workbench-text-muted" />
-            <span className="wb-num truncate tabular-nums">{customer.phone}</span>
-          </>
-        ) : (
-          <span className="text-workbench-text-muted">—</span>
-        )}
-        <CardActionButton
-          ariaLabel={STRINGS.card.chat}
-          className="ml-auto"
-          onClick={(e) => {
-            e.stopPropagation();
-            onOpenChat(customer.id);
-          }}
-        >
-          <MessageCircle size={14} />
-        </CardActionButton>
+      {/* 信息区：企业名称 + 手机号（缺失统一兜底默认占位） */}
+      <div className="mt-1 space-y-0.5">
+        <InfoRow
+          icon={<Building2 size={13} className="shrink-0 text-workbench-text-secondary" />}
+          aria={STRINGS.card.companyAria}
+          value={company}
+          fallback={STRINGS.card.companyFallback}
+        />
+        <div className="flex items-center gap-1.5">
+          <InfoRow
+            icon={<Phone size={13} className="shrink-0 text-workbench-text-secondary" />}
+            aria={STRINGS.card.phoneAria}
+            value={phone}
+            fallback={STRINGS.card.phoneFallback}
+            numeric
+          />
+          <CardActionButton
+            ariaLabel={STRINGS.card.chat}
+            className="ml-auto"
+            onClick={(e) => {
+              e.stopPropagation();
+              onOpenChat(customer.id);
+            }}
+          >
+            <MessageCircle size={13} />
+          </CardActionButton>
+        </div>
       </div>
 
       {/* 标签 */}
       {visibleTags.length > 0 && (
-        <div className="mt-1.5 flex flex-wrap items-center gap-1">
+        <div className="mt-1 flex flex-wrap items-center gap-1">
           {visibleTags.map((tag) => (
             <span
               key={tag}
@@ -187,35 +198,59 @@ export const CustomerCard = memo(function CustomerCard({
         </div>
       )}
 
-      {/* 底部：最近跟进 / 添加时间 */}
-      <div className="mt-1.5 border-t border-workbench-line-subtle pt-1.5 text-[11px] text-workbench-text-muted">
-        {footerMeta ? (
+      {/* 底部：仅添加时间 */}
+      {addedAt ? (
+        <div className="mt-1 border-t border-workbench-line-subtle pt-1 text-[10px] text-workbench-text-secondary">
           <span className="truncate">
-            {footerMeta.label}{" "}
-            <span className="wb-num tabular-nums text-workbench-text-secondary">
-              {footerMeta.value}
-            </span>
+            {STRINGS.card.addedAtTime}{" "}
+            <span className="wb-num tabular-nums text-workbench-text-secondary">{addedAt}</span>
           </span>
-        ) : null}
-      </div>
+        </div>
+      ) : null}
     </div>
   );
 });
-
-/** 底部元信息：优先「最近跟进」，无跟进数据时回退到「添加」时间（接口里 lastContactAt 常为空）。 */
-function formatCardMeta(customer: Customer): { label: string; value: string } | null {
-  const last = formatDateTime(customer.lastContactAt ?? null);
-  if (last) return { label: STRINGS.card.recentFollow, value: last };
-  const added = formatDateTime(customer.addedAt);
-  if (added) return { label: STRINGS.card.addedAt, value: added };
-  return null;
-}
 
 function formatDateTime(value: string | null | undefined): string | null {
   const d = parseDate(value ?? null);
   if (!d) return null;
   const pad = (n: number) => (n < 10 ? `0${n}` : `${n}`);
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+/** 归一缺失值：空串 / 纯空白 / 适配层占位 "—" 一律视为「无」，返回 null。 */
+function cleanValue(v: string | null | undefined): string | null {
+  const s = (v ?? "").trim();
+  return s && s !== "—" ? s : null;
+}
+
+/** 单条信息行：图标 + 值；值缺失时用灰色默认占位填充，保持卡片高度稳定。 */
+function InfoRow({
+  icon,
+  aria,
+  value,
+  fallback,
+  numeric,
+}: {
+  icon: React.ReactNode;
+  aria: string;
+  value: string | null;
+  fallback: string;
+  numeric?: boolean;
+}) {
+  return (
+    <div className="flex min-w-0 items-center gap-1.5 text-[11px]" aria-label={aria}>
+      {icon}
+      <span
+        className={cn(
+          "truncate text-workbench-text-secondary",
+          numeric && value && "wb-num tabular-nums",
+        )}
+      >
+        {value ?? fallback}
+      </span>
+    </div>
+  );
 }
 
 function GenderIcon({ gender }: { gender?: "male" | "female" }) {

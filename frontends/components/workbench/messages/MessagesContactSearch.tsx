@@ -23,9 +23,9 @@ interface MessagesContactSearchProps {
 /**
  * 消息页「搜索客户」框 + 「联系人」下拉(企业微信风格)。
  * - 只按名字搜客户,**直接打 `list_friends` 接口**(useFriends 的 externalName 服务端模糊匹配)。
- * - **按 token 全量搜索**:不传 wecomAccountIds(fullScope),由登录账号 token 圈定范围,
- *   不受顶部账号选择器影响;每条结果按 `wecomAccountId` 反查 `accounts` 显示归属账号徽章。
- * - query 为空时不请求(fullScope=false + 空 accountIds → useFriends 自动 disabled)。
+ * - **全量搜索**:下发当前可管理的全部账号 id(新接口 wecomAccountIds 必传),不受顶部账号
+ *   选择器影响;每条结果按 `wecomAccountId` 反查 `accounts` 显示归属账号徽章。
+ * - query 为空时账号集传空 → useFriends 自动 disabled,不请求。
  * - 下拉用相对定位的浮层(非 Radix Popover):搜索框是 live 输入,自管开合 + 外点关闭,
  *   避免 Popover 抢焦点。
  */
@@ -51,15 +51,13 @@ export const MessagesContactSearch = memo(function MessagesContactSearch({
   // 账号反查表:用结果里的 `wecomAccountId` 取归属账号(显示名 + 配色),展示账号徽章。
   const accountById = useMemo(() => new Map(accounts.map((a) => [a.id, a] as const)), [accounts]);
 
-  // 按 token 全量搜索:空 accountIds + fullScope(请求体省略 wecomAccountIds)。
-  // fullScope 由 debounced 非空驱动,顺带充当 enable 开关:空关键词 → fullScope=false +
-  // 空 accountIds → useFriends 自动 disabled,不发请求。
-  const { friends, loading } = useFriends(
-    [],
-    { externalName: debounced },
-    undefined,
-    debounced.length > 0,
+  // 全量搜索:下发当前可管理的全部账号 id(新接口 wecomAccountIds 必传、至少 1 个)。
+  // 账号集顺带充当 enable 开关:空关键词 → 账号集传空 → useFriends 自动 disabled,不发请求。
+  const searchAccountIds = useMemo(
+    () => (debounced.length > 0 ? accounts.map((a) => a.id) : []),
+    [debounced, accounts],
   );
+  const { friends, loading } = useFriends(searchAccountIds, { externalName: debounced });
 
   // 有 debounced 关键词即展开下拉(展示 搜索中/空/结果)。选中后由 suppressRef 压住不重开。
   useEffect(() => {

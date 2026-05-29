@@ -12,7 +12,7 @@ import type { Account } from "@/lib/types/account";
 import { cn } from "@/lib/utils";
 
 import { AccountTrendChart } from "./AccountTrendChart";
-import { formatNumber, formatRelative, getCityLabel, getStatusMeta } from "./utils";
+import { formatNumber, getStatusMeta } from "./utils";
 
 interface AccountCardProps {
   account: Account;
@@ -48,7 +48,7 @@ export const AccountCard = memo(function AccountCard({ account, onOpen }: Accoun
       onKeyDown={handleKeyDown}
       aria-label={`查看 ${account.name} 的客户`}
       className={cn(
-        "focus-ring group relative flex flex-col rounded-lg border border-workbench-line bg-workbench-surface p-4 text-left",
+        "focus-ring group relative flex flex-col rounded-lg border border-workbench-line bg-workbench-surface p-3.5 text-left",
         "cursor-pointer transition-colors hover:border-workbench-line-strong hover:bg-workbench-surface-subtle/40",
       )}
     >
@@ -68,11 +68,10 @@ export const AccountCard = memo(function AccountCard({ account, onOpen }: Accoun
               />
             )}
           </div>
-          <div className="mt-1 truncate text-[12px] leading-tight text-workbench-text-secondary">
-            负责人：{account.ownerName ?? "未指定"}
-          </div>
-          <div className="mt-0.5 truncate text-[12px] leading-tight text-workbench-text-muted">
-            {account.enterprise ?? "—"}
+          <div className="mt-1 flex items-center gap-1.5 text-[12px] leading-tight text-workbench-text-secondary">
+            <span className="min-w-0 truncate">别名：{account.wecomAlias || "—"}</span>
+            <span className="shrink-0 text-workbench-line-strong">·</span>
+            <span className="shrink-0">岗位：{account.position || "员工"}</span>
           </div>
         </div>
         <span
@@ -87,27 +86,19 @@ export const AccountCard = memo(function AccountCard({ account, onOpen }: Accoun
         </span>
       </header>
 
-      {/* 中部：折线图（左 50%）+ 三栏数字（右 50%） */}
-      <div className="mt-4 flex items-start gap-4">
-        <div className="min-w-0 flex-1">
-          <AccountTrendChart values={account.trend7d ?? []} className={trendColorClass} />
-        </div>
-        <dl className="grid w-[120px] shrink-0 grid-cols-[auto_1fr] gap-x-3 gap-y-1.5 text-[12px]">
-          <Stat label="客户数" value={formatNumber(account.customerCount ?? 0)} />
-          <Stat label="会话数" value={formatNumber(account.sessionCount ?? 0)} />
-        </dl>
+      {/* 顶部点缀：迷你趋势 sparkline（无坐标轴，全宽细条） */}
+      <AccountTrendChart values={account.trend7d ?? []} className={cn("mt-3", trendColorClass)} />
+
+      {/* KPI：客户数 / 会话数 横排放大，作为卡片视觉重点 */}
+      <div className="mt-2.5 grid grid-cols-2 gap-3">
+        <Kpi label="客户数" value={formatNumber(account.customerCount ?? 0)} />
+        <Kpi label="会话数" value={formatNumber(account.sessionCount ?? 0)} />
       </div>
 
-      {/* 底部：创建时间 + 最后登录 + ⋯ overflow */}
-      <div className="mt-4 flex items-center justify-between gap-2 border-t border-workbench-line/60 pt-3 text-[11px] text-workbench-text-muted">
+      {/* 底部：更新时间 + ⋯ overflow */}
+      <div className="mt-3 flex items-center justify-between gap-2 border-t border-workbench-line/60 pt-2.5 text-[11px] text-workbench-text-muted">
         <span className="truncate">
-          创建时间：<span className="wb-num tabular-nums">{account.createdAt ?? "—"}</span>
-        </span>
-        <span className="shrink-0 truncate">
-          最后登录：
-          <span className="text-workbench-text-secondary">
-            {formatRelative(account.lastActiveAt)}
-          </span>
+          更新时间：<span className="wb-num tabular-nums">{account.createdAt ?? "—"}</span>
         </span>
         <button
           type="button"
@@ -123,7 +114,8 @@ export const AccountCard = memo(function AccountCard({ account, onOpen }: Accoun
 });
 
 function CityAvatar({ account }: { account: Account }) {
-  const label = getCityLabel(account);
+  // 头像展示账号名称的第一个字符（如"任亚奇"→"任"）。
+  const label = Array.from(account.name)[0] ?? "";
   return (
     <div
       className="grid size-10 shrink-0 place-items-center rounded-xl text-[13px] font-semibold text-workbench-text"
@@ -135,11 +127,13 @@ function CityAvatar({ account }: { account: Account }) {
   );
 }
 
-function Stat({ label, value }: { label: string; value: string }) {
+function Kpi({ label, value }: { label: string; value: string }) {
   return (
-    <>
-      <dt className="text-workbench-text-muted">{label}</dt>
-      <dd className="wb-num text-right font-semibold tabular-nums text-workbench-text">{value}</dd>
-    </>
+    <div className="min-w-0">
+      <div className="wb-num truncate text-[19px] font-semibold tabular-nums leading-none text-workbench-text">
+        {value}
+      </div>
+      <div className="mt-1 text-[11px] leading-none text-workbench-text-muted">{label}</div>
+    </div>
   );
 }

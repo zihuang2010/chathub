@@ -41,15 +41,13 @@ export function CustomersPage({
   const [selectedAccountIds, setSelectedAccountIds] =
     useState<ReadonlySet<string>>(EMPTY_ACCOUNTS_SET);
 
-  // API 入参账号:选了账号则下发该子集;没选 → 走全量(fullScope,请求体省略 wecomAccountIds,
-  // 由业务后台按登录账号 token 圈定),此处账号集留空。
-  const isFullScope = selectedAccountIds.size === 0;
+  // API 入参账号:选了账号则下发该子集;没选 → 下发当前可管理的全部账号 id
+  // (新接口 wecomAccountIds 必传、至少 1 个,不能再走「省略字段按 token 全量」)。
+  // accounts 尚未加载(空)时账号集为空 → useFriends 自动 disabled,待账号到位再拉。
   const apiAccountIds = useMemo(() => {
-    if (selectedAccountIds.size > 0) {
-      return [...selectedAccountIds].sort();
-    }
-    return [];
-  }, [selectedAccountIds]);
+    const base = selectedAccountIds.size > 0 ? [...selectedAccountIds] : accounts.map((a) => a.id);
+    return base.sort();
+  }, [selectedAccountIds, accounts]);
 
   // 搜索:输入即时回显,防抖 350ms 后下推服务端 externalName(按名称模糊匹配)。
   const [searchInput, setSearchInput] = useState("");
@@ -65,7 +63,6 @@ export function CustomersPage({
     apiAccountIds,
     { externalName },
     pageSize,
-    isFullScope,
   );
 
   // 列表展示形态（卡片 / 列表），对应头部右上角两个视图切换按钮。

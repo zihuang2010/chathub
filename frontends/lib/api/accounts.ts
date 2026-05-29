@@ -150,6 +150,8 @@ function deriveAccount(item: ListAccountsItem): Account {
     id: item.wecomAccountId,
     name: item.wecomName,
     colorToken,
+    wecomAlias: item.wecomAlias,
+    position: item.position,
     ownerName: OWNERS[ownerIdx],
     city: CITIES[cityIdx],
     enterprise: ENTERPRISES[cityIdx],
