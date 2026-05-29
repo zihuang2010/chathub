@@ -79,8 +79,9 @@ Start here when exploring this area:
 
 | Area          | Connections |
 | ------------- | ----------- |
-| Customers     | 8 calls     |
+| Customers     | 7 calls     |
 | Illustrations | 2 calls     |
+| Messages      | 1 calls     |
 
 ## How to Explore
 

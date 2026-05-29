@@ -45,7 +45,8 @@ export function MessagesSkeleton() {
   );
 }
 
-function SkeletonRow() {
+// 单条会话行骨架。首屏整页骨架与切账号时的列表骨架(ConversationList)共用,保证两处占位一致。
+export function SkeletonRow() {
   return (
     <div className="grid grid-cols-[44px_minmax(0,1fr)] items-center gap-3 rounded-xl px-3 py-2">
       <div className="size-11 animate-pulse rounded-lg bg-workbench-surface-subtle" />

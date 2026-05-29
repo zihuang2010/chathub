@@ -1,9 +1,9 @@
 ---
-name: cluster-91
-description: "Skill for the Cluster_91 area of chathub. 23 symbols across 3 files."
+name: cluster-98
+description: "Skill for the Cluster_98 area of chathub. 23 symbols across 3 files."
 ---
 
-# Cluster_91
+# Cluster_98
 
 23 symbols | 3 files | Cohesion: 93%
 
@@ -11,7 +11,7 @@ description: "Skill for the Cluster_91 area of chathub. 23 symbols across 3 file
 
 - Working with code in `backends/`
 - Understanding how invalidate_employee, new, register_employee work
-- Modifying cluster_91-related functionality
+- Modifying cluster_98-related functionality
 
 ## Key Files
 
@@ -69,11 +69,11 @@ Start here when exploring this area:
 
 | Area       | Connections |
 | ---------- | ----------- |
-| Cluster_85 | 1 calls     |
+| Cluster_94 | 1 calls     |
 | Storage    | 1 calls     |
 
 ## How to Explore
 
 1. `gitnexus_context({name: "invalidate_employee"})` — see callers and callees
-2. `gitnexus_query({query: "cluster_91"})` — find related execution flows
+2. `gitnexus_query({query: "cluster_98"})` — find related execution flows
 3. Read key files listed above for implementation details

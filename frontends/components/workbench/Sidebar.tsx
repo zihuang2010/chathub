@@ -1,6 +1,8 @@
-import { memo, useState } from "react";
+import { memo, useState, type ReactNode } from "react";
+import * as Popover from "@radix-ui/react-popover";
 import { ChevronLeft, ChevronRight, Menu } from "lucide-react";
 
+import type { UserProfile } from "@/App";
 import { DriftingWave } from "@/components/illustrations";
 import { useCurrentProfile } from "@/lib/data/useCurrentProfile";
 import { useHubSyncStatus } from "@/lib/data/useHubSyncStatus";
@@ -11,6 +13,7 @@ import { FROSTED_GLASS_STYLE, WORKBENCH_BLUE, WORKBENCH_NAV_TEXT } from "@/lib/t
 import { cn } from "@/lib/utils";
 
 import { NAV_ITEMS, type NavItem, type Section } from "./nav";
+import { UserMenu } from "./UserMenu";
 
 // 头像回退底色 —— 贴主题的蓝色品牌渐变,作为左栏顶部的视觉锚点。
 const AVATAR_GRADIENT = "linear-gradient(140deg, #6FA8F0 0%, #3E7BD6 100%)";
@@ -114,24 +117,27 @@ export const Sidebar = memo(function Sidebar({
             ))}
           </nav>
           <div className="mt-auto px-2 pb-3 pt-2">
-            <button
-              type="button"
-              className="flex h-10 w-full items-center rounded-md transition-colors hover:bg-white/55 hover:text-[#1F2937]"
-              style={{ color: WORKBENCH_NAV_TEXT }}
-              aria-label="更多"
-            >
-              <span className="grid w-12 shrink-0 place-items-center">
-                <Menu size={18} />
-              </span>
-              <span
-                className={cn(
-                  "truncate text-[13.5px] font-medium transition-opacity duration-150 ease-out",
-                  collapsed ? "opacity-0" : "opacity-100",
-                )}
+            {/* 「更多」即「账户菜单」触发器(关于 / 退出),菜单从按钮底部向右弹出。 */}
+            <UserMenu>
+              <button
+                type="button"
+                className="flex h-10 w-full items-center rounded-md transition-colors hover:bg-white/55 hover:text-[#1F2937]"
+                style={{ color: WORKBENCH_NAV_TEXT }}
+                aria-label="更多"
               >
-                更多
-              </span>
-            </button>
+                <span className="grid w-12 shrink-0 place-items-center">
+                  <Menu size={18} />
+                </span>
+                <span
+                  className={cn(
+                    "truncate text-[13.5px] font-medium transition-opacity duration-150 ease-out",
+                    collapsed ? "opacity-0" : "opacity-100",
+                  )}
+                >
+                  更多
+                </span>
+              </button>
+            </UserMenu>
           </div>
         </div>
       </div>
@@ -225,7 +231,17 @@ function UserBadge({ collapsed }: { collapsed: boolean }) {
   // 两态零位移;名称/状态常驻挂载,仅以 opacity 淡入淡出 —— 收缩时不再整树替换造成跳动。
   return (
     <div className="flex items-center px-2.5 pb-1 pt-4">
-      <AvatarMark avatarUrl={profile?.avatar_url} displayName={name} />
+      {/* 头像即「个人信息」触发器,点击在右侧弹出个人信息卡片。button 仅作触发壳,不改
+          AvatarMark 视觉:套同款 rounded-lg + focus-ring,hover 轻微放大提示可点击。收/展两态都可用。 */}
+      <ProfilePopover profile={profile} status={status}>
+        <button
+          type="button"
+          aria-label="个人信息"
+          className="focus-ring shrink-0 rounded-lg transition-transform duration-150 hover:scale-[1.04] active:scale-95"
+        >
+          <AvatarMark avatarUrl={profile?.avatar_url} displayName={name} />
+        </button>
+      </ProfilePopover>
       <div
         className={cn(
           "ml-2.5 flex min-w-0 flex-1 flex-col gap-1 leading-tight transition-opacity duration-150 ease-out",
@@ -245,6 +261,69 @@ function UserBadge({ collapsed }: { collapsed: boolean }) {
           </span>
         </span>
       </div>
+    </div>
+  );
+}
+
+// ─── 个人信息卡片 ─────────────────────────────────────────────────────────────
+
+// 点头像在右侧弹出的只读个人信息卡。字段全部取自 UserProfile(user_id/display_name/
+// role),在线状态复用 UserBadge 已派生的 status,不重复取 hub 连接态。
+function ProfilePopover({
+  profile,
+  status,
+  children,
+}: {
+  profile: UserProfile | null;
+  status: ReturnType<typeof onlineStatus>;
+  children: ReactNode;
+}) {
+  const name = profile?.display_name ?? "";
+
+  return (
+    <Popover.Root>
+      <Popover.Trigger asChild>{children}</Popover.Trigger>
+      <Popover.Portal>
+        <Popover.Content
+          side="right"
+          align="start"
+          sideOffset={10}
+          collisionPadding={12}
+          className="z-[120] w-64 rounded-xl border border-workbench-line bg-workbench-surface p-4 shadow-wb-popover-strong outline-none"
+        >
+          <div className="flex items-center gap-3">
+            <AvatarMark avatarUrl={profile?.avatar_url} displayName={name} />
+            <div className="flex min-w-0 flex-col gap-1">
+              <span className="truncate text-[15px] font-semibold text-workbench-text">
+                {name || "未登录"}
+              </span>
+              <span className="flex items-center gap-1.5">
+                <span
+                  className="size-[7px] shrink-0 rounded-full"
+                  style={{ background: status.dot }}
+                />
+                <span className="text-[11px] font-medium" style={{ color: status.text }}>
+                  {status.label}
+                </span>
+              </span>
+            </div>
+          </div>
+          <div aria-hidden className="my-3 h-px bg-workbench-line" />
+          <dl className="flex flex-col gap-2.5 text-[12.5px]">
+            <ProfileRow label="账号" value={profile?.user_id} />
+            <ProfileRow label="角色" value={profile?.role} />
+          </dl>
+        </Popover.Content>
+      </Popover.Portal>
+    </Popover.Root>
+  );
+}
+
+function ProfileRow({ label, value }: { label: string; value?: string }) {
+  return (
+    <div className="flex items-center justify-between gap-3">
+      <dt className="shrink-0 text-workbench-text-muted">{label}</dt>
+      <dd className="truncate text-right font-medium text-workbench-text">{value || "—"}</dd>
     </div>
   );
 }

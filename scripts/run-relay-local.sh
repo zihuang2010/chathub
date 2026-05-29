@@ -32,11 +32,11 @@ set -a; source "${ENV_FILE}"; set +a
 # 2. dev 默认值(外部 env / .env.local 优先)
 # 2026-05-16:RELAY_DOWNSTREAM_SECRET 已下线(改走客户端 token 透传)
 export RELAY_ALLOW_HTTP=true
-export RELAY_DOWNSTREAM_URL="${RELAY_DOWNSTREAM_URL:-http://127.0.0.1:8080}"
+export RELAY_DOWNSTREAM_URL="${RELAY_DOWNSTREAM_URL:-https://proxy-dev.jdd51.com}"
 export RELAY_PUSH_SECRET="${RELAY_PUSH_SECRET:-push-secret}"
 # OAuth2 Basic client auth(default 都是 rh_wxchat,生产部署可 override)
 export RELAY_OAUTH_CLIENT_ID="${RELAY_OAUTH_CLIENT_ID:-rh_wxchat}"
-export RELAY_OAUTH_CLIENT_SECRET="${RELAY_OAUTH_CLIENT_SECRET:-rh_wxchat}"
+export RELAY_OAUTH_CLIENT_SECRET="${RELAY_OAUTH_CLIENT_SECRET:-9f3a2b1c-4d5e-4f6a-8b7c-2d3e4f5a6b7c}"
 export RELAY_GRPC_ADDR="${RELAY_GRPC_ADDR:-127.0.0.1:50051}"
 export RELAY_PUSH_ADDR="${RELAY_PUSH_ADDR:-127.0.0.1:50052}"
 export RELAY_DB_PATH="${RELAY_DB_PATH:-${REPO_ROOT}/relay.db}"

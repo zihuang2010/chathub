@@ -1,9 +1,9 @@
 ---
-name: cluster-111
-description: "Skill for the Cluster_111 area of chathub. 17 symbols across 1 files."
+name: cluster-119
+description: "Skill for the Cluster_119 area of chathub. 17 symbols across 1 files."
 ---
 
-# Cluster_111
+# Cluster_119
 
 17 symbols | 1 files | Cohesion: 75%
 
@@ -11,7 +11,7 @@ description: "Skill for the Cluster_111 area of chathub. 17 symbols across 1 fil
 
 - Working with code in `backends/`
 - Understanding how new, upsert_messages, upsert_message_and_bump_window work
-- Modifying cluster_111-related functionality
+- Modifying cluster_119-related functionality
 
 ## Key Files
 
@@ -62,17 +62,16 @@ Start here when exploring this area:
 | `Upsert_updates_mutable_keeps_position → MessageRow`             | intra_community | 3     |
 | `Window_upsert_get_round_trip → MessageWindow`                   | cross_community | 3     |
 | `Upsert_message_and_bump_window_atomic → MessageRow`             | intra_community | 3     |
-| `Clear_for_employee_isolates → MessageRow`                       | intra_community | 3     |
 
 ## Connected Areas
 
 | Area       | Connections |
 | ---------- | ----------- |
-| Cluster_6  | 7 calls     |
-| Cluster_35 | 3 calls     |
+| Cluster_51 | 7 calls     |
+| Cluster_38 | 3 calls     |
 
 ## How to Explore
 
 1. `gitnexus_context({name: "new"})` — see callers and callees
-2. `gitnexus_query({query: "cluster_111"})` — find related execution flows
+2. `gitnexus_query({query: "cluster_119"})` — find related execution flows
 3. Read key files listed above for implementation details

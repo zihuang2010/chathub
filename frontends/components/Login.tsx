@@ -14,6 +14,7 @@ import {
   type Satellite,
 } from "@/components/illustrations";
 import { cn } from "@/lib/utils";
+import { encryptPassword } from "@/lib/crypto/passwordCipher";
 import {
   BLUE_GRADIENT,
   BLUE_GRADIENT_HOVER,
@@ -140,7 +141,11 @@ export function Login({ onSuccess, notice }: LoginProps) {
     setErrorMsg(null);
     setLoading(true);
     try {
-      const profile = await invoke<UserProfile>("login", { username: identifier, password });
+      // 业务后台 /account-app/oauth2/token 要求 password 字段为 AES-CFB 密文,统一在前端入口加密。
+      const profile = await invoke<UserProfile>("login", {
+        username: identifier,
+        password: encryptPassword(password),
+      });
       // C3: 持久化 — 根据 remember 写或清(按当前 tab 分别记)
       if (typeof window !== "undefined") {
         if (remember) {

@@ -80,6 +80,9 @@ pub struct RecentSessionRow {
     /// 不进 WHERE/ORDER BY,只影响渲染;远端 UPSERT 永不触碰(自动保留)。
     pub muted: bool,
     pub muted_at_ms: i64,
+    /// V17:用户主动"打开会话"的时间戳。进 list_top/trim 的 MAX(...) 排序(把该行提到
+    /// 非置顶区顶部),但不进时间显示。客户端独占列,远端 UPSERT 永不触碰。
+    pub opened_at_ms: i64,
 }
 
 /// 远端拉取 / 事件 applier 携带的远端列数据(无本地列)。
@@ -173,14 +176,14 @@ impl RecentSessionsStore {
                       unread_count, has_unread, updated_at_ms, \
                       pinned, pinned_at_ms, local_draft_at_ms, local_draft_text, \
                       removed, removed_at_ms, muted, muted_at_ms, \
-                      last_message_sort_key_ms, gmt_modified_time \
+                      last_message_sort_key_ms, gmt_modified_time, opened_at_ms \
                     FROM hub_conversation_recents \
                     WHERE employee_id = ?1 AND removed = 0 \
                       AND (?2 IS NULL OR wecom_account_id = ?2) \
                     ORDER BY \
                       pinned DESC, \
                       pinned_at_ms DESC, \
-                      MAX(last_message_time_ms, local_draft_at_ms) DESC, \
+                      MAX(last_message_time_ms, local_draft_at_ms, opened_at_ms) DESC, \
                       last_message_time_ms DESC \
                     LIMIT ?3";
                 let mut stmt = c.prepare(sql)?;
@@ -193,55 +196,28 @@ impl RecentSessionsStore {
         Ok(rows)
     }
 
-    /// 多键 ORDER BY 的 offset 分页读 —— 接待列表「本地深读」尾部专用。
-    /// 排序与 [`list_top`] **完全一致**(同 WHERE / 同 ORDER BY),仅多 `OFFSET`:
-    /// 头部 top-N 由 `list_top` 秒开,滑过 N 行后用本命令从 `offset` 起继续取本地行,
-    /// 零网络。返回行数 < `limit` 即本地已到底(供上层停止下拉)。
-    /// `employee_id` 强制过滤;`account_filter=None` 表示该员工全部账号合并。
-    pub async fn list_page(
+    /// 统计当前 scope 的接待会话行数(已过滤 removed)。WHERE 与 `list_top` 完全一致,
+    /// 供水位预填判定"本地是否已达目标深度"。`account_filter=None` 统计全部账号。
+    pub async fn count(
         &self,
         employee_id: &str,
         account_filter: Option<String>,
-        limit: usize,
-        offset: usize,
-    ) -> Result<Vec<RecentSessionRow>, StateError> {
+    ) -> Result<usize, StateError> {
         let employee_id = employee_id.to_string();
-        let limit = limit as i64;
-        let offset = offset as i64;
         let conn = self.pool.pool().get().await?;
-        let rows = conn
-            .interact(move |c| -> Result<Vec<RecentSessionRow>, StateError> {
-                // SQL 与 list_top 同构,仅末尾追加 OFFSET;排序一致保证头尾无缝衔接。
-                let sql = "\
-                    SELECT \
-                      conversation_id, wecom_account_id, employee_id, wecom_name, wecom_account, wecom_alias, \
-                      external_user_id, external_name, external_avatar, external_mobile, \
-                      last_local_message_id, last_message_type, last_message_direction, \
-                      last_send_status, last_message_summary, last_message_time_ms, \
-                      unread_count, has_unread, updated_at_ms, \
-                      pinned, pinned_at_ms, local_draft_at_ms, local_draft_text, \
-                      removed, removed_at_ms, muted, muted_at_ms, \
-                      last_message_sort_key_ms, gmt_modified_time \
-                    FROM hub_conversation_recents \
-                    WHERE employee_id = ?1 AND removed = 0 \
-                      AND (?2 IS NULL OR wecom_account_id = ?2) \
-                    ORDER BY \
-                      pinned DESC, \
-                      pinned_at_ms DESC, \
-                      MAX(last_message_time_ms, local_draft_at_ms) DESC, \
-                      last_message_time_ms DESC \
-                    LIMIT ?3 OFFSET ?4";
-                let mut stmt = c.prepare(sql)?;
-                let rows = stmt
-                    .query_map(
-                        rusqlite::params![employee_id, account_filter, limit, offset],
-                        map_row,
-                    )?
-                    .collect::<rusqlite::Result<Vec<_>>>()?;
-                Ok(rows)
+        let n = conn
+            .interact(move |c| -> Result<i64, StateError> {
+                let n: i64 = c.query_row(
+                    "SELECT COUNT(*) FROM hub_conversation_recents \
+                     WHERE employee_id = ?1 AND removed = 0 \
+                       AND (?2 IS NULL OR wecom_account_id = ?2)",
+                    rusqlite::params![employee_id, account_filter],
+                    |r| r.get(0),
+                )?;
+                Ok(n)
             })
             .await??;
-        Ok(rows)
+        Ok(n as usize)
     }
 
     /// 远端拉取批量 UPSERT —— 只写远端列与 updated_at_ms,本地列(pinned/pinned_at_ms/
@@ -419,6 +395,31 @@ impl RecentSessionsStore {
         Ok(())
     }
 
+    /// 用户主动"打开会话"(从搜索点开客户):写 `opened_at_ms = ts_ms`,把该行提到非置顶区顶部。
+    /// 独立 UPDATE(始终生效,不受远端列版本门影响,类似 [`Self::set_pinned`]);employee 过滤防越权。
+    /// 行不存在时 no-op —— 调用方需先 upsert(空白行 / 远端记录)再 set_opened。
+    pub async fn set_opened(
+        &self,
+        employee_id: &str,
+        conversation_id: &str,
+        ts_ms: i64,
+    ) -> Result<(), StateError> {
+        let employee_id = employee_id.to_string();
+        let id = conversation_id.to_string();
+        let conn = self.pool.pool().get().await?;
+        conn.interact(move |c| -> Result<(), StateError> {
+            c.execute(
+                "UPDATE hub_conversation_recents \
+                   SET opened_at_ms = ?1 \
+                 WHERE employee_id = ?2 AND conversation_id = ?3",
+                rusqlite::params![ts_ms, employee_id, id],
+            )?;
+            Ok(())
+        })
+        .await??;
+        Ok(())
+    }
+
     /// 标记会话已读:本地乐观清零未读列(`unread_count=0`、`has_unread=0`)。
     /// employee_id 校验,行不存在或跨员工时 no-op。
     ///
@@ -579,7 +580,7 @@ impl RecentSessionsStore {
                      SELECT conversation_id, \
                             ROW_NUMBER() OVER ( \
                               PARTITION BY wecom_account_id \
-                              ORDER BY MAX(last_message_time_ms, local_draft_at_ms) DESC \
+                              ORDER BY MAX(last_message_time_ms, local_draft_at_ms, opened_at_ms) DESC \
                             ) AS rn \
                      FROM hub_conversation_recents \
                      WHERE employee_id = ?1 AND pinned = 0 \
@@ -601,7 +602,7 @@ impl RecentSessionsStore {
                  WHERE conversation_id IN ( \
                    SELECT conversation_id FROM hub_conversation_recents \
                    WHERE employee_id = ?1 AND pinned = 0 \
-                   ORDER BY MAX(last_message_time_ms, local_draft_at_ms) DESC \
+                   ORDER BY MAX(last_message_time_ms, local_draft_at_ms, opened_at_ms) DESC \
                    LIMIT -1 OFFSET ?2 \
                  )",
                 rusqlite::params![employee_id, non_pinned_keep],
@@ -669,6 +670,7 @@ fn map_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RecentSessionRow> {
         muted_at_ms: row.get(26)?,
         last_message_sort_key_ms: row.get(27)?,
         gmt_modified_time: row.get(28)?,
+        opened_at_ms: row.get(29)?,
     })
 }
 
@@ -852,84 +854,70 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn list_page_offset_slices_in_same_order_as_list_top() {
+    async fn count_empty_returns_zero() {
         let pool = SqlitePool::in_memory().await.unwrap();
         let store = RecentSessionsStore::new(pool);
-        // ts 递增 → 倒序为 c5,c4,c3,c2,c1
+        assert_eq!(store.count(E, None).await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn count_all_accounts() {
+        let pool = SqlitePool::in_memory().await.unwrap();
+        let store = RecentSessionsStore::new(pool);
+        store
+            .upsert_remote_many(&[
+                sample_remote("c1", "wa-1", 100, 0),
+                sample_remote("c2", "wa-2", 200, 0),
+            ])
+            .await
+            .unwrap();
+        assert_eq!(store.count(E, None).await.unwrap(), 2);
+    }
+
+    #[tokio::test]
+    async fn count_filters_by_account() {
+        let pool = SqlitePool::in_memory().await.unwrap();
+        let store = RecentSessionsStore::new(pool);
+        store
+            .upsert_remote_many(&[
+                sample_remote("c1", "wa-1", 100, 0),
+                sample_remote("c2", "wa-2", 200, 0),
+                sample_remote("c3", "wa-1", 300, 0),
+            ])
+            .await
+            .unwrap();
+        assert_eq!(store.count(E, Some("wa-1".into())).await.unwrap(), 2);
+        assert_eq!(store.count(E, Some("wa-2".into())).await.unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn count_excludes_removed() {
+        let pool = SqlitePool::in_memory().await.unwrap();
+        let store = RecentSessionsStore::new(pool);
         store
             .upsert_remote_many(&[
                 sample_remote("c1", "wa-1", 100, 0),
                 sample_remote("c2", "wa-1", 200, 0),
-                sample_remote("c3", "wa-1", 300, 0),
-                sample_remote("c4", "wa-1", 400, 0),
-                sample_remote("c5", "wa-1", 500, 0),
             ])
             .await
             .unwrap();
-        // offset=2 limit=2 → 跳过 c5,c4 → 取 c3,c2
-        let page = store.list_page(E, None, 2, 2).await.unwrap();
-        assert_eq!(page.len(), 2);
-        assert_eq!(page[0].conversation_id, "c3");
-        assert_eq!(page[1].conversation_id, "c2");
-        // 与 list_top 全量切片同序(头尾无缝衔接的前提)
-        let all = store.list_top(E, None, 10).await.unwrap();
-        assert_eq!(page[0].conversation_id, all[2].conversation_id);
-        assert_eq!(page[1].conversation_id, all[3].conversation_id);
+        store.set_removed(E, "c1", true).await.unwrap();
+        assert_eq!(store.count(E, None).await.unwrap(), 1);
     }
 
     #[tokio::test]
-    async fn list_page_past_end_returns_empty() {
-        let pool = SqlitePool::in_memory().await.unwrap();
-        let store = RecentSessionsStore::new(pool);
-        store
-            .upsert_remote_many(&[sample_remote("c1", "wa-1", 100, 0)])
-            .await
-            .unwrap();
-        // offset 越过末尾 → 空(上层据此判定「本地到底」,停止下拉)
-        let page = store.list_page(E, None, 200, 200).await.unwrap();
-        assert!(page.is_empty());
-    }
-
-    #[tokio::test]
-    async fn list_page_filters_by_account_and_employee() {
+    async fn count_isolates_by_employee() {
         let pool = SqlitePool::in_memory().await.unwrap();
         let store = RecentSessionsStore::new(pool);
         store
             .upsert_remote_many(&[
                 sample_remote_for("u-A", "c1", "wa-1", 100, 0),
-                sample_remote_for("u-A", "c2", "wa-2", 200, 0),
-                sample_remote_for("u-B", "c3", "wa-1", 300, 0),
+                sample_remote_for("u-B", "c2", "wa-2", 200, 0),
             ])
             .await
             .unwrap();
-        // 账号过滤:u-A 的 wa-1 仅 c1
-        let a_wa1 = store
-            .list_page("u-A", Some("wa-1".into()), 10, 0)
-            .await
-            .unwrap();
-        assert_eq!(a_wa1.len(), 1);
-        assert_eq!(a_wa1[0].conversation_id, "c1");
-        // employee 隔离:u-B 看不到 u-A
-        let b = store.list_page("u-B", None, 10, 0).await.unwrap();
-        assert_eq!(b.len(), 1);
-        assert_eq!(b[0].conversation_id, "c3");
-    }
-
-    #[tokio::test]
-    async fn list_page_excludes_removed() {
-        let pool = SqlitePool::in_memory().await.unwrap();
-        let store = RecentSessionsStore::new(pool);
-        store
-            .upsert_remote_many(&[
-                sample_remote("c1", "wa-1", 100, 0),
-                sample_remote("c2", "wa-1", 200, 0),
-            ])
-            .await
-            .unwrap();
-        store.set_removed(E, "c2", true).await.unwrap();
-        let page = store.list_page(E, None, 10, 0).await.unwrap();
-        assert_eq!(page.len(), 1);
-        assert_eq!(page[0].conversation_id, "c1");
+        assert_eq!(store.count("u-A", None).await.unwrap(), 1);
+        assert_eq!(store.count("u-B", None).await.unwrap(), 1);
     }
 
     #[tokio::test]
@@ -1618,6 +1606,112 @@ mod tests {
         assert_eq!(got[0].last_message_time_ms, 999, "remote col updated");
         assert!(got[0].muted, "muted must survive remote upsert");
         assert!(got[0].muted_at_ms > 0);
+    }
+
+    // ─── V17: opened_at_ms 行为 ─────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn set_opened_lifts_row_above_newer_unpinned() {
+        let pool = SqlitePool::in_memory().await.unwrap();
+        let store = RecentSessionsStore::new(pool);
+        store
+            .upsert_remote_many(&[
+                sample_remote("c1", "wa-1", 100, 0), // 旧
+                sample_remote("c2", "wa-1", 999, 0), // 新
+            ])
+            .await
+            .unwrap();
+        // 打开旧的 c1(opened_at = now,必然 > 999)→ 排到非置顶顶部
+        store.set_opened(E, "c1", now_unix_ms()).await.unwrap();
+        let got = store.list_top(E, None, 10).await.unwrap();
+        assert_eq!(
+            got[0].conversation_id, "c1",
+            "opened row should lift to top"
+        );
+        assert!(got[0].opened_at_ms > 0);
+    }
+
+    #[tokio::test]
+    async fn pinned_sorts_above_opened() {
+        let pool = SqlitePool::in_memory().await.unwrap();
+        let store = RecentSessionsStore::new(pool);
+        store
+            .upsert_remote_many(&[
+                sample_remote("c1", "wa-1", 100, 0),
+                sample_remote("c2", "wa-1", 200, 0),
+            ])
+            .await
+            .unwrap();
+        // c1 置顶;c2 打开(opened_at=now)。置顶必须仍在打开行之上。
+        store.set_pinned(E, "c1", true).await.unwrap();
+        store.set_opened(E, "c2", now_unix_ms()).await.unwrap();
+        let got = store.list_top(E, None, 10).await.unwrap();
+        assert_eq!(got[0].conversation_id, "c1", "pinned stays on top");
+        assert_eq!(got[1].conversation_id, "c2", "opened row just below pinned");
+    }
+
+    #[tokio::test]
+    async fn opened_preserved_through_remote_upsert() {
+        let pool = SqlitePool::in_memory().await.unwrap();
+        let store = RecentSessionsStore::new(pool);
+        store
+            .upsert_remote_many(&[sample_remote("c1", "wa-1", 100, 0)])
+            .await
+            .unwrap();
+        store.set_opened(E, "c1", now_unix_ms()).await.unwrap();
+        // 远端事件推一条新消息;远端列覆盖,本地 opened_at 不被抹掉。
+        store
+            .upsert_remote_many(&[sample_remote("c1", "wa-1", 999, 5)])
+            .await
+            .unwrap();
+        let got = store.list_top(E, None, 10).await.unwrap();
+        assert_eq!(got[0].last_message_time_ms, 999, "remote col updated");
+        assert!(
+            got[0].opened_at_ms > 0,
+            "opened_at must survive remote upsert"
+        );
+    }
+
+    #[tokio::test]
+    async fn set_opened_rejects_wrong_employee() {
+        let pool = SqlitePool::in_memory().await.unwrap();
+        let store = RecentSessionsStore::new(pool);
+        store
+            .upsert_remote_many(&[sample_remote("c1", "wa-1", 100, 0)])
+            .await
+            .unwrap();
+        store
+            .set_opened("u-other", "c1", now_unix_ms())
+            .await
+            .unwrap();
+        let got = store.list_top(E, None, 10).await.unwrap();
+        assert_eq!(
+            got[0].opened_at_ms, 0,
+            "wrong-employee open must not affect row"
+        );
+    }
+
+    /// 空白行(sort_key_ms=0)被打开后,真实远端记录(sort_key>0)到达仍能覆盖远端列,不被版本门挡。
+    #[tokio::test]
+    async fn blank_opened_row_overwritten_by_real_record() {
+        let pool = SqlitePool::in_memory().await.unwrap();
+        let store = RecentSessionsStore::new(pool);
+        // 合成空白行:消息字段空、sort_key_ms=0(模拟 open_friend_conversation 的无记录路径)。
+        let mut blank = sample_remote("c-blank", "wa-1", 0, 0);
+        blank.last_message_summary = String::new();
+        blank.last_local_message_id = String::new();
+        blank.last_message_sort_key_ms = 0;
+        store.upsert_remote_one(blank).await.unwrap();
+        store.set_opened(E, "c-blank", now_unix_ms()).await.unwrap();
+        // 真实记录(sort_key 大)到达:远端列被覆盖,opened_at 仍保留。
+        let mut real = sample_remote("c-blank", "wa-1", 500, 2);
+        real.last_message_summary = "真实首条".into();
+        real.last_message_sort_key_ms = 500;
+        store.upsert_remote_one(real).await.unwrap();
+        let got = store.list_top(E, None, 10).await.unwrap();
+        assert_eq!(got.len(), 1, "must be the same row (no duplicate)");
+        assert_eq!(got[0].last_message_summary, "真实首条");
+        assert!(got[0].opened_at_ms > 0);
     }
 
     #[tokio::test]

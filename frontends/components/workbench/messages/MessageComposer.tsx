@@ -58,6 +58,10 @@ interface MessageComposerProps {
   ) => void;
   /** Quick-reply templates available from the composer popover. */
   quickReplies?: QuickReply[];
+  /** 快捷回复增删改回调:存在则 popover 内开启管理(新增 / 编辑 / 删除)。 */
+  onCreateQuickReply?: (title: string, content: string) => void;
+  onUpdateQuickReply?: (id: string, title: string, content: string) => void;
+  onDeleteQuickReply?: (id: string) => void;
   /** Contacts shown in the @mention popover when the user types `@`. */
   mentionCandidates?: Conversation[];
   /** Pinned reply target: when present, renders a quote preview above the toolbar
@@ -87,6 +91,9 @@ export function MessageComposer({
   onToggleDetails,
   onSend,
   quickReplies,
+  onCreateQuickReply,
+  onUpdateQuickReply,
+  onDeleteQuickReply,
   mentionCandidates,
   replyDraft,
   onCancelReply,
@@ -533,7 +540,9 @@ export function MessageComposer({
                 type="button"
                 aria-haspopup="dialog"
                 aria-expanded={quickRepliesOpen}
-                disabled={!quickReplies || quickReplies.length === 0}
+                // 可管理(传了 onCreate)时即使列表为空也要能打开 popover 去新增第一条;
+                // 纯展示场景(无管理回调)才在无数据时禁用。
+                disabled={(!quickReplies || quickReplies.length === 0) && !onCreateQuickReply}
                 className="focus-ring inline-flex h-9 items-center gap-1 rounded-md px-2.5 text-wb-2xs font-medium text-workbench-text-secondary transition-colors hover:bg-workbench-surface-subtle hover:text-workbench-text disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent"
               >
                 <span>{STRINGS.composer.quickReplies}</span>
@@ -547,7 +556,13 @@ export function MessageComposer({
                 collisionPadding={12}
                 className="z-30 w-[300px] rounded-lg border border-workbench-line bg-workbench-surface p-3 shadow-wb-popover-strong outline-none"
               >
-                <QuickRepliesPanel items={quickReplies ?? []} onSelect={handleQuickReplySelect} />
+                <QuickRepliesPanel
+                  items={quickReplies ?? []}
+                  onSelect={handleQuickReplySelect}
+                  onCreate={onCreateQuickReply}
+                  onUpdate={onUpdateQuickReply}
+                  onDelete={onDeleteQuickReply}
+                />
               </Popover.Content>
             </Popover.Portal>
           </Popover.Root>

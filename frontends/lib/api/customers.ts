@@ -1,10 +1,10 @@
 // 好友(客户)API 层 —— 桥接 Tauri `list_friends` 命令到前端 WecomFriend 类型。
 //
 // **阶段 3:纯 cursor 滚动**
-//   链路:UI → invoke("list_friends", { accountIds, cursor, size, externalId, addStartTime, addEndTime })
+//   链路:UI → invoke("list_friends", { accountIds, cursor, size, externalName, addStartTime, addEndTime })
 //        → Tauri:透传单 cursor 跨账号 keyset 请求(不写本地镜像)
 //        → 返 { records, hasMore, nextCursor }(每条 record 自带 wecomAccountId 归属)
-//   筛选(externalId 模糊匹配名称/手机号 + 加好友时间区间)全部下推服务端;
+//   筛选(externalName 按名称模糊匹配 + 加好友时间区间)全部下推服务端;
 //   翻页靠 nextCursor;FRIEND_* 推送事件 → ChangeNotice → useFriends 重拉首页。
 
 import { invoke } from "@tauri-apps/api/core";
@@ -57,8 +57,8 @@ export interface FetchFriendsParams {
   cursor?: string;
   /** 每页条数,默认 20,服务端 clamp 到 [1,100]。 */
   size?: number;
-  /** 名称/手机号统一模糊匹配;空 / undefined 不筛选。 */
-  externalId?: string;
+  /** 按名称模糊匹配;空 / undefined 不筛选。 */
+  externalName?: string;
   /** 加好友时间下界 `yyyy-MM-dd HH:mm:ss`。 */
   addStartTime?: string;
   /** 加好友时间上界 `yyyy-MM-dd HH:mm:ss`。 */
@@ -74,7 +74,7 @@ export async function fetchFriends(params: FetchFriendsParams): Promise<ListFrie
     accountIds: params.accountIds,
     cursor: params.cursor ?? "",
     size: params.size,
-    externalId: params.externalId || undefined,
+    externalName: params.externalName || undefined,
     addStartTime: params.addStartTime || undefined,
     addEndTime: params.addEndTime || undefined,
   });

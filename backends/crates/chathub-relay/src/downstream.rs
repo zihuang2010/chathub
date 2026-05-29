@@ -13,6 +13,7 @@ use crate::config::{DownstreamRoutes, HttpMethod};
 use crate::error::{map_downstream_4xx_5xx, RelayError};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// 业务后台统一响应包络(2026-05-17 起):
@@ -64,9 +65,59 @@ where
     Ok(env.data)
 }
 
+/// 下游 base_url 的来源。
+///   - `Static`:固定 url(未启用 Nacos 的现状,或 Nacos 兜底)。
+///   - `Nacos`:每请求向 Nacos 解析一个健康实例的地址;拿不到时回退 `fallback`。
+///     每请求决策 → Nacos 恢复后自动切回发现结果,无需重启。
+#[derive(Clone)]
+pub enum BaseUrlSource {
+    /// 固定 base_url(已 trim 尾部 '/')。
+    Static(Arc<str>),
+    /// Nacos 服务发现 + 静态兜底(`fallback` 已 trim 尾部 '/')。
+    Nacos {
+        client: Arc<crate::nacos::NacosClient>,
+        fallback: Arc<str>,
+    },
+}
+
+impl BaseUrlSource {
+    /// 构造静态来源,自动 trim 尾部 '/'。
+    pub fn new_static(url: &str) -> Self {
+        Self::Static(Arc::from(url.trim_end_matches('/')))
+    }
+
+    /// 构造 Nacos 来源,`fallback` 自动 trim 尾部 '/'。
+    pub fn new_nacos(client: Arc<crate::nacos::NacosClient>, fallback: &str) -> Self {
+        Self::Nacos {
+            client,
+            fallback: Arc::from(fallback.trim_end_matches('/')),
+        }
+    }
+
+    /// 当前应使用的 base_url。Nacos 失败回退 `fallback`,故总能返回可用值,不会失败。
+    pub async fn base_url(&self) -> String {
+        match self {
+            Self::Static(u) => u.to_string(),
+            Self::Nacos { client, fallback } => match client.discover_base_url().await {
+                Some(u) => u,
+                None => fallback.to_string(),
+            },
+        }
+    }
+
+    /// 给 reqwest `no_proxy` 启发式(loopback 检测)用的代表性 url。
+    /// Nacos 模式用静态 `fallback` 代表(典型 dev 用 loopback mock)。
+    fn representative_url(&self) -> &str {
+        match self {
+            Self::Static(u) => u,
+            Self::Nacos { fallback, .. } => fallback,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct DownstreamClient {
-    base_url: String,
+    source: BaseUrlSource,
     http: Client,
     paths: AuthPaths,
     oauth: OAuthCreds,
@@ -113,13 +164,56 @@ pub struct LoginResp {
 
 /// JddTokenVO 反序列化结构(仅摘 relay 需要的字段;
 /// channel/username/mobile/tokenType/issuedAt/expiresAt 被 serde 忽略)。
+///
+/// `user_id` 容忍 string / number 两种形态:生产业务后台(jdd51)序列化为字符串
+/// (雪花算法 ID 超 JS 安全整数,后台统一发 string 防客户端精度丢失);早期 mock /
+/// 单测仍发 number。relay 不该卡在这种契约毛刺上。
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct JddTokenVO {
     access_token: JddAccessToken,
-    user_id: i64,
+    #[serde(deserialize_with = "deserialize_id_string_or_number")]
+    user_id: String,
     #[serde(default)]
     nick_name: Option<String>,
+}
+
+/// 兼容 `"123"` / `123` 两种 JSON 形态的整型 ID。
+/// 失败场景:浮点 / 非整型 string / 其它 JSON 类型 → serde error。
+fn deserialize_id_string_or_number<'de, D>(de: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::{Error, Unexpected, Visitor};
+    use std::fmt;
+
+    struct IdVisitor;
+    impl<'de> Visitor<'de> for IdVisitor {
+        type Value = String;
+
+        fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("an integer ID as string or number")
+        }
+
+        fn visit_str<E: Error>(self, v: &str) -> Result<Self::Value, E> {
+            // 仍要求是整数 string,避免后台误发 "abc" 也被静默接受
+            if v.is_empty() || !v.bytes().all(|b| b.is_ascii_digit() || b == b'-') {
+                return Err(Error::invalid_value(Unexpected::Str(v), &self));
+            }
+            Ok(v.to_owned())
+        }
+        fn visit_string<E: Error>(self, v: String) -> Result<Self::Value, E> {
+            self.visit_str(&v)
+        }
+        fn visit_i64<E: Error>(self, v: i64) -> Result<Self::Value, E> {
+            Ok(v.to_string())
+        }
+        fn visit_u64<E: Error>(self, v: u64) -> Result<Self::Value, E> {
+            Ok(v.to_string())
+        }
+    }
+
+    de.deserialize_any(IdVisitor)
 }
 
 #[derive(Deserialize)]
@@ -246,7 +340,18 @@ impl DownstreamClient {
             .unwrap_or(false)
     }
 
+    /// 静态 base_url 构造(未启用 Nacos / 测试)。内部包成 `BaseUrlSource::Static`。
     pub fn new(base_url: &str, paths: AuthPaths, oauth: OAuthCreds) -> Result<Self, RelayError> {
+        Self::new_with_source(BaseUrlSource::new_static(base_url), paths, oauth)
+    }
+
+    /// 通用构造:base_url 来源可为静态或 Nacos 发现。reqwest client 只建一次,
+    /// 故 `no_proxy` 启发式按来源的代表性 url(loopback 检测)一次性决定。
+    pub fn new_with_source(
+        source: BaseUrlSource,
+        paths: AuthPaths,
+        oauth: OAuthCreds,
+    ) -> Result<Self, RelayError> {
         // F4:reqwest 全面 h2 调优 — 关键是 HTTP/2 多路复用,把 5000 conn × N forward
         // 收敛到 1-2 个 TCP carries 数千 streams。pool size 在 h2 下基本无意义,
         // 但 h1.1 fallback 时仍需要充足空间。
@@ -269,14 +374,14 @@ impl DownstreamClient {
             builder = builder.http2_prior_knowledge();
         }
         // loopback downstream(mock/dev)绕过系统代理:reqwest 默认读 ALL_PROXY,会把 127.0.0.1 请求误导向 SOCKS 代理,代理不在时触发 transient downstream。
-        if Self::is_loopback_base(base_url) {
+        if Self::is_loopback_base(source.representative_url()) {
             builder = builder.no_proxy();
         }
         let http = builder
             .build()
             .map_err(|e| RelayError::Http(e.to_string()))?;
         Ok(Self {
-            base_url: base_url.trim_end_matches('/').to_string(),
+            source,
             http,
             paths,
             oauth,
@@ -306,17 +411,37 @@ impl DownstreamClient {
     ///       `Authorization: Basic Base64("<client_id>:<client_secret>")`
     ///       `Content-Type: application/x-www-form-urlencoded`
     ///       body: `username=…&password=…`
+    ///
+    /// 诊断日志:出站请求 / 响应 status+headers 在 info 级别打印;响应 body 在 4xx/5xx
+    /// 或 envelope 解析失败时打全(限 2KB),帮助定位"对接不通"。敏感字段(client_secret /
+    /// password / Authorization header)统一走 [`crate::secret::Redacted`] 脱敏。
     pub async fn login(&self, req: LoginReq<'_>) -> Result<LoginResp, RelayError> {
-        let url = format!("{}{}", self.base_url, self.paths.login);
+        use crate::secret::Redacted;
+
+        let base = self.source.base_url().await;
+        let url = format!("{}{}", base, self.paths.login);
         let started = Instant::now();
 
-        tracing::debug!(
+        // 出站请求快照(脱敏):URL/query/Basic 客户端凭证/form 都打出来便于对账 curl。
+        tracing::info!(
             target: "chathub_relay::downstream",
+            method = "POST",
             url = %url,
-            "oauth2 login request",
+            query.scope = "server",
+            query.terminalId = %req.device_id,
+            query.grant_type = "password",
+            content_type = "application/x-www-form-urlencoded",
+            authorization = %format!("Basic <Base64({}:{})>", self.oauth.client_id, Redacted(&self.oauth.client_secret)),
+            oauth_client_id = %self.oauth.client_id,
+            oauth_client_secret = %Redacted(&self.oauth.client_secret),
+            form.username = %req.username,
+            form.password = %Redacted(req.password),
+            "oauth2 login: outbound request",
         );
 
-        let resp = self
+        // 显式 build() 取出 reqwest::Request,把最终 headers / body 字节长度一起打出来,
+        // 排除 reqwest builder 中途吞参的可能性。
+        let pending = self
             .http
             .post(&url)
             .query(&[
@@ -326,31 +451,91 @@ impl DownstreamClient {
             ])
             .basic_auth(&self.oauth.client_id, Some(&self.oauth.client_secret))
             .form(&[("username", req.username), ("password", req.password)])
-            .send()
-            .await
+            .build()
             .map_err(|e| {
-                let elapsed_ms = started.elapsed().as_millis() as u64;
                 tracing::warn!(
                     target: "chathub_relay::downstream",
                     error = %e,
-                    elapsed_ms,
-                    "oauth2 login send failed",
+                    "oauth2 login request build failed",
                 );
-                if e.is_timeout() || e.is_connect() {
-                    RelayError::Transient
-                } else {
-                    RelayError::Http(e.to_string())
-                }
+                RelayError::Http(e.to_string())
             })?;
+
+        // 打 reqwest 最终拼好的 url 与脱敏 headers,确认 query / Basic / Content-Type 都齐。
+        let final_url = pending.url().to_string();
+        let header_dump: Vec<(String, String)> = pending
+            .headers()
+            .iter()
+            .map(|(k, v)| {
+                let val = v.to_str().unwrap_or("<bin>").to_string();
+                // Authorization 整段脱敏,其余原样
+                if k.as_str().eq_ignore_ascii_case("authorization") {
+                    (k.to_string(), Redacted(&val).to_string())
+                } else {
+                    (k.to_string(), val)
+                }
+            })
+            .collect();
+        let body_len = pending
+            .body()
+            .and_then(|b| b.as_bytes())
+            .map(|b| b.len())
+            .unwrap_or(0);
+        tracing::info!(
+            target: "chathub_relay::downstream",
+            final_url = %final_url,
+            headers = ?header_dump,
+            body_len,
+            "oauth2 login: final request snapshot (post-builder)",
+        );
+
+        let resp = self.http.execute(pending).await.map_err(|e| {
+            let elapsed_ms = started.elapsed().as_millis() as u64;
+            tracing::warn!(
+                target: "chathub_relay::downstream",
+                error = %e,
+                elapsed_ms,
+                "oauth2 login send failed",
+            );
+            if e.is_timeout() || e.is_connect() {
+                RelayError::Transient
+            } else {
+                RelayError::Http(e.to_string())
+            }
+        })?;
 
         let status = resp.status();
         let elapsed_ms = started.elapsed().as_millis() as u64;
+
+        // 响应 headers 在 info 级别打印,便于核对 Content-Type / Set-Cookie / X-* 等。
+        let resp_headers: Vec<(String, String)> = resp
+            .headers()
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("<bin>").to_string()))
+            .collect();
+        tracing::info!(
+            target: "chathub_relay::downstream",
+            status = status.as_u16(),
+            headers = ?resp_headers,
+            elapsed_ms,
+            "oauth2 login: response received",
+        );
+
         if !status.is_success() {
             let code = status.as_u16();
+            // 限 2KB body 摘要;大响应不淹没日志,但对调试 4xx/5xx 够用
+            let body_snippet = match resp.bytes().await {
+                Ok(b) => {
+                    let take = b.len().min(2048);
+                    String::from_utf8_lossy(&b[..take]).into_owned()
+                }
+                Err(e) => format!("<body read failed: {e}>"),
+            };
             tracing::warn!(
                 target: "chathub_relay::downstream",
                 status = code,
                 elapsed_ms,
+                body = %body_snippet,
                 "oauth2 login non-2xx",
             );
             return Err(map_downstream_4xx_5xx(
@@ -368,27 +553,64 @@ impl DownstreamClient {
             );
             RelayError::Http(e.to_string())
         })?;
-        let jdd: JddTokenVO =
-            unwrap_envelope::<JddTokenVO>(&body_bytes, "login")?.ok_or_else(|| {
+        // 2xx body 在 info 级别打印一份(限 2KB),失败定位最关键的就是它。
+        // accessToken.tokenValue 不在这里单独脱敏 —— 它就是这次调用要返还给客户端的 token,
+        // 与 verify_token 路径上的 Bearer 同源,日志已是受控环境,接受这一权衡。
+        let body_preview = {
+            let take = body_bytes.len().min(2048);
+            String::from_utf8_lossy(&body_bytes[..take]).into_owned()
+        };
+        tracing::info!(
+            target: "chathub_relay::downstream",
+            body = %body_preview,
+            body_len = body_bytes.len(),
+            "oauth2 login: response body",
+        );
+        let jdd: JddTokenVO = unwrap_envelope::<JddTokenVO>(&body_bytes, "login")
+            .map_err(|e| {
                 tracing::warn!(
                     target: "chathub_relay::downstream",
+                    error = %e,
+                    body = %body_preview,
+                    elapsed_ms,
+                    "oauth2 login envelope parse failed (body printed for diagnosis)",
+                );
+                e
+            })?
+            .ok_or_else(|| {
+                tracing::warn!(
+                    target: "chathub_relay::downstream",
+                    body = %body_preview,
                     elapsed_ms,
                     "oauth2 login envelope ok but data missing",
                 );
                 RelayError::Internal
             })?;
 
+        // userId 已是 string(雪花 ID 防精度丢失)。AuthSvc 仍需要 i64 给 cache prepopulate,
+        // 因此这里解析一次;解析失败属于契约错(后台发了非整型 ID),映射 Internal。
+        let employee_id: i64 = jdd.user_id.parse().map_err(|e| {
+            tracing::warn!(
+                target: "chathub_relay::downstream",
+                user_id = %jdd.user_id,
+                error = %e,
+                elapsed_ms,
+                "oauth2 login userId not parseable to i64",
+            );
+            RelayError::Internal
+        })?;
+
         tracing::info!(
             target: "chathub_relay::downstream",
-            user_id = jdd.user_id,
+            user_id = %jdd.user_id,
             elapsed_ms,
             "oauth2 login ok",
         );
 
         Ok(LoginResp {
             access_token: jdd.access_token.token_value,
-            user_id: jdd.user_id.to_string(),
-            employee_id: jdd.user_id, // 数值 ID,关键给 cache prepopulate 用
+            user_id: jdd.user_id,
+            employee_id, // 数值 ID,关键给 cache prepopulate 用
             display_name: jdd.nick_name.unwrap_or_default(),
             avatar_url: String::new(),
             role: String::new(),
@@ -401,7 +623,8 @@ impl DownstreamClient {
     /// 业务后台返 `{code:1, msg:"成功", data:null}` 形态;envelope 解析失败/code!=1 时
     /// 也只 warn-log 不阻断(logout 关键路径不应被业务报错卡住)。
     pub async fn logout(&self, client_token: &str) -> Result<(), RelayError> {
-        let url = format!("{}{}", self.base_url, self.paths.logout);
+        let base = self.source.base_url().await;
+        let url = format!("{}{}", base, self.paths.logout);
         let resp = match self.http.post(&url).bearer_auth(client_token).send().await {
             Ok(r) => r,
             Err(e) => {
@@ -449,7 +672,8 @@ impl DownstreamClient {
     /// 在请求**无 Content-Type 或无 body** 时直接返 415 Unsupported Media Type,
     /// 不进 handler。`{}` + JSON header 是最不可能被挑刺的形态。
     pub async fn verify_token(&self, client_token: &str) -> Result<VerifyTokenResp, RelayError> {
-        let url = format!("{}{}", self.base_url, self.paths.verify_token);
+        let base = self.source.base_url().await;
+        let url = format!("{}{}", base, self.paths.verify_token);
         let started = Instant::now();
 
         let resp = self
@@ -481,10 +705,29 @@ impl DownstreamClient {
         let elapsed_ms = started.elapsed().as_millis() as u64;
         if !status.is_success() {
             let code = status.as_u16();
+            // 读 body 摘要(限长 512B,nginx html 等大响应不会淹没日志)用于排查
+            // 网关/业务后台拒绝的真实原因。读失败时不淹没原 status 错误,降级为空。
+            let body_snippet = match resp.bytes().await {
+                Ok(b) => {
+                    let take = b.len().min(512);
+                    String::from_utf8_lossy(&b[..take]).into_owned()
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        target: "chathub_relay::downstream",
+                        status = code,
+                        elapsed_ms,
+                        error = %e,
+                        "verify_token body read failed",
+                    );
+                    String::new()
+                }
+            };
             tracing::warn!(
                 target: "chathub_relay::downstream",
                 status = code,
                 elapsed_ms,
+                body = %body_snippet,
                 "verify_token non-2xx",
             );
             return Err(map_downstream_4xx_5xx(
@@ -525,7 +768,8 @@ impl DownstreamClient {
         client_token: &str,
         req: NotifyPullReq<'_>,
     ) -> Result<NotifyPullResp, RelayError> {
-        let url = format!("{}{}", self.base_url, self.paths.notify_pull);
+        let base = self.source.base_url().await;
+        let url = format!("{}{}", base, self.paths.notify_pull);
         let started = Instant::now();
         let body = serde_json::to_vec(&req).map_err(|_| RelayError::Internal)?;
 
@@ -610,7 +854,8 @@ impl DownstreamClient {
         client_token: &str,
     ) -> Result<ForwardOutcome, RelayError> {
         let spec = routes.get(method).ok_or(RelayError::InvalidArg)?;
-        let url = format!("{}{}", self.base_url, spec.path);
+        let base = self.source.base_url().await;
+        let url = format!("{}{}", base, spec.path);
         let started = Instant::now();
 
         tracing::debug!(
@@ -733,6 +978,14 @@ mod tests {
     use wiremock::matchers::{body_string_contains, header, method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
+    #[tokio::test(flavor = "multi_thread")]
+    async fn base_url_source_static_trims_trailing_slash() {
+        let src = BaseUrlSource::new_static("https://dn.local/");
+        assert_eq!(src.base_url().await, "https://dn.local");
+        // representative_url 同样去尾斜杠
+        assert_eq!(src.representative_url(), "https://dn.local");
+    }
+
     /// 2026-05-17 包络化后,业务后台响应统一是 `{code:1, serviceCode, msg, data}`。
     /// 测试 fixture 用这个 helper 把原 payload 包成成功包络。
     fn envelope_ok_json(data: serde_json::Value) -> serde_json::Value {
@@ -744,6 +997,7 @@ mod tests {
         })
     }
 
+    /// 默认 fixture 用 string userId,与生产业务后台契约一致(雪花 ID 防 JS 精度丢失)。
     fn jdd_response() -> serde_json::Value {
         envelope_ok_json(serde_json::json!({
             "accessToken": {
@@ -752,7 +1006,7 @@ mod tests {
                 "issuedAt": "2026-05-16 10:00:00",
                 "expiresAt": "2026-05-16 22:00:00"
             },
-            "userId": 1234,
+            "userId": "1234",
             "username": "alice",
             "nickName": "Alice",
             "mobile": "1380000000",
@@ -794,8 +1048,84 @@ mod tests {
             .unwrap();
         assert_eq!(resp.access_token, "biz-tok-abc");
         assert_eq!(resp.user_id, "1234");
+        assert_eq!(resp.employee_id, 1234);
         assert_eq!(resp.display_name, "Alice");
         assert!(resp.wecom_accounts.is_empty()); // 永远空
+    }
+
+    /// 生产业务后台(jdd51)实际形态:userId 是 19 位雪花算法 ID 的字符串,
+    /// 远超 JS Number 安全整数范围 → 后台用 string 序列化。
+    /// 回归历史 bug:i64 直反序列化时此响应直接 envelope ok / data 解析失败。
+    #[tokio::test(flavor = "multi_thread")]
+    async fn login_oauth2_accepts_snowflake_string_user_id() {
+        let mock = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/account-app/oauth2/token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(envelope_ok_json(
+                serde_json::json!({
+                    "accessToken": {
+                        "tokenValue": "rh_wxchat:zhangle:e1388374-f614-459a-b3b8-f655e6500381",
+                        "tokenType": { "value": "Bearer" },
+                        "issuedAt": 1779959859.507000000_f64,
+                        "expiresAt": 1780564659.507000000_f64,
+                        "scopes": ["server"]
+                    },
+                    "channel": 3,
+                    "userId": "1674614956223361024",
+                    "mobile": "13043979430",
+                    "nickName": "张乐乐",
+                    "username": "zhangle"
+                }),
+            )))
+            .mount(&mock)
+            .await;
+        let client = DownstreamClient::new_with_defaults(&mock.uri()).unwrap();
+        let resp = client
+            .login(LoginReq {
+                username: "zhangle",
+                password: "YehdBPev",
+                device_id: "eca831ca-bab9-4bff-a78d-6d9b13cd6d7c",
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.access_token,
+            "rh_wxchat:zhangle:e1388374-f614-459a-b3b8-f655e6500381"
+        );
+        assert_eq!(resp.user_id, "1674614956223361024");
+        assert_eq!(resp.employee_id, 1674614956223361024_i64);
+        assert_eq!(resp.display_name, "张乐乐");
+    }
+
+    /// 向后兼容:早期 mock / 单测仍发数字 userId,relay 必须能解析。
+    #[tokio::test(flavor = "multi_thread")]
+    async fn login_oauth2_accepts_numeric_user_id() {
+        let mock = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/account-app/oauth2/token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(envelope_ok_json(
+                serde_json::json!({
+                    "accessToken": {
+                        "tokenValue": "tok-99",
+                        "tokenType": { "value": "Bearer" }
+                    },
+                    "userId": 99,
+                    "nickName": "N"
+                }),
+            )))
+            .mount(&mock)
+            .await;
+        let client = DownstreamClient::new_with_defaults(&mock.uri()).unwrap();
+        let resp = client
+            .login(LoginReq {
+                username: "u",
+                password: "p",
+                device_id: "d",
+            })
+            .await
+            .unwrap();
+        assert_eq!(resp.user_id, "99");
+        assert_eq!(resp.employee_id, 99);
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -924,6 +1254,24 @@ mod tests {
         Mock::given(method("POST"))
             .and(path(VERIFY_PATH))
             .respond_with(ResponseTemplate::new(401))
+            .mount(&mock)
+            .await;
+        let client = DownstreamClient::new_with_defaults(&mock.uri()).unwrap();
+        let err = client.verify_token("bad").await.unwrap_err();
+        assert!(matches!(err, RelayError::InvalidCreds));
+    }
+
+    /// 4xx 带 body 时,verify_token 应能读取 body 后正常映射错误(不淹没原 status 错误)。
+    /// 回归点:body 读取逻辑加入后,行为语义保持不变。
+    #[tokio::test(flavor = "multi_thread")]
+    async fn verify_token_403_with_body_still_maps_invalid_creds() {
+        let mock = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path(VERIFY_PATH))
+            .respond_with(
+                ResponseTemplate::new(403)
+                    .set_body_string(r#"{"code":-1,"msg":"forbidden by gateway"}"#),
+            )
             .mount(&mock)
             .await;
         let client = DownstreamClient::new_with_defaults(&mock.uri()).unwrap();

@@ -31,8 +31,8 @@ export const STRINGS = {
     contactEmpty: "未找到客户",
     /** 清空搜索框的无障碍标签。 */
     clearSearch: "清空搜索",
-    /** 点击的客户从未建过会话(入站模型无法主动发起)时的提示。 */
-    noConversationForCustomer: "该客户暂无会话记录",
+    /** 点击搜索结果打开会话失败(网络/服务端异常)时的提示。 */
+    openConversationFailed: "打开会话失败,请重试",
     filter: "筛选",
     accountFallback: "全部账号",
     statusAll: "全部",
@@ -181,9 +181,17 @@ export const STRINGS = {
     },
     quickReplies: {
       title: "快捷回复",
-      manage: "管理",
+      add: "新增",
+      addAriaLabel: "新增快捷回复",
       searchPlaceholder: "搜索快捷回复",
       editAriaLabel: (title: string) => `编辑 ${title}`,
+      deleteAriaLabel: (title: string) => `删除 ${title}`,
+      titlePlaceholder: "标题(如:欢迎语)",
+      contentPlaceholder: "回复内容",
+      save: "保存",
+      cancel: "取消",
+      delete: "删除",
+      empty: "暂无快捷回复",
     },
     emptyReplies: "暂无快捷回复",
     emptyTrace: "暂无客户轨迹",

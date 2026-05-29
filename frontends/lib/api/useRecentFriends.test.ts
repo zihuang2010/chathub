@@ -6,21 +6,25 @@ import { useResource } from "@/lib/data/useResource";
 
 import { useRecentFriends, type RecentFriendListEntry } from "./useRecentFriends";
 import {
-  fetchRecentFriendsLocalPage,
   fetchRecentFriendsPage,
-  type RecentFriendItem,
+  prefillRecentFriends,
+  type ListRecentFriendsResp,
+  type RecentFriendListRecord,
 } from "./recentFriends";
 
-// useResource(默认列表头部 cache 的来源)与 recentFriends IPC 全部 mock:
-// 本测聚焦「滑过头部后的本地深读尾部」语义,不验真实订阅 / 网络。
+// useResource(默认列表本地 cache 的来源)与 recentFriends IPC 全部 mock:
+// 本测聚焦「本地单源深读 + 远端水位预填」语义,不验真实订阅 / 网络。
+// 因 useResource 被 mock,真实 queryFn(读 list_top(limit))不执行 —— items 直接反映
+// mock 提供的 cache 数据;故断言聚焦「是否触发远端预填 / 是否纯本地重读」。
 vi.mock("@/lib/data/useCurrentEmployeeId", () => ({
   useCurrentEmployeeId: () => "emp-1",
 }));
 vi.mock("@/lib/data/useResource", () => ({ useResource: vi.fn() }));
 vi.mock("./recentFriends", () => ({
   fetchRecentFriendsCache: vi.fn(),
-  fetchRecentFriendsLocalPage: vi.fn(),
   fetchRecentFriendsPage: vi.fn(),
+  prefillRecentFriends: vi.fn(),
+  openFriendConversation: vi.fn(),
   markConversationRead: vi.fn(),
   muteConversation: vi.fn(),
   pinConversation: vi.fn(),
@@ -29,8 +33,13 @@ vi.mock("./recentFriends", () => ({
 }));
 
 const useResourceMock = vi.mocked(useResource);
-const localPageMock = vi.mocked(fetchRecentFriendsLocalPage);
 const pageMock = vi.mocked(fetchRecentFriendsPage);
+const prefillMock = vi.mocked(prefillRecentFriends);
+
+// 对齐 useRecentFriends 内部常量:水位触发线 100、首屏渲染深度/翻页步长 200。
+// mkEntries(n) 的 n 用来构造"本地低于/高于触发线"与"本地是否填满当前 limit"两类场景。
+const TRIGGER = 100;
+const INITIAL_LIMIT = 200;
 
 function mkEntry(
   id: string,
@@ -67,11 +76,6 @@ function mkEntry(
   };
 }
 
-/** RecentFriendItem 与 Entry 字段同名同义(fromCacheItem 一一映射),复用 mkEntry 结构。 */
-function asItems(rows: RecentFriendListEntry[]): RecentFriendItem[] {
-  return rows as unknown as RecentFriendItem[];
-}
-
 function resourceResult(
   data: RecentFriendListEntry[],
   over: Partial<UseResourceResult<RecentFriendListEntry[]>> = {},
@@ -86,108 +90,157 @@ function resourceResult(
     resyncing: false,
     connectionState: null,
     initialFetched: true,
+    isStale: false,
     ...over,
   };
 }
 
-/** 满头部 cache(200 行,ts 递减保证排序稳定),避免触发「空缓存补远端首页」门。 */
-function fullHeadCache(): RecentFriendListEntry[] {
-  return Array.from({ length: 200 }, (_, i) => mkEntry(`c${i}`, 1_000_000 - i));
+/** n 条本地 cache 条目(渲染源)。用于构造"本地低于/高于触发线"与"填满 limit"场景。 */
+function mkEntries(n: number): RecentFriendListEntry[] {
+  return Array.from({ length: n }, (_, i) => mkEntry(`c${i}`, 1000 + i));
 }
+
+/** 远端一页响应 —— 仅搜索路径用(默认列表不再走远端翻页)。 */
+function mkResp(count: number, hasMore: boolean, nextCursor: string): ListRecentFriendsResp {
+  return {
+    size: count,
+    hasMore,
+    nextCursor,
+    records: Array.from(
+      { length: count },
+      (_, i) => ({ conversationId: `r${i}` }) as RecentFriendListRecord,
+    ),
+  };
+}
+
+const okPrefill = { filled: true, localCount: 200, iters: 1, exhausted: false };
 
 afterEach(() => {
   vi.clearAllMocks();
 });
 
-describe("useRecentFriends 本地深读尾部", () => {
-  it("滑到底走本地深读:offset=200 调 local_page,且不打远端 recentFriends", async () => {
-    useResourceMock.mockReturnValue(resourceResult(fullHeadCache()));
-    localPageMock.mockResolvedValue(asItems([mkEntry("cold-1", 100), mkEntry("cold-2", 99)]));
+// 注:filledScopes 是模块级"本会话已预填"标记,跨用例累积。每个用例用**不同 accountFilter**
+// (键 = `emp-1|<account>`)规避相互污染,保证冷启动用例能观察到一次预填。
+describe("useRecentFriends 本地单源深读 + 水位预填", () => {
+  it("冷启动(本地<100):mount 触发水位预填一次,且不走远端整页翻页", async () => {
+    useResourceMock.mockReturnValue(resourceResult(mkEntries(10)));
+    prefillMock.mockResolvedValue(okPrefill);
 
-    const { result } = renderHook(() => useRecentFriends({ accountFilter: null }));
-    await act(async () => {
-      await result.current.loadMore();
-    });
+    renderHook(() => useRecentFriends({ accountFilter: "acc-cold" }));
+    await act(async () => {});
 
-    expect(localPageMock).toHaveBeenCalledWith(null, 200, 200);
-    expect(pageMock).not.toHaveBeenCalled(); // 零网络:不走远端业务接口
-    expect(result.current.items.some((i) => i.conversationId === "cold-1")).toBe(true);
+    expect(prefillMock).toHaveBeenCalledTimes(1);
+    expect(prefillMock).toHaveBeenCalledWith("acc-cold");
+    expect(pageMock).not.toHaveBeenCalled(); // 默认列表不再走远端 recentFriends 整页翻页
   });
 
-  it("offset 随尾部累积递增:第二页从 400 起", async () => {
-    useResourceMock.mockReturnValue(resourceResult(fullHeadCache()));
-    localPageMock
-      .mockResolvedValueOnce(
-        asItems(Array.from({ length: 200 }, (_, i) => mkEntry(`t${i}`, 900 - i))),
-      )
-      .mockResolvedValueOnce(asItems([mkEntry("t200", 50)]));
+  it("温缓存(本地≥100):mount 不预填、零远端", async () => {
+    useResourceMock.mockReturnValue(resourceResult(mkEntries(TRIGGER + 50)));
 
-    const { result } = renderHook(() => useRecentFriends({ accountFilter: null }));
-    await act(async () => {
-      await result.current.loadMore();
-    });
-    await act(async () => {
-      await result.current.loadMore();
-    });
+    const { result } = renderHook(() => useRecentFriends({ accountFilter: "acc-warm" }));
+    await act(async () => {});
 
-    expect(localPageMock).toHaveBeenNthCalledWith(1, null, 200, 200);
-    expect(localPageMock).toHaveBeenNthCalledWith(2, null, 400, 200);
+    expect(prefillMock).not.toHaveBeenCalled();
+    expect(pageMock).not.toHaveBeenCalled();
+    expect(result.current.items).toHaveLength(TRIGGER + 50);
   });
 
-  it("某页返回 < 一页 → 本地到底:defaultHasMore=false 且后续 loadMore 永久 no-op", async () => {
-    useResourceMock.mockReturnValue(resourceResult(fullHeadCache()));
-    localPageMock.mockResolvedValue(asItems([mkEntry("cold-1", 100)])); // 1 < 200
+  it("loadMore 纯本地深读:本地填满 limit 则涨深度并重读,不打远端", async () => {
+    const res = resourceResult(mkEntries(INITIAL_LIMIT)); // 本地填满首屏深度
+    useResourceMock.mockReturnValue(res);
 
-    const { result } = renderHook(() => useRecentFriends({ accountFilter: null }));
+    const { result } = renderHook(() => useRecentFriends({ accountFilter: "acc-deep" }));
+    await act(async () => {});
+    vi.mocked(res.refresh).mockClear();
+
     await act(async () => {
       await result.current.loadMore();
     });
+
+    expect(pageMock).not.toHaveBeenCalled(); // 零远端
+    expect(prefillMock).not.toHaveBeenCalled();
+    expect(res.refresh).toHaveBeenCalled(); // 涨 limit 后本地重读
+  });
+
+  it("loadMore 本地见底(cacheItems<limit):no-op,不重读不联网", async () => {
+    const res = resourceResult(mkEntries(INITIAL_LIMIT - 50)); // 读不满当前 limit ⇒ 见底
+    useResourceMock.mockReturnValue(res);
+
+    const { result } = renderHook(() => useRecentFriends({ accountFilter: "acc-bottom" }));
+    await act(async () => {});
+    vi.mocked(res.refresh).mockClear();
+    prefillMock.mockClear();
+
+    await act(async () => {
+      await result.current.loadMore();
+    });
+
+    expect(pageMock).not.toHaveBeenCalled();
+    expect(prefillMock).not.toHaveBeenCalled();
+    expect(res.refresh).not.toHaveBeenCalled(); // 见底:不重读
     expect(result.current.defaultHasMore).toBe(false);
-
-    localPageMock.mockClear();
-    await act(async () => {
-      await result.current.loadMore();
-    });
-    expect(localPageMock).not.toHaveBeenCalled();
   });
 
-  it("localTail 与 cache 重叠时去重,且 cache(权威)版本压过 tail 旧快照", async () => {
-    const cache = [
-      mkEntry("convX", 5000, { lastMessageSummary: "NEW" }),
-      ...Array.from({ length: 199 }, (_, i) => mkEntry(`c${i}`, 4000 - i)),
-    ];
-    useResourceMock.mockReturnValue(resourceResult(cache));
-    // 深读尾部捞到 convX 的旧快照(冒泡前)
-    localPageMock.mockResolvedValue(
-      asItems([mkEntry("convX", 300, { lastMessageSummary: "OLD" })]),
-    );
+  it("resync 跃迁(false→true):触发 force 水位预填(绕过已填标记)", async () => {
+    useResourceMock.mockReturnValue(resourceResult(mkEntries(TRIGGER + 50), { resyncing: false }));
+    prefillMock.mockResolvedValue(okPrefill);
 
-    const { result } = renderHook(() => useRecentFriends({ accountFilter: null }));
+    const { rerender } = renderHook(() => useRecentFriends({ accountFilter: "acc-resync" }));
+    await act(async () => {});
+    expect(prefillMock).not.toHaveBeenCalled(); // 温缓存 mount 不预填
+
+    useResourceMock.mockReturnValue(resourceResult(mkEntries(TRIGGER + 50), { resyncing: true }));
     await act(async () => {
-      await result.current.loadMore();
+      rerender();
     });
 
-    const xs = result.current.items.filter((i) => i.conversationId === "convX");
-    expect(xs).toHaveLength(1);
-    expect(xs[0].lastMessageSummary).toBe("NEW");
+    expect(prefillMock).toHaveBeenCalledTimes(1);
   });
 
-  it("切账号重置 localTail:旧账号深读尾部不带入新账号", async () => {
-    useResourceMock.mockReturnValue(resourceResult(fullHeadCache()));
-    localPageMock.mockResolvedValue(asItems([mkEntry("cold-1", 100)]));
+  it("搜索走临时态:size=20 且 persist=false(不写库不污染默认列表)", async () => {
+    useResourceMock.mockReturnValue(resourceResult(mkEntries(TRIGGER + 50)));
 
-    const { result, rerender } = renderHook(
+    const { result } = renderHook(() => useRecentFriends({ accountFilter: "acc-search" }));
+    await act(async () => {});
+
+    pageMock.mockResolvedValueOnce({
+      size: 20,
+      hasMore: false,
+      nextCursor: "",
+      records: [{ conversationId: "match-1" } as RecentFriendListRecord],
+    });
+    await act(async () => {
+      await result.current.searchRemote({ externalName: "foo" });
+    });
+
+    const searchCall = pageMock.mock.calls[pageMock.mock.calls.length - 1];
+    expect(searchCall[0]).toEqual(expect.objectContaining({ size: 20, externalName: "foo" }));
+    expect(searchCall[1]).toBe(false); // persist=false:搜索结果不写本地
+    expect(result.current.filtered?.map((i) => i.conversationId)).toEqual(["match-1"]);
+  });
+
+  it("切账号:切到本地浅的账号触发该账号预填(按 scope 各自判定)", async () => {
+    useResourceMock.mockReturnValue(resourceResult(mkEntries(TRIGGER + 50)));
+    prefillMock.mockResolvedValue(okPrefill);
+
+    const { rerender } = renderHook(
       (props: { accountFilter: string | null }) => useRecentFriends(props),
-      { initialProps: { accountFilter: null } },
+      { initialProps: { accountFilter: "acc-sw1" } },
     );
-    await act(async () => {
-      await result.current.loadMore();
-    });
-    expect(result.current.items.some((i) => i.conversationId === "cold-1")).toBe(true);
+    await act(async () => {});
+    expect(prefillMock).not.toHaveBeenCalled(); // acc-sw1 本地≥100,不预填
 
-    act(() => {
-      rerender({ accountFilter: "wa-2" });
+    useResourceMock.mockReturnValue(resourceResult(mkEntries(10)));
+    await act(async () => {
+      rerender({ accountFilter: "acc-sw2" });
     });
-    expect(result.current.items.some((i) => i.conversationId === "cold-1")).toBe(false);
+    await act(async () => {});
+
+    expect(prefillMock).toHaveBeenCalledWith("acc-sw2");
+  });
+
+  it("mkResp helper 自洽(仅搜索路径构造远端响应用)", () => {
+    const r = mkResp(1, false, "");
+    expect(r.records).toHaveLength(1);
   });
 });

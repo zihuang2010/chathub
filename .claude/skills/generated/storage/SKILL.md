@@ -1,11 +1,11 @@
 ---
 name: storage
-description: "Skill for the Storage area of chathub. 21 symbols across 4 files."
+description: "Skill for the Storage area of chathub. 32 symbols across 8 files."
 ---
 
 # Storage
 
-21 symbols | 4 files | Cohesion: 86%
+32 symbols | 8 files | Cohesion: 84%
 
 ## When to Use
 
@@ -15,12 +15,16 @@ description: "Skill for the Storage area of chathub. 21 symbols across 4 files."
 
 ## Key Files
 
-| File                                                        | Symbols                                                                        |
-| ----------------------------------------------------------- | ------------------------------------------------------------------------------ |
-| `backends/crates/chathub-relay/src/storage/events.rs`       | new, insert_batch, query_since, earliest_for, cleanup_older_than (+9)          |
-| `backends/crates/chathub-relay/src/storage/mod.rs`          | open, pool, open_leaves_only_hub_events_after_migrations, reopen_is_idempotent |
-| `backends/crates/chathub-state/src/pool.rs`                 | pool, in_memory_pool_applies_all_migrations                                    |
-| `frontends/components/workbench/messages/ChatArea.test.tsx` | get                                                                            |
+| File                                                        | Symbols                                                                             |
+| ----------------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| `backends/crates/chathub-relay/src/storage/events.rs`       | new, insert_batch, query_since, earliest_for, make_log (+9)                         |
+| `backends/crates/chathub-relay/src/downstream.rs`           | new_static, new_nacos, new_with_source, base_url_source_static_trims_trailing_slash |
+| `backends/crates/chathub-relay/src/main.rs`                 | main, now_ms, wait_for_shutdown_signal, init_tracing                                |
+| `backends/crates/chathub-relay/src/storage/mod.rs`          | open, pool, open_leaves_only_hub_events_after_migrations, reopen_is_idempotent      |
+| `backends/crates/chathub-relay/src/nacos.rs`                | register_push, deregister_push                                                      |
+| `backends/crates/chathub-state/src/pool.rs`                 | pool, in_memory_pool_applies_all_migrations                                         |
+| `backends/crates/chathub-relay/src/hub_service.rs`          | with_capacity                                                                       |
+| `frontends/components/workbench/messages/ChatArea.test.tsx` | get                                                                                 |
 
 ## Entry Points
 
@@ -30,7 +34,7 @@ Start here when exploring this area:
 - **`insert_batch`** (Function) — `backends/crates/chathub-relay/src/storage/events.rs:39`
 - **`query_since`** (Function) — `backends/crates/chathub-relay/src/storage/events.rs:86`
 - **`earliest_for`** (Function) — `backends/crates/chathub-relay/src/storage/events.rs:138`
-- **`cleanup_older_than`** (Function) — `backends/crates/chathub-relay/src/storage/events.rs:162`
+- **`new_static`** (Function) — `backends/crates/chathub-relay/src/downstream.rs:84`
 
 ## Key Symbols
 
@@ -40,6 +44,12 @@ Start here when exploring this area:
 | `insert_batch`                                                  | Function | `backends/crates/chathub-relay/src/storage/events.rs` | 39   |
 | `query_since`                                                   | Function | `backends/crates/chathub-relay/src/storage/events.rs` | 86   |
 | `earliest_for`                                                  | Function | `backends/crates/chathub-relay/src/storage/events.rs` | 138  |
+| `new_static`                                                    | Function | `backends/crates/chathub-relay/src/downstream.rs`     | 84   |
+| `new_nacos`                                                     | Function | `backends/crates/chathub-relay/src/downstream.rs`     | 89   |
+| `new_with_source`                                               | Function | `backends/crates/chathub-relay/src/downstream.rs`     | 306  |
+| `with_capacity`                                                 | Function | `backends/crates/chathub-relay/src/hub_service.rs`    | 137  |
+| `register_push`                                                 | Function | `backends/crates/chathub-relay/src/nacos.rs`          | 68   |
+| `deregister_push`                                               | Function | `backends/crates/chathub-relay/src/nacos.rs`          | 95   |
 | `cleanup_older_than`                                            | Function | `backends/crates/chathub-relay/src/storage/events.rs` | 162  |
 | `open`                                                          | Function | `backends/crates/chathub-relay/src/storage/mod.rs`    | 42   |
 | `pool`                                                          | Function | `backends/crates/chathub-relay/src/storage/mod.rs`    | 88   |
@@ -50,12 +60,6 @@ Start here when exploring this area:
 | `event_log_insert_batch_is_idempotent_on_duplicate_primary_key` | Function | `backends/crates/chathub-relay/src/storage/events.rs` | 230  |
 | `event_log_query_since_returns_ordered_events`                  | Function | `backends/crates/chathub-relay/src/storage/events.rs` | 251  |
 | `event_log_query_since_includes_batch_internal_order`           | Function | `backends/crates/chathub-relay/src/storage/events.rs` | 269  |
-| `event_log_isolates_per_employee`                               | Function | `backends/crates/chathub-relay/src/storage/events.rs` | 284  |
-| `event_log_earliest_for_returns_min_notify_seq`                 | Function | `backends/crates/chathub-relay/src/storage/events.rs` | 298  |
-| `event_log_cleanup_deletes_old_rows_up_to_limit`                | Function | `backends/crates/chathub-relay/src/storage/events.rs` | 314  |
-| `open_leaves_only_hub_events_after_migrations`                  | Function | `backends/crates/chathub-relay/src/storage/mod.rs`    | 98   |
-| `reopen_is_idempotent`                                          | Function | `backends/crates/chathub-relay/src/storage/mod.rs`    | 130  |
-| `in_memory_pool_applies_all_migrations`                         | Function | `backends/crates/chathub-state/src/pool.rs`           | 84   |
 
 ## Execution Flows
 
@@ -66,9 +70,13 @@ Start here when exploring this area:
 
 ## Connected Areas
 
-| Area      | Connections |
-| --------- | ----------- |
-| Cluster_6 | 1 calls     |
+| Area        | Connections |
+| ----------- | ----------- |
+| Tests       | 1 calls     |
+| Cluster_97  | 1 calls     |
+| Cluster_98  | 1 calls     |
+| Cluster_137 | 1 calls     |
+| Cluster_51  | 1 calls     |
 
 ## How to Explore
 

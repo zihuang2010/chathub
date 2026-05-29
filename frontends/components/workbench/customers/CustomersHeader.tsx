@@ -2,7 +2,7 @@ import { memo } from "react";
 
 import type { Account } from "@/lib/types/account";
 
-import type { CardDensity } from "./constants";
+import type { CustomerViewMode } from "./constants";
 import { CustomersFilterBar } from "./CustomersFilterBar";
 import { STRINGS } from "./strings";
 
@@ -16,13 +16,13 @@ interface CustomersHeaderProps {
   onClearAccounts: () => void;
 
   onReset: () => void;
-  density: CardDensity;
-  onDensityChange: (density: CardDensity) => void;
+  viewMode: CustomerViewMode;
+  onViewModeChange: (viewMode: CustomerViewMode) => void;
 }
 
 /**
  * 客户管理页头部外壳:标题行 + 主筛选栏。阶段 3 起客户列表为纯 cursor 滚动,
- * 不再有 KPI Tab 条 / 客户端分页 —— 筛选只剩账号选择 + 服务端 externalId 搜索。
+ * 不再有 KPI Tab 条 / 客户端分页 —— 筛选只剩账号选择 + 服务端 externalName 搜索。
  */
 export const CustomersHeader = memo(function CustomersHeader(props: CustomersHeaderProps) {
   return (
@@ -41,8 +41,8 @@ export const CustomersHeader = memo(function CustomersHeader(props: CustomersHea
         onToggleAccount={props.onToggleAccount}
         onClearAccounts={props.onClearAccounts}
         onReset={props.onReset}
-        density={props.density}
-        onDensityChange={props.onDensityChange}
+        viewMode={props.viewMode}
+        onViewModeChange={props.onViewModeChange}
       />
     </header>
   );

@@ -44,6 +44,10 @@ interface ChatAreaProps {
   onLoadMoreHistory?: () => Promise<void> | void;
   /** Quick-reply templates surfaced in the composer popover. */
   quickReplies?: QuickReply[];
+  /** 快捷回复增删改回调:透传给 composer popover 内的管理 UI。 */
+  onCreateQuickReply?: (title: string, content: string) => void;
+  onUpdateQuickReply?: (id: string, title: string, content: string) => void;
+  onDeleteQuickReply?: (id: string) => void;
   /** Conversations available as @mention candidates in the composer. */
   mentionCandidates?: Conversation[];
   /**
@@ -69,6 +73,9 @@ export const ChatArea = memo(function ChatArea({
   hasMoreHistory = false,
   onLoadMoreHistory,
   quickReplies,
+  onCreateQuickReply,
+  onUpdateQuickReply,
+  onDeleteQuickReply,
   mentionCandidates,
   onSendMessage,
   onLeaveMarkRead,
@@ -315,6 +322,9 @@ export const ChatArea = memo(function ChatArea({
         onToggleDetails={onToggleDetails}
         onSend={handleSend}
         quickReplies={quickReplies}
+        onCreateQuickReply={onCreateQuickReply}
+        onUpdateQuickReply={onUpdateQuickReply}
+        onDeleteQuickReply={onDeleteQuickReply}
         mentionCandidates={mentionCandidates}
         replyDraft={activeReplyDraft}
         onCancelReply={() => setReplyDraft(null)}

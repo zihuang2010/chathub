@@ -49,6 +49,9 @@ arc-swap           = "1.7"
 im                 = "15"
 moka               = { version = "0.12", features = ["future"] }
 num_cpus           = "1.16"
+# Nacos 服务注册/发现 —— 只要 naming + http 鉴权,不引入 config 模块。
+# 注:nacos-sdk 0.8 内部用 tonic/prost 0.14,与本仓 0.12/0.13 并存(互不传递类型,Cargo 自动多版本)。
+nacos-sdk          = { version = "0.8", default-features = false, features = ["naming", "auth-by-http"] }
 # Plan 5 dev-only ----
 wiremock           = "0.6"
 tokio-stream       = "0.1"

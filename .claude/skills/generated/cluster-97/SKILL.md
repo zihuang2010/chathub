@@ -1,9 +1,9 @@
 ---
-name: cluster-90
-description: "Skill for the Cluster_90 area of chathub. 15 symbols across 2 files."
+name: cluster-97
+description: "Skill for the Cluster_97 area of chathub. 15 symbols across 2 files."
 ---
 
-# Cluster_90
+# Cluster_97
 
 15 symbols | 2 files | Cohesion: 90%
 
@@ -11,7 +11,7 @@ description: "Skill for the Cluster_90 area of chathub. 15 symbols across 2 file
 
 - Working with code in `backends/`
 - Understanding how prepopulate, app work
-- Modifying cluster_90-related functionality
+- Modifying cluster_97-related functionality
 
 ## Key Files
 
@@ -67,11 +67,11 @@ Start here when exploring this area:
 | Area       | Connections |
 | ---------- | ----------- |
 | Storage    | 3 calls     |
-| Cluster_91 | 2 calls     |
-| Cluster_68 | 1 calls     |
+| Cluster_98 | 2 calls     |
+| Cluster_87 | 1 calls     |
 
 ## How to Explore
 
 1. `gitnexus_context({name: "prepopulate"})` — see callers and callees
-2. `gitnexus_query({query: "cluster_90"})` — find related execution flows
+2. `gitnexus_query({query: "cluster_97"})` — find related execution flows
 3. Read key files listed above for implementation details

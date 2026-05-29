@@ -8,6 +8,7 @@ import { WorkbenchPanel } from "@/components/workbench/WorkbenchPanel";
 import type { Account } from "@/lib/types/account";
 import { adaptFriendDetailToCustomer, type WecomFriend } from "@/lib/api/customers";
 import { useFriendDetail } from "@/lib/api/useFriendDetail";
+import { useQuickReplies } from "@/lib/api/useQuickReplies";
 import { useRecentFriends, type RecentFriendListEntry } from "@/lib/api/useRecentFriends";
 import { sendMessage } from "@/lib/api/messageHistory";
 import { appReady } from "@/lib/data/appReady";
@@ -35,7 +36,6 @@ import { useDetailsWindow } from "./useDetailsWindow";
 // 引用稳定(同一模块级变量在 React render 间不变),下游 memo 不因每次 render 失效。
 // 类型不用 readonly 以匹配 ChatArea/CustomerDetails 既有 props 形态;
 // 通过 module-level 常量 + 不导出避免外部 mutation。
-const EMPTY_QUICK_REPLIES: QuickReply[] = [];
 const EMPTY_MENTION_CANDIDATES: Conversation[] = [];
 // 静态 props,hoist 到模块级避免每次 render 新建对象(被多个 ErrorBoundary 复用)。
 const ERROR_BOUNDARY_PROPS = {
@@ -90,8 +90,8 @@ function clampField(value: string): string {
 
 function adaptEntryToConversation(entry: RecentFriendListEntry): Conversation {
   const draftText = extractDraftPreview(entry.localDraftText);
-  // 列表行时间用 max(lastMessageTimeMs, localDraftAtMs),与 useRecentFriends 的
-  // multiKeySort 排序键一致:有草稿且新于最后消息时显示草稿时间,新消息进来反超
+  // 列表行时间用 max(lastMessageTimeMs, localDraftAtMs),与后端 list_top 的多键
+  // 排序键一致:有草稿且新于最后消息时显示草稿时间,新消息进来反超
   // 草稿时间后自动切回消息时间。否则会出现"行按草稿时间排到顶部、但右上角
   // 时间字段是旧消息时间"的视觉错位(微信桌面端约定)。
   const effectiveTimeMs = Math.max(entry.lastMessageTimeMs, entry.localDraftAtMs);
@@ -186,6 +186,7 @@ export function MessagesPage({ accounts }: MessagesPageProps) {
     items: recentEntries,
     filtered,
     initialFetched,
+    switching,
     pin: pinRecent,
     remove: removeRecent,
     mute: muteRecent,
@@ -195,8 +196,7 @@ export function MessagesPage({ accounts }: MessagesPageProps) {
     loadMoreFiltered,
     defaultLoading,
     filteredLoading,
-    searchRemote,
-    exitFilter,
+    openFriend,
   } = useRecentFriends({
     accountFilter: selectedAccountId,
   });
@@ -314,11 +314,16 @@ export function MessagesPage({ accounts }: MessagesPageProps) {
   });
   // 客户资料:按选中会话归属的 (wecomAccountId, externalUserId) 拉好友详情。
   // 两者缺一时 hook 不发请求、detail 为 null,CustomerDetails 渲染空态。
+  // 用 detailsOpen 收口 id:面板收起时传 undefined → 不取数,避免切会话时白拉一份不展示的资料;
+  // 面板展开才补齐 id 触发拉取(展开期间切会话会重新拉新客户资料)。
   const {
     detail: customerDetail,
     loading: customerLoading,
     refresh: refreshCustomer,
-  } = useFriendDetail(selectedEntry?.wecomAccountId, selectedEntry?.externalUserId);
+  } = useFriendDetail(
+    detailsOpen ? selectedEntry?.wecomAccountId : undefined,
+    detailsOpen ? selectedEntry?.externalUserId : undefined,
+  );
   const customer = useMemo(
     () =>
       customerDetail
@@ -328,6 +333,14 @@ export function MessagesPage({ accounts }: MessagesPageProps) {
           })
         : null,
     [customerDetail, selectedEntry],
+  );
+
+  // 快捷回复(纯客户端本地表,按登录员工隔离):CRUD 全落本地,popover 内可增删改。
+  // 行存 content 映射成 UI 的 preview(面板展示 + 选中即插入此文本)。
+  const quickReplies = useQuickReplies();
+  const quickReplyItems = useMemo<QuickReply[]>(
+    () => quickReplies.replies.map((r) => ({ id: r.id, title: r.title, preview: r.content })),
+    [quickReplies.replies],
   );
 
   // 真发送(text-only):后端落库出站气泡 + 发 conversation-messages ChangeNotice,
@@ -442,57 +455,51 @@ export function MessagesPage({ accounts }: MessagesPageProps) {
   );
 
   // ─── 搜索客户 → 打开会话 ─────────────────────────────────────────────────
-  // 顶部搜索框(MessagesContactSearch)直接搜 list_friends(全部客户),点击某客户后由这里把
-  // 消息页定位到对应会话。WecomFriend 不带 conversationId,故:
-  //   ① 先在已加载最近会话(recentEntries)里按 (account, externalUserId) 命中 → 直接选中;
-  //   ② 未命中则用现有 searchRemote 把匹配会话拉进 filtered,由下方 effect 精确选中;
-  //   ③ filtered 回来仍无匹配 = 该客户从未建过会话(入站模型无法主动发起)→ toast + 退出筛选。
-  const pendingOpenRef = useRef<{ wecomAccountId: string; externalUserId: string } | null>(null);
+  // 顶部搜索框(MessagesContactSearch)直接搜 list_friends(全部客户),点击某客户后由后端
+  // open_friend_conversation 一次性:recentFriends(externalId+includeFirstHistory)定位/建会话、
+  // upsert 接待列表、首屏历史冷写入、set_opened 提到非置顶顶部、emit ChangeNotice。
+  // conversationId 取服务端权威 firstConversationId(客户端不自算)。命令落地后行经 useResource
+  // 重读进 recentEntries,可能慢于 await 返回,故挂 pendingOpenId,等行出现再选中(见下方 effect)。
+  const pendingOpenIdRef = useRef<string | null>(null);
   const handleOpenCustomer = useCallback(
-    (friend: WecomFriend) => {
-      const hit = recentEntries.find(
-        (e) =>
-          e.wecomAccountId === friend.wecomAccountId && e.externalUserId === friend.externalUserId,
-      );
-      if (hit) {
-        pendingOpenRef.current = null;
-        if (filtered !== null) void exitFilter();
-        setSelectedId(hit.conversationId);
-        if (hit.hasUnread || hit.unreadCount > 0) void markReadRecent(hit.conversationId);
-        return;
+    async (friend: WecomFriend) => {
+      // wecomName/wecomAlias 仅用于"无记录建空白行"时展示归属账号;从 accounts 反查。
+      const accountName = accounts.find((a) => a.id === friend.wecomAccountId)?.name ?? "";
+      try {
+        const conversationId = await openFriend({
+          wecomAccountId: friend.wecomAccountId,
+          externalUserId: friend.externalUserId,
+          externalName: friend.externalName,
+          externalAvatar: friend.externalAvatar,
+          externalMobile: friend.externalMobile,
+          wecomName: accountName,
+          wecomAlias: accountName,
+        });
+        pendingOpenIdRef.current = conversationId;
+      } catch {
+        showToast(STRINGS.conversationList.openConversationFailed, { type: "error" });
       }
-      pendingOpenRef.current = {
-        wecomAccountId: friend.wecomAccountId,
-        externalUserId: friend.externalUserId,
-      };
-      void searchRemote({ externalName: friend.externalName });
     },
-    [recentEntries, filtered, exitFilter, searchRemote, markReadRecent],
+    [accounts, openFriend],
   );
 
-  // searchRemote 落地(filtered 更新)后,按 pending 客户精确匹配会话并选中;无匹配则提示。
+  // openFriend 落地后,等 recentEntries 重读出该会话行再选中(+ 有未读则标已读)。
+  // 不在 await 后直接 setSelectedId:行可能尚未随 ChangeNotice 重读进列表,直接设会被
+  // "列表无此 id → 自动选第一项"的 effect 覆盖。行被 set_opened 提到非置顶顶部,出现即选中。
   useEffect(() => {
-    const pending = pendingOpenRef.current;
-    if (!pending || filtered === null) return;
-    const match = filtered.find(
-      (e) =>
-        e.wecomAccountId === pending.wecomAccountId && e.externalUserId === pending.externalUserId,
-    );
-    pendingOpenRef.current = null;
-    if (match) {
-      setSelectedId(match.conversationId);
-      if (match.hasUnread || match.unreadCount > 0) void markReadRecent(match.conversationId);
-    } else {
-      showToast(STRINGS.conversationList.noConversationForCustomer, { type: "info" });
-      void exitFilter();
-    }
-  }, [filtered, exitFilter, markReadRecent]);
+    const pid = pendingOpenIdRef.current;
+    if (!pid) return;
+    const entry = recentEntries.find((e) => e.conversationId === pid);
+    if (!entry) return;
+    pendingOpenIdRef.current = null;
+    setSelectedId(pid);
+    if (entry.hasUnread || entry.unreadCount > 0) void markReadRecent(pid);
+  }, [recentEntries, markReadRecent]);
 
-  // 搜索框清空:若处于 filtered 态则退出回默认列表。
+  // 搜索框清空:撤销待选中的打开请求(列表本就是默认态,无需额外处理)。
   const handleClearSearch = useCallback(() => {
-    pendingOpenRef.current = null;
-    if (filtered !== null) void exitFilter();
-  }, [filtered, exitFilter]);
+    pendingOpenIdRef.current = null;
+  }, []);
 
   // 滚动到底分派:筛选态翻 filtered 续页,否则翻默认列表续页。loading 同源切换防重入;
   // 是否到底由 hook 内部 cursor/hasMore 自守(loadMore/loadMoreFiltered 到底即 no-op)。
@@ -526,6 +533,7 @@ export function MessagesPage({ accounts }: MessagesPageProps) {
           onClearSearch={handleClearSearch}
           onLoadMore={handleLoadMore}
           loading={listLoading}
+          switching={switching}
         />
       </ErrorBoundary>
       <div
@@ -587,8 +595,10 @@ export function MessagesPage({ accounts }: MessagesPageProps) {
               onLoadMoreHistory={loadMoreMessages}
               onSendMessage={handleSendMessage}
               onLeaveMarkRead={markReadRecent}
-              // TODO(quick-replies API): 接通 useQuickReplies(employeeId) 后透传;暂空
-              quickReplies={EMPTY_QUICK_REPLIES}
+              quickReplies={quickReplyItems}
+              onCreateQuickReply={quickReplies.create}
+              onUpdateQuickReply={quickReplies.update}
+              onDeleteQuickReply={quickReplies.remove}
               // TODO(@mention API): 接通 useMentionCandidates(conversationId) 后透传
               mentionCandidates={EMPTY_MENTION_CANDIDATES}
             />
@@ -606,7 +616,7 @@ export function MessagesPage({ accounts }: MessagesPageProps) {
         <ErrorBoundary {...ERROR_BOUNDARY_PROPS}>
           <CustomerDetails
             customer={customer}
-            quickReplies={EMPTY_QUICK_REPLIES}
+            quickReplies={quickReplyItems}
             onRefresh={() => void refreshCustomer(true)}
             refreshing={customerLoading}
           />

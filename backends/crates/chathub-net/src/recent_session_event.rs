@@ -4,60 +4,55 @@
 //! 规范 §8:`MESSAGE_UPSERT` 只更新消息气泡(由 `MessageEventApplier` 落),**不更新**最近接待
 //! 列表;摘要变化由同 batch 的 `SESSION_SUMMARY_UPSERT` 表达。故本 applier 只消费后者。
 //!
-//! 应用策略:
+//! 应用策略 —— 纯 UPSERT(事件路径**不**回拉 recentFriends):
 //!
 //!   1. **已知 conversation_id → 分字段部分更新**:`decode_summary` 解 `sessionSummary{}`
 //!      (规范 §9.2),`store.apply_summary` 只覆盖摘要列与非空资料列(§9.3「用服务端
 //!      sessionSummary 覆盖本地同字段」)。`wecomName/externalMobile` 等摘要不携带的展示
 //!      字段、以及 pinned/local_draft_at_ms 等本地列一律保留不动(写入纪律,见 V7 migration)。
 //!
-//!   2. **未知 conversation_id / 瘦 payload → fallback**:拉一次 `list_recent_friends` 首页
-//!      (cursor="",无筛选)对齐,由服务端权威补齐展示字段(§9.3「静默调用 recentFriends」)。
-//!      服务端按 last_message_time 倒序保证新会话出现在头部。
+//!   2. **未知 conversation_id → 直接 INSERT**:用事件顶层身份(conversationId/wecomAccountId/
+//!      externalUserId)+ sessionSummary,并从本地账号缓存(`AccountCacheStore`)补
+//!      `wecomName/wecomAccount/wecomAlias`,拼整行 `upsert_remote_one` 入库。客户名/头像/手机号
+//!      事件没带就先留空,由后续 `FRIEND_UPSERT`/`SUMMARY_PROFILE_CHANGED`/刷新补齐。
+//!      离线期新会话经 backfill 补回的 `SESSION_SUMMARY_UPSERT` 即走此路,无需拉首页。
 //!
-//!   3. **throttle**:同一秒内多次 fallback 合并为一次,避免事件风暴时多次拉首页。
+//!   3. **瘦 payload**(无 conversationId 或无 sessionSummary)→ skip + 日志;粗粒度对齐交给
+//!      连接级 resync / 用户刷新,事件路径不再为此回拉。
 
 use crate::change_notice::{ChangeNotice, ChangeScope, ChangeTopic};
-use crate::error::AuthError;
-use crate::hub::{HubClient, ListRecentFriendsRequest, RecentFriendRecord};
+use crate::hub::RecentFriendRecord;
 use crate::message_sync::parse_server_time_to_ms;
 use chathub_proto::v1::PushBatchOut;
-use chathub_state::{RecentSessionRemote, RecentSessionSummary, RecentSessionsStore};
+use chathub_state::{
+    AccountCacheStore, RecentSessionRemote, RecentSessionSummary, RecentSessionsStore,
+    WecomAccountRow,
+};
 use std::collections::HashSet;
-use std::sync::atomic::{AtomicI64, Ordering};
-use std::sync::Arc;
 use tokio::sync::broadcast;
 use tracing::warn;
-
-/// fallback 拉首页时使用的 page size。固定 20,服务端文档示例值。
-const FALLBACK_PAGE_SIZE: u32 = 20;
-
-/// fallback 节流窗口:1 秒内多次 fallback 合并为一次。
-const FALLBACK_THROTTLE_MS: i64 = 1000;
 
 // C6 拆双发:`RecentFriendsChanged` 类型已删除。统一走 ChangeNotice + hub:change。
 
 #[derive(Clone)]
 pub struct RecentSessionEventApplier {
     store: RecentSessionsStore,
-    hub: HubClient,
+    /// 新会话 INSERT 时补 `wecom_name/account/alias`(事件不带、本地账号缓存有)。
+    accounts: AccountCacheStore,
     /// 统一变更通知通道。
     change_notice_tx: broadcast::Sender<ChangeNotice>,
-    /// 最近一次 fallback 触发的 unix ms;throttle 用。
-    last_fallback_ms: Arc<AtomicI64>,
 }
 
 impl RecentSessionEventApplier {
     pub fn new(
         store: RecentSessionsStore,
-        hub: HubClient,
+        accounts: AccountCacheStore,
         change_notice_tx: broadcast::Sender<ChangeNotice>,
     ) -> Self {
         Self {
             store,
-            hub,
+            accounts,
             change_notice_tx,
-            last_fallback_ms: Arc::new(AtomicI64::new(0)),
         }
     }
 
@@ -79,7 +74,8 @@ impl RecentSessionEventApplier {
 
         let mut seen = false;
         let mut applied = 0usize;
-        let mut needs_fallback = false;
+        // 新会话 INSERT 时补企微展示字段;懒读一次(本批确有未知会话才读账号缓存)。
+        let mut accounts_cache: Option<Vec<WecomAccountRow>> = None;
         // 聚合本批涉及的 wecom_account_id,用于 ChangeNotice scope。
         let mut accounts_in_batch: HashSet<String> = HashSet::new();
 
@@ -98,49 +94,105 @@ impl RecentSessionEventApplier {
                 accounts_in_batch.insert(acct.to_string());
             }
 
-            // 必备字段:conversationId(摘要字段在 sessionSummary{} 里,由 decode_summary 解)
+            // 必备:conversationId(顶层定位)+ 可解的 sessionSummary。任一缺失 = 瘦 payload,
+            // 无法入库 → skip(事件路径不回拉,交给 resync/刷新)。
             let conv_id = match ev.get("conversationId").and_then(|v| v.as_str()) {
                 Some(s) if !s.is_empty() => s,
-                _ => {
-                    needs_fallback = true;
-                    continue;
-                }
+                _ => continue,
+            };
+            let summary = match decode_summary(ev, &employee_id_str) {
+                Some(s) => s,
+                None => continue,
             };
 
-            // 未知 conversation_id → fallback(不尝试 INSERT,见模块注释 / §9.3)
+            // 纯 UPSERT:有则更新(保留展示列),无则从事件 + 账号缓存新增。
             let exists = match self.store.exists(&employee_id_str, conv_id).await {
                 Ok(b) => b,
                 Err(e) => {
+                    // 存在性未知:跳过,避免误把已有行的展示列 UPSERT 抹空。
                     warn!(
                         target: "chathub_net::recent_session_event",
-                        ?e, conv_id, "store.exists failed; will fallback"
+                        ?e, conv_id, "store.exists failed; skip"
                     );
-                    needs_fallback = true;
                     continue;
                 }
             };
-            if !exists {
-                needs_fallback = true;
-                continue;
-            }
 
-            // 已存在:解 sessionSummary,分字段部分更新(只覆盖摘要列与非空资料列,保留展示字段)。
-            match decode_summary(ev, &employee_id_str) {
-                Some(summary) => match self.store.apply_summary(summary).await {
+            if exists {
+                // 已存在:分字段部分更新(只覆盖摘要列与非空资料列,保留展示字段)。
+                match self.store.apply_summary(summary).await {
                     Ok(true) => applied += 1,
                     Ok(false) => {
-                        // 版本门拒绝的 stale 摘要 → no-op,不需 fallback。
+                        // 版本门拒绝的 stale 摘要 → no-op。
                     }
-                    Err(e) => {
-                        warn!(
-                            target: "chathub_net::recent_session_event",
-                            ?e, conv_id, "apply_summary failed; scheduling fallback"
-                        );
-                        needs_fallback = true;
-                    }
-                },
-                None => {
-                    needs_fallback = true;
+                    Err(e) => warn!(
+                        target: "chathub_net::recent_session_event",
+                        ?e, conv_id, "apply_summary failed"
+                    ),
+                }
+            } else {
+                // 新会话:事件顶层身份 + 账号缓存补企微展示字段 → 整行 INSERT。
+                if accounts_cache.is_none() {
+                    accounts_cache = Some(
+                        self.accounts
+                            .read_for_employee(&employee_id_str)
+                            .await
+                            .unwrap_or_default(),
+                    );
+                }
+                let acct_id = ev
+                    .get("wecomAccountId")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let (wecom_name, wecom_account, cache_alias) = accounts_cache
+                    .as_ref()
+                    .and_then(|v| v.iter().find(|a| a.wecom_account_id == acct_id))
+                    .map(|a| {
+                        (
+                            a.wecom_name.clone(),
+                            a.wecom_account.clone(),
+                            a.wecom_alias.clone(),
+                        )
+                    })
+                    .unwrap_or_default();
+                let remote = RecentSessionRemote {
+                    conversation_id: conv_id.to_string(),
+                    wecom_account_id: acct_id.to_string(),
+                    employee_id: employee_id_str.clone(),
+                    wecom_name,
+                    wecom_account,
+                    // 别名:事件带的更新,否则用账号缓存。
+                    wecom_alias: if summary.wecom_alias.is_empty() {
+                        cache_alias
+                    } else {
+                        summary.wecom_alias.clone()
+                    },
+                    external_user_id: ev
+                        .get("externalUserId")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string(),
+                    external_name: summary.external_name.clone(),
+                    external_avatar: summary.external_avatar.clone(),
+                    // 事件不带手机号 → 留空,后续 FRIEND_UPSERT/刷新补。
+                    external_mobile: String::new(),
+                    last_local_message_id: summary.last_local_message_id.clone(),
+                    last_message_type: summary.last_message_type,
+                    last_message_direction: summary.last_message_direction,
+                    last_send_status: summary.last_send_status,
+                    last_message_summary: summary.last_message_summary.clone(),
+                    last_message_time_ms: summary.last_message_time_ms,
+                    unread_count: summary.unread_count,
+                    has_unread: summary.has_unread,
+                    last_message_sort_key_ms: summary.last_message_sort_key_ms,
+                    gmt_modified_time: summary.gmt_modified_time.clone(),
+                };
+                match self.store.upsert_remote_one(remote).await {
+                    Ok(()) => applied += 1,
+                    Err(e) => warn!(
+                        target: "chathub_net::recent_session_event",
+                        ?e, conv_id, "upsert_remote_one(insert) failed"
+                    ),
                 }
             }
         }
@@ -149,19 +201,9 @@ impl RecentSessionEventApplier {
             return;
         }
 
-        if needs_fallback && self.should_run_fallback() {
-            if let Err(e) = self.fallback_first_page(&employee_id_str).await {
-                warn!(
-                    target: "chathub_net::recent_session_event",
-                    ?e, "fallback list_recent_friends first page failed"
-                );
-            }
-        }
-
-        // C6 单发:ChangeNotice 唯一通道。
-        // 策略:fallback 时 BulkInvalidate(前端最好整体重拉);否则 Upsert。
+        // C6 单发:ChangeNotice 唯一通道。纯 UPSERT,统一发 Upsert。
         // 单 account 批 → scope 带 account_id(精准 match);多 account → scope 不带。
-        if applied > 0 || needs_fallback {
+        if applied > 0 {
             let scope_account = if accounts_in_batch.len() == 1 {
                 accounts_in_batch.into_iter().next()
             } else {
@@ -172,54 +214,11 @@ impl RecentSessionEventApplier {
                 wecom_account_id: scope_account,
                 ..Default::default()
             };
-            let notice = if needs_fallback {
-                ChangeNotice::server_bulk(ChangeTopic::RecentSessions, scope)
-            } else {
-                ChangeNotice::server_upsert(ChangeTopic::RecentSessions, scope)
-            };
-            let _ = self.change_notice_tx.send(notice);
+            let _ = self.change_notice_tx.send(ChangeNotice::server_upsert(
+                ChangeTopic::RecentSessions,
+                scope,
+            ));
         }
-    }
-
-    /// 节流:同一窗口(1s)内多次 fallback 合并为一次。
-    fn should_run_fallback(&self) -> bool {
-        let now = now_unix_ms();
-        let last = self.last_fallback_ms.load(Ordering::Relaxed);
-        if now.saturating_sub(last) < FALLBACK_THROTTLE_MS {
-            return false;
-        }
-        // 用 compare_exchange 防多 task 同时进入(broadcast 单消费者场景下其实串行,但保险)
-        self.last_fallback_ms
-            .compare_exchange(last, now, Ordering::Relaxed, Ordering::Relaxed)
-            .is_ok()
-    }
-
-    /// fallback:拉一次首页(无筛选),把结果 UPSERT 到本地表。
-    /// `employee_id` 由事件 batch 携带,所有写入的 RecentSessionRemote 都打上这个 employee。
-    async fn fallback_first_page(&self, employee_id: &str) -> Result<(), AuthError> {
-        let resp = self
-            .hub
-            .list_recent_friends(ListRecentFriendsRequest {
-                size: FALLBACK_PAGE_SIZE,
-                cursor: String::new(),
-                external_name: String::new(),
-                external_mobile: String::new(),
-                wecom_account_id: String::new(),
-                only_unread: false,
-            })
-            .await?;
-        let rows: Vec<RecentSessionRemote> = resp
-            .records
-            .into_iter()
-            .map(|r| record_to_remote(r, employee_id))
-            .collect();
-        self.store
-            .upsert_remote_many(&rows)
-            .await
-            .map_err(|e| AuthError::Internal {
-                message: format!("recents upsert_remote_many failed: {e}"),
-            })?;
-        Ok(())
     }
 }
 
@@ -256,7 +255,7 @@ pub fn record_to_remote(r: RecentFriendRecord, employee_id: &str) -> RecentSessi
 ///
 /// 会话定位(`conversationId`)在事件**顶层**;摘要字段在 `sessionSummary{}` 内,排序键叫
 /// `lastSortKey`(注意:不是 `recentFriends.records.lastMessageSortKey`)。
-/// 必备:`conversationId` 与 `sessionSummary.lastSortKey` 非空 → 缺失返 `None`(调用者走 fallback)。
+/// 必备:`conversationId` 与 `sessionSummary.lastSortKey` 非空 → 缺失返 `None`(调用者按瘦 payload 跳过)。
 /// `employee_id` 来自事件批 `PushBatchOut.employee_id`,不在 payload 里。
 fn decode_summary(ev: &serde_json::Value, employee_id: &str) -> Option<RecentSessionSummary> {
     let conv_id = ev.get("conversationId")?.as_str()?;
@@ -369,14 +368,6 @@ fn days_from_civil(y: i32, m: i32, d: i32) -> i64 {
     let doy = (153 * (m as i64 + if m > 2 { -3 } else { 9 }) + 2) / 5 + d as i64 - 1;
     let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
     era as i64 * 146097 + doe - 719468
-}
-
-fn now_unix_ms() -> i64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
 }
 
 #[cfg(test)]
@@ -509,5 +500,156 @@ mod tests {
         assert_eq!(s.external_name, "");
         assert_eq!(s.external_avatar, "");
         assert_eq!(s.wecom_alias, "");
+    }
+
+    // ─── apply_push_batch 纯 UPSERT 行为(无 hub:applier 已不持有 HubClient,天然不回拉)─────
+
+    use chathub_proto::v1::PushBatchOut;
+    use chathub_state::SqlitePool;
+
+    const EMP: &str = "42"; // 对齐 batch() 里的 employee_id=42
+
+    async fn applier_with_stores() -> (
+        RecentSessionEventApplier,
+        RecentSessionsStore,
+        AccountCacheStore,
+        broadcast::Receiver<ChangeNotice>,
+    ) {
+        let pool = SqlitePool::in_memory().await.expect("pool");
+        let store = RecentSessionsStore::new(pool.clone());
+        let accounts = AccountCacheStore::new(pool.clone());
+        let (tx, rx) = broadcast::channel(16);
+        let applier = RecentSessionEventApplier::new(store.clone(), accounts.clone(), tx);
+        (applier, store, accounts, rx)
+    }
+
+    fn batch(events: serde_json::Value) -> PushBatchOut {
+        PushBatchOut {
+            notify_seq: 1,
+            client_id: "c-1".into(),
+            employee_id: 42,
+            batch_id: "c-1:42:0".into(),
+            batch_time: "2026-05-21 10:00:00".into(),
+            device_id: "dev-test".into(),
+            events_json: serde_json::to_vec(&events).unwrap().into(),
+        }
+    }
+
+    fn account_row(acct: &str, name: &str) -> WecomAccountRow {
+        WecomAccountRow {
+            wecom_account_id: acct.into(),
+            employee_id: EMP.into(),
+            wecom_name: name.into(),
+            wecom_account: format!("acc_{acct}"),
+            wecom_alias: format!("alias_{acct}"),
+            wecom_avatar: String::new(),
+            wecom_status: 1,
+            gender: 0,
+            position: String::new(),
+        }
+    }
+
+    fn seed_remote(conv: &str, acct: &str, sort_ms: i64) -> RecentSessionRemote {
+        RecentSessionRemote {
+            conversation_id: conv.into(),
+            wecom_account_id: acct.into(),
+            employee_id: EMP.into(),
+            wecom_name: "已存在客服".into(),
+            wecom_account: "acc_old".into(),
+            wecom_alias: "alias_old".into(),
+            external_user_id: format!("ext_{conv}"),
+            external_name: "老客户".into(),
+            external_avatar: "av_old".into(),
+            external_mobile: "138****0000".into(),
+            last_local_message_id: "LM_OLD".into(),
+            last_message_type: 1,
+            last_message_direction: 1,
+            last_send_status: 3,
+            last_message_summary: "旧摘要".into(),
+            last_message_time_ms: sort_ms,
+            unread_count: 0,
+            has_unread: false,
+            last_message_sort_key_ms: sort_ms,
+            gmt_modified_time: String::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn known_conversation_updates_and_preserves_display_fields() {
+        let (applier, store, _accounts, mut rx) = applier_with_stores().await;
+        // 预置已有行(低 sortKey,保证事件版本更新),带客户名/手机号等展示字段。
+        store
+            .upsert_remote_one(seed_remote("cv-1", "wa-1", 1_000_000_000_000))
+            .await
+            .unwrap();
+
+        // 事件不带任何客户资料字段、sortKey 更高 → 只更新摘要列,保留展示字段。
+        applier
+            .apply_push_batch(&batch(serde_json::json!([full_session_summary_event(
+                "cv-1", "wa-1"
+            )])))
+            .await;
+
+        let rows = store.list_top(EMP, None, 50).await.unwrap();
+        let row = rows.iter().find(|r| r.conversation_id == "cv-1").unwrap();
+        assert_eq!(row.last_message_summary, "你好", "摘要被更新");
+        assert_eq!(row.last_message_sort_key_ms, 1_900_000_000_000);
+        assert_eq!(row.external_name, "老客户", "展示字段保留(事件未带不抹空)");
+        assert_eq!(row.external_mobile, "138****0000", "手机号保留");
+
+        let notice = rx.try_recv().expect("应发 ChangeNotice");
+        assert_eq!(notice.topic, ChangeTopic::RecentSessions);
+        assert_eq!(notice.scope.employee_id, EMP);
+        assert_eq!(notice.scope.wecom_account_id.as_deref(), Some("wa-1"));
+    }
+
+    #[tokio::test]
+    async fn unknown_conversation_inserts_from_event_with_account_display() {
+        let (applier, store, accounts, mut rx) = applier_with_stores().await;
+        // 账号缓存里有 wa-1 展示信息;新会话 INSERT 据此补 wecom_*。
+        accounts
+            .replace_all_for_employee(EMP, &[account_row("wa-1", "客服A")])
+            .await
+            .unwrap();
+
+        // 任意 reason(此处 LAST_MESSAGE_CHANGED,非 SUMMARY_CREATED)的未知会话也直接 INSERT。
+        applier
+            .apply_push_batch(&batch(serde_json::json!([full_session_summary_event(
+                "cv-new", "wa-1"
+            )])))
+            .await;
+
+        assert!(
+            store.exists(EMP, "cv-new").await.unwrap(),
+            "未知会话事件应直接 INSERT 入库"
+        );
+        let rows = store.list_top(EMP, None, 50).await.unwrap();
+        let row = rows.iter().find(|r| r.conversation_id == "cv-new").unwrap();
+        assert_eq!(row.wecom_account_id, "wa-1");
+        assert_eq!(row.wecom_name, "客服A", "企微展示名从账号缓存补上");
+        assert_eq!(row.wecom_account, "acc_wa-1");
+        assert_eq!(row.external_user_id, "ext_cv-new", "外部 id 取自事件顶层");
+        assert_eq!(row.last_message_summary, "你好");
+        assert_eq!(row.unread_count, 2);
+        assert_eq!(row.external_mobile, "", "事件不带手机号 → 暂空,后续补");
+
+        let notice = rx.try_recv().expect("应发 ChangeNotice");
+        assert_eq!(notice.topic, ChangeTopic::RecentSessions);
+        assert_eq!(notice.scope.wecom_account_id.as_deref(), Some("wa-1"));
+    }
+
+    #[tokio::test]
+    async fn thin_payload_without_conversation_id_is_skipped() {
+        let (applier, store, _accounts, mut rx) = applier_with_stores().await;
+        let mut ev = full_session_summary_event("cv-x", "wa-1");
+        ev.as_object_mut().unwrap().remove("conversationId");
+
+        applier
+            .apply_push_batch(&batch(serde_json::json!([ev])))
+            .await;
+
+        assert!(rx.try_recv().is_err(), "瘦 payload 不应发 ChangeNotice");
+        let rows = store.list_top(EMP, None, 50).await.unwrap();
+        assert!(rows.is_empty(), "瘦 payload 不应入库");
     }
 }

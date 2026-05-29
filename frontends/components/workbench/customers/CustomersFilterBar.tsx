@@ -1,11 +1,11 @@
 import { memo, type ReactNode } from "react";
-import { Grid3x3, LayoutGrid, Search, X } from "lucide-react";
+import { LayoutGrid, List, Search, X } from "lucide-react";
 
 import type { Account } from "@/lib/types/account";
 import { cn } from "@/lib/utils";
 
 import { AccountPicker } from "./AccountPicker";
-import type { CardDensity } from "./constants";
+import type { CustomerViewMode } from "./constants";
 import { STRINGS } from "./strings";
 
 interface CustomersFilterBarProps {
@@ -18,16 +18,16 @@ interface CustomersFilterBarProps {
   onClearAccounts: () => void;
 
   onReset: () => void;
-  /** 卡片网格密度 + 切换。对应右上角两个视图切换按钮。 */
-  density: CardDensity;
-  onDensityChange: (density: CardDensity) => void;
+  /** 列表展示形态 + 切换。对应右上角两个视图切换按钮（卡片 / 列表）。 */
+  viewMode: CustomerViewMode;
+  onViewModeChange: (viewMode: CustomerViewMode) => void;
 }
 
 const EMPTY_ACCOUNT_COUNTS: Record<string, number> = {};
 
 /**
  * 客户管理页主筛选栏(阶段 3 纯 cursor 滚动版)。从左到右:
- *   搜索(下推服务端 externalId)+ 账号选择 + 重置 + 视图切换 + 刷新
+ *   搜索(下推服务端 externalName)+ 账号选择 + 重置 + 视图切换 + 刷新
  *
  * 阶段 2 → 3 退役的:客户阶段 / 跟进状态 / 标签 / 排序 popover、账号 chip 计数。
  * 这些都基于"全量已加载 + 占位字段(tags/stage)"假设,在窗口化 cursor 滚动下失真,
@@ -41,8 +41,8 @@ export const CustomersFilterBar = memo(function CustomersFilterBar({
   onToggleAccount,
   onClearAccounts,
   onReset,
-  density,
-  onDensityChange,
+  viewMode,
+  onViewModeChange,
 }: CustomersFilterBarProps) {
   return (
     // 工具栏强制不换行 — 内容超容器时横向滚动(滚动条隐藏,Firefox/Webkit 都兼容)。
@@ -69,40 +69,40 @@ export const CustomersFilterBar = memo(function CustomersFilterBar({
 
       <span aria-hidden className="ml-auto" />
 
-      <DensityToggle density={density} onChange={onDensityChange} />
+      <ViewModeToggle viewMode={viewMode} onChange={onViewModeChange} />
     </div>
   );
 });
 
-/** 卡片密度切换段控（舒适 / 紧凑），对应设计稿右上角的两个视图按钮。 */
-function DensityToggle({
-  density,
+/** 视图切换段控（卡片 / 列表），对应设计稿右上角的两个视图按钮。 */
+function ViewModeToggle({
+  viewMode,
   onChange,
 }: {
-  density: CardDensity;
-  onChange: (density: CardDensity) => void;
+  viewMode: CustomerViewMode;
+  onChange: (viewMode: CustomerViewMode) => void;
 }) {
   return (
     <div className="inline-flex shrink-0 items-center gap-0.5 rounded-md border border-workbench-line bg-workbench-surface-subtle p-0.5">
-      <DensityButton
-        active={density === "comfortable"}
-        ariaLabel={STRINGS.toolbar.densityComfortable}
-        onClick={() => onChange("comfortable")}
+      <ViewModeButton
+        active={viewMode === "card"}
+        ariaLabel={STRINGS.toolbar.viewCard}
+        onClick={() => onChange("card")}
       >
         <LayoutGrid size={15} />
-      </DensityButton>
-      <DensityButton
-        active={density === "compact"}
-        ariaLabel={STRINGS.toolbar.densityCompact}
-        onClick={() => onChange("compact")}
+      </ViewModeButton>
+      <ViewModeButton
+        active={viewMode === "list"}
+        ariaLabel={STRINGS.toolbar.viewList}
+        onClick={() => onChange("list")}
       >
-        <Grid3x3 size={15} />
-      </DensityButton>
+        <List size={15} />
+      </ViewModeButton>
     </div>
   );
 }
 
-function DensityButton({
+function ViewModeButton({
   active,
   ariaLabel,
   onClick,

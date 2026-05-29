@@ -62,6 +62,15 @@ export interface UseResourceResult<T> {
    * 但 `null vs []` 在消费方读起来 fragile;`initialFetched` 是显式单调布尔。
    */
   initialFetched: boolean;
+  /**
+   * 当前 `data` 取自的 scope 与当前 scope 不一致 —— 即 scope 刚变(如切账号筛选)、
+   * 新 scope 的数据尚未返回的窗口期。期间 `data` 仍是上一个 scope 的旧数据
+   * (stale-while-revalidate),消费方可据此渲染骨架,避免"旧 scope 数据残留一瞬再突变"的闪烁。
+   *
+   * 与 `initialFetched` 互补:后者管首屏(data 还没有过任何值),前者管 scope 切换
+   * (data 有值但属于上一个 scope)。data 为 null(尚无任何数据)时恒 false。
+   */
+  isStale: boolean;
 }
 
 const DEFAULT_SILENT_PROBE_MS = 90_000;
@@ -95,6 +104,8 @@ export function useResource<T>(opts: UseResourceOptions<T>): UseResourceResult<T
   } = opts;
 
   const [data, setData] = useState<T | null>(null);
+  // 当前 data 取自的 scope 序列化键;与当前 scopeStr 比较得出 isStale(见 return)。
+  const [dataScopeStr, setDataScopeStr] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [lastEventAt, setLastEventAt] = useState<number | null>(null);
@@ -133,9 +144,13 @@ export function useResource<T>(opts: UseResourceOptions<T>): UseResourceResult<T
     if (inflightRef.current) return inflightRef.current;
     const promise = (async () => {
       setLoading(true);
+      // 捕获本次拉取所用 scope:queryFn 同步读 scopeRef.current(无 await 间隔,不会被
+      // 后续 scope 变更串改),据此把结果归属到正确 scope,供 isStale 判定。
+      const fetchScopeStr = scopeKey(scopeRef.current);
       try {
         const result = await queryFnRef.current(scopeRef.current);
         setData(result);
+        setDataScopeStr(fetchScopeStr);
         setLastRefreshAt(Date.now());
         setError(null);
       } catch (e) {
@@ -286,5 +301,7 @@ export function useResource<T>(opts: UseResourceOptions<T>): UseResourceResult<T
     resyncing,
     connectionState,
     initialFetched,
+    // data 已有值且其归属 scope 与当前 scope 不符 → scope 切换在途,当前展示的是旧 scope 数据。
+    isStale: data !== null && dataScopeStr !== null && dataScopeStr !== scopeStr,
   };
 }

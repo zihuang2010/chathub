@@ -436,21 +436,27 @@ pub struct ListAccountsItem {
 /// `add_time DESC, id DESC` 的全局 keyset,返回单条游标 `next_cursor`。
 ///
 /// 空字符串语义:
+///   - `wecom_account_ids = []` → 全量拉取:序列化省略该字段,后台按登录账号 token 圈定;非空 → 按子集过滤
 ///   - `cursor = ""` → 首页;`cursor = nextCursor` → 续页
-///   - `external_id = None` → 不筛选;非空 → 名称/手机号统一模糊匹配
+///   - `external_name = None` → 不筛选;非空 → 按名称模糊匹配
 ///   - `add_start_time / add_end_time = None` → 不限时间
+///   - `total_mode` 固定 `"none"`:10万级数据量下不返 total/pages,UI 走纯滚动。
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ListFriendsRequest {
+    /// 为空 = 全量拉取:序列化时整体省略该字段,业务后台按登录账号 token 圈定好友。
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub wecom_account_ids: Vec<String>,
     pub size: u32,
     pub cursor: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub external_id: Option<String>,
+    pub external_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub add_start_time: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub add_end_time: Option<String>,
+    /// totalMode:固定 `"none"`(不返 total/pages)。
+    pub total_mode: String,
 }
 
 /// 好友单条记录(camelCase JSON ↔ Rust snake_case)。
@@ -581,6 +587,9 @@ pub struct WecomFriendDetail {
 ///   - `cursor = ""` → 首页;`cursor = nextCursor` → 续页
 ///   - `wecom_account_id = ""` → 全部账号聚合;非空 → 仅该账号
 ///   - `external_name / external_mobile = ""` → 不筛选
+///   - `external_id = ""` → 不按单好友定位;非空 → 只取该外部联系人的会话
+///     (配合 `include_first_history`,响应顶层带回 `first_conversation_id` + 首屏历史)
+///   - `include_first_history = false` → 不返回首屏历史(列表/搜索路径)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ListRecentFriendsRequest {
@@ -590,6 +599,12 @@ pub struct ListRecentFriendsRequest {
     pub external_mobile: String,
     pub wecom_account_id: String,
     pub only_unread: bool,
+    /// 单好友定位:按 `external_user_id` 取该好友会话(打开会话流程用)。空串=不定位。
+    #[serde(default)]
+    pub external_id: String,
+    /// 是否随响应带回该会话首屏历史(`first_conversation_history`)。
+    #[serde(default)]
+    pub include_first_history: bool,
 }
 
 /// session/recentFriends 单条记录(17 字段,camelCase JSON ↔ Rust snake_case)。
@@ -629,6 +644,9 @@ pub struct RecentFriendRecord {
 }
 
 /// session/recentFriends 响应(2xx envelope.data 的形态)。
+///
+/// `first_conversation_id` / `first_conversation_history` 仅在请求带 `include_first_history=true`
+/// (打开会话流程)时由服务端填充;列表/搜索路径缺省 → 默认值(空串 / None),反序列化兼容。
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ListRecentFriendsResp {
@@ -636,6 +654,28 @@ pub struct ListRecentFriendsResp {
     pub has_more: bool,
     pub next_cursor: String,
     pub records: Vec<RecentFriendRecord>,
+    /// 服务端权威会话 ID:打开会话流程用此值(即使 `records` 为空也返回)。
+    #[serde(default)]
+    pub first_conversation_id: String,
+    /// 该会话首屏历史。`null` / 缺省 → None。
+    #[serde(default)]
+    pub first_conversation_history: Option<FirstConversationHistory>,
+}
+
+/// `firstConversationHistory`:打开会话时随接待记录带回的首屏历史(语义对照 message/history:
+/// 最新一页 + earlier-only 游标)。冷写入消息缓存建窗用 `records` + `has_more` + `next_cursor`;
+/// 其余分页字段(size/total/current/pages)忽略。
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FirstConversationHistory {
+    #[serde(default)]
+    pub records: Vec<HistoryMessage>,
+    /// 是否还有更老消息(建窗 `has_more_older`)。
+    #[serde(default)]
+    pub has_more: bool,
+    /// 更老分页游标;服务端返回 `null` → None(建窗 `older_cursor` 取空串)。
+    #[serde(default)]
+    pub next_cursor: Option<String>,
 }
 
 // ─── fetch_message_history typed contract ───────────────────────────────────
@@ -1175,6 +1215,41 @@ mod tests {
         let s = ConnectionState::Disconnected { last_error: None };
         let json = serde_json::to_string(&s).unwrap();
         assert_eq!(json, r#"{"state":"disconnected"}"#);
+    }
+
+    #[test]
+    fn list_friends_request_empty_accounts_omits_wecom_account_ids() {
+        // 全量拉取:账号集为空时请求体整体省略 wecomAccountIds(由后台按登录账号 token 圈定)。
+        let req = ListFriendsRequest {
+            wecom_account_ids: Vec::new(),
+            size: 20,
+            cursor: String::new(),
+            external_name: None,
+            add_start_time: None,
+            add_end_time: None,
+            total_mode: "none".into(),
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(!json.contains("wecomAccountIds"), "got {json}");
+    }
+
+    #[test]
+    fn list_friends_request_non_empty_accounts_keeps_wecom_account_ids() {
+        // 选定子集时仍下发 wecomAccountIds。
+        let req = ListFriendsRequest {
+            wecom_account_ids: vec!["acct-1".into()],
+            size: 20,
+            cursor: String::new(),
+            external_name: None,
+            add_start_time: None,
+            add_end_time: None,
+            total_mode: "none".into(),
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(
+            json.contains(r#""wecomAccountIds":["acct-1"]"#),
+            "got {json}"
+        );
     }
 
     #[test]

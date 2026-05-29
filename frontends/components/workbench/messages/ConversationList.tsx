@@ -11,6 +11,7 @@ import { AccountDropdown } from "./AccountDropdown";
 import { ConversationAvatar } from "./Avatar";
 import type { Conversation } from "./data";
 import { MessagesContactSearch } from "./MessagesContactSearch";
+import { SkeletonRow } from "./MessagesSkeleton";
 import { STRINGS } from "./strings";
 import { extractAccountOperator } from "./utils";
 import { WorkbenchScrollArea, type ScrollMetrics } from "./WorkbenchScrollArea";
@@ -42,6 +43,9 @@ interface ConversationListProps {
   onOpenCustomer: (friend: WecomFriend) => void;
   /** 搜索框清空:父级据此退出 filtered 态(若有)回默认列表。 */
   onClearSearch: () => void;
+  /** 切账号筛选后、新账号列表尚未返回的窗口期。为真时列表主体渲染骨架行(顶部搜索框/筛选条仍可见),
+   *  避免"旧账号列表残留一瞬再突变"的闪烁。来自 useRecentFriends.switching。 */
+  switching?: boolean;
 }
 
 export const ConversationList = memo(function ConversationList({
@@ -59,6 +63,7 @@ export const ConversationList = memo(function ConversationList({
   loading,
   onOpenCustomer,
   onClearSearch,
+  switching,
 }: ConversationListProps) {
   const [statusTab, setStatusTab] = useState<StatusTab>("all");
   const [accountPickerOpen, setAccountPickerOpen] = useState(false);
@@ -76,7 +81,6 @@ export const ConversationList = memo(function ConversationList({
       <div className="flex flex-col gap-2 px-3 pb-1.5 pt-3">
         <MessagesContactSearch
           accounts={accounts}
-          selectedAccount={selectedAccount}
           onOpenCustomer={onOpenCustomer}
           onClear={onClearSearch}
         />
@@ -91,19 +95,39 @@ export const ConversationList = memo(function ConversationList({
         />
       </div>
 
-      <VirtualizedList
-        items={filteredConversations}
-        selectedId={selectedId}
-        onSelect={onSelect}
-        onTogglePin={onTogglePin}
-        onToggleMute={onToggleMute}
-        onRemove={onRemove}
-        onLoadMore={onLoadMore}
-        loading={loading}
-      />
+      {switching ? (
+        <ConversationListSkeleton />
+      ) : (
+        <VirtualizedList
+          items={filteredConversations}
+          selectedId={selectedId}
+          onSelect={onSelect}
+          onTogglePin={onTogglePin}
+          onToggleMute={onToggleMute}
+          onRemove={onRemove}
+          onLoadMore={onLoadMore}
+          loading={loading}
+        />
+      )}
     </div>
   );
 });
+
+// 切账号过渡期的列表骨架:复用首屏 SkeletonRow,padding 对齐 VirtualizedList 的滚动视口
+// (pl-3 pr-2 pt-0.5 pb-1.5),数据到位切回真列表时不产生 layout shift。行数固定取首屏窗口
+// 大致可见的条数。
+const SWITCHING_SKELETON_ROWS = 8;
+function ConversationListSkeleton() {
+  return (
+    <div className="flex-1 overflow-hidden pb-1.5 pl-3 pr-2 pt-0.5" aria-hidden>
+      <div className="flex flex-col gap-1">
+        {Array.from({ length: SWITCHING_SKELETON_ROWS }).map((_, i) => (
+          <SkeletonRow key={i} />
+        ))}
+      </div>
+    </div>
+  );
+}
 
 // ─── Virtualized list body ──────────────────────────────────────────────────
 // @tanstack/react-virtual 跑在 WorkbenchScrollArea 上层:接管"哪些 item 渲染 +

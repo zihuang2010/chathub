@@ -9,8 +9,8 @@
 use crate::change_notice::{ChangeNotice, ChangeScope, ChangeTopic};
 use crate::error::AuthError;
 use crate::hub::{
-    FetchMessageHistoryRequest, HistoryAttachment, HistoryMessage, HubClient, SendMessageRequest,
-    SendMessageResp,
+    FetchMessageHistoryRequest, FirstConversationHistory, HistoryAttachment, HistoryMessage,
+    HubClient, SendMessageRequest, SendMessageResp,
 };
 use crate::recent_session_event::split_sort_key_ms;
 use chathub_state::{MessageRow, MessageWindow, MessagesStore};
@@ -166,6 +166,8 @@ impl MessageSync {
             .await
             .map_err(state_err)?;
         let mode = classify_reconcile(window.as_ref(), page_oldest.as_deref());
+        // 重对齐前缓存的 newest 水位,用于判断本次是否真有更新消息到达(下方 Stitch 用)。
+        let prev_newest_sort_key = window.as_ref().map(|w| w.newest_sort_key.clone());
 
         let rows: Vec<MessageRow> = resp
             .records
@@ -173,7 +175,13 @@ impl MessageSync {
             .map(|h| history_to_row(h, conversation_id, employee_id, wecom_account_id))
             .collect();
 
-        match mode {
+        // should_notify:本次重对齐是否真的写入了新数据,决定是否广播 ChangeNotice 让前端重读。
+        // 关键:Stitch 若未推进 newest(首页与缓存最新一致,即无新消息),则**不通知**。否则会与
+        // load_conversation_messages 的「水位门 not-fresh → 后台 reconcile」形成
+        // notify→read→reconcile→notify 自激死循环 —— 尤以搜索打开、不在接待列表的会话为甚:
+        // 其 recents 行为 blank(last_message_sort_key_ms=0),水位门要求 r>0 故恒判 not-fresh,
+        // 每次重读都会再 spawn 一次 reconcile,无条件通知就会无限打 message/history。
+        let should_notify = match mode {
             ReconcileMode::NoOp => return Ok(()),
             ReconcileMode::Replace => {
                 self.store
@@ -199,9 +207,15 @@ impl MessageSync {
                     })
                     .await
                     .map_err(state_err)?;
+                true
             }
             ReconcileMode::Stitch => {
                 self.store.upsert_messages(&rows).await.map_err(state_err)?;
+                // 首页最新 > 缓存原 newest 才算「有新消息到达」(sort_key 同构,字典序即时序)。
+                let advanced = matches!(
+                    (prev_newest_sort_key.as_deref(), page_newest.as_deref()),
+                    (Some(prev), Some(curr)) if curr > prev
+                );
                 // 只扩 newest 上界,下界 / older_cursor / has_more_older 不动。
                 if let (Some(mut w), Some(newest)) = (window, page_newest) {
                     w.newest_sort_key = newest;
@@ -211,8 +225,86 @@ impl MessageSync {
                     w.last_accessed_ms = now;
                     self.store.upsert_window(w).await.map_err(state_err)?;
                 }
+                advanced
             }
+        };
+
+        if should_notify {
+            let _ = self.change_notice_tx.send(ChangeNotice::server_upsert(
+                ChangeTopic::ConversationMessages,
+                ChangeScope {
+                    employee_id: employee_id.to_string(),
+                    conversation_id: Some(conversation_id.to_string()),
+                    ..Default::default()
+                },
+            ));
         }
+        Ok(())
+    }
+
+    /// 冷写入"首屏历史":打开会话时把 recentFriends 随响应带回的 `firstConversationHistory.records`
+    /// 直接落库 + 建窗,免去选中后再走一次 `reconcile_newest` 的网络往返(秒显)。
+    ///
+    /// 纪律:**仅当会话冷(无 window)时写**——已有窗口说明本地缓存已是权威,跳过以免覆盖更全的历史。
+    /// `history.records` 约定升序(早→晚),与 message/history 同形;`has_more` / `next_cursor` 供后续
+    /// "加载更早"接续。写完 emit ConversationMessages ChangeNotice 让打开着的会话重读。
+    pub async fn seed_first_history(
+        &self,
+        conversation_id: &str,
+        wecom_account_id: &str,
+        external_user_id: &str,
+        employee_id: &str,
+        history: &FirstConversationHistory,
+    ) -> Result<(), AuthError> {
+        let records = &history.records;
+        if records.is_empty() {
+            return Ok(());
+        }
+        // 已有窗口 = 温缓存,跳过(不覆盖本地更全的历史)。
+        if self
+            .store
+            .get_window(employee_id, conversation_id)
+            .await
+            .map_err(state_err)?
+            .is_some()
+        {
+            return Ok(());
+        }
+
+        let rows: Vec<MessageRow> = records
+            .iter()
+            .map(|h| history_to_row(h, conversation_id, employee_id, wecom_account_id))
+            .collect();
+        self.store.upsert_messages(&rows).await.map_err(state_err)?;
+
+        let page_oldest = records
+            .first()
+            .map(|r| r.sort_key.clone())
+            .unwrap_or_default();
+        let page_newest = records
+            .last()
+            .map(|r| r.sort_key.clone())
+            .unwrap_or_default();
+        let newest_ms = records.last().map(message_freshness_ms).unwrap_or(0);
+        let older_cursor = history.next_cursor.as_deref().unwrap_or("");
+        let now = now_ms();
+        self.store
+            .upsert_window(MessageWindow {
+                conversation_id: conversation_id.to_string(),
+                employee_id: employee_id.to_string(),
+                wecom_account_id: wecom_account_id.to_string(),
+                external_user_id: external_user_id.to_string(),
+                newest_sort_key: page_newest,
+                oldest_sort_key: page_oldest,
+                older_cursor: older_cursor.to_string(),
+                has_more_older: history.has_more,
+                newest_message_time_ms: newest_ms,
+                last_accessed_ms: now,
+                reconciled_at_ms: now,
+                updated_at_ms: now,
+            })
+            .await
+            .map_err(state_err)?;
 
         let _ = self.change_notice_tx.send(ChangeNotice::server_upsert(
             ChangeTopic::ConversationMessages,

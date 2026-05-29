@@ -5,7 +5,7 @@ description: "Skill for the Workbench area of chathub. 13 symbols across 4 files
 
 # Workbench
 
-13 symbols | 4 files | Cohesion: 73%
+13 symbols | 4 files | Cohesion: 70%
 
 ## When to Use
 
@@ -29,7 +29,7 @@ Start here when exploring this area:
 - **`useCurrentProfile`** (Function) — `frontends/lib/data/useCurrentProfile.ts:13`
 - **`useHubSyncStatus`** (Function) — `frontends/lib/data/useHubSyncStatus.ts:32`
 - **`un`** (Function) — `frontends/lib/data/useHubSyncStatus.ts:50`
-- **`Sidebar`** (Function) — `frontends/components/workbench/Sidebar.tsx:62`
+- **`Sidebar`** (Function) — `frontends/components/workbench/Sidebar.tsx:63`
 
 ## Key Symbols
 
@@ -38,16 +38,16 @@ Start here when exploring this area:
 | `useCurrentProfile` | Function | `frontends/lib/data/useCurrentProfile.ts`         | 13   |
 | `useHubSyncStatus`  | Function | `frontends/lib/data/useHubSyncStatus.ts`          | 32   |
 | `un`                | Function | `frontends/lib/data/useHubSyncStatus.ts`          | 50   |
-| `Sidebar`           | Function | `frontends/components/workbench/Sidebar.tsx`      | 62   |
-| `initialOf`         | Function | `frontends/components/workbench/Sidebar.tsx`      | 33   |
-| `onlineStatus`      | Function | `frontends/components/workbench/Sidebar.tsx`      | 39   |
-| `UserBadge`         | Function | `frontends/components/workbench/Sidebar.tsx`      | 213  |
-| `AvatarMark`        | Function | `frontends/components/workbench/Sidebar.tsx`      | 250  |
+| `Sidebar`           | Function | `frontends/components/workbench/Sidebar.tsx`      | 63   |
+| `initialOf`         | Function | `frontends/components/workbench/Sidebar.tsx`      | 34   |
+| `onlineStatus`      | Function | `frontends/components/workbench/Sidebar.tsx`      | 40   |
+| `UserBadge`         | Function | `frontends/components/workbench/Sidebar.tsx`      | 214  |
+| `AvatarMark`        | Function | `frontends/components/workbench/Sidebar.tsx`      | 251  |
 | `renderSidebar`     | Function | `frontends/components/workbench/Sidebar.test.tsx` | 49   |
-| `broadWavePath`     | Function | `frontends/components/workbench/Sidebar.tsx`      | 23   |
-| `SidebarBackdrop`   | Function | `frontends/components/workbench/Sidebar.tsx`      | 143  |
-| `EdgeHandle`        | Function | `frontends/components/workbench/Sidebar.tsx`      | 286  |
-| `NavButton`         | Function | `frontends/components/workbench/Sidebar.tsx`      | 318  |
+| `broadWavePath`     | Function | `frontends/components/workbench/Sidebar.tsx`      | 24   |
+| `SidebarBackdrop`   | Function | `frontends/components/workbench/Sidebar.tsx`      | 144  |
+| `EdgeHandle`        | Function | `frontends/components/workbench/Sidebar.tsx`      | 287  |
+| `NavButton`         | Function | `frontends/components/workbench/Sidebar.tsx`      | 319  |
 
 ## Execution Flows
 
@@ -59,6 +59,7 @@ Start here when exploring this area:
 | `Workbench → UseCurrentProfile` | cross_community | 4     |
 | `Workbench → OnlineStatus`      | cross_community | 4     |
 | `Sidebar → Un`                  | cross_community | 4     |
+| `Sidebar → CachedImageSrc`      | cross_community | 4     |
 | `Sidebar → InitialOf`           | cross_community | 4     |
 
 ## Connected Areas
@@ -67,6 +68,7 @@ Start here when exploring this area:
 | ---------- | ----------- |
 | Customers  | 5 calls     |
 | Components | 1 calls     |
+| Messages   | 1 calls     |
 
 ## How to Explore
 

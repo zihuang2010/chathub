@@ -24,7 +24,9 @@ pub mod token;
 
 pub use account_event::AccountEventApplier;
 pub use auth::{AuthApi, LoggedOutReason};
-pub use change_notice::{ChangeKind, ChangeNotice, ChangeScope, ChangeSource, ChangeTopic};
+pub use change_notice::{
+    ChangeCoalescer, ChangeKind, ChangeNotice, ChangeScope, ChangeSource, ChangeTopic,
+};
 pub use channel::build_endpoint;
 pub use error::AuthError;
 pub use friend_event::FriendEventApplier;

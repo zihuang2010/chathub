@@ -113,33 +113,19 @@ export interface RecentFriendListRecord {
 }
 
 /**
- * 仅读本地行存的接待好友列表。默认列表打开瞬间调用 —— 零网络往返。
- * `accountFilter` 为空 / undefined 表示"全部账号"。
+ * 仅读本地行存的接待好友列表(头部热缓存的物化视图)。默认列表的唯一渲染源 —— 零网络往返。
+ * `accountFilter` 为空 / undefined 表示"全部账号";`limit` = 当前渲染深度(随游标翻页生长),
+ * 缺省时后端回退头部窗口,上限由后端钳到全局 trim 上限。
  *
  * ORDER BY 由后端多键合成:`pinned DESC, pinned_at_ms DESC, MAX(last, draft) DESC, last DESC`。
  */
 export async function fetchRecentFriendsCache(
   accountFilter?: string | null,
+  limit?: number,
 ): Promise<RecentFriendItem[]> {
   return invoke<RecentFriendItem[]>("list_recent_friends", {
     accountFilter: accountFilter || null,
-  });
-}
-
-/**
- * 接待列表「本地深读」分页 —— 仅读本地行存的 offset 续页,零网络往返。
- * 头部 top-200 由 `fetchRecentFriendsCache` 秒开;滑过 200 行后从 `offset` 起继续取本地行。
- * 返回行数 < `limit` 即本地到底(上层据此停止下拉)。
- */
-export async function fetchRecentFriendsLocalPage(
-  accountFilter: string | null | undefined,
-  offset: number,
-  limit: number,
-): Promise<RecentFriendItem[]> {
-  return invoke<RecentFriendItem[]>("list_recent_friends_local_page", {
-    accountFilter: accountFilter || null,
-    offset,
-    limit,
+    limit: limit ?? null,
   });
 }
 
@@ -156,6 +142,31 @@ export async function fetchRecentFriendsPage(
     req,
     persist,
   });
+}
+
+/**
+ * 从搜索点开某客户 → 定位/创建其会话并提到非置顶区顶部。
+ *
+ * 一次 `recentFriends`(externalId + includeFirstHistory)由后端编排:
+ *   - 有接待记录 → upsert 进接待列表;无记录 → 用此处传入的客户资料建空白行。
+ *   - conversationId 取服务端 `firstConversationId`(权威,客户端不自算)。
+ *   - 首屏历史冷写入消息缓存。
+ *   - emit ChangeNotice → useResource 自动重读列表(行出现在非置顶顶部)。
+ *
+ * `externalName/externalAvatar/externalMobile` 来自被点客户;`wecomName/wecomAlias` 为其归属账号
+ * 显示名(从 accounts 反查)。这些仅在"无记录建空白行"时用于展示,有记录时一律以记录为准。
+ */
+export async function openFriendConversation(args: {
+  wecomAccountId: string;
+  externalUserId: string;
+  externalName: string;
+  externalAvatar: string;
+  externalMobile: string;
+  wecomName: string;
+  wecomAlias: string;
+}): Promise<string> {
+  const resp = await invoke<{ conversationId: string }>("open_friend_conversation", args);
+  return resp.conversationId;
 }
 
 /** 置顶 / 取消置顶。后端仅更新本地列,emit `recent_friends_changed`。 */
@@ -196,4 +207,24 @@ export async function muteConversation(conversationId: string, muted: boolean): 
  */
 export async function markConversationRead(conversationId: string): Promise<void> {
   await invoke<void>("mark_conversation_read", { conversationId });
+}
+
+/** 水位预填结果(对齐 Rust `PrefillResult`)。前端通常忽略,仅用于调试。 */
+export interface PrefillResult {
+  filled: boolean;
+  localCount: number;
+  iters: number;
+  exhausted: boolean;
+}
+
+/**
+ * 水位预填:把本地接待列表补到目标水位,供纯本地深读翻页有足够数据可翻。
+ * 后端内部循环远端续拉 + 写库(版本门保本地列),达水位 / 远端耗尽 / 安全上限即止,
+ * 并 emit ChangeNotice 触发列表重读。`accountFilter` 跟随当前视图(空 / undefined = 全部账号)。
+ * 由 useRecentFriends 在冷启动 / 低于触发线 / resync 时调用,日常翻页与保鲜不走它。
+ */
+export async function prefillRecentFriends(accountFilter?: string | null): Promise<PrefillResult> {
+  return invoke<PrefillResult>("prefill_recent_friends", {
+    accountFilter: accountFilter || null,
+  });
 }

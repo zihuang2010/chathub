@@ -60,6 +60,7 @@ impl SqlitePool {
                 M::up(include_str!(
                     "../migrations/V16__retire_friends_store_and_watermarks.sql"
                 )),
+                M::up(include_str!("../migrations/V17__recents_opened_at.sql")),
             ]);
             migrations
                 .to_latest(c)

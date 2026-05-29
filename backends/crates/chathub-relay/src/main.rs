@@ -33,8 +33,39 @@ async fn main() -> anyhow::Result<()> {
     let storage = Storage::open(&cfg.db_path).await?;
     let router = Arc::new(Router::new());
     let events_log = EventLog::new(storage.clone());
-    let downstream = Arc::new(DownstreamClient::new(
-        &cfg.downstream_url,
+
+    // Nacos(可选,best-effort):连接成功则注册 push 端点 + 启用下游服务发现;
+    // 连接失败则 warn 并降级为纯静态 downstream_url(不阻断启动)。
+    let nacos_client: Option<Arc<chathub_relay::nacos::NacosClient>> = if cfg.nacos.enabled {
+        match chathub_relay::nacos::NacosClient::connect(cfg.nacos.clone()).await {
+            Ok(c) => {
+                let c = Arc::new(c);
+                c.register_push().await;
+                Some(c)
+            }
+            Err(e) => {
+                tracing::warn!(
+                    target: "chathub_relay::nacos",
+                    error = %e,
+                    "connect Nacos failed — degrading to static downstream_url",
+                );
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    // 下游 base_url 来源:有 Nacos 走发现(静态 url 兜底),否则纯静态。
+    let source = match &nacos_client {
+        Some(c) => {
+            chathub_relay::downstream::BaseUrlSource::new_nacos(c.clone(), &cfg.downstream_url)
+        }
+        None => chathub_relay::downstream::BaseUrlSource::new_static(&cfg.downstream_url),
+    };
+
+    let downstream = Arc::new(DownstreamClient::new_with_source(
+        source,
         chathub_relay::downstream::AuthPaths {
             login: cfg.path_login.clone(),
             verify_token: cfg.path_verify_token.clone(),
@@ -130,8 +161,13 @@ async fn main() -> anyhow::Result<()> {
 
     // 监听信号的 task
     let router_for_signal = router.clone();
+    let nacos_for_signal = nacos_client.clone();
     tokio::spawn(async move {
         wait_for_shutdown_signal().await;
+        // 先从 Nacos 注销 push 端点,让业务后台尽快停止把回调路由过来,再排空在途连接。
+        if let Some(c) = &nacos_for_signal {
+            c.deregister_push().await;
+        }
         let drained = router_for_signal.broadcast_server_drain("relay shutting down");
         tracing::info!(
             connections_drained = drained,

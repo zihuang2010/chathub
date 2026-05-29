@@ -24,7 +24,6 @@ interface CustomerCardProps {
   onSelect: (id: string) => void;
   onToggleMultiSelect: (id: string) => void;
   onOpenChat: (id: string) => void;
-  onCall: (id: string) => void;
   onMore: (id: string) => void;
 }
 
@@ -48,7 +47,6 @@ export const CustomerCard = memo(function CustomerCard({
   onSelect,
   onToggleMultiSelect,
   onOpenChat,
-  onCall,
   onMore,
 }: CustomerCardProps) {
   const visibleTags = customer.tags.slice(0, CARD_MAX_TAGS);
@@ -75,7 +73,7 @@ export const CustomerCard = memo(function CustomerCard({
         }
       }}
       className={cn(
-        "group relative flex cursor-pointer flex-col rounded-lg border bg-workbench-surface p-3 transition-all",
+        "group relative flex cursor-pointer flex-col rounded-lg border bg-workbench-surface p-2.5 transition-all",
         "hover:shadow-wb-card focus-visible:outline-none",
         selected
           ? "border-workbench-accent ring-1 ring-workbench-accent"
@@ -120,7 +118,7 @@ export const CustomerCard = memo(function CustomerCard({
           name={customer.name}
           photoUrl={customer.avatarUrl}
           colorToken={avatarColorToken}
-          size={40}
+          size={36}
           online={account?.status === "online"}
         />
         <div className="min-w-0 flex-1">
@@ -145,17 +143,31 @@ export const CustomerCard = memo(function CustomerCard({
         </RowIconButton>
       </div>
 
-      {/* 手机号 */}
-      {customer.phone && (
-        <div className="mt-2 flex items-center gap-1.5 text-[12.5px] text-workbench-text-secondary">
-          <Phone size={13} className="shrink-0 text-workbench-text-muted" />
-          <span className="wb-num truncate tabular-nums">{customer.phone}</span>
-        </div>
-      )}
+      {/* 手机号 + 会话入口 */}
+      <div className="mt-1 flex items-center gap-1.5 text-[12.5px] text-workbench-text-secondary">
+        {customer.phone ? (
+          <>
+            <Phone size={13} className="shrink-0 text-workbench-text-muted" />
+            <span className="wb-num truncate tabular-nums">{customer.phone}</span>
+          </>
+        ) : (
+          <span className="text-workbench-text-muted">—</span>
+        )}
+        <CardActionButton
+          ariaLabel={STRINGS.card.chat}
+          className="ml-auto"
+          onClick={(e) => {
+            e.stopPropagation();
+            onOpenChat(customer.id);
+          }}
+        >
+          <MessageCircle size={14} />
+        </CardActionButton>
+      </div>
 
       {/* 标签 */}
       {visibleTags.length > 0 && (
-        <div className="mt-2 flex flex-wrap items-center gap-1">
+        <div className="mt-1.5 flex flex-wrap items-center gap-1">
           {visibleTags.map((tag) => (
             <span
               key={tag}
@@ -175,38 +187,16 @@ export const CustomerCard = memo(function CustomerCard({
         </div>
       )}
 
-      {/* 底部：最近跟进 / 添加时间 + 操作按钮 */}
-      <div className="mt-3 flex items-center justify-between border-t border-workbench-line-subtle pt-2.5">
-        <div className="min-w-0 text-[11px] text-workbench-text-muted">
-          {footerMeta ? (
-            <span className="truncate">
-              {footerMeta.label}{" "}
-              <span className="wb-num tabular-nums text-workbench-text-secondary">
-                {footerMeta.value}
-              </span>
+      {/* 底部：最近跟进 / 添加时间 */}
+      <div className="mt-1.5 border-t border-workbench-line-subtle pt-1.5 text-[11px] text-workbench-text-muted">
+        {footerMeta ? (
+          <span className="truncate">
+            {footerMeta.label}{" "}
+            <span className="wb-num tabular-nums text-workbench-text-secondary">
+              {footerMeta.value}
             </span>
-          ) : null}
-        </div>
-        <div className="flex shrink-0 items-center gap-1.5">
-          <CardActionButton
-            ariaLabel={STRINGS.card.chat}
-            onClick={(e) => {
-              e.stopPropagation();
-              onOpenChat(customer.id);
-            }}
-          >
-            <MessageCircle size={15} />
-          </CardActionButton>
-          <CardActionButton
-            ariaLabel={STRINGS.card.call}
-            onClick={(e) => {
-              e.stopPropagation();
-              onCall(customer.id);
-            }}
-          >
-            <Phone size={15} />
-          </CardActionButton>
-        </div>
+          </span>
+        ) : null}
       </div>
     </div>
   );
@@ -264,10 +254,12 @@ function RowIconButton({
 function CardActionButton({
   ariaLabel,
   onClick,
+  className,
   children,
 }: {
   ariaLabel: string;
   onClick: (e: React.MouseEvent) => void;
+  className?: string;
   children: React.ReactNode;
 }) {
   return (
@@ -277,8 +269,9 @@ function CardActionButton({
       title={ariaLabel}
       onClick={onClick}
       className={cn(
-        "focus-ring grid size-7 place-items-center rounded-full bg-workbench-surface-active text-workbench-accent transition-colors",
+        "focus-ring grid size-6 shrink-0 place-items-center rounded-full bg-workbench-surface-active text-workbench-accent transition-colors",
         "hover:bg-workbench-accent hover:text-white",
+        className,
       )}
     >
       {children}

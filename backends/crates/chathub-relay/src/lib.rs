@@ -13,6 +13,7 @@ pub mod downstream;
 pub mod error;
 pub mod event_policy;
 pub mod hub_service;
+pub mod nacos;
 pub mod push;
 pub mod router;
 pub mod secret;

@@ -17,7 +17,11 @@
 //   - 多 account 入参 → scope 仅 employee 维度,任何 account 事件都刷新(广义订阅)
 //   - 空 accountIds → enabled=false,不拉不订阅
 //
-// 筛选(externalId / 加好友时间区间)与 pageSize 下推服务端;任一变化 → 重置 cursor 从首页重拉。
+// **fullScope(全量,按 token 圈定)**:置 true 时不按账号过滤 —— 请求体省略 wecomAccountIds,
+//   由业务后台按登录账号(Bearer token)纬度返回全部好友。此时空 accountIds 不再表示禁用,
+//   而是「全量拉取」。默认 false 保持原「空 accountIds = 禁用」语义,调用方零改动。
+//
+// 筛选(externalName / 加好友时间区间)与 pageSize 下推服务端;任一变化 → 重置 cursor 从首页重拉。
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
@@ -29,8 +33,8 @@ import { fetchFriends, type WecomFriend } from "./customers";
 const DEFAULT_PAGE_SIZE = 20;
 
 export interface UseFriendsFilters {
-  /** 名称/手机号统一模糊匹配。 */
-  externalId?: string;
+  /** 按名称模糊匹配。 */
+  externalName?: string;
   /** 加好友时间下界 `yyyy-MM-dd HH:mm:ss`。 */
   addStartTime?: string;
   /** 加好友时间上界 `yyyy-MM-dd HH:mm:ss`。 */
@@ -64,22 +68,30 @@ export function useFriends(
   accountIds: string[],
   filters?: UseFriendsFilters,
   pageSize: number = DEFAULT_PAGE_SIZE,
+  fullScope: boolean = false,
 ): UseFriendsResult {
   const employeeId = useCurrentEmployeeId();
   const sortedAccountIds = useMemo(() => [...accountIds].sort(), [accountIds]);
-  const accountKey = sortedAccountIds.join(",");
-  const scopeAccount = sortedAccountIds.length === 1 ? sortedAccountIds[0] : undefined;
+  // 请求体账号集:fullScope → 空(请求体省略 wecomAccountIds,后台按 token 全量);否则按选中账号过滤。
+  const requestAccountIds = useMemo(
+    () => (fullScope ? [] : sortedAccountIds),
+    [fullScope, sortedAccountIds],
+  );
+  // 能否拉取:fullScope 恒可拉(空集合=全量);否则维持「空 accountIds = 禁用」原语义。
+  const enabledByAccounts = fullScope || sortedAccountIds.length > 0;
+  const accountKey = requestAccountIds.join(",");
+  const scopeAccount = requestAccountIds.length === 1 ? requestAccountIds[0] : undefined;
 
-  const externalId = filters?.externalId ?? "";
+  const externalName = filters?.externalName ?? "";
   const addStartTime = filters?.addStartTime ?? "";
   const addEndTime = filters?.addEndTime ?? "";
   // 重拉指纹:筛选 / pageSize 任一变化都从首页重拉(它们不进 scope)。
-  const resetKey = `${externalId}|${addStartTime}|${addEndTime}|${pageSize}`;
+  const resetKey = `${externalName}|${addStartTime}|${addEndTime}|${pageSize}`;
   // queryFn / nextPage 经 ref 读最新筛选 + pageSize,避免 stale closure。
-  const paramsRef = useRef({ externalId, addStartTime, addEndTime, pageSize });
+  const paramsRef = useRef({ externalName, addStartTime, addEndTime, pageSize });
   useEffect(() => {
-    paramsRef.current = { externalId, addStartTime, addEndTime, pageSize };
-  }, [externalId, addStartTime, addEndTime, pageSize]);
+    paramsRef.current = { externalName, addStartTime, addEndTime, pageSize };
+  }, [externalName, addStartTime, addEndTime, pageSize]);
 
   // 续页缓存(page 1..N)+ 当前页指针。page 0 由 useResource 持有。
   const [tailPages, setTailPages] = useState<FriendsPage[]>([]);
@@ -96,16 +108,16 @@ export function useFriends(
       wecomAccountId: scopeAccount,
     },
     queryFn: async () => {
-      if (sortedAccountIds.length === 0) {
+      if (!enabledByAccounts) {
         return { records: [], nextCursor: "", hasMore: false };
       }
       const gen = ++genRef.current;
       const p = paramsRef.current;
       const resp = await fetchFriends({
-        accountIds: sortedAccountIds,
+        accountIds: requestAccountIds,
         cursor: "",
         size: p.pageSize,
-        externalId: p.externalId,
+        externalName: p.externalName,
         addStartTime: p.addStartTime,
         addEndTime: p.addEndTime,
       });
@@ -116,7 +128,7 @@ export function useFriends(
       }
       return { records: resp.records, nextCursor: resp.nextCursor, hasMore: resp.hasMore };
     },
-    enabled: !!employeeId && sortedAccountIds.length > 0,
+    enabled: !!employeeId && enabledByAccounts,
     // 降自动重拉:客户数据非实时,关掉聚焦刷新 + 静默探活,只靠事件 + 显式刷新。
     refetchOnFocus: false,
     silentProbeMs: 0,
@@ -150,7 +162,7 @@ export function useFriends(
     }
     const tail = allPages[allPages.length - 1];
     if (!tail || !tail.hasMore || !tail.nextCursor) return;
-    if (sortedAccountIds.length === 0) return;
+    if (!enabledByAccounts) return;
     const gen = genRef.current;
     const targetIndex = allPages.length; // 追加后新页所在下标
     setTailLoading(true);
@@ -158,10 +170,10 @@ export function useFriends(
     try {
       const p = paramsRef.current;
       const resp = await fetchFriends({
-        accountIds: sortedAccountIds,
+        accountIds: requestAccountIds,
         cursor: tail.nextCursor,
         size: p.pageSize,
-        externalId: p.externalId,
+        externalName: p.externalName,
         addStartTime: p.addStartTime,
         addEndTime: p.addEndTime,
       });
@@ -176,7 +188,7 @@ export function useFriends(
     } finally {
       setTailLoading(false);
     }
-  }, [tailLoading, safeIndex, allPages, sortedAccountIds]);
+  }, [tailLoading, safeIndex, allPages, requestAccountIds, enabledByAccounts]);
 
   const refresh = resource.refresh;
 
@@ -187,9 +199,9 @@ export function useFriends(
     const key = `${accountKey}|${resetKey}`;
     if (prevKeyRef.current === key) return;
     prevKeyRef.current = key;
-    if (!employeeId || sortedAccountIds.length === 0) return;
+    if (!employeeId || !enabledByAccounts) return;
     void refresh();
-  }, [accountKey, resetKey, employeeId, refresh, sortedAccountIds.length]);
+  }, [accountKey, resetKey, employeeId, refresh, enabledByAccounts]);
 
   return {
     friends,

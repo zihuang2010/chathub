@@ -14,8 +14,6 @@ const SEARCH_DEBOUNCE_MS = 300;
 
 interface MessagesContactSearchProps {
   accounts: readonly Account[];
-  /** 顶部账号选择器选中的账号 `name`;`null` = 全部账号。决定搜索范围。 */
-  selectedAccount: string | null;
   /** 点击下拉里的客户:由父级解析「客户 → 会话」并打开。 */
   onOpenCustomer: (friend: WecomFriend) => void;
   /** 搜索框清空:父级据此退出 filtered 态(若有)回到默认列表。 */
@@ -24,14 +22,15 @@ interface MessagesContactSearchProps {
 
 /**
  * 消息页「搜索客户」框 + 「联系人」下拉(企业微信风格)。
- * - 只按名字搜客户,**直接打 `list_friends` 接口**(useFriends 的 externalId 服务端模糊匹配)。
- * - query 为空时不请求(accountIds=[] → useFriends 自动 disabled)。
+ * - 只按名字搜客户,**直接打 `list_friends` 接口**(useFriends 的 externalName 服务端模糊匹配)。
+ * - **按 token 全量搜索**:不传 wecomAccountIds(fullScope),由登录账号 token 圈定范围,
+ *   不受顶部账号选择器影响;每条结果按 `wecomAccountId` 反查 `accounts` 显示归属账号徽章。
+ * - query 为空时不请求(fullScope=false + 空 accountIds → useFriends 自动 disabled)。
  * - 下拉用相对定位的浮层(非 Radix Popover):搜索框是 live 输入,自管开合 + 外点关闭,
  *   避免 Popover 抢焦点。
  */
 export const MessagesContactSearch = memo(function MessagesContactSearch({
   accounts,
-  selectedAccount,
   onOpenCustomer,
   onClear,
 }: MessagesContactSearchProps) {
@@ -42,24 +41,25 @@ export const MessagesContactSearch = memo(function MessagesContactSearch({
   // 选中某条后程序化把名字写回输入框:此次不重新搜索、不重开下拉。
   const suppressRef = useRef(false);
 
-  // 输入防抖 → debounced(喂给 useFriends 的 externalId)。
+  // 输入防抖 → debounced(喂给 useFriends 的 externalName)。
   useEffect(() => {
     if (suppressRef.current) return;
     const id = setTimeout(() => setDebounced(query.trim()), SEARCH_DEBOUNCE_MS);
     return () => clearTimeout(id);
   }, [query]);
 
-  // 搜索范围:选中账号取其 id;否则全部账号 id。debounced 为空 → [] 关闭请求。
-  const searchAccountIds = useMemo(() => {
-    if (!debounced) return [];
-    if (selectedAccount) {
-      const acct = accounts.find((a) => a.name === selectedAccount);
-      return acct ? [acct.id] : [];
-    }
-    return accounts.map((a) => a.id);
-  }, [debounced, selectedAccount, accounts]);
+  // 账号反查表:用结果里的 `wecomAccountId` 取归属账号(显示名 + 配色),展示账号徽章。
+  const accountById = useMemo(() => new Map(accounts.map((a) => [a.id, a] as const)), [accounts]);
 
-  const { friends, loading } = useFriends(searchAccountIds, { externalId: debounced });
+  // 按 token 全量搜索:空 accountIds + fullScope(请求体省略 wecomAccountIds)。
+  // fullScope 由 debounced 非空驱动,顺带充当 enable 开关:空关键词 → fullScope=false +
+  // 空 accountIds → useFriends 自动 disabled,不发请求。
+  const { friends, loading } = useFriends(
+    [],
+    { externalName: debounced },
+    undefined,
+    debounced.length > 0,
+  );
 
   // 有 debounced 关键词即展开下拉(展示 搜索中/空/结果)。选中后由 suppressRef 压住不重开。
   useEffect(() => {
@@ -140,6 +140,7 @@ export const MessagesContactSearch = memo(function MessagesContactSearch({
           friends={friends}
           loading={loading}
           query={debounced}
+          accountById={accountById}
           onPick={handlePick}
         />
       )}
@@ -151,11 +152,13 @@ function ContactDropdown({
   friends,
   loading,
   query,
+  accountById,
   onPick,
 }: {
   friends: WecomFriend[];
   loading: boolean;
   query: string;
+  accountById: Map<string, Account>;
   onPick: (friend: WecomFriend) => void;
 }) {
   const showEmpty = !loading && friends.length === 0;
@@ -190,6 +193,7 @@ function ContactDropdown({
               key={`${friend.wecomAccountId}:${friend.externalUserId}`}
               friend={friend}
               query={query}
+              account={accountById.get(friend.wecomAccountId)}
               onPick={onPick}
             />
           ))}
@@ -202,10 +206,13 @@ function ContactDropdown({
 function ContactRow({
   friend,
   query,
+  account,
   onPick,
 }: {
   friend: WecomFriend;
   query: string;
+  /** 由 `friend.wecomAccountId` 反查到的归属账号;未命中(账号不在列表)则不渲染徽章。 */
+  account: Account | undefined;
   onPick: (friend: WecomFriend) => void;
 }) {
   const name = friend.externalName || "(未命名)";
@@ -218,7 +225,7 @@ function ContactRow({
       className="focus-ring flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-workbench-surface-active"
     >
       <ConversationAvatar name={name} online={false} />
-      <div className="min-w-0 flex-1">
+      <div className="flex min-w-0 flex-1 flex-col">
         <div className="truncate text-wb-xs font-medium text-workbench-text">
           {highlightMatch(name, query)}
         </div>
@@ -227,8 +234,23 @@ function ContactRow({
             {company}
           </div>
         )}
+        {account && <AccountLine account={account} />}
       </div>
     </button>
+  );
+}
+
+/** 结果行第三行的归属账号:「来自: 账号名」,样式对齐接待列表(ConversationList)的 from 行。 */
+function AccountLine({ account }: { account: Account }) {
+  return (
+    <div className="mt-px flex min-w-0 items-center gap-1.5 text-wb-4xs">
+      <span className="shrink-0 font-semibold text-workbench-text-muted">
+        {STRINGS.conversationList.fromShort}
+      </span>
+      <span className="min-w-0 truncate font-medium text-workbench-text-secondary">
+        {account.name}
+      </span>
+    </div>
   );
 }
 

@@ -8,7 +8,7 @@ import { useFriendDetail } from "@/lib/api/useFriendDetail";
 import { useFriends } from "@/lib/api/useFriends";
 import type { Account } from "@/lib/types/account";
 
-import { DEFAULT_CARD_DENSITY, DEFAULT_PAGE_SIZE, type CardDensity } from "./constants";
+import { DEFAULT_PAGE_SIZE, DEFAULT_VIEW_MODE, type CustomerViewMode } from "./constants";
 import { CustomerDetailPanel } from "./CustomerDetailPanel";
 import { CustomerList } from "./CustomerList";
 import { CustomersHeader } from "./CustomersHeader";
@@ -41,32 +41,35 @@ export function CustomersPage({
   const [selectedAccountIds, setSelectedAccountIds] =
     useState<ReadonlySet<string>>(EMPTY_ACCOUNTS_SET);
 
-  // API 入参账号:UI 没选时拉所有可见账号。
+  // API 入参账号:选了账号则下发该子集;没选 → 走全量(fullScope,请求体省略 wecomAccountIds,
+  // 由业务后台按登录账号 token 圈定),此处账号集留空。
+  const isFullScope = selectedAccountIds.size === 0;
   const apiAccountIds = useMemo(() => {
     if (selectedAccountIds.size > 0) {
       return [...selectedAccountIds].sort();
     }
-    return accounts.map((a) => a.id);
-  }, [selectedAccountIds, accounts]);
+    return [];
+  }, [selectedAccountIds]);
 
-  // 搜索:输入即时回显,防抖 350ms 后下推服务端 externalId(名称/手机号统一模糊匹配)。
+  // 搜索:输入即时回显,防抖 350ms 后下推服务端 externalName(按名称模糊匹配)。
   const [searchInput, setSearchInput] = useState("");
-  const [externalId, setExternalId] = useState("");
+  const [externalName, setExternalName] = useState("");
   useEffect(() => {
-    const t = setTimeout(() => setExternalId(searchInput.trim()), SEARCH_DEBOUNCE_MS);
+    const t = setTimeout(() => setExternalName(searchInput.trim()), SEARCH_DEBOUNCE_MS);
     return () => clearTimeout(t);
   }, [searchInput]);
 
-  // cursor keyset 分页 + 前端页缓存。账号集 / externalId / pageSize 变化 → 重置 cursor 从首页重拉。
+  // cursor keyset 分页 + 前端页缓存。账号集 / externalName / pageSize 变化 → 重置 cursor 从首页重拉。
   const [pageSize, setPageSize] = useState<number>(DEFAULT_PAGE_SIZE);
   const { friends, loading, error, page, canPrev, canNext, prevPage, nextPage } = useFriends(
     apiAccountIds,
-    { externalId },
+    { externalName },
     pageSize,
+    isFullScope,
   );
 
-  // 卡片网格密度（舒适 / 紧凑），对应头部右上角两个视图切换按钮。
-  const [density, setDensity] = useState<CardDensity>(DEFAULT_CARD_DENSITY);
+  // 列表展示形态（卡片 / 列表），对应头部右上角两个视图切换按钮。
+  const [viewMode, setViewMode] = useState<CustomerViewMode>(DEFAULT_VIEW_MODE);
 
   useEffect(() => {
     if (error) showToast(`加载客户列表失败: ${error}`, { type: "error" });
@@ -95,10 +98,15 @@ export function CustomersPage({
 
   const [requestedCustomerId, setRequestedCustomerId] = useState<string | null>(null);
 
-  // 渲染期派生有效的激活客户:若用户选中的客户被过滤掉,则回退到第一条;空列表为 null。
+  // 渲染期派生有效的激活客户:
+  //   - 初始未主动选中(requestedCustomerId 为 null)→ 不自动选第一条,详情面板留空态、不拉详情;
+  //   - 选中的客户仍在可见集 → 用它;
+  //   - 选中的客户被搜索/翻页过滤掉 → 回退到第一条;
+  //   - 空列表 → null。
   const activeCustomerId = useMemo(() => {
     if (visibleCustomers.length === 0) return null;
-    if (requestedCustomerId && visibleCustomers.some((c) => c.id === requestedCustomerId)) {
+    if (requestedCustomerId === null) return null;
+    if (visibleCustomers.some((c) => c.id === requestedCustomerId)) {
       return requestedCustomerId;
     }
     return visibleCustomers[0].id;
@@ -327,8 +335,8 @@ export function CustomersPage({
             onToggleAccount={toggleAccount}
             onClearAccounts={clearAccounts}
             onReset={handleClearFilters}
-            density={density}
-            onDensityChange={setDensity}
+            viewMode={viewMode}
+            onViewModeChange={setViewMode}
           />
 
           <div className="flex min-h-0 flex-1 gap-2 overflow-hidden bg-workbench-surface-subtle p-2">
@@ -339,7 +347,7 @@ export function CustomersPage({
                 loading={loading}
                 accounts={accounts}
                 activeCustomerId={activeCustomerId}
-                density={density}
+                viewMode={viewMode}
                 page={page}
                 pageSize={pageSize}
                 canPrev={canPrev}
@@ -362,7 +370,6 @@ export function CustomersPage({
                 onBulkToggleStar={handleBulkToggleStar}
                 onExport={handleBulkExport}
                 onOpenChat={handleOpenChat}
-                onCall={handleCall}
                 onMore={handleRowMore}
                 hasActiveFilters={hasActiveFilters}
                 onClearFilters={handleClearFilters}

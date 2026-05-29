@@ -25,9 +25,9 @@ export interface Conversation {
    */
   draftText?: string;
   /**
-   * 用户对该会话点了"置顶"。true 时头像右上角显示 pin 角标;排序已在
-   * useRecentFriends.multiKeySort 中按 pinned DESC → pinnedAtMs DESC 处理,
-   * UI 不再额外排序。pinned 状态仅本地维护(SQLite 列),远端事件不覆盖。
+   * 用户对该会话点了"置顶"。true 时头像右上角显示 pin 角标;排序已在后端
+   * list_top 多键 ORDER BY(pinned DESC → pinned_at_ms DESC)处理,UI 不再额外排序。
+   * pinned 状态仅本地维护(SQLite 列),远端事件不覆盖。
    */
   pinned?: boolean;
   /**

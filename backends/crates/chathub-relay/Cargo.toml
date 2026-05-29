@@ -62,6 +62,9 @@ im                 = { workspace = true }
 moka               = { workspace = true }
 num_cpus           = { workspace = true }
 
+# Nacos 服务注册/发现
+nacos-sdk          = { workspace = true }
+
 # 同 workspace 内 codegen
 chathub-proto      = { path = "../chathub-proto" }
 

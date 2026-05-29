@@ -81,7 +81,8 @@ Start here when exploring this area:
 
 | Area      | Connections |
 | --------- | ----------- |
-| Customers | 11 calls    |
+| Customers | 10 calls    |
+| Messages  | 1 calls     |
 
 ## How to Explore
 

@@ -148,7 +148,7 @@ mod tests {
                     "issuedAt": "2026-05-16 10:00:00",
                     "expiresAt": "2026-05-16 22:00:00"
                 },
-                "userId": 7,
+                "userId": "7",
                 "nickName": "Alice",
                 "channel": 3
             }

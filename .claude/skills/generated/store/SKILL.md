@@ -1,11 +1,11 @@
 ---
 name: store
-description: "Skill for the Store area of chathub. 21 symbols across 5 files."
+description: "Skill for the Store area of chathub. 17 symbols across 2 files."
 ---
 
 # Store
 
-21 symbols | 5 files | Cohesion: 92%
+17 symbols | 2 files | Cohesion: 100%
 
 ## When to Use
 
@@ -15,13 +15,10 @@ description: "Skill for the Store area of chathub. 21 symbols across 5 files."
 
 ## Key Files
 
-| File                                                              | Symbols                                                                                      |
-| ----------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
-| `frontends/components/workbench/messages/store/chatStore.ts`      | emptySlice, findIdByClientMsgId, replaceAuthoritative, prependOlder, enqueueOptimistic (+10) |
-| `frontends/components/workbench/messages/store/chatStore.test.ts` | sliceWith, msg, optimistic                                                                   |
-| `frontends/components/workbench/messages/useChatMessages.ts`      | useChatMessages                                                                              |
-| `frontends/lib/api/useMessageHistory.ts`                          | useMessageHistory                                                                            |
-| `frontends/lib/data/changeBus.ts`                                 | subscribe                                                                                    |
+| File                                                              | Symbols                                                                                     |
+| ----------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| `frontends/components/workbench/messages/store/chatStore.ts`      | emptySlice, findIdByClientMsgId, replaceAuthoritative, prependOlder, enqueueOptimistic (+9) |
+| `frontends/components/workbench/messages/store/chatStore.test.ts` | sliceWith, msg, optimistic                                                                  |
 
 ## Entry Points
 
@@ -50,31 +47,10 @@ Start here when exploring this area:
 | `removeMessage`        | Function | `frontends/components/workbench/messages/store/chatStore.ts`      | 227  |
 | `setLoading`           | Function | `frontends/components/workbench/messages/store/chatStore.ts`      | 229  |
 | `setError`             | Function | `frontends/components/workbench/messages/store/chatStore.ts`      | 231  |
-| `useChatStore`         | Function | `frontends/components/workbench/messages/store/chatStore.ts`      | 185  |
-| `useChatMessages`      | Function | `frontends/components/workbench/messages/useChatMessages.ts`      | 32   |
-| `useMessageHistory`    | Function | `frontends/lib/api/useMessageHistory.ts`                          | 56   |
 | `sliceWith`            | Function | `frontends/components/workbench/messages/store/chatStore.test.ts` | 41   |
 | `findIdByClientMsgId`  | Function | `frontends/components/workbench/messages/store/chatStore.ts`      | 36   |
 | `msg`                  | Function | `frontends/components/workbench/messages/store/chatStore.test.ts` | 18   |
 | `optimistic`           | Function | `frontends/components/workbench/messages/store/chatStore.test.ts` | 30   |
-
-## Execution Flows
-
-| Flow                                  | Type            | Steps |
-| ------------------------------------- | --------------- | ----- |
-| `ConversationList → Subscribe`        | cross_community | 5     |
-| `MessagesPage → Subscribe`            | cross_community | 4     |
-| `MessagesPage → UseCurrentEmployeeId` | cross_community | 4     |
-| `MessagesPage → UseChatStore`         | cross_community | 4     |
-| `CustomersPage → Subscribe`           | cross_community | 4     |
-| `Workbench → Subscribe`               | cross_community | 4     |
-
-## Connected Areas
-
-| Area     | Connections |
-| -------- | ----------- |
-| Messages | 1 calls     |
-| Api      | 1 calls     |
 
 ## How to Explore
 

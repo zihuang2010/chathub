@@ -6,19 +6,21 @@ import type { Customer } from "@/lib/types/customer";
 
 import { BulkActionsBar } from "./BulkActionsBar";
 import { WorkbenchScrollArea } from "../messages/WorkbenchScrollArea";
-import { CARD_COLUMNS, type CardDensity } from "./constants";
+import { CARD_VIEW_COLUMNS, type CustomerViewMode } from "./constants";
 import { CustomerCard } from "./CustomerCard";
+import { CustomerRow } from "./CustomerRow";
 import { CustomersPagination } from "./CustomersPagination";
 import { STRINGS } from "./strings";
 
-// ─── 卡片网格虚拟化 ───────────────────────────────────────────────────────────
-// 卡片网格用 @tanstack/react-virtual 按「行」虚拟化:每个虚拟项是一整行卡片,
-// 行内列数由密度固定(CARD_COLUMNS,不随窗口宽度跳列;卡片等比缩放)。只渲染可视
-// 行 + 上下 overscan,长列表(pageSize 最大 100)滚动时 DOM 节点恒定,不再一次性挂载全部卡片。
+// ─── 虚拟化 ──────────────────────────────────────────────────────────────────
+// 卡片网格按「行」虚拟化(每个虚拟项是一整行卡片,列数固定);列表视图按「条」虚拟化
+// (每个虚拟项是一行客户)。两者都只渲染可视区 + overscan,长列表滚动时 DOM 节点恒定。
 const CARD_GAP_PX = 10; // 列间距(对应原 gap-2.5)
 const ROW_GAP_PX = 10; // 行间距(对应原 gap-2.5),以行 wrapper 的 paddingBottom 实现
-const ESTIMATED_ROW_PX = 168; // 行高初始估值;measureElement 会按真实高度校正
-const OVERSCAN_ROWS = 6; // 视口上下额外预渲染的行数,滚动时减少白屏
+const ESTIMATED_ROW_PX = 148; // 卡片行高初始估值;measureElement 会按真实高度校正
+const ESTIMATED_LIST_ROW_PX = 60; // 列表行高初始估值
+const OVERSCAN_ROWS = 6; // 卡片视口上下额外预渲染的行数
+const OVERSCAN_LIST_ROWS = 10; // 列表视口上下额外预渲染的条数
 
 interface CustomerListProps {
   /** 当前页的客户（cursor keyset 分页，单页展示）。 */
@@ -29,8 +31,8 @@ interface CustomerListProps {
   loading: boolean;
   accounts: readonly Account[];
   activeCustomerId: string | null;
-  /** 卡片网格密度（舒适 / 紧凑）。 */
-  density: CardDensity;
+  /** 展示形态（卡片 / 列表）。 */
+  viewMode: CustomerViewMode;
 
   // pagination (cursor keyset)
   page: number;
@@ -59,9 +61,8 @@ interface CustomerListProps {
   onBulkToggleStar: () => void;
   onExport: () => void;
 
-  // card actions
+  // card / row actions
   onOpenChat: (id: string) => void;
-  onCall: (id: string) => void;
   onMore: (id: string) => void;
 
   /** 是否存在任意筛选（搜索 / 账号）。空列表时区分"无数据" vs "筛选无结果"。 */
@@ -76,7 +77,7 @@ export const CustomerList = memo(function CustomerList({
   loading,
   accounts,
   activeCustomerId,
-  density,
+  viewMode,
   page,
   pageSize,
   canPrev,
@@ -99,7 +100,6 @@ export const CustomerList = memo(function CustomerList({
   onBulkToggleStar,
   onExport,
   onOpenChat,
-  onCall,
   onMore,
   hasActiveFilters,
   onClearFilters,
@@ -137,19 +137,32 @@ export const CustomerList = memo(function CustomerList({
         )
       ) : (
         <>
-          <VirtualizedCardGrid
-            customers={customers}
-            accountMap={accountMap}
-            activeCustomerId={activeCustomerId}
-            density={density}
-            multiSelectActive={multiSelectActive}
-            selectedIds={selectedIds}
-            onSelectCustomer={onSelectCustomer}
-            onToggleMultiSelect={onToggleMultiSelect}
-            onOpenChat={onOpenChat}
-            onCall={onCall}
-            onMore={onMore}
-          />
+          {viewMode === "card" ? (
+            <VirtualizedCardGrid
+              customers={customers}
+              accountMap={accountMap}
+              activeCustomerId={activeCustomerId}
+              columnCount={CARD_VIEW_COLUMNS}
+              multiSelectActive={multiSelectActive}
+              selectedIds={selectedIds}
+              onSelectCustomer={onSelectCustomer}
+              onToggleMultiSelect={onToggleMultiSelect}
+              onOpenChat={onOpenChat}
+              onMore={onMore}
+            />
+          ) : (
+            <VirtualizedCustomerRows
+              customers={customers}
+              accountMap={accountMap}
+              activeCustomerId={activeCustomerId}
+              multiSelectActive={multiSelectActive}
+              selectedIds={selectedIds}
+              onSelectCustomer={onSelectCustomer}
+              onToggleMultiSelect={onToggleMultiSelect}
+              onOpenChat={onOpenChat}
+              onMore={onMore}
+            />
+          )}
           <CustomersPagination
             page={page}
             pageSize={pageSize}
@@ -170,13 +183,12 @@ interface VirtualizedCardGridProps {
   customers: readonly Customer[];
   accountMap: ReadonlyMap<string, Account>;
   activeCustomerId: string | null;
-  density: CardDensity;
+  columnCount: number;
   multiSelectActive: boolean;
   selectedIds: ReadonlySet<string>;
   onSelectCustomer: (id: string) => void;
   onToggleMultiSelect: (id: string) => void;
   onOpenChat: (id: string) => void;
-  onCall: (id: string) => void;
   onMore: (id: string) => void;
 }
 
@@ -184,13 +196,12 @@ const VirtualizedCardGrid = memo(function VirtualizedCardGrid({
   customers,
   accountMap,
   activeCustomerId,
-  density,
+  columnCount,
   multiSelectActive,
   selectedIds,
   onSelectCustomer,
   onToggleMultiSelect,
   onOpenChat,
-  onCall,
   onMore,
 }: VirtualizedCardGridProps) {
   // 滚动容器:由 WorkbenchScrollArea 通过 scrollRef 回调把 viewport DOM 桥接进来,
@@ -200,9 +211,8 @@ const VirtualizedCardGrid = memo(function VirtualizedCardGrid({
     if (node) scrollRef.current = node;
   }, []);
 
-  // 每行列数由密度固定(舒适 4 列 / 紧凑 5 列),不随窗口宽度跳列;
-  // 卡片用 `minmax(0, 1fr)` 平分容器宽,窗口缩放时等比变宽 / 变窄。
-  const columnCount = CARD_COLUMNS[density];
+  // 每行列数固定(不随窗口宽度跳列);卡片用 `minmax(0, 1fr)` 平分容器宽,
+  // 窗口缩放时等比变宽 / 变窄。
   const rowCount = Math.ceil(customers.length / columnCount);
 
   // useVirtualizer 返回的方法无法被 React Compiler 安全 memo,编译器会跳过对本组件的
@@ -251,7 +261,7 @@ const VirtualizedCardGrid = memo(function VirtualizedCardGrid({
               }}
             >
               <div
-                className="grid"
+                className="grid items-start"
                 style={{
                   gridTemplateColumns: `repeat(${columnCount}, minmax(0, 1fr))`,
                   gap: CARD_GAP_PX,
@@ -273,12 +283,100 @@ const VirtualizedCardGrid = memo(function VirtualizedCardGrid({
                       onSelect={onSelectCustomer}
                       onToggleMultiSelect={onToggleMultiSelect}
                       onOpenChat={onOpenChat}
-                      onCall={onCall}
                       onMore={onMore}
                     />
                   );
                 })}
               </div>
+            </div>
+          );
+        })}
+      </div>
+    </WorkbenchScrollArea>
+  );
+});
+
+interface VirtualizedCustomerRowsProps {
+  customers: readonly Customer[];
+  accountMap: ReadonlyMap<string, Account>;
+  activeCustomerId: string | null;
+  multiSelectActive: boolean;
+  selectedIds: ReadonlySet<string>;
+  onSelectCustomer: (id: string) => void;
+  onToggleMultiSelect: (id: string) => void;
+  onOpenChat: (id: string) => void;
+  onMore: (id: string) => void;
+}
+
+const VirtualizedCustomerRows = memo(function VirtualizedCustomerRows({
+  customers,
+  accountMap,
+  activeCustomerId,
+  multiSelectActive,
+  selectedIds,
+  onSelectCustomer,
+  onToggleMultiSelect,
+  onOpenChat,
+  onMore,
+}: VirtualizedCustomerRowsProps) {
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const setScrollViewport = useCallback((node: HTMLDivElement | null) => {
+    if (node) scrollRef.current = node;
+  }, []);
+
+  // eslint-disable-next-line react-hooks/incompatible-library
+  const rowVirtualizer = useVirtualizer({
+    count: customers.length,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: () => ESTIMATED_LIST_ROW_PX,
+    overscan: OVERSCAN_LIST_ROWS,
+    getItemKey: (index) => customers[index]?.id ?? index,
+  });
+
+  const virtualRows = rowVirtualizer.getVirtualItems();
+  const totalSize = rowVirtualizer.getTotalSize();
+
+  return (
+    <WorkbenchScrollArea
+      className="flex-1"
+      viewportClassName="px-3 py-3"
+      scrollRef={setScrollViewport}
+    >
+      <div
+        role="listbox"
+        aria-label="客户列表"
+        style={{ height: totalSize, position: "relative", width: "100%" }}
+      >
+        {virtualRows.map((virtualRow) => {
+          const customer = customers[virtualRow.index];
+          if (!customer) return null;
+          const account = customer.accountId ? accountMap.get(customer.accountId) : undefined;
+          return (
+            <div
+              key={virtualRow.key}
+              ref={rowVirtualizer.measureElement}
+              data-index={virtualRow.index}
+              style={{
+                position: "absolute",
+                top: 0,
+                left: 0,
+                width: "100%",
+                paddingBottom: ROW_GAP_PX,
+                transform: `translateY(${virtualRow.start}px)`,
+              }}
+            >
+              <CustomerRow
+                customer={customer}
+                account={account}
+                avatarColorToken={account?.colorToken}
+                selected={!multiSelectActive && customer.id === activeCustomerId}
+                multiSelectActive={multiSelectActive}
+                multiSelected={selectedIds.has(customer.id)}
+                onSelect={onSelectCustomer}
+                onToggleMultiSelect={onToggleMultiSelect}
+                onOpenChat={onOpenChat}
+                onMore={onMore}
+              />
             </div>
           );
         })}

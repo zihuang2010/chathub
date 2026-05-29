@@ -79,11 +79,14 @@ struct MockAccount {
 
 // ─── JddTokenVO(login 响应)───────────────────────────────────────────────
 
+/// 与生产业务后台契约对齐:userId 以 string 形态序列化(雪花算法 ID 超 JS Number
+/// 安全整数范围,防客户端精度丢失)。relay 端的 JddTokenVO 反序列化已兼容
+/// string/number 两态;mock 这里固定用 string,贴近生产形态做集成验证。
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct JddTokenVO {
     access_token: JddAccessToken,
-    user_id: i64,
+    user_id: String,
     username: String,
     nick_name: String,
     mobile: String,
@@ -163,14 +166,16 @@ struct ListMineItem {
 #[derive(Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 struct ListFriendsReq {
+    /// 缺省 / 空 = 全量拉取:真实后台按 token 圈定,mock 这里回退为「所有已知账号」。
+    #[serde(default)]
     wecom_account_ids: Vec<String>,
     size: u32,
     /// 首页 ""(空串);续页填上轮 nextCursor。keyset 位置编码,见 `decode_friend_cursor`。
     #[serde(default)]
     cursor: String,
-    /// 非空 → 名称/手机号统一模糊匹配(契约 #3:externalId 替代 externalName/externalMobile)。
+    /// 非空 → 按名称模糊匹配(契约:externalName 仅匹配名称)。
     #[serde(default)]
-    external_id: Option<String>,
+    external_name: Option<String>,
     #[serde(default)]
     add_start_time: Option<String>,
     #[serde(default)]
@@ -275,6 +280,12 @@ struct ListRecentFriendsReq {
     wecom_account_id: String,
     #[serde(default)]
     only_unread: bool,
+    /// 单好友定位(打开会话流程):非空时只返回该 external_user_id 的会话 + firstConversationId。
+    #[serde(default)]
+    external_id: String,
+    /// 是否随响应带回首屏历史(firstConversationHistory)。
+    #[serde(default)]
+    include_first_history: bool,
 }
 
 /// 接待列表单条记录(17 字段,对齐 chathub-net::RecentFriendRecord)。
@@ -308,6 +319,21 @@ struct ListRecentFriendsResp {
     has_more: bool,
     next_cursor: String,
     records: Vec<MockRecentFriend>,
+    /// 打开会话流程才下发(单好友定位);列表/搜索路径为空串 → 跳过序列化。
+    #[serde(skip_serializing_if = "String::is_empty")]
+    first_conversation_id: String,
+    /// 打开会话流程才下发首屏历史;否则 None → 跳过序列化。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    first_conversation_history: Option<MockFirstConversationHistory>,
+}
+
+/// 首屏历史(对照 chathub-net::FirstConversationHistory:records + hasMore + nextCursor)。
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MockFirstConversationHistory {
+    records: Vec<MockHistoryMessage>,
+    has_more: bool,
+    next_cursor: Option<String>,
 }
 
 // ─── 业务类 ─────────────────────────────────────────────────────────────────
@@ -734,7 +760,7 @@ async fn oauth2_token(
             issued_at: now,
             expires_at: exp,
         },
-        user_id: state.user_id,
+        user_id: state.user_id.to_string(),
         username: form.username.clone(),
         nick_name: state.nick_name.clone(),
         mobile: "13800000000".into(),
@@ -816,27 +842,33 @@ async fn list_friends(
     if !has_bearer(&headers) {
         return (StatusCode::UNAUTHORIZED, "missing Bearer").into_response();
     }
-    if req.wecom_account_ids.is_empty() {
-        return (StatusCode::BAD_REQUEST, "wecomAccountIds required").into_response();
-    }
     let size = req.size.clamp(1, 100) as usize;
 
-    // 已知 mock 账号集合;请求里不存在的账号 ID 静默忽略(契约上不返错,空集合即可)
+    // 全量(token 维度):请求体省略 wecomAccountIds → 回退为「所有已知账号」,模拟后台按登录账号圈定。
+    // 非空则按子集过滤,请求里不存在的账号 ID 静默忽略(契约上不返错,空集合即可)。
     let known: std::collections::HashSet<&str> = state
         .accounts
         .iter()
         .map(|a| a.wecom_account_id.as_str())
         .collect();
-    let mut all: Vec<MockFriend> = req
-        .wecom_account_ids
+    let account_ids: Vec<String> = if req.wecom_account_ids.is_empty() {
+        state
+            .accounts
+            .iter()
+            .map(|a| a.wecom_account_id.clone())
+            .collect()
+    } else {
+        req.wecom_account_ids.clone()
+    };
+    let mut all: Vec<MockFriend> = account_ids
         .iter()
         .filter(|id| known.contains(id.as_str()))
         .flat_map(|id| generate_friends(id, state.friends_per_account))
         .collect();
 
-    // 服务端筛选:externalId 统一模糊匹配名称/手机号;时间区间字符串比较(yyyy-MM-dd HH:mm:ss 可比)
-    if let Some(q) = req.external_id.as_deref().filter(|s| !s.is_empty()) {
-        all.retain(|f| f.external_name.contains(q) || f.external_mobile.contains(q));
+    // 服务端筛选:externalName 仅按名称模糊匹配;时间区间字符串比较(yyyy-MM-dd HH:mm:ss 可比)
+    if let Some(q) = req.external_name.as_deref().filter(|s| !s.is_empty()) {
+        all.retain(|f| f.external_name.contains(q));
     }
     if let Some(start) = req.add_start_time.as_deref().filter(|s| !s.is_empty()) {
         all.retain(|f| f.add_time.as_str() >= start);
@@ -1091,11 +1123,47 @@ async fn list_recent_friends(
     if !has_bearer(&headers) {
         return (StatusCode::UNAUTHORIZED, "missing Bearer").into_response();
     }
-    let size = req.size.max(1).min(100);
+    let size = req.size.clamp(1, 100);
     let offset: usize = req.cursor.parse().unwrap_or(0);
 
     // 派生 mock 会话池:每个启用账号取前 N 条 friend 当会话(N=8 给 27 启用账号即 216 条)
     const SESSIONS_PER_ACCOUNT: usize = 8;
+
+    // 单好友定位(打开会话流程):只返回匹配 external_id 的会话 + 顶层 firstConversationId。
+    // 命中(该好友在派生会话池里)→ 返回该记录 + 首屏历史;未命中(从未建会话)→
+    // 空 records,但仍给出 firstConversationId(稳定派生),首屏历史空。
+    if !req.external_id.is_empty() {
+        let found: Option<MockRecentFriend> = state
+            .accounts
+            .iter()
+            .filter(|a| a.enabled)
+            .filter(|a| {
+                req.wecom_account_id.is_empty() || a.wecom_account_id == req.wecom_account_id
+            })
+            .flat_map(|a| generate_recent_sessions(a, SESSIONS_PER_ACCOUNT))
+            .find(|r| r.external_user_id == req.external_id);
+
+        let conversation_id = match &found {
+            Some(r) => r.conversation_id.clone(),
+            None => format!("cv-{}-ext-{}", req.wecom_account_id, req.external_id),
+        };
+        let first_conversation_history = if req.include_first_history {
+            Some(generate_first_history(&conversation_id, found.as_ref()))
+        } else {
+            None
+        };
+        let records: Vec<MockRecentFriend> = found.into_iter().collect();
+        return envelope_ok(ListRecentFriendsResp {
+            size: records.len() as u32,
+            has_more: false,
+            next_cursor: String::new(),
+            records,
+            first_conversation_id: conversation_id,
+            first_conversation_history,
+        })
+        .into_response();
+    }
+
     let mut all: Vec<MockRecentFriend> = state
         .accounts
         .iter()
@@ -1137,8 +1205,48 @@ async fn list_recent_friends(
         has_more,
         next_cursor,
         records,
+        // 列表/搜索路径不下发单好友定位字段(skip_serializing_if 跳过)。
+        first_conversation_id: String::new(),
+        first_conversation_history: None,
     })
     .into_response()
+}
+
+/// 打开会话流程的首屏历史(mock 简化):命中记录 → 用记录末条消息派生 1 条;未命中 → 空。
+/// sort_key 用真实协议格式 `{epochMs}:{dir}:{seq}`,epochMs 取 now(够新,客户端水位门判 fresh)。
+fn generate_first_history(
+    conversation_id: &str,
+    found: Option<&MockRecentFriend>,
+) -> MockFirstConversationHistory {
+    let Some(r) = found else {
+        // 从未建会话:无历史。
+        return MockFirstConversationHistory {
+            records: Vec::new(),
+            has_more: false,
+            next_cursor: None,
+        };
+    };
+    let ms = now_ms();
+    let (y, mo, d, h, mi, s) = ymdhms_from_unix(ms / 1000);
+    let message_time = format!("{:04}-{:02}-{:02} {:02}:{:02}:{:02}", y, mo, d, h, mi, s);
+    let sort_key = format!("{:013}:{}:{:020}", ms, r.last_message_direction, 0);
+    let msg = MockHistoryMessage {
+        local_message_id: r.last_local_message_id.clone(),
+        message_direction: r.last_message_direction,
+        message_type: r.last_message_type,
+        content_text: r.last_message_summary.clone(),
+        send_status: r.last_send_status,
+        message_time: message_time.clone(),
+        sort_key,
+        attachments: Vec::new(),
+        gmt_modified_time: message_time,
+    };
+    let _ = conversation_id;
+    MockFirstConversationHistory {
+        records: vec![msg],
+        has_more: false,
+        next_cursor: None,
+    }
 }
 
 /// 从 generate_friends 池前 N 条派生 recent sessions。
@@ -1375,7 +1483,7 @@ async fn fetch_message_history(
         )
             .into_response();
     }
-    let size = req.size.max(1).min(100) as usize;
+    let size = req.size.clamp(1, 100) as usize;
 
     // 派生完整消息池 — 同一 (account_id, external_user_id) 永远得同一份消息
     let pool = generate_message_pool(

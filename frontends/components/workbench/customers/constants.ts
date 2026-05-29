@@ -43,20 +43,14 @@ export const SORT_OPTIONS: SortOption[] = [
   { value: "follower", label: STRINGS.sort.follower },
 ];
 
-/** 卡片视图的密度。comfortable=舒适（卡片更宽，列更少），compact=紧凑（卡片更窄，列更多）。 */
-export type CardDensity = "comfortable" | "compact";
+/** 客户列表展示形态：card=卡片网格，list=单列列表。对应右上角两个切换按钮。 */
+export type CustomerViewMode = "card" | "list";
 
-/**
- * 卡片网格使用固定列数（不随窗口宽度跳列）；密度决定一行几个卡片。
- * 舒适 4 列、紧凑 5 列；窗口缩放时卡片等比变宽 / 变窄，列数保持不变。
- */
-export const CARD_COLUMNS: Record<CardDensity, number> = {
-  comfortable: 4,
-  compact: 5,
-};
+/** 卡片视图固定列数（不随窗口宽度跳列；窗口缩放时卡片等比变宽 / 变窄）。 */
+export const CARD_VIEW_COLUMNS = 4;
 
-/** 默认卡片密度（对齐设计稿的 3 列舒适视图）。 */
-export const DEFAULT_CARD_DENSITY: CardDensity = "comfortable";
+/** 默认展示形态（卡片视图）。 */
+export const DEFAULT_VIEW_MODE: CustomerViewMode = "card";
 
 /** 详情侧栏宽度（像素）。卡片视图详情信息更丰富，较列表版 280 加宽到 320。 */
 export const DETAIL_PANEL_WIDTH = 320;

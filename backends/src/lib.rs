@@ -8,12 +8,12 @@ use tracing::info;
 
 use chathub_net::{
     record_to_remote, row_to_history, AccountEventApplier, AuthApi, AuthError, AuthInterceptor,
-    BackoffConfig, ChangeNotice, ChangeScope, ChangeTopic, ConnectionManager, ConnectionState,
-    FetchMessageHistoryRequest, FetchMessageHistoryResp, FriendDetailRequest, FriendEventApplier,
-    HistoryMessage, HubClient, ListAccountsFilter, ListAccountsItem, ListFriendsRequest,
-    ListFriendsResp, ListRecentFriendsRequest, ListRecentFriendsResp, LoggedOutReason,
-    MarkReadRequest, MessageEventApplier, MessageSync, RecentSessionEventApplier, SendMessageResp,
-    TokenStore, WecomFriendDetail,
+    BackoffConfig, ChangeCoalescer, ChangeNotice, ChangeScope, ChangeSource, ChangeTopic,
+    ConnectionManager, ConnectionState, FetchMessageHistoryRequest, FetchMessageHistoryResp,
+    FriendDetailRequest, FriendEventApplier, HistoryMessage, HubClient, ListAccountsFilter,
+    ListAccountsItem, ListFriendsRequest, ListFriendsResp, ListRecentFriendsRequest,
+    ListRecentFriendsResp, LoggedOutReason, MarkReadRequest, MessageEventApplier, MessageSync,
+    RecentFriendRecord, RecentSessionEventApplier, SendMessageResp, TokenStore, WecomFriendDetail,
 };
 use chathub_proto::v1::UserProfile;
 use chathub_state::{
@@ -276,9 +276,11 @@ fn filter_rows(rows: Vec<WecomAccountRow>, enabled: Option<bool>) -> Vec<ListAcc
 /// 每条 record 自带 `wecomAccountId` 归属(前端多账号合并 chip 数字/显示名直接用)。
 ///
 /// 入参:
+///   - `account_ids` 为空 → 全量拉取:请求体省略 `wecomAccountIds`,业务后台按登录账号 token 圈定;
+///     非空 → 按该账号子集过滤
 ///   - `cursor` 缺省 / "" → 首页;续页传上次的 `nextCursor`
 ///   - `size` 缺省 20,clamp 到 [1, 100]
-///   - `external_id` → 名称/手机号统一模糊匹配;空 → 不筛选
+///   - `external_name` → 按名称模糊匹配;空 → 不筛选
 ///   - `add_start_time` / `add_end_time` → 添加时间范围;空 → 不限
 ///
 /// 切换筛选条件 / 账号集时,前端丢弃旧 cursor 从首页(`cursor=""`)重拉。
@@ -288,24 +290,20 @@ async fn list_friends(
     account_ids: Vec<String>,
     cursor: Option<String>,
     size: Option<u32>,
-    external_id: Option<String>,
+    external_name: Option<String>,
     add_start_time: Option<String>,
     add_end_time: Option<String>,
 ) -> Result<ListFriendsResp, AuthError> {
-    if account_ids.is_empty() {
-        return Ok(ListFriendsResp {
-            records: Vec::new(),
-            has_more: false,
-            next_cursor: String::new(),
-        });
-    }
+    // account_ids 为空 = 全量拉取:请求体省略 wecomAccountIds,业务后台按登录账号 token 圈定。
+    // 非空则按该子集过滤。两种情况都透传 forward,不在此短路。
     let req = ListFriendsRequest {
         wecom_account_ids: account_ids,
         size: size.unwrap_or(20).clamp(1, 100),
         cursor: cursor.unwrap_or_default(),
-        external_id: external_id.filter(|s| !s.is_empty()),
+        external_name: external_name.filter(|s| !s.is_empty()),
         add_start_time: add_start_time.filter(|s| !s.is_empty()),
         add_end_time: add_end_time.filter(|s| !s.is_empty()),
+        total_mode: "none".into(),
     };
     hub.list_friends(req).await
 }
@@ -557,12 +555,26 @@ fn now_unix_ms() -> i64 {
 
 // ============================== session/recentFriends 接待好友列表 ==============================
 
-/// 头部缓存读取上限 —— UI 默认列表最多展示 200 条;尾部走远端 cursor 分页(不写库)。
+/// 默认列表渲染深度的回退值 —— 前端未显式传 `limit` 时用它。实际深度由前端随游标
+/// 翻页逐步生长(见 `list_recent_friends` 的 limit 入参),上限封顶到
+/// `RECENT_SESSIONS_GLOBAL_LIMIT`。
 const RECENT_FRIENDS_LIST_LIMIT: usize = 200;
 
-/// 远端单页拉取的 size 硬顶 —— 纵深防御:前端固定发 20,但渲染进程若被篡改/出 bug
-/// 传入超大 size 会放大服务端与网络负载,这里在过线前钳到上限。
+/// 远端单页拉取的 size 硬顶 —— 纵深防御:前端默认列表发 50、搜索发 20,但渲染进程
+/// 若被篡改/出 bug 传入超大 size 会放大服务端与网络负载,这里在过线前钳到上限。
 const RECENT_FRIENDS_REMOTE_MAX_SIZE: u32 = 100;
+
+/// 水位预填目标:本地(当前 scope)补到 ≥ 它(或远端耗尽)即止。对齐 RECENT_FRIENDS_LIST_LIMIT,
+/// 保证默认列表渲染深度内的数据本地齐备,翻页可纯本地深读。前端的"触发线"取更低值(100)
+/// 形成滞回,避免在目标边界频繁触发(见 frontends/lib/api/useRecentFriends.ts)。
+const RECENT_FRIENDS_WATERMARK_TARGET: usize = 200;
+
+/// 预填单页上限:一次远端请求最多拉这么多。常态(目标 200)一页即可拉满目标,独立于搜索
+/// 路径的 RECENT_FRIENDS_REMOTE_MAX_SIZE(不影响后者);目标若 > 它则循环分批。
+const RECENT_FRIENDS_PREFILL_PAGE_MAX: usize = 200;
+
+/// 预填循环安全上限:最多续拉这么多页,防远端异常导致失控拉取。
+const RECENT_FRIENDS_PREFILL_MAX_ITERS: u32 = 10;
 
 /// recents 命令内部错误收敛:底层细节(StateError / SQL)只写本地日志,返回渲染层的
 /// message 仅含我们掌控的静态操作名,避免内部实现细节经 IPC 泄露到前端。
@@ -587,14 +599,20 @@ async fn list_recent_friends(
     store: State<'_, RecentSessionsStore>,
     auth_api: State<'_, Arc<AuthApi>>,
     account_filter: Option<String>,
+    limit: Option<usize>,
 ) -> Result<Vec<RecentSessionRow>, AuthError> {
     let employee_id = match auth_api.current_session().await? {
         Some(p) => p.user_id,
         None => return Ok(Vec::new()),
     };
     let filter = account_filter.filter(|s| !s.is_empty());
+    // 渲染深度由前端 `limit` 决定(随游标翻页生长);未传时回退头部窗口。
+    // 钳到全局 trim 上限:默认列表最深就到本地热缓存的总量,再深一律走搜索。
+    let limit = limit
+        .unwrap_or(RECENT_FRIENDS_LIST_LIMIT)
+        .clamp(1, RECENT_SESSIONS_GLOBAL_LIMIT);
     store
-        .list_top(&employee_id, filter, RECENT_FRIENDS_LIST_LIMIT)
+        .list_top(&employee_id, filter, limit)
         .await
         .map_err(|e| recents_internal_error("list_top", e))
 }
@@ -655,29 +673,312 @@ async fn list_recent_friends_remote_page(
     Ok(resp)
 }
 
-/// 接待列表「本地深读」分页 —— 仅读本地行存的 offset 续页,零网络往返。
-/// 默认列表头部 top-200 由 `list_recent_friends` 秒开;滑过 200 行后调本命令从
-/// `offset` 起继续取本地行。返回行数 < `limit` 即本地到底(上层据此停止下拉)。
-/// 未登录返空 Vec 不报错(同 `list_recent_friends`,冷启动 / 登出期应是 0 行而非报错)。
+/// 水位预填结果(供前端日志/调试,前端可忽略具体字段)。
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PrefillResult {
+    /// 是否实际发起了远端拉取(false = 本地已达目标水位,直接跳过)。
+    filled: bool,
+    /// 结束时本地(当前 scope)行数。
+    local_count: usize,
+    /// 实际远端续拉的页数。
+    iters: u32,
+    /// 远端是否已耗尽(has_more=false / 返回空)—— true 表示本地已 = 远端全部。
+    exhausted: bool,
+}
+
+/// 水位预填:把本地接待列表补到目标水位,供"纯本地深读"翻页有足够数据可翻。
+///
+/// 默认列表渲染只读本地 `list_top(limit)`、翻页纯本地加深 limit(不联网);为保证本地
+/// 有足够深度,冷启动/低水位时由本命令一次性补到水位线:
+///   - 本地(当前 scope)行数 ≥ TARGET → 直接返回,不打远端。
+///   - 否则从 cursor="" **自适应单页**续拉(每页 size = 需补足量,钳到 PREFILL_PAGE_MAX),
+///     UPSERT 写库,直到本地 ≥ TARGET / 远端耗尽 / 安全上限。
+///   - 写库走 `upsert_remote_many`(版本门保本地列),循环结束 `trim` 一次 + emit ChangeNotice。
+///
+/// `account_filter` 跟随当前视图:单账号补该账号,None(全部)补合并列表。"是否触发"由前端
+/// 按触发线判定;命令被调到即尝试补到 TARGET。
 #[tauri::command]
-async fn list_recent_friends_local_page(
+async fn prefill_recent_friends(
+    hub: State<'_, HubClient>,
     store: State<'_, RecentSessionsStore>,
     auth_api: State<'_, Arc<AuthApi>>,
+    change_tx: State<'_, tokio_broadcast::Sender<ChangeNotice>>,
     account_filter: Option<String>,
-    offset: usize,
-    limit: usize,
-) -> Result<Vec<RecentSessionRow>, AuthError> {
+) -> Result<PrefillResult, AuthError> {
     let employee_id = match auth_api.current_session().await? {
         Some(p) => p.user_id,
-        None => return Ok(Vec::new()),
+        None => {
+            return Ok(PrefillResult {
+                filled: false,
+                local_count: 0,
+                iters: 0,
+                exhausted: false,
+            })
+        }
     };
     let filter = account_filter.filter(|s| !s.is_empty());
-    // 纵深防御:钳制单页 size,挡住被篡改的超大请求(前端固定 200)。
-    let limit = limit.clamp(1, RECENT_FRIENDS_LIST_LIMIT);
-    store
-        .list_page(&employee_id, filter, limit, offset)
+    prefill_to_watermark(&hub, &store, &change_tx, &employee_id, filter).await
+}
+
+/// `prefill_recent_friends` 的循环主体(抽出便于保持命令简短、聚焦)。
+async fn prefill_to_watermark(
+    hub: &HubClient,
+    store: &RecentSessionsStore,
+    change_tx: &tokio_broadcast::Sender<ChangeNotice>,
+    employee_id: &str,
+    filter: Option<String>,
+) -> Result<PrefillResult, AuthError> {
+    let mut local_count = store
+        .count(employee_id, filter.clone())
         .await
-        .map_err(|e| recents_internal_error("list_page", e))
+        .map_err(|e| recents_internal_error("count", e))?;
+    if local_count >= RECENT_FRIENDS_WATERMARK_TARGET {
+        return Ok(PrefillResult {
+            filled: false,
+            local_count,
+            iters: 0,
+            exhausted: false,
+        });
+    }
+
+    let mut cursor = String::new();
+    let mut iters: u32 = 0;
+    let mut exhausted = false;
+    loop {
+        if iters >= RECENT_FRIENDS_PREFILL_MAX_ITERS {
+            break;
+        }
+        // 自适应单页:只请求"补到目标还差的量",钳到预填单页上限 → 常态一页拉满目标。
+        let need = RECENT_FRIENDS_WATERMARK_TARGET.saturating_sub(local_count);
+        let size = need.min(RECENT_FRIENDS_PREFILL_PAGE_MAX) as u32;
+        let resp = hub
+            .list_recent_friends(ListRecentFriendsRequest {
+                size,
+                cursor: cursor.clone(),
+                external_name: String::new(),
+                external_mobile: String::new(),
+                wecom_account_id: filter.clone().unwrap_or_default(),
+                only_unread: false,
+                external_id: String::new(),
+                include_first_history: false,
+            })
+            .await?;
+        if resp.records.is_empty() {
+            exhausted = true;
+            break;
+        }
+        let rows: Vec<_> = resp
+            .records
+            .iter()
+            .cloned()
+            .map(|r| record_to_remote(r, employee_id))
+            .collect();
+        store
+            .upsert_remote_many(&rows)
+            .await
+            .map_err(|e| recents_internal_error("upsert_remote_many", e))?;
+        iters += 1;
+        local_count = store
+            .count(employee_id, filter.clone())
+            .await
+            .map_err(|e| recents_internal_error("count", e))?;
+        if !resp.has_more || resp.next_cursor.is_empty() {
+            exhausted = true;
+            break;
+        }
+        if local_count >= RECENT_FRIENDS_WATERMARK_TARGET {
+            break;
+        }
+        cursor = resp.next_cursor;
+    }
+
+    if iters > 0 {
+        if let Err(e) = store
+            .trim(
+                employee_id,
+                RECENT_SESSIONS_PER_ACCOUNT_LIMIT,
+                RECENT_SESSIONS_GLOBAL_LIMIT,
+            )
+            .await
+        {
+            tracing::warn!(target: "chathub::recents", ?e, "prefill trim failed; ignoring");
+        }
+        let _ = change_tx.send(ChangeNotice::command_upsert(
+            ChangeTopic::RecentSessions,
+            ChangeScope::employee(employee_id),
+        ));
+        // trim 可能裁掉尾部行,重算最终 count 反映落库后真实深度。
+        local_count = store
+            .count(employee_id, filter.clone())
+            .await
+            .map_err(|e| recents_internal_error("count", e))?;
+    }
+
+    Ok(PrefillResult {
+        filled: iters > 0,
+        local_count,
+        iters,
+        exhausted,
+    })
+}
+
+/// `open_friend_conversation` 返回:本次定位/创建的会话 ID(前端据此选中)。
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OpenFriendConversationResp {
+    conversation_id: String,
+}
+
+/// 从搜索点开某客户 → 定位/创建其会话并提到非置顶区顶部。
+///
+/// 一次 `recentFriends`(`externalId` + `includeFirstHistory=true`)拿齐:
+///   - `firstConversationId` = 服务端权威会话 ID(records 为空也返回);
+///   - `records`:0/1 条该好友的接待记录;
+///   - `firstConversationHistory.records`:首屏历史。
+///
+/// 编排:
+///   1. records 命中 → `record_to_remote` 入接待列表;为空 → 用前端兜底资料合成空白行
+///      (消息字段空、sortKey 空 → 版本 0,真实记录到达即覆盖,不会产生重复)。
+///   2. 首屏历史冷写入消息缓存(仅会话冷时,best-effort)。
+///   3. `set_opened` 把行提到非置顶区顶部(置顶仍在其上)。
+///   4. emit RecentSessions ChangeNotice(消息侧由 seed_first_history 内部 emit)。
+// Tauri 命令:5 个 State 注入 + 标识 + 空白回退资料,参数数天然超 clippy 默认阈值(同
+// load_conversation_messages)。State 不可合并,故按惯例 allow。
+#[allow(clippy::too_many_arguments)]
+#[tauri::command]
+async fn open_friend_conversation(
+    hub: State<'_, HubClient>,
+    recents_store: State<'_, RecentSessionsStore>,
+    message_sync: State<'_, MessageSync>,
+    auth_api: State<'_, Arc<AuthApi>>,
+    change_tx: State<'_, tokio_broadcast::Sender<ChangeNotice>>,
+    wecom_account_id: String,
+    external_user_id: String,
+    // 以下仅当远端无该好友接待记录(走空白行)时用于展示;有记录时一律以记录为准。
+    external_name: String,
+    external_avatar: String,
+    external_mobile: String,
+    wecom_name: String,
+    wecom_alias: String,
+) -> Result<OpenFriendConversationResp, AuthError> {
+    let employee_id = auth_api
+        .current_session()
+        .await?
+        .ok_or(AuthError::Unauthenticated)?
+        .user_id;
+
+    // 单好友定位:externalId 过滤(size=1)+ 带回首屏历史。
+    let resp = hub
+        .list_recent_friends(ListRecentFriendsRequest {
+            size: 1,
+            cursor: String::new(),
+            external_name: String::new(),
+            external_mobile: String::new(),
+            wecom_account_id: wecom_account_id.clone(),
+            only_unread: false,
+            external_id: external_user_id.clone(),
+            include_first_history: true,
+        })
+        .await?;
+
+    let record = resp.records.into_iter().next();
+
+    // conversationId 以服务端 firstConversationId 为准;缺省回退记录自带 id;再无则报错。
+    let conversation_id = if !resp.first_conversation_id.is_empty() {
+        resp.first_conversation_id.clone()
+    } else if let Some(r) = &record {
+        r.conversation_id.clone()
+    } else {
+        return Err(AuthError::Internal {
+            message: "打开会话失败: 服务端未返回会话 ID".into(),
+        });
+    };
+
+    // 接待行:有记录用真实记录;无记录合成空白行(sortKey 空 → 版本 0,不覆盖未来真实记录)。
+    let remote = match record {
+        Some(mut r) => {
+            r.conversation_id = conversation_id.clone();
+            record_to_remote(r, &employee_id)
+        }
+        None => {
+            let blank = RecentFriendRecord {
+                conversation_id: conversation_id.clone(),
+                wecom_account_id: wecom_account_id.clone(),
+                wecom_name,
+                wecom_account: String::new(),
+                wecom_alias,
+                external_user_id: external_user_id.clone(),
+                external_name,
+                external_avatar,
+                external_mobile,
+                last_local_message_id: String::new(),
+                last_message_type: 0,
+                last_message_direction: 0,
+                last_send_status: 0,
+                last_message_summary: String::new(),
+                last_message_time: String::new(),
+                unread_count: 0,
+                has_unread: false,
+                last_message_sort_key: String::new(),
+                gmt_modified_time: String::new(),
+            };
+            record_to_remote(blank, &employee_id)
+        }
+    };
+    recents_store
+        .upsert_remote_one(remote)
+        .await
+        .map_err(|e| recents_internal_error("open_upsert", e))?;
+
+    // 首屏历史冷写入(仅会话冷时);失败 best-effort —— 选中后 load_conversation_messages 会兜底重对齐。
+    if let Some(h) = &resp.first_conversation_history {
+        if let Err(e) = message_sync
+            .seed_first_history(
+                &conversation_id,
+                &wecom_account_id,
+                &external_user_id,
+                &employee_id,
+                h,
+            )
+            .await
+        {
+            tracing::warn!(target: "chathub::recents", error = %e, "seed_first_history failed; ignoring");
+        }
+    }
+
+    // 打开 = 显式查看意图:若该会话此前被本地软删除(removed=1),空白行 sort_key=0 会被
+    // upsert_remote_in_tx 版本门整体跳过而无法清 removed,表现为"打开成功但列表里不可见"
+    // (list_top 过滤 removed=0)。这里独立清除 removed,与 set_opened 一样不受远端列版本门影响。
+    recents_store
+        .set_removed(&employee_id, &conversation_id, false)
+        .await
+        .map_err(|e| recents_internal_error("open_unremove", e))?;
+
+    // 提到非置顶区顶部。
+    recents_store
+        .set_opened(&employee_id, &conversation_id, now_unix_ms())
+        .await
+        .map_err(|e| recents_internal_error("set_opened", e))?;
+
+    // 单条插入也按既有上限收口,与远端拉取路径一致。
+    if let Err(e) = recents_store
+        .trim(
+            &employee_id,
+            RECENT_SESSIONS_PER_ACCOUNT_LIMIT,
+            RECENT_SESSIONS_GLOBAL_LIMIT,
+        )
+        .await
+    {
+        tracing::warn!(target: "chathub::recents", ?e, "open trim failed; ignoring");
+    }
+
+    let _ = change_tx.send(ChangeNotice::command_upsert(
+        ChangeTopic::RecentSessions,
+        ChangeScope::employee(&employee_id),
+    ));
+
+    Ok(OpenFriendConversationResp { conversation_id })
 }
 
 /// 置顶 / 取消置顶。只动本地列(pinned/pinned_at_ms),严防远端列被覆盖。
@@ -1019,7 +1320,7 @@ pub fn run() {
                 // 阶段 3:Subscribe 流里 MESSAGE_UPSERT / SESSION_SUMMARY_UPSERT → RecentSessionsStore + broadcast。
                 let recent_applier = Arc::new(RecentSessionEventApplier::new(
                     recents_store.clone(),
-                    hub_client.clone(),
+                    account_cache.clone(),
                     change_notice_tx.clone(),
                 ));
                 // 阶段 4:Subscribe 流里 MESSAGE_UPSERT → MessagesStore 气泡 + broadcast。
@@ -1142,15 +1443,52 @@ pub fn run() {
             let mut change_rx = conn_manager.change_notice_subscribe();
             let app_for_change = app_handle.clone();
             tauri::async_runtime::spawn(async move {
+                use tokio::time::{sleep_until, Instant as TokioInstant};
+                // 尾沿防抖 + maxWait 上限:把一阵高频 ChangeNotice 按 (topic,scope) 合并成稀疏 emit。
+                // WINDOW:最后一条事件后等这么久再 flush(治列表闪烁 + 拉开 emit 间隔避免前端 in-flight
+                // 丢尾部更新)。MAX_WAIT:持续事件流时强制 flush,避免大批 backfill 期间列表长时间不更新。
+                const WINDOW: Duration = Duration::from_millis(150);
+                const MAX_WAIT: Duration = Duration::from_millis(500);
+                let mut coalescer = ChangeCoalescer::new();
+                let mut flush_at: Option<TokioInstant> = None; // 尾沿截止
+                let mut hard_at: Option<TokioInstant> = None; // maxWait 截止(首条 pending 起算)
                 loop {
-                    match change_rx.recv().await {
-                        Ok(notice) => {
-                            let _ = app_for_change.emit("hub:change", &notice);
+                    tokio::select! {
+                        recv = change_rx.recv() => match recv {
+                            Ok(notice) => {
+                                if notice.source == ChangeSource::Resync {
+                                    // 全量对齐:先按序放行已 pending,再立即 emit resync,绕过防抖。
+                                    for n in coalescer.drain_ordered() {
+                                        let _ = app_for_change.emit("hub:change", &n);
+                                    }
+                                    let _ = app_for_change.emit("hub:change", &notice);
+                                    flush_at = None;
+                                    hard_at = None;
+                                } else {
+                                    let now = TokioInstant::now();
+                                    if coalescer.is_empty() {
+                                        hard_at = Some(now + MAX_WAIT);
+                                    }
+                                    coalescer.merge(notice);
+                                    let trailing = now + WINDOW;
+                                    flush_at = Some(match hard_at {
+                                        Some(h) => trailing.min(h),
+                                        None => trailing,
+                                    });
+                                }
+                            }
+                            Err(tokio_broadcast::error::RecvError::Lagged(n)) => {
+                                tracing::warn!(target: "chathub::change", skipped = n, "hub:change lagged");
+                            }
+                            Err(tokio_broadcast::error::RecvError::Closed) => break,
+                        },
+                        _ = async { sleep_until(flush_at.unwrap()).await }, if flush_at.is_some() => {
+                            for n in coalescer.drain_ordered() {
+                                let _ = app_for_change.emit("hub:change", &n);
+                            }
+                            flush_at = None;
+                            hard_at = None;
                         }
-                        Err(tokio_broadcast::error::RecvError::Lagged(n)) => {
-                            tracing::warn!(target: "chathub::change", skipped = n, "hub:change lagged");
-                        }
-                        Err(tokio_broadcast::error::RecvError::Closed) => break,
                     }
                 }
             });
@@ -1181,7 +1519,8 @@ pub fn run() {
             greet, take_screenshot,
             login, logout, current_session,
             hub_forward, hub_ack, hub_state, list_accounts, list_friends, friend_detail,
-            list_recent_friends, list_recent_friends_remote_page, list_recent_friends_local_page,
+            list_recent_friends, list_recent_friends_remote_page, prefill_recent_friends,
+            open_friend_conversation,
             set_conversation_pinned, set_conversation_draft, set_conversation_removed,
             set_conversation_muted, mark_conversation_read,
             fetch_message_history,

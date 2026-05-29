@@ -1,9 +1,9 @@
 ---
-name: cluster-35
-description: "Skill for the Cluster_35 area of chathub. 13 symbols across 2 files."
+name: cluster-38
+description: "Skill for the Cluster_38 area of chathub. 13 symbols across 2 files."
 ---
 
-# Cluster_35
+# Cluster_38
 
 13 symbols | 2 files | Cohesion: 74%
 
@@ -11,7 +11,7 @@ description: "Skill for the Cluster_35 area of chathub. 13 symbols across 2 file
 
 - Working with code in `backends/`
 - Understanding how new, apply_push_batch, upsert_window work
-- Modifying cluster_35-related functionality
+- Modifying cluster_38-related functionality
 
 ## Key Files
 
@@ -66,14 +66,14 @@ Start here when exploring this area:
 
 | Area        | Connections |
 | ----------- | ----------- |
-| Cluster_111 | 6 calls     |
-| Cluster_6   | 3 calls     |
+| Cluster_119 | 6 calls     |
+| Cluster_51  | 3 calls     |
 | Build\_     | 1 calls     |
-| Cluster_33  | 1 calls     |
-| Cluster_43  | 1 calls     |
+| Cluster_36  | 1 calls     |
+| Cluster_46  | 1 calls     |
 
 ## How to Explore
 
 1. `gitnexus_context({name: "new"})` — see callers and callees
-2. `gitnexus_query({query: "cluster_35"})` — find related execution flows
+2. `gitnexus_query({query: "cluster_38"})` — find related execution flows
 3. Read key files listed above for implementation details
