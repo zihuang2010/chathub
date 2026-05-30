@@ -5,6 +5,7 @@ import type { Account } from "@/lib/types/account";
 
 import { ChatArea } from "./ChatArea";
 import type { Conversation, Message } from "./data";
+import { estimateTimelineRowHeight, getVirtualOverscan } from "./virtualListSizing";
 import type { ScrollMetrics } from "./WorkbenchScrollArea";
 
 const scrollAreaMock = vi.hoisted(() => ({
@@ -187,6 +188,24 @@ function message(id: string, text = id): Message {
   };
 }
 
+function imageMessage(id: string, dimensions?: { width?: number; height?: number }): Message {
+  return {
+    id,
+    conversationId: conversation.id,
+    direction: "in",
+    text: "",
+    parts: [
+      {
+        kind: "image",
+        url: `asset://image-${id}`,
+        width: dimensions?.width,
+        height: dimensions?.height,
+      },
+    ],
+    sentAt: `2026-05-19T10:${id.padStart(2, "0")}:00.000Z`,
+  };
+}
+
 function renderChatArea(
   overrides: Partial<React.ComponentProps<typeof ChatArea>> & Record<string, unknown> = {},
 ) {
@@ -344,6 +363,50 @@ describe("ChatArea history scrolling", () => {
     const { getByTestId } = renderChatArea({ loading: true, messages: [] });
 
     expect(getByTestId("loading")).toBeTruthy();
+  });
+});
+
+describe("ChatArea virtual list sizing", () => {
+  it("estimates image row height from real dimensions to reduce first-frame correction", () => {
+    const wideImage = estimateTimelineRowHeight({
+      type: "message",
+      id: "wide",
+      message: imageMessage("10", { width: 800, height: 400 }),
+      isFirstInBurst: true,
+    });
+    const tallImage = estimateTimelineRowHeight({
+      type: "message",
+      id: "tall",
+      message: imageMessage("11", { width: 400, height: 900 }),
+      isFirstInBurst: true,
+    });
+    const unknownImage = estimateTimelineRowHeight({
+      type: "message",
+      id: "unknown",
+      message: imageMessage("12"),
+      isFirstInBurst: true,
+    });
+
+    expect(wideImage).toBeLessThan(252);
+    expect(tallImage).toBeGreaterThan(wideImage);
+    expect(unknownImage).toBe(252);
+  });
+
+  it("uses a smaller overscan window for image-dense histories", () => {
+    const imageDense = Array.from({ length: 30 }, (_, i) => ({
+      type: "message" as const,
+      id: `image-${i}`,
+      message: imageMessage(String(i + 1)),
+      isFirstInBurst: true,
+    }));
+    const textDense = Array.from({ length: 30 }, (_, i) => ({
+      type: "message" as const,
+      id: `text-${i}`,
+      message: message(String(i + 1)),
+      isFirstInBurst: true,
+    }));
+
+    expect(getVirtualOverscan(imageDense)).toBeLessThan(getVirtualOverscan(textDense));
   });
 });
 

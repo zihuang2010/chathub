@@ -14,6 +14,21 @@ import { invokeWithTimeout } from "./invokeClient";
 // 故前端超时设更长,避免前端先超时诱发用户重复发送。
 const HISTORY_TIMEOUT_MS = 20_000;
 const SEND_TIMEOUT_MS = 30_000;
+// 上传走 OSS(读字节 + 上传),耗时较长,单独给更宽松的超时。
+const UPLOAD_TIMEOUT_MS = 60_000;
+
+// 附件预览域名前缀:落库的 objectName 拼此前缀得到可访问 URL。
+const ATTACHMENT_BASE_URL = "https://filet.jdd51.com";
+
+/**
+ * 把后端返回的相对 objectName 拼成完整预览 URL;已是完整 http(s) URL 则原样返回。
+ * 拼接前去掉 objectName 开头的 "/"。
+ */
+export function attachmentPreviewUrl(objectName: string): string {
+  if (!objectName) return objectName;
+  if (/^https?:\/\//i.test(objectName)) return objectName;
+  return `${ATTACHMENT_BASE_URL}/${objectName.replace(/^\//, "")}`;
+}
 
 /** Tauri `fetch_message_history` 命令入参(对齐 Rust `FetchMessageHistoryRequest`)。 */
 export interface FetchMessageHistoryRequest {
@@ -47,6 +62,12 @@ export interface HistoryAttachment {
   fileName: string;
   fileSize: number;
   fileType: string;
+  /** 图片原始宽度（像素），由后端 image_meta 注入；非图片附件为空。 */
+  width?: number;
+  /** 图片原始高度（像素），由后端 image_meta 注入；非图片附件为空。 */
+  height?: number;
+  /** 本地缩略图绝对路径，由后端 image_meta 注入；前端走 Tauri asset 协议读取。 */
+  localPath?: string;
 }
 
 export interface FetchMessageHistoryResp {
@@ -124,8 +145,10 @@ export interface SendMessageResp {
 }
 
 /**
- * 发送一条文本消息(`messageType=1`)。后端发送成功后落库出站气泡 + 发
- * `conversation-messages` ChangeNotice → 打开着的会话重读缓存稳定追加(不再依赖乐观气泡)。
+ * 发送一条消息。messageType:1=文本 / 2=图片 / 3=文件 / 4=语音,默认 1=文本。
+ * 附件类(2/3/4)contentText 传 ""、并带上传后的 objectName(filePath)+ fileName + fileSize。
+ * 后端发送成功后落库出站气泡 + 发 `conversation-messages` ChangeNotice → 打开着的会话
+ * 重读缓存稳定追加(不再依赖乐观气泡)。纯文本旧调用(不传 messageType / file 字段)向后兼容。
  */
 export async function sendMessage(params: {
   conversationId: string;
@@ -134,18 +157,54 @@ export async function sendMessage(params: {
   contentText: string;
   /** 幂等键:重复点击 / 重试复用同一值,后端按 request_message_id 去重。 */
   clientMsgId: string;
+  /** 1=文本 / 2=图片 / 3=文件 / 4=语音,默认 1。 */
+  messageType?: number;
+  /** 附件 OSS objectName(由 uploadAttachment 返回);非附件消息不传。 */
+  filePath?: string;
+  fileName?: string;
+  fileSize?: number;
 }): Promise<SendMessageResp> {
-  return invokeWithTimeout<SendMessageResp>(
-    "send_message",
-    {
-      conversationId: params.conversationId,
-      wecomAccountId: params.wecomAccountId,
-      externalUserId: params.externalUserId,
-      contentText: params.contentText,
-      clientMsgId: params.clientMsgId,
-    },
-    SEND_TIMEOUT_MS,
-  );
+  // 纯文本旧调用向后兼容:不传 file 字段时不下发对应键。
+  const args: Record<string, unknown> = {
+    conversationId: params.conversationId,
+    wecomAccountId: params.wecomAccountId,
+    externalUserId: params.externalUserId,
+    messageType: params.messageType ?? 1,
+    contentText: params.contentText,
+    clientMsgId: params.clientMsgId,
+  };
+  if (params.filePath !== undefined) args.filePath = params.filePath;
+  if (params.fileName !== undefined) args.fileName = params.fileName;
+  if (params.fileSize !== undefined) args.fileSize = params.fileSize;
+  return invokeWithTimeout<SendMessageResp>("send_message", args, SEND_TIMEOUT_MS);
+}
+
+/** `upload_attachment` 命令返回(对齐 Rust)。 */
+export interface UploadAttachmentResp {
+  objectName: string;
+  fileName: string;
+  fileSize: number;
+}
+
+/**
+ * 上传一份附件字节到 OSS,返回 objectName 供 sendMessage 作 filePath 使用。
+ * Tauri v2 invoke 直接把 Uint8Array 作为 bytes 透传给后端 Vec<u8>。
+ */
+export async function uploadAttachment(params: {
+  bytes: Uint8Array;
+  fileName: string;
+  /** 文件后缀(不含点),如 jpg/png/amr/pdf。 */
+  fileSuf: string;
+  /** MIME 类型,如 image/png;可缺省。 */
+  contentType?: string;
+}): Promise<UploadAttachmentResp> {
+  const args: Record<string, unknown> = {
+    bytes: params.bytes,
+    fileName: params.fileName,
+    fileSuf: params.fileSuf,
+  };
+  if (params.contentType !== undefined) args.contentType = params.contentType;
+  return invokeWithTimeout<UploadAttachmentResp>("upload_attachment", args, UPLOAD_TIMEOUT_MS);
 }
 
 // ─── 形态转换:HistoryMessage → Message ─────────────────────────────────────
@@ -186,10 +245,15 @@ function historyAttachmentToMessage(a: HistoryAttachment): MessageAttachment {
         : "file";
   return {
     type: kind,
-    // 媒体默认走 OSS 链接(mediaId 即 OSS https URL);图片渲染侧再经 cachedImageSrc 走磁盘缓存。
-    url: a.mediaId,
+    // 媒体走 OSS 链接:mediaId 若是完整 https 原样用;若是相对 objectName 则拼预览域名。
+    // 图片渲染侧再经 cachedImageSrc 走磁盘缓存。
+    url: attachmentPreviewUrl(a.mediaId),
     name: a.fileName,
     sizeBytes: a.fileSize,
+    // 后端 image_meta 注入的派生字段（非图片附件为 undefined）
+    width: a.width,
+    height: a.height,
+    localPath: a.localPath,
   };
 }
 

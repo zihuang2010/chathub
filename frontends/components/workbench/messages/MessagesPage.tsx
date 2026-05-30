@@ -15,6 +15,7 @@ import { appReady } from "@/lib/data/appReady";
 import { cn } from "@/lib/utils";
 
 import { ChatArea } from "./ChatArea";
+import type { SendMessageOptions } from "./hooks/useChatActions";
 import { STRINGS } from "./strings";
 import {
   CHAT_AREA_MIN_WIDTH,
@@ -340,10 +341,11 @@ export function MessagesPage({ accounts }: MessagesPageProps) {
     [quickReplies.replies],
   );
 
-  // 真发送(text-only):后端落库出站气泡 + 发 conversation-messages ChangeNotice,
-  // useChatMessages 重读缓存把这条消息收敛进权威列表。缺会话归属(account/user)时静默忽略。
+  // 真发送:后端落库出站气泡 + 发 conversation-messages ChangeNotice,useChatMessages 重读
+  // 缓存把这条消息收敛进权威列表。缺会话归属(account/user)时静默忽略。
+  // options:附件类透传 messageType + 上传后的 objectName(filePath)等;纯文本不传走默认 1=文本。
   const handleSendMessage = useCallback(
-    async (text: string, clientMsgId: string) => {
+    async (text: string, clientMsgId: string, options?: SendMessageOptions) => {
       if (!conversation || !selectedEntry?.wecomAccountId || !selectedEntry?.externalUserId) return;
       // 返回后端响应,供 ChatArea 用 localMessageId 作 serverId 收敛乐观气泡。
       return await sendMessage({
@@ -352,6 +354,10 @@ export function MessagesPage({ accounts }: MessagesPageProps) {
         externalUserId: selectedEntry.externalUserId,
         contentText: text,
         clientMsgId,
+        messageType: options?.messageType,
+        filePath: options?.filePath,
+        fileName: options?.fileName,
+        fileSize: options?.fileSize,
       });
     },
     [conversation, selectedEntry],

@@ -36,6 +36,14 @@ function messageAriaText(message: Message): string {
   return trimmed ? `${trimmed}（含 ${imageCount} 张图片）` : `（含 ${imageCount} 张图片）`;
 }
 
+// 媒体独占消息(仅图片/视频、无文本):气泡不套底色/内边距/描边,让媒体卡片本身作视觉容器,
+// 消除"灰色气泡框 + 白色图片框"的双重边框(IM 标准:图片消息即图片本身,不加聊天气泡 chrome)。
+// 带引用的消息排除在外:仍用气泡承载引用块的上下文。
+function isMediaOnly(message: Message): boolean {
+  const parts = message.parts;
+  return parts.length > 0 && parts.every((p) => p.kind === "image" || p.kind === "video");
+}
+
 // Custom equality for memo: timeline rebuilds replyTarget objects fresh each
 // pass, so a reference compare would force every bubble to re-render whenever
 // any sibling changes. Compare by content for replyTarget; reference compare
@@ -124,6 +132,7 @@ function IncomingBubble({
 }: BubbleVariantProps & { avatarName: string; avatarColor?: string; avatarUrl?: string }) {
   const fullLabel = formatMessageDateTime(message.sentAt);
   const compact = isCompactText(message.text);
+  const mediaOnly = isMediaOnly(message) && !replyTarget;
   return (
     <div className="flex w-full items-start gap-2 self-start">
       <CustomerAvatar name={avatarName} color={avatarColor} avatarUrl={avatarUrl} size="sm" />
@@ -134,8 +143,13 @@ function IncomingBubble({
             role="article"
             aria-label={`${avatarName}: ${messageAriaText(message)}，发送时间 ${fullLabel}`}
             className={cn(
-              "group relative flex min-w-0 max-w-full flex-col gap-1 rounded-2xl rounded-tl-md bg-workbench-bubble-in text-[13.5px] font-[450] leading-[1.65] text-workbench-text shadow-wb-bubble ring-1 ring-workbench-bubble-in-border/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-workbench-accent/40",
-              compact ? "px-3.5 py-2" : "px-4 py-2.5",
+              "group relative flex min-w-0 max-w-full flex-col gap-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-workbench-accent/40",
+              mediaOnly
+                ? "rounded-xl"
+                : cn(
+                    "rounded-2xl rounded-tl-md bg-workbench-bubble-in text-[13.5px] font-[450] leading-[1.65] text-workbench-text shadow-wb-bubble ring-1 ring-workbench-bubble-in-border/50",
+                    compact ? "px-3.5 py-2" : "px-4 py-2.5",
+                  ),
             )}
           >
             <MessageTimeTooltip label={fullLabel} align="left" />
@@ -158,6 +172,7 @@ function OutgoingBubble({
 }: BubbleVariantProps & { account: string }) {
   const fullLabel = formatMessageDateTime(message.sentAt);
   const compact = isCompactText(message.text);
+  const mediaOnly = isMediaOnly(message) && !replyTarget;
   return (
     <div className="flex w-full flex-row-reverse items-start gap-2 self-end">
       <AgentAvatar account={account} />
@@ -168,8 +183,13 @@ function OutgoingBubble({
             role="article"
             aria-label={`我：${messageAriaText(message)}，发送时间 ${fullLabel}`}
             className={cn(
-              "group relative flex min-w-0 max-w-full flex-col gap-1 rounded-2xl rounded-tr-md bg-workbench-bubble-out text-[13.5px] font-[450] leading-[1.65] text-workbench-text shadow-wb-bubble ring-1 ring-workbench-bubble-out-border/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-workbench-accent/40",
-              compact ? "px-3.5 py-2" : "px-4 py-2.5",
+              "group relative flex min-w-0 max-w-full flex-col gap-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-workbench-accent/40",
+              mediaOnly
+                ? "rounded-xl"
+                : cn(
+                    "rounded-2xl rounded-tr-md bg-workbench-bubble-out text-[13.5px] font-[450] leading-[1.65] text-workbench-text shadow-wb-bubble ring-1 ring-workbench-bubble-out-border/50",
+                    compact ? "px-3.5 py-2" : "px-4 py-2.5",
+                  ),
             )}
           >
             <MessageTimeTooltip label={fullLabel} align="right" />

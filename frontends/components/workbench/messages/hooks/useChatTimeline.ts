@@ -32,6 +32,7 @@ function buildTimelineItems(
   unreadCount: number,
 ): TimelineItem[] {
   const items: TimelineItem[] = [];
+  const messagesById = new Map(messages.map((message) => [message.id, message]));
   let previousDayKey: string | null = null;
 
   for (let i = 0; i < messages.length; i++) {
@@ -53,7 +54,7 @@ function buildTimelineItems(
 
     let replyTarget: ReplyTarget | undefined;
     if (message.replyTo) {
-      const replied = messages.find((m) => m.id === message.replyTo);
+      const replied = messagesById.get(message.replyTo);
       if (replied) {
         replyTarget = {
           senderName:
@@ -80,6 +81,8 @@ function buildTimelineItems(
 
   return items;
 }
+
+export const buildTimelineItemsForTest = buildTimelineItems;
 
 export function useChatTimeline({
   localMessages,

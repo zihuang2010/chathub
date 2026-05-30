@@ -1,10 +1,12 @@
 import { Fragment, useLayoutEffect, useRef, useState } from "react";
 import { Download, FileText, ImageOff, Play } from "lucide-react";
 
+import { assetImageSrc } from "@/lib/assetImageSrc";
 import { cachedImageSrc } from "@/lib/cachedImageSrc";
 import { cn } from "@/lib/utils";
 
 import type { MessagePart } from "./data";
+import { ImageLightbox } from "./ImageLightbox";
 import { STRINGS } from "./strings";
 import { formatFileSize, formatRichText, isSafeUrl, thumbWidth } from "./utils";
 
@@ -15,6 +17,16 @@ type VideoPart = Extract<MessagePart, { kind: "video" }>;
 
 interface MessageContentProps {
   parts: MessagePart[];
+}
+
+const LOADED_IMAGE_SRC_LIMIT = 512;
+const loadedImageSrcs = new Set<string>();
+
+function rememberLoadedImageSrc(src: string) {
+  loadedImageSrcs.add(src);
+  if (loadedImageSrcs.size <= LOADED_IMAGE_SRC_LIMIT) return;
+  const oldest = loadedImageSrcs.values().next().value;
+  if (oldest) loadedImageSrcs.delete(oldest);
 }
 
 // 内联部分:文本 + 标记为内联的图片(composer 富文本)。其余(附件图片/文件/语音/
@@ -73,22 +85,26 @@ function PartCard({ part }: { part: MessagePart }) {
 }
 
 function ImageAttachment({ part }: { part: ImagePart }) {
-  // 不安全 URL 时去掉 href,链接不可点击;MessageImage 内部同样会落 error 态。
-  const href = isSafeUrl(part.url, "image") ? part.url : undefined;
+  const [open, setOpen] = useState(false);
+  const safe = isSafeUrl(part.url, "image");
   return (
-    <a
-      href={href}
-      target="_blank"
-      rel="noopener noreferrer"
-      title={STRINGS.attachment.openImage}
-      className="focus-ring inline-block max-w-full overflow-hidden rounded-xl border border-workbench-line bg-workbench-surface p-1 shadow-wb-bubble transition-colors hover:bg-workbench-surface-subtle"
-    >
-      <MessageImage
-        src={cachedImageSrc(part.url, thumbWidth(192))}
-        alt={STRINGS.attachment.imageAlt(part.name)}
-        imgClassName="block h-full w-full rounded-lg object-cover"
-      />
-    </a>
+    <>
+      <button
+        type="button"
+        title={STRINGS.attachment.openImage}
+        onClick={() => safe && setOpen(true)}
+        className="focus-ring inline-block max-w-full cursor-pointer overflow-hidden rounded-xl align-bottom leading-none shadow-wb-bubble transition-shadow hover:shadow-wb-popover"
+      >
+        <MessageImage part={part} alt={STRINGS.attachment.imageAlt(part.name)} />
+      </button>
+      {open && safe && (
+        <ImageLightbox
+          src={part.url}
+          alt={STRINGS.attachment.imageAlt(part.name)}
+          onClose={() => setOpen(false)}
+        />
+      )}
+    </>
   );
 }
 
@@ -224,7 +240,8 @@ function TextRun({ value }: { value: string }) {
 }
 
 function InlineImage({ part }: { part: ImagePart }) {
-  // 不安全 URL 不进 <img src>,渲染占位;安全图加 lazy 减少长消息一次性全量请求。
+  const [open, setOpen] = useState(false);
+  // 不安全 URL 不进 <img src>,渲染占位。
   if (!isSafeUrl(part.url, "image")) {
     return (
       <span
@@ -237,95 +254,174 @@ function InlineImage({ part }: { part: ImagePart }) {
     );
   }
   return (
-    <a
-      href={part.url}
-      target="_blank"
-      rel="noopener noreferrer"
-      className="focus-ring mx-1 inline-block overflow-hidden rounded-lg align-middle ring-1 ring-workbench-line transition-shadow hover:ring-workbench-accent"
-    >
-      <img
-        src={cachedImageSrc(part.url, thumbWidth(260))}
-        alt={part.name ?? STRINGS.attachment.image}
-        loading="lazy"
-        className="block max-h-[200px] max-w-[260px] object-contain"
-      />
-    </a>
+    <>
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        className="focus-ring mx-1 inline-block cursor-pointer overflow-hidden rounded-xl align-bottom leading-none"
+      >
+        <MessageImage
+          part={part}
+          alt={part.name ?? STRINGS.attachment.image}
+          maxW={260}
+          maxH={200}
+        />
+      </button>
+      {open && (
+        <ImageLightbox
+          src={part.url}
+          alt={part.name ?? STRINGS.attachment.image}
+          onClose={() => setOpen(false)}
+        />
+      )}
+    </>
   );
 }
 
 function ImageStandalone({ part }: { part: ImagePart }) {
-  const href = isSafeUrl(part.url, "image") ? part.url : undefined;
+  const [open, setOpen] = useState(false);
+  const safe = isSafeUrl(part.url, "image");
   return (
-    <a
-      href={href}
-      target="_blank"
-      rel="noopener noreferrer"
-      title={STRINGS.attachment.openImage}
-      className="focus-ring inline-block max-w-full overflow-hidden rounded-xl border border-workbench-line bg-workbench-surface p-1 shadow-wb-bubble transition-colors hover:bg-workbench-surface-subtle"
-    >
-      <MessageImage
-        src={cachedImageSrc(part.url, thumbWidth(192))}
-        alt={STRINGS.attachment.imageAlt(part.name)}
-        imgClassName="block h-full w-full rounded-lg object-cover"
-      />
-    </a>
+    <>
+      <button
+        type="button"
+        title={STRINGS.attachment.openImage}
+        onClick={() => safe && setOpen(true)}
+        className="focus-ring inline-block max-w-full cursor-pointer overflow-hidden rounded-xl align-bottom leading-none shadow-wb-bubble transition-shadow hover:shadow-wb-popover"
+      >
+        <MessageImage part={part} alt={STRINGS.attachment.imageAlt(part.name)} />
+      </button>
+      {open && safe && (
+        <ImageLightbox
+          src={part.url}
+          alt={STRINGS.attachment.imageAlt(part.name)}
+          onClose={() => setOpen(false)}
+        />
+      )}
+    </>
   );
 }
 
 // ─── 异步图片加载封装 ─────────────────────────────────────────────────────
 //
-// 解决两类闪烁:
-//   A. layout shift(抖动): 服务端图片在加载前未知尺寸,若按自然高度撑开,load 完成
-//      会把下方气泡顶下去、多图先后加载各撑一次 → 整列抖动。这里改用**固定缩略图盒**
-//      (h-48 w-48 方形 + object-cover 裁切): 盒子尺寸与加载态无关,任何阶段零位移。
-//      代价是高窄/宽扁图被裁切,换取切会话/首屏的绝对稳定(IM 列表常见取舍)。
-//   B. broken-icon 闪现: src 失败时浏览器自带的 broken-icon 出现时机不可控。改用本地
-//      state + onLoad / onError 自管显隐:加载中渲染骨架,失败用稳定的"图片加载失败"
-//      卡片替代浏览器默认 UI,同样占满固定盒、不改变布局。
+// 渲染源优先级：
+//   1. assetImageSrc(part.localPath)（asset 协议，WebView 可靠缓存，命中即不画骨架）
+//   2. cachedImageSrc(part.url, thumbWidth(maxW * 2))（回退，保留骨架）
 //
-// 渲染态(盒子恒为 192×192,三态同尺寸):
-//   loading → 骨架 overlay + 隐形 img(opacity-0,占位但不可见)
-//   loaded  → img object-cover 填满固定盒,骨架移除
-//   error   → 失败卡片填满固定盒,img 卸载,杜绝 broken-icon 偶现
+// 比例盒策略：
+//   - 有宽高 → style.aspectRatio + maxW/maxH 上限 + object-contain（不裁切）
+//   - 无宽高 → 固定 192×192 方盒（向后兼容）
+//
+// 三态（盒子恒定尺寸，零位移）：
+//   loading → 骨架 overlay + 隐形 img（opacity-0）
+//   loaded  → img object-contain，骨架移除
+//   error   → 失败卡片，img 卸载，杜绝 broken-icon 偶现
+//
+// asset onError 回退：先 setUseFallback(true) → src 切换到 cachedImageSrc 重新下载
 
 interface MessageImageProps {
-  src: string;
+  part: ImagePart;
   alt: string;
-  /** img 元素自身样式;容器尺寸由本组件管。 */
-  imgClassName: string;
+  /** 显示上限宽度（px），默认 256。 */
+  maxW?: number;
+  /** 显示上限高度（px），默认 320。 */
+  maxH?: number;
 }
 
-function MessageImage({ src, alt, imgClassName }: MessageImageProps) {
-  // 不安全协议(javascript:/file:/data:text-html 等)直接进 error 态,绝不落到 <img src>。
-  const initialState = isSafeUrl(src, "image") ? "loading" : "error";
-  const [state, setState] = useState<"loading" | "loaded" | "error">(initialState);
-  // src 变化(消息流刷新 / 媒体 URL 重签等)时回到 loading,杜绝旧 state 复用。
-  // 用 React 推荐的"渲染期同步"模式而非 useEffect:effect 内 setState 会先用
-  // 旧 state 渲染一帧再修正,reflow 已经看见。这里走 React 渲染中断重新生效路径。
-  const [lastSrc, setLastSrc] = useState(src);
-  if (lastSrc !== src) {
-    setLastSrc(src);
-    setState(isSafeUrl(src, "image") ? "loading" : "error");
+type ImageRenderState =
+  | { phase: "loading"; visibleSrc: string; pendingSrc?: undefined }
+  | { phase: "loaded"; visibleSrc: string; pendingSrc?: undefined }
+  | { phase: "transition"; visibleSrc: string; pendingSrc: string }
+  | { phase: "error"; visibleSrc: string; pendingSrc?: undefined };
+
+function initialImageState(src: string, safe: boolean, isLocal: boolean): ImageRenderState {
+  if (!safe) return { phase: "error", visibleSrc: src };
+  if (isLocal || loadedImageSrcs.has(src)) return { phase: "loaded", visibleSrc: src };
+  return { phase: "loading", visibleSrc: src };
+}
+
+function nextImageState(
+  current: ImageRenderState,
+  nextSrc: string,
+  safe: boolean,
+  isLocal: boolean,
+): ImageRenderState {
+  if (!safe) return { phase: "error", visibleSrc: nextSrc };
+
+  if (current.visibleSrc === nextSrc) {
+    if (current.phase === "transition" || current.phase === "error") {
+      return { phase: "loaded", visibleSrc: nextSrc };
+    }
+    if (loadedImageSrcs.has(nextSrc) && current.phase !== "loaded") {
+      return { phase: "loaded", visibleSrc: nextSrc };
+    }
+    return current;
   }
 
-  // 切到"看过的会话"时,图片已在浏览器缓存里:<img> 一挂载就 complete,onLoad 仍走
-  // 异步微任务,于是先画一帧 loading 骨架(灰色 pulse + opacity-0)再 pop 出图 ——
-  // 这就是"切到含图会话闪一下"的真因。useLayoutEffect 在 paint 前同步把已就绪的缓存图
-  // 标为 loaded,骨架那一帧不会被画出。naturalWidth>0 既精确判定缓存命中,又兜住 jsdom
-  // (不真实解码、complete 可能为 true 但 naturalWidth 恒为 0)→ 测试里的 loading 态不变。
+  if (loadedImageSrcs.has(nextSrc)) {
+    return { phase: "loaded", visibleSrc: nextSrc };
+  }
+
+  if (current.phase === "loaded" || current.phase === "transition") {
+    return { phase: "transition", visibleSrc: current.visibleSrc, pendingSrc: nextSrc };
+  }
+
+  return initialImageState(nextSrc, safe, isLocal);
+}
+
+function MessageImage({ part, alt, maxW = 256, maxH = 320 }: MessageImageProps) {
+  // 本地 asset 源（优先）
+  const local = assetImageSrc(part.localPath);
+  // 回退源（cachedImageSrc / 原 URL）
+  const fallback = cachedImageSrc(part.url, thumbWidth(maxW * 2));
+  const [useFallback, setUseFallback] = useState(false);
+  const src = !useFallback && local ? local : fallback;
+
+  // 有 localPath 且未进回退 → asset 源已同步缓存，直接 loaded；否则走 loading
+  const isLocal = !useFallback && !!local;
+  // 安全性检查基于原始 https URL，asset URL 本身是程序化生成的不需要再检查
+  const safe = isSafeUrl(part.url, "image");
+  const [renderState, setRenderState] = useState<ImageRenderState>(() =>
+    initialImageState(src, safe, isLocal),
+  );
+
+  const [lastSource, setLastSource] = useState({ src, safe, isLocal });
+  if (lastSource.src !== src || lastSource.safe !== safe || lastSource.isLocal !== isLocal) {
+    setLastSource({ src, safe, isLocal });
+    setRenderState(nextImageState(renderState, src, safe, isLocal));
+  }
+
+  // 切到"看过的会话"时图片已在缓存中：useLayoutEffect 在 paint 前同步标记 loaded，
+  // 骨架那一帧不会被画出（消除切会话闪烁）。jsdom 中 naturalWidth 恒为 0，
+  // 故测试里 loading 态仍保持不变，不影响加载态断言。
   const imgRef = useRef<HTMLImageElement | null>(null);
   useLayoutEffect(() => {
-    if (state !== "loading") return;
+    if (renderState.phase !== "loading") return;
     const img = imgRef.current;
-    if (img && img.complete && img.naturalWidth > 0) setState("loaded");
-  }, [src, state]);
+    if (img && img.complete && img.naturalWidth > 0) {
+      rememberLoadedImageSrc(renderState.visibleSrc);
+      setRenderState({ phase: "loaded", visibleSrc: renderState.visibleSrc });
+    }
+  }, [renderState]);
 
-  if (state === "error") {
+  // 有宽高时用比例盒，否则回退固定 192 方盒（向后兼容）
+  const hasDims = !!(part.width && part.height);
+  const boxStyle: React.CSSProperties = hasDims
+    ? {
+        aspectRatio: `${part.width} / ${part.height}`,
+        maxWidth: maxW,
+        maxHeight: maxH,
+        width: "100%",
+      }
+    : { width: 192, height: 192 };
+
+  if (renderState.phase === "error") {
     return (
       <span
         role="img"
         aria-label={STRINGS.attachment.imageLoadFailed}
-        className="text-wb-3xs grid h-48 w-48 place-items-center rounded-lg bg-workbench-surface-soft text-workbench-text-muted"
+        className="text-wb-3xs grid place-items-center rounded-xl bg-workbench-surface-soft text-workbench-text-muted ring-1 ring-workbench-line"
+        style={boxStyle}
       >
         <span className="flex flex-col items-center gap-1.5">
           <ImageOff size={22} strokeWidth={1.5} aria-hidden />
@@ -335,21 +431,70 @@ function MessageImage({ src, alt, imgClassName }: MessageImageProps) {
     );
   }
 
+  const handleVisibleLoad = () => {
+    rememberLoadedImageSrc(renderState.visibleSrc);
+    setRenderState((current) =>
+      current.phase === "loading" && current.visibleSrc === renderState.visibleSrc
+        ? { phase: "loaded", visibleSrc: renderState.visibleSrc }
+        : current,
+    );
+  };
+
+  const handlePendingLoad = () => {
+    if (renderState.phase !== "transition") return;
+    rememberLoadedImageSrc(renderState.pendingSrc);
+    setRenderState((current) =>
+      current.phase === "transition" && current.pendingSrc === renderState.pendingSrc
+        ? { phase: "loaded", visibleSrc: renderState.pendingSrc }
+        : current,
+    );
+  };
+
+  const handleImageError = (erroredSrc: string, role: "visible" | "pending") => {
+    if (local && erroredSrc === local) {
+      setUseFallback(true);
+      if (role === "visible") setRenderState(initialImageState(fallback, safe, false));
+      return;
+    }
+    setRenderState({ phase: "error", visibleSrc: erroredSrc });
+  };
+
   return (
-    <span className="relative inline-block h-48 w-48">
+    <span
+      className="relative inline-block overflow-hidden rounded-xl align-bottom ring-1 ring-workbench-line"
+      style={boxStyle}
+    >
       <img
         ref={imgRef}
-        src={src}
+        src={renderState.visibleSrc}
         alt={alt}
-        loading="lazy"
-        onLoad={() => setState("loaded")}
-        onError={() => setState("error")}
-        className={cn(imgClassName, state !== "loaded" && "opacity-0")}
+        // 本地 asset 图(磁盘命中、WebView 可靠缓存)→ eager + 同步解码:重挂/切回/上滑回看
+        // 时在插入 DOM 同帧就解码出像素,消除"元素已挂载但像素未解码"的空白闪;远程回退源
+        // (cachedimg://,首次预取未完成的过渡态)仍 lazy + 异步,省屏外解码内存。
+        loading={isLocal ? "eager" : "lazy"}
+        decoding={isLocal ? "sync" : "async"}
+        onLoad={handleVisibleLoad}
+        onError={() => handleImageError(renderState.visibleSrc, "visible")}
+        className={cn(
+          "block h-full w-full object-contain",
+          renderState.phase === "loading" && "opacity-0",
+        )}
       />
-      {state === "loading" && (
+      {renderState.phase === "transition" && (
+        <img
+          src={renderState.pendingSrc}
+          alt=""
+          aria-hidden
+          loading="eager"
+          onLoad={handlePendingLoad}
+          onError={() => handleImageError(renderState.pendingSrc, "pending")}
+          className="absolute inset-0 h-full w-full object-contain opacity-0"
+        />
+      )}
+      {renderState.phase === "loading" && (
         <span
           aria-hidden
-          className="pointer-events-none absolute inset-0 animate-pulse rounded-lg bg-workbench-surface-soft"
+          className="pointer-events-none absolute inset-0 animate-pulse bg-workbench-surface-soft"
         />
       )}
     </span>

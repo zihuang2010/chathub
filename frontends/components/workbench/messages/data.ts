@@ -54,6 +54,12 @@ export interface MessageAttachment {
   name?: string;
   sizeBytes?: number;
   durationSec?: number;
+  /** 图片原始宽度（像素），由后端 image_meta 注入。 */
+  width?: number;
+  /** 图片原始高度（像素），由后端 image_meta 注入。 */
+  height?: number;
+  /** 本地缩略图绝对路径，由后端 image_meta 注入；前端走 Tauri asset 协议读取。 */
+  localPath?: string;
 }
 
 export type MessageBlock =
@@ -79,6 +85,8 @@ export type MessagePart =
       sizeBytes?: number;
       width?: number;
       height?: number;
+      /** 本地缩略图绝对路径，由后端 image_meta 注入；前端走 Tauri asset 协议读取。 */
+      localPath?: string;
       /** true=随文本内联(composer 富文本);否则按附件大卡渲染。 */
       inline?: boolean;
     }
@@ -89,7 +97,15 @@ export type MessagePart =
 function attachmentToPart(a: MessageAttachment): MessagePart {
   switch (a.type) {
     case "image":
-      return { kind: "image", url: a.url, name: a.name, sizeBytes: a.sizeBytes };
+      return {
+        kind: "image",
+        url: a.url,
+        name: a.name,
+        sizeBytes: a.sizeBytes,
+        width: a.width,
+        height: a.height,
+        localPath: a.localPath,
+      };
     case "file":
       return { kind: "file", url: a.url, name: a.name, sizeBytes: a.sizeBytes };
     case "voice":
@@ -160,6 +176,14 @@ export interface Message {
   /** Recalled by sender within the recall window. Renderer collapses the
    *  bubble into a centered system line ("你撤回了一条消息" / "对方撤回了一条消息"). */
   isRecalled?: boolean;
+  /**
+   * 出站附件气泡专用字段:消息类型(1=文本/2=图片/3=文件/4=语音)与已上传的 OSS objectName。
+   * 失败重发时复用 filePath 直接重发,无需重传 OSS。纯文本/入站消息不写。
+   */
+  messageType?: number;
+  filePath?: string;
+  fileName?: string;
+  fileSize?: number;
 }
 
 // `Customer` is now defined in `@/lib/types/customer` so the customers page and

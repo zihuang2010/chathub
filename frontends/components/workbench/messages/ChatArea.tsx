@@ -1,4 +1,4 @@
-import { memo, useMemo, useState } from "react";
+import { memo, useMemo, useRef, useState } from "react";
 import { ArrowDown, ArrowUp, Loader2 } from "lucide-react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 
@@ -10,14 +10,21 @@ import { ChatEmptyState, ChatErrorState, ChatLoadingState } from "./ChatStates";
 import { ChatHeader } from "./ChatHeader";
 import { COMPOSER_DEFAULT_HEIGHT } from "./constants";
 import type { Conversation, Message, QuickReply } from "./data";
-import { useChatActions } from "./hooks/useChatActions";
+import { useChatActions, type SendMessageOptions } from "./hooks/useChatActions";
 import { useChatTimeline, type TimelineItem } from "./hooks/useChatTimeline";
 import { useScrollController } from "./hooks/useScrollController";
 import { DateDivider, MessageBubble, type ReplyTarget, UnreadDivider } from "./MessageBubble";
 import { MessageComposer } from "./MessageComposer";
 import { RangePill } from "./RangePill";
 import { STRINGS } from "./strings";
+import { estimateTimelineRowHeight, getVirtualOverscan } from "./virtualListSizing";
 import { WorkbenchScrollArea } from "./WorkbenchScrollArea";
+
+const VIRTUALIZE_THRESHOLD = 60;
+
+function rowHeightCacheKey(conversationId: string, itemId: string): string {
+  return `${conversationId}:${itemId}`;
+}
 
 interface ChatAreaProps {
   conversation: Conversation;
@@ -51,10 +58,15 @@ interface ChatAreaProps {
   /** Conversations available as @mention candidates in the composer. */
   mentionCandidates?: Conversation[];
   /**
-   * 真发送回调(text-only)。成功后后端落库 + 发 conversation-messages ChangeNotice,
-   * 整窗 REPLACE 把这条收敛进权威列表(乐观气泡随之被替换)。失败则把该气泡标 failed。
+   * 真发送回调。成功后后端落库 + 发 conversation-messages ChangeNotice,整窗 REPLACE 把这条
+   * 收敛进权威列表(乐观气泡随之被替换)。失败则把该气泡标 failed。
+   * options:附件类透传 messageType + 上传后的 objectName 等;纯文本不传。
    */
-  onSendMessage?: (text: string, clientMsgId: string) => Promise<SendMessageResp | void>;
+  onSendMessage?: (
+    text: string,
+    clientMsgId: string,
+    options?: SendMessageOptions,
+  ) => Promise<SendMessageResp | void>;
   /** 切走/卸载该会话时回调,补一次 markRead(只在 leave 同步服务端,不按消息打)。 */
   onLeaveMarkRead?: (conversationId: string) => void | Promise<void>;
 }
@@ -92,6 +104,12 @@ export const ChatArea = memo(function ChatArea({
     () => messages.filter((m) => m.conversationId === conversation.id),
     [messages, conversation.id],
   );
+  const measuredRowHeightsRef = useRef(new Map<string, number>());
+  const measuredRowsConversationRef = useRef(conversation.id);
+  if (measuredRowsConversationRef.current !== conversation.id) {
+    measuredRowsConversationRef.current = conversation.id;
+    measuredRowHeightsRef.current.clear();
+  }
 
   // 时间线派生(日期/未读分隔 + 气泡 + 未读锚点冻结)抽到 useChatTimeline(Stage 4d),纯派生。
   const timelineItems = useChatTimeline({ localMessages, conversation });
@@ -132,12 +150,14 @@ export const ChatArea = memo(function ChatArea({
     setReplyDraft,
   });
 
-  // Stage 3.2 消息区虚拟化:仅长会话(>阈值)启用,短会话/测试走原全量渲染(零结构变化、测试保持绿)。
-  // 阈值 50→20:中等长度会话(20~50 条)也启用虚拟化,避免一次性把几十条消息(含图片)全渲染进
-  // DOM —— 图片历史里"同时存活的 <img> = 同时解码的位图"是内存大头,提前虚拟化把它压到可视窗口量级。
-  // 现有测试用例消息数都 <20,仍走全量渲染分支,保持绿。
-  const VIRTUALIZE_THRESHOLD = 20;
+  // Stage 3.2 消息区虚拟化:仅超长会话(>阈值)启用,中短会话走全量渲染(零虚拟化抖动)。
+  // 阈值 20→60:此前下调到 20 是为压低图片解码内存,但代价是几十条的常见会话也被虚拟化 ——
+  // 可变高度气泡(多行文本/多图/文本+图)的 estimateSize 必然与 measureElement 实测不符,
+  // 滚动时虚拟器据实测重算偏移 → 内容"一抖一抖"。几十条全量渲染内存可控(图片走固定 192
+  // 缩略图盒,解码量有限),换取常见会话零抖动;只有真正超长(>60)会话才虚拟化,把同时存活的
+  // <img> 压到可视窗口量级。现有测试用例消息数都 <20,仍走全量渲染分支,保持绿。
   const shouldVirtualize = timelineItems.length > VIRTUALIZE_THRESHOLD;
+  const virtualOverscan = useMemo(() => getVirtualOverscan(timelineItems), [timelineItems]);
   // 虚拟器与滚动视口(WorkbenchScrollArea)都常驻、跨会话持久(消息区不再按会话重挂),
   // 故无「实例持久 vs 视口重挂」错配。getItemKey 按消息 id 缓存测量,杜绝跨会话按 index 串台。
   const rowVirtualizer = useVirtualizer({
@@ -152,17 +172,28 @@ export const ChatArea = memo(function ChatArea({
     // 按 kind 给出接近真实的估算,使可视区底部那批行首帧误差趋零,基本消除开场跳动。
     estimateSize: (index) => {
       const item = timelineItems[index];
-      if (item.type !== "message") return 64; // 日期/未读分隔条
-      const parts = item.message.parts;
-      if (parts.some((p) => p.kind === "image")) return 252; // 固定缩略图盒 + 气泡内边距 + 行距
-      if (parts.some((p) => p.kind === "video")) return 212; // aspect-video w-64 缩略图
-      return 72; // 文本/文件/语音:单行气泡 ≈ 44 + 行距
+      const cacheKey = rowHeightCacheKey(conversation.id, item.id);
+      return measuredRowHeightsRef.current.get(cacheKey) ?? estimateTimelineRowHeight(item);
     },
-    // overscan 10→5:屏外预渲染的行数减半。图片历史里每个屏外预渲染的图片行都会被解码,
-    // 减半即少解码约一屏外缓冲区的图片(省下数 MB 峰值);代价是极快速滑动时偶有一瞬空白行。
-    overscan: 5,
+    // 图片密集历史降低屏外预渲染量,减少同时挂载/解码的 <img>;文本历史保留 5 行缓冲,
+    // 快速滚动仍有足够预渲染空间。
+    overscan: virtualOverscan,
     getItemKey: (index) => timelineItems[index].id,
   });
+
+  const measureVirtualRow = (node: HTMLDivElement | null) => {
+    if (!node) return;
+    rowVirtualizer.measureElement(node);
+    const indexAttr = node.dataset.index;
+    if (!indexAttr) return;
+    const index = Number(indexAttr);
+    const item = timelineItems[index];
+    if (!item) return;
+    const height = node.getBoundingClientRect().height;
+    if (height > 0) {
+      measuredRowHeightsRef.current.set(rowHeightCacheKey(conversation.id, item.id), height);
+    }
+  };
 
   // 单条 timeline 行的内容(不含间距/包裹):虚拟分支用。
   const renderRowContent = (item: TimelineItem) => {
@@ -239,7 +270,7 @@ export const ChatArea = memo(function ChatArea({
                     <div
                       key={item.id}
                       data-index={idx}
-                      ref={rowVirtualizer.measureElement}
+                      ref={measureVirtualRow}
                       style={{
                         position: "absolute",
                         top: 0,

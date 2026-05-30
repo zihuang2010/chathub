@@ -4,7 +4,15 @@ import { cleanup, render } from "@testing-library/react";
 import { AT_BOTTOM_THRESHOLD } from "./constants";
 import { type ScrollMetrics, WorkbenchScrollArea } from "./WorkbenchScrollArea";
 
+let rafCallbacks: FrameRequestCallback[] = [];
+
 beforeEach(() => {
+  rafCallbacks = [];
+  vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) => {
+    rafCallbacks.push(cb);
+    return rafCallbacks.length;
+  });
+  vi.stubGlobal("cancelAnimationFrame", vi.fn());
   class ResizeObserverMock {
     observe = vi.fn();
     unobserve = vi.fn();
@@ -17,6 +25,12 @@ beforeEach(() => {
   vi.stubGlobal("ResizeObserver", ResizeObserverMock);
   vi.stubGlobal("MutationObserver", MutationObserverMock);
 });
+
+function flushRaf() {
+  const callbacks = rafCallbacks;
+  rafCallbacks = [];
+  callbacks.forEach((cb) => cb(0));
+}
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -78,6 +92,7 @@ describe("WorkbenchScrollArea", () => {
     // 初次挂载时 useEffect 已 emit 过一轮,但当时 jsdom 默认 0 维度;手动
     // 触发一次 scroll 让 emit 读到 defineProperty 后的真实值。
     viewport.dispatchEvent(new Event("scroll"));
+    flushRaf();
     expect(onMetrics).toHaveBeenCalled();
     const m = onMetrics.mock.lastCall?.[0] as ScrollMetrics;
     expect(m.scrollTop).toBe(0);
@@ -97,6 +112,7 @@ describe("WorkbenchScrollArea", () => {
     await Promise.resolve();
     onMetrics.mockClear();
     viewport.dispatchEvent(new Event("scroll"));
+    flushRaf();
     expect(onMetrics).toHaveBeenCalled();
     const m = onMetrics.mock.lastCall?.[0] as ScrollMetrics;
     expect(m.atBottom).toBe(true);
@@ -119,6 +135,7 @@ describe("WorkbenchScrollArea", () => {
       value: 120,
     });
     viewport.dispatchEvent(new Event("scroll"));
+    flushRaf();
 
     expect(onMetrics).toHaveBeenCalled();
     const m = onMetrics.mock.lastCall?.[0] as ScrollMetrics;
@@ -140,10 +157,12 @@ describe("WorkbenchScrollArea", () => {
 
     // window resize 走 emit(),不走 onUserScroll。
     window.dispatchEvent(new Event("resize"));
+    flushRaf();
     expect(onUserScroll).not.toHaveBeenCalled();
 
     // 真正的 native scroll event 才触发 onUserScroll。
     viewport.dispatchEvent(new Event("scroll"));
+    flushRaf();
     expect(onUserScroll).toHaveBeenCalledTimes(1);
     const m = onUserScroll.mock.lastCall?.[0] as ScrollMetrics;
     expect(m.scrollTop).toBe(0);
@@ -165,8 +184,40 @@ describe("WorkbenchScrollArea", () => {
     onUserScroll.mockClear();
 
     viewport.dispatchEvent(new Event("scroll"));
+    flushRaf();
 
     expect(onMetrics).toHaveBeenCalledTimes(1);
     expect(onUserScroll).toHaveBeenCalledTimes(1);
+  });
+
+  it("coalesces repeated scroll events into one metrics report per animation frame", async () => {
+    const onMetrics = vi.fn();
+    const onUserScroll = vi.fn();
+    const viewport = setupViewport({
+      scrollTop: 0,
+      scrollHeight: 800,
+      clientHeight: 200,
+      onMetrics,
+      onUserScroll,
+    });
+    await Promise.resolve();
+    onMetrics.mockClear();
+    onUserScroll.mockClear();
+
+    viewport.scrollTop = 40;
+    viewport.dispatchEvent(new Event("scroll"));
+    viewport.scrollTop = 80;
+    viewport.dispatchEvent(new Event("scroll"));
+    viewport.scrollTop = 120;
+    viewport.dispatchEvent(new Event("scroll"));
+
+    expect(onMetrics).not.toHaveBeenCalled();
+    expect(onUserScroll).not.toHaveBeenCalled();
+
+    flushRaf();
+
+    expect(onUserScroll).toHaveBeenCalledTimes(1);
+    expect(onMetrics).toHaveBeenCalledTimes(1);
+    expect((onMetrics.mock.lastCall?.[0] as ScrollMetrics).scrollTop).toBe(120);
   });
 });

@@ -79,19 +79,33 @@ export function WorkbenchScrollArea({
         atBottom: scrollHeight - scrollTop - clientHeight < AT_BOTTOM_THRESHOLD,
       };
     };
-    const emit = () => {
-      const cb = onScrollMetricsRef.current;
-      if (!cb) return;
-      cb(computeMetrics());
-    };
-    const onScrollEvent = () => {
-      const m = computeMetrics();
+    let frameId: number | null = null;
+    let pendingMetrics: ScrollMetrics | null = null;
+    let pendingUserScroll = false;
+
+    const flushMetrics = () => {
+      frameId = null;
+      const metrics = pendingMetrics;
+      if (!metrics) return;
+      const shouldNotifyUserScroll = pendingUserScroll;
+      pendingMetrics = null;
+      pendingUserScroll = false;
+
       // user-scroll callback 先于 metrics callback —— ChatArea 的 handleUserScroll
       // 读到的 ref 状态(wasAtBottomRef 等)还是 handleScrollMetrics 更新之前的旧值,
       // 避免顺序耦合(尽管当前 handleUserScroll 不依赖那个 ref,但保留这个保险)。
-      onUserScrollRef.current?.(m);
-      onScrollMetricsRef.current?.(m);
+      if (shouldNotifyUserScroll) onUserScrollRef.current?.(metrics);
+      onScrollMetricsRef.current?.(metrics);
     };
+
+    const scheduleMetrics = (fromUserScroll: boolean) => {
+      pendingMetrics = computeMetrics();
+      pendingUserScroll = pendingUserScroll || fromUserScroll;
+      if (frameId !== null) return;
+      frameId = requestAnimationFrame(flushMetrics);
+    };
+    const emit = () => scheduleMetrics(false);
+    const onScrollEvent = () => scheduleMetrics(true);
 
     // 首次挂载先 emit 一次,让父组件拿到初始 atBottom 状态。
     emit();
@@ -119,6 +133,7 @@ export function WorkbenchScrollArea({
     return () => {
       node.removeEventListener("scroll", onScrollEvent);
       window.removeEventListener("resize", emit);
+      if (frameId !== null) cancelAnimationFrame(frameId);
       ro.disconnect();
       mo.disconnect();
     };
