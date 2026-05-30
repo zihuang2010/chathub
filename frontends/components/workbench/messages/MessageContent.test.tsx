@@ -415,4 +415,26 @@ describe("MessageImage 比例盒 + asset 源（R1/R2/R4）", () => {
     expect(remoteImg.getAttribute("loading")).toBe("lazy");
     expect(remoteImg.getAttribute("decoding")).toBe("async");
   });
+
+  it("首次无后端宽高：onLoad 读 <img> 固有宽高即切比例盒（消白边二段跳）", () => {
+    const { container } = render(
+      <article>
+        <MessageContent parts={[{ kind: "image", url: "https://e.example/p.png" }]} />
+      </article>,
+    );
+    const img = container.querySelector("img")!;
+    // 加载前无任何 dims → 固定 192 方盒（此刻 object-contain 会把非方图留白边）。
+    expect(img.parentElement!.style.width).toBe("192px");
+    expect(img.parentElement!.style.height).toBe("192px");
+    // jsdom 不解码，手动赋固有宽高模拟"图片字节加载完"。
+    Object.defineProperty(img, "naturalWidth", { value: 300, configurable: true });
+    Object.defineProperty(img, "naturalHeight", { value: 150, configurable: true });
+    act(() => {
+      fireEvent.load(img);
+    });
+    // 加载后立刻按固有比例 2:1 切比例盒（不再 192 方盒、不再留白边）。
+    const box = img.parentElement!;
+    expect(box.style.aspectRatio).toBe("300 / 150");
+    expect(box.style.width).toBe("100%");
+  });
 });

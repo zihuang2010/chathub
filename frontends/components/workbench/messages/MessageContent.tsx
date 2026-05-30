@@ -391,24 +391,41 @@ function MessageImage({ part, alt, maxW = 256, maxH = 320 }: MessageImageProps) 
     setRenderState(nextImageState(renderState, src, safe, isLocal));
   }
 
+  // 首次查看(后端预取未回、part 无宽高)时，从已加载 <img> 读其固有宽高，立刻据此切比例盒——
+  // 消除"固定 192 方盒 object-contain 把非方图留白边、数秒后预取回来才变原比例"的白边二段跳。
+  // 缩略图保持原图纵横比，故测得比例与后端 dims 一致：预取回来时盒比例不变、零位移。
+  const [measuredDims, setMeasuredDims] = useState<{ w: number; h: number } | null>(null);
+  const captureNaturalDims = (img: HTMLImageElement | null) => {
+    if (!img || part.width || part.height) return;
+    if (img.naturalWidth > 0 && img.naturalHeight > 0) {
+      setMeasuredDims((prev) => prev ?? { w: img.naturalWidth, h: img.naturalHeight });
+    }
+  };
+
   // 切到"看过的会话"时图片已在缓存中：useLayoutEffect 在 paint 前同步标记 loaded，
-  // 骨架那一帧不会被画出（消除切会话闪烁）。jsdom 中 naturalWidth 恒为 0，
-  // 故测试里 loading 态仍保持不变，不影响加载态断言。
+  // 骨架那一帧不会被画出（消除切会话闪烁）。缓存命中时 onLoad 可能早于监听器挂载而丢失，
+  // 这里也兜底捕获固有宽高。jsdom 中 naturalWidth 恒为 0，故测试里 loading 态/方盒保持不变。
   const imgRef = useRef<HTMLImageElement | null>(null);
   useLayoutEffect(() => {
-    if (renderState.phase !== "loading") return;
     const img = imgRef.current;
-    if (img && img.complete && img.naturalWidth > 0) {
+    if (!img || !img.complete || img.naturalWidth <= 0) return;
+    if (!part.width && !part.height) {
+      setMeasuredDims((prev) => prev ?? { w: img.naturalWidth, h: img.naturalHeight });
+    }
+    if (renderState.phase === "loading") {
       rememberLoadedImageSrc(renderState.visibleSrc);
       setRenderState({ phase: "loaded", visibleSrc: renderState.visibleSrc });
     }
-  }, [renderState]);
+  }, [renderState, part.width, part.height]);
 
-  // 有宽高时用比例盒，否则回退固定 192 方盒（向后兼容）
-  const hasDims = !!(part.width && part.height);
+  // 比例盒尺寸源优先级：后端 image_meta 注入的原始宽高 → <img> 固有宽高(首次加载即测得) →
+  // 都没有(尚未加载完)才回退固定 192 方盒。任一可用即按真实比例渲染，杜绝白边 letterbox。
+  const dimW = part.width ?? measuredDims?.w;
+  const dimH = part.height ?? measuredDims?.h;
+  const hasDims = !!(dimW && dimH);
   const boxStyle: React.CSSProperties = hasDims
     ? {
-        aspectRatio: `${part.width} / ${part.height}`,
+        aspectRatio: `${dimW} / ${dimH}`,
         maxWidth: maxW,
         maxHeight: maxH,
         width: "100%",
@@ -432,6 +449,7 @@ function MessageImage({ part, alt, maxW = 256, maxH = 320 }: MessageImageProps) 
   }
 
   const handleVisibleLoad = () => {
+    captureNaturalDims(imgRef.current);
     rememberLoadedImageSrc(renderState.visibleSrc);
     setRenderState((current) =>
       current.phase === "loading" && current.visibleSrc === renderState.visibleSrc
