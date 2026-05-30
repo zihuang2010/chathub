@@ -467,6 +467,9 @@ pub struct ListFriendsRequest {
 #[serde(rename_all = "camelCase")]
 pub struct WecomFriend {
     pub wecom_account_id: String,
+    /// 归属账号(负责人)显示名;业务后台返回,缺省容忍空串。
+    #[serde(default)]
+    pub wecom_account_name: String,
     pub external_user_id: String,
     pub external_name: String,
     pub external_position: String,
@@ -533,6 +536,9 @@ pub struct FriendTag {
 #[serde(rename_all = "camelCase")]
 pub struct WecomFriendDetail {
     pub external_user_id: String,
+    /// 归属账号(负责人)显示名;业务后台返回,缺省容忍空串。
+    #[serde(default)]
+    pub wecom_account_name: String,
     #[serde(default)]
     pub external_name: String,
     #[serde(default)]

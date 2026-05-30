@@ -6,10 +6,8 @@ import type { Customer } from "@/lib/types/customer";
 import { cn } from "@/lib/utils";
 
 import { CustomerAvatar } from "./CustomerAvatar";
-import { CARD_MAX_TAGS } from "./constants";
 import { isKeyCustomer } from "./customerLabels";
 import { STRINGS } from "./strings";
-import { tagColorClass } from "./tagColor";
 import { parseDate } from "./utils";
 
 interface CustomerCardProps {
@@ -51,8 +49,6 @@ export const CustomerCard = memo(function CustomerCard({
   onOpenChat,
   onMore,
 }: CustomerCardProps) {
-  const visibleTags = customer.tags.slice(0, CARD_MAX_TAGS);
-  const overflowTags = customer.tags.length - visibleTags.length;
   const isKey = isKeyCustomer(customer);
   // 企业名称 / 手机号 / 负责人 统一兜底：空串、"—" 都视为缺失，回退到默认占位。
   const company = cleanValue(customer.company);
@@ -76,13 +72,13 @@ export const CustomerCard = memo(function CustomerCard({
         }
       }}
       className={cn(
-        "group relative flex cursor-pointer flex-col rounded-lg border bg-workbench-surface p-2 transition-all",
+        "group relative flex cursor-pointer flex-col rounded-lg border p-2 transition-all",
         "hover:shadow-wb-card focus-visible:outline-none",
         selected
-          ? "border-workbench-accent ring-1 ring-workbench-accent"
+          ? "border-[#D6E4FF] bg-[#F7FAFF]"
           : multiSelected
-            ? "border-workbench-accent/60"
-            : "border-workbench-line hover:border-workbench-line-strong",
+            ? "border-workbench-accent/60 bg-workbench-surface"
+            : "border-[#E5E7EB] bg-workbench-surface hover:border-workbench-line-strong",
       )}
     >
       {/* 左上角：重点客户角标（与 checkbox 互斥） */}
@@ -175,28 +171,6 @@ export const CustomerCard = memo(function CustomerCard({
           </CardActionButton>
         </div>
       </div>
-
-      {/* 标签 */}
-      {visibleTags.length > 0 && (
-        <div className="mt-1 flex flex-wrap items-center gap-1">
-          {visibleTags.map((tag) => (
-            <span
-              key={tag}
-              className={cn(
-                "inline-flex max-w-full items-center truncate whitespace-nowrap rounded px-1.5 py-0.5 text-[11px] font-medium",
-                tagColorClass(tag),
-              )}
-            >
-              {tag}
-            </span>
-          ))}
-          {overflowTags > 0 && (
-            <span className="inline-flex shrink-0 items-center whitespace-nowrap rounded bg-slate-100 px-1.5 py-0.5 text-[11px] text-slate-500 ring-1 ring-inset ring-slate-200/60">
-              {STRINGS.list.overflowTagsLabel(overflowTags)}
-            </span>
-          )}
-        </div>
-      )}
 
       {/* 底部：仅添加时间 */}
       {addedAt ? (

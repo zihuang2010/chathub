@@ -244,6 +244,7 @@ export const STRINGS = {
     reassignDialog: {
       title: "移交跟进人",
       submit: "移交",
+      empty: "暂无可选跟进人。",
     },
     csvFileName: "customers",
   },

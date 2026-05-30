@@ -32,6 +32,24 @@ interface CustomersPageProps {
 const EMPTY_ACCOUNTS_SET: ReadonlySet<string> = new Set();
 const SEARCH_DEBOUNCE_MS = 350;
 
+/**
+ * 合并后端标签与本地新增标签:后端标签在前,本地标签去重(大小写折叠)追加。
+ * 列表接口不下发标签,本地新增标签暂存 store;详情到达后需与后端标签并集展示,
+ * 避免后端标签直接覆盖本地新增标签。
+ */
+function mergeTags(serverTags: readonly string[], localTags: readonly string[]): string[] {
+  const result = [...serverTags];
+  const seen = new Set(serverTags.map((t) => t.toLocaleLowerCase()));
+  for (const t of localTags) {
+    const folded = t.toLocaleLowerCase();
+    if (!seen.has(folded)) {
+      seen.add(folded);
+      result.push(t);
+    }
+  }
+  return result;
+}
+
 export function CustomersPage({
   accounts,
   pendingAccountFilter,
@@ -153,7 +171,8 @@ export function CustomersPage({
     void refreshDetail(true);
   }, [refreshDetail]);
 
-  // 详情到达后,仅覆盖只读展示字段;starred / tags 仍由 store 负责本地交互,不被覆盖。
+  // 详情到达后覆盖只读展示字段与后端标签;starred 仍由 store 负责本地交互,不被覆盖。
+  // 标签的新增/删除待接口就绪后改为调用后端,届时本地态与服务端保持一致。
   const panelCustomer = useMemo(() => {
     if (!activeCustomer) return null;
     if (!activeDetail) return activeCustomer;
@@ -168,6 +187,8 @@ export function CustomersPage({
       company: d.company,
       source: d.source,
       addedAt: d.addedAt,
+      tags: mergeTags(d.tags, activeCustomer.tags),
+      follower: d.follower || activeCustomer.follower,
     };
   }, [activeCustomer, activeDetail]);
 
@@ -230,10 +251,12 @@ export function CustomersPage({
     (tag: string) => {
       if (!activeCustomer) return;
       const folded = tag.toLocaleLowerCase();
-      if (activeCustomer.tags.some((t) => t.toLocaleLowerCase() === folded)) return;
+      // 去重基准用合并集(后端标签 + 本地标签),避免重复添加后端已有标签。
+      const existing = panelCustomer?.tags ?? activeCustomer.tags;
+      if (existing.some((t) => t.toLocaleLowerCase() === folded)) return;
       store.patchCustomer(activeCustomer.id, { tags: [...activeCustomer.tags, tag] });
     },
-    [activeCustomer, store],
+    [activeCustomer, panelCustomer, store],
   );
 
   const handleRemoveTag = useCallback(

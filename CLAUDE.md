@@ -144,11 +144,13 @@
    - 目标：
    - 风险：
    - 验证：
+```
 
 <!-- gitnexus:start -->
+
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **chathub** (5529 symbols, 10476 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **chathub** (5542 symbols, 10505 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 
@@ -169,23 +171,44 @@ This project is indexed by GitNexus as **chathub** (5529 symbols, 10476 relation
 
 ## Resources
 
-| Resource | Use for |
-|----------|---------|
-| `gitnexus://repo/chathub/context` | Codebase overview, check index freshness |
-| `gitnexus://repo/chathub/clusters` | All functional areas |
-| `gitnexus://repo/chathub/processes` | All execution flows |
-| `gitnexus://repo/chathub/process/{name}` | Step-by-step execution trace |
+| Resource                                 | Use for                                  |
+| ---------------------------------------- | ---------------------------------------- |
+| `gitnexus://repo/chathub/context`        | Codebase overview, check index freshness |
+| `gitnexus://repo/chathub/clusters`       | All functional areas                     |
+| `gitnexus://repo/chathub/processes`      | All execution flows                      |
+| `gitnexus://repo/chathub/process/{name}` | Step-by-step execution trace             |
 
 ## CLI
 
-| Task | Read this skill file |
-|------|---------------------|
-| Understand architecture / "How does X work?" | `.claude/skills/gitnexus/gitnexus-exploring/SKILL.md` |
-| Blast radius / "What breaks if I change X?" | `.claude/skills/gitnexus/gitnexus-impact-analysis/SKILL.md` |
-| Trace bugs / "Why is X failing?" | `.claude/skills/gitnexus/gitnexus-debugging/SKILL.md` |
-| Rename / extract / split / refactor | `.claude/skills/gitnexus/gitnexus-refactoring/SKILL.md` |
-| Tools, resources, schema reference | `.claude/skills/gitnexus/gitnexus-guide/SKILL.md` |
-| Index, status, clean, wiki CLI commands | `.claude/skills/gitnexus/gitnexus-cli/SKILL.md` |
+| Task                                         | Read this skill file                                        |
+| -------------------------------------------- | ----------------------------------------------------------- |
+| Understand architecture / "How does X work?" | `.claude/skills/gitnexus/gitnexus-exploring/SKILL.md`       |
+| Blast radius / "What breaks if I change X?"  | `.claude/skills/gitnexus/gitnexus-impact-analysis/SKILL.md` |
+| Trace bugs / "Why is X failing?"             | `.claude/skills/gitnexus/gitnexus-debugging/SKILL.md`       |
+| Rename / extract / split / refactor          | `.claude/skills/gitnexus/gitnexus-refactoring/SKILL.md`     |
+| Tools, resources, schema reference           | `.claude/skills/gitnexus/gitnexus-guide/SKILL.md`           |
+| Index, status, clean, wiki CLI commands      | `.claude/skills/gitnexus/gitnexus-cli/SKILL.md`             |
 
 <!-- gitnexus:end -->
-```
+
+---
+
+# 3. 仓库地图与命令工作目录
+
+跑任何引用路径的命令（`sed`/`cat`/`ls` 操作 `package.json`、`pnpm`、`cargo`）之前，先确认工作目录，避免 `No such file or directory` 报错。
+
+## 3.1 最重要的一条
+
+- **整个仓库只有一个 `package.json`，且只在仓库根目录；`frontends/` 下没有 `package.json`。**
+- 所有 `pnpm` / `vitest` / `eslint` 命令的工作目录都是**仓库根目录**，不是 `frontends/`。
+- 包管理器是 **pnpm**（认 `pnpm-lock.yaml`），不要用 `npm` / `yarn`。
+- 直接的 `cargo` 命令工作目录是 `backends/`；跑单个服务用 `cargo run -p <crate>`（如 `chathub-relay`）。
+- Tauri 配置在 `backends/tauri.conf.json`，不在根目录。
+
+## 3.2 完整索引见技能
+
+定位文件、选工作目录、查命令 ↔ cwd 对照、Cargo workspace 成员、目录结构等，查阅技能：
+
+| 需求                                       | 查阅                                       |
+| ------------------------------------------ | ------------------------------------------ |
+| 仓库目录地图 / 文件在哪 / 命令在哪个目录跑 | `.claude/skills/chathub-repo-map/SKILL.md` |

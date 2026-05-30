@@ -158,6 +158,8 @@ export interface FriendTag {
  */
 export interface WecomFriendDetail {
   externalUserId: string;
+  /** 归属账号(负责人)显示名。业务后台返回,缺失时为空串。 */
+  wecomAccountName?: string;
   externalName: string;
   externalPosition: string;
   externalAvatar: string;
@@ -232,7 +234,7 @@ export function adaptFriendDetailToCustomer(
     company: detail.externalCorpName || detail.remarkCorpName || "—",
     source: addWayToSource(detail.addWay),
     addedAt: detail.addTime,
-    follower: "",
+    follower: detail.wecomAccountName ?? "",
     starred: false,
     lastContactAt: null,
     gender,

@@ -4,7 +4,7 @@ import { CheckCheck, Download, Star, Tag, UserCheck, X } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 
-import { MOCK_FOLLOWERS, TAG_PRESETS } from "./data";
+import { TAG_PRESETS } from "./data";
 import { STRINGS } from "./strings";
 
 interface BulkActionsBarProps {
@@ -216,7 +216,8 @@ function TagPickerPopover({
   );
 }
 
-function ReassignPopover({ onSubmit }: { onSubmit: (follower: string) => void }) {
+// 移交跟进人候选待真后台字典上线;当前仅占位空态,onSubmit 暂不触发。
+function ReassignPopover({ onSubmit: _onSubmit }: { onSubmit: (follower: string) => void }) {
   const [open, setOpen] = useState(false);
 
   return (
@@ -239,19 +240,9 @@ function ReassignPopover({ onSubmit }: { onSubmit: (follower: string) => void })
           <div className="px-2 pb-1 text-[12px] font-semibold text-workbench-text">
             {STRINGS.bulk.reassignDialog.title}
           </div>
-          {MOCK_FOLLOWERS.map((follower) => (
-            <button
-              key={follower}
-              type="button"
-              onClick={() => {
-                onSubmit(follower);
-                setOpen(false);
-              }}
-              className="focus-ring flex h-8 w-full items-center justify-start rounded-md px-2 text-left text-[12px] text-workbench-text-secondary transition-colors hover:bg-workbench-surface-subtle hover:text-workbench-text"
-            >
-              {follower}
-            </button>
-          ))}
+          <p className="px-2 py-3 text-center text-wb-2xs text-workbench-text-muted">
+            {STRINGS.bulk.reassignDialog.empty}
+          </p>
         </Popover.Content>
       </Popover.Portal>
     </Popover.Root>

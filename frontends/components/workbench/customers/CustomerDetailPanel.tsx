@@ -159,7 +159,7 @@ function DetailBody({
 
         <FollowUpSection
           entries={customer.timeline}
-          follower={account?.ownerName || customer.follower}
+          follower={customer.follower}
           onSeeMore={() => onSeeMoreRecords(customer.id)}
         />
       </WorkbenchScrollArea>
@@ -337,11 +337,9 @@ function CustomerInfoSection({
   onCopy: (label: string, value: string) => void;
 }) {
   const f = STRINGS.detail.fields;
-  const accountValue = account
-    ? account.ownerName
-      ? `${account.name} · ${account.ownerName}`
-      : account.name
-    : customer.account;
+  // 归属账号 = 账号显示名 · 负责人名(负责人来自后端 wecomAccountName,经 customer.follower 透传)。
+  const accountName = account?.name ?? customer.account;
+  const accountValue = customer.follower ? `${accountName} · ${customer.follower}` : accountName;
   return (
     <section className="flex flex-col gap-2.5">
       <h3 className="text-[13px] font-semibold text-workbench-text">
