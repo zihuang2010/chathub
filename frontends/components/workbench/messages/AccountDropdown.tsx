@@ -10,9 +10,10 @@ import { STRINGS } from "./strings";
 
 interface AccountDropdownProps {
   accounts: readonly Account[];
-  /** 单选语义。值是 `account.name`(兼容 conversation.account 字段) — `null` 表示"全部"。 */
-  selectedAccount: string | null;
-  onSelect: (account: string | null) => void;
+  /** 单选语义。值是 `account.id`(= wecomAccountId,唯一) — `null` 表示"全部"。
+   *  用 id 而非 name 做选中标识:同名账号也能各自区分,不会一选多高亮。 */
+  selectedAccountId: string | null;
+  onSelect: (accountId: string | null) => void;
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
   children: ReactNode;
@@ -34,7 +35,7 @@ interface AccountDropdownProps {
  */
 export function AccountDropdown({
   accounts,
-  selectedAccount,
+  selectedAccountId,
   onSelect,
   open,
   onOpenChange,
@@ -61,8 +62,8 @@ export function AccountDropdown({
     );
   }, [accounts, query]);
 
-  const handleSelect = (account: string | null) => {
-    onSelect(account);
+  const handleSelect = (accountId: string | null) => {
+    onSelect(accountId);
     onOpenChange?.(false);
     setQuery("");
   };
@@ -100,10 +101,10 @@ export function AccountDropdown({
           <div className="flex-1 overflow-y-auto px-1 py-1">
             {/* "全部账号" — 固定置顶,搜索不参与过滤 */}
             <AllAccountsRow
-              active={!selectedAccount}
+              active={!selectedAccountId}
               total={accounts.length}
               onClick={() => handleSelect(null)}
-              innerRef={!selectedAccount ? scrollActiveIntoView : undefined}
+              innerRef={!selectedAccountId ? scrollActiveIntoView : undefined}
             />
             <Group title={`全部账号 (${formatTotalCount(accounts.length)})`}>
               {filtered.length === 0 ? (
@@ -113,9 +114,9 @@ export function AccountDropdown({
                   <AccountRow
                     key={a.id}
                     account={a}
-                    active={selectedAccount === a.name}
-                    onClick={() => handleSelect(a.name)}
-                    innerRef={selectedAccount === a.name ? scrollActiveIntoView : undefined}
+                    active={selectedAccountId === a.id}
+                    onClick={() => handleSelect(a.id)}
+                    innerRef={selectedAccountId === a.id ? scrollActiveIntoView : undefined}
                   />
                 ))
               )}

@@ -23,8 +23,8 @@ interface ChatAreaProps {
   conversation: Conversation;
   messages: Message[];
   accounts: readonly Account[];
-  selectedAccount: string | null;
-  onAccountChange: (account: string | null) => void;
+  selectedAccountId: string | null;
+  onAccountChange: (accountId: string | null) => void;
   detailsOpen: boolean;
   onToggleDetails: () => void;
   /**
@@ -63,7 +63,7 @@ export const ChatArea = memo(function ChatArea({
   conversation,
   messages,
   accounts,
-  selectedAccount,
+  selectedAccountId,
   onAccountChange,
   detailsOpen,
   onToggleDetails,
@@ -188,7 +188,7 @@ export const ChatArea = memo(function ChatArea({
       <ChatHeader conversation={conversation} />
       <RangePill
         accounts={accounts}
-        selectedAccount={selectedAccount}
+        selectedAccountId={selectedAccountId}
         onAccountChange={onAccountChange}
       />
       {/* 消息区与下方 MessageComposer 都不加 key:整块重挂没有必要,反而会重建编辑器/视口。

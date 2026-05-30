@@ -31,8 +31,9 @@ interface ConversationListProps {
   onRemove?: (id: string) => void;
   width: number;
   accounts: readonly Account[];
-  selectedAccount: string | null;
-  onAccountChange: (account: string | null) => void;
+  /** 选中账号的 `account.id`(= wecomAccountId),`null` = 全部。展示名按 id 反查 accounts。 */
+  selectedAccountId: string | null;
+  onAccountChange: (accountId: string | null) => void;
   /** 滚动到底加载更老会话(默认列表续页 / 筛选态续页,由父级按当前态分派)。
    *  是否真的还有更多由父级 hook 内部 cursor/hasMore 自守(到底即 no-op),这里不再重复 gate。
    *  不传 = 不分页(退化为只展示传入的 conversations,与历史行为一致)。 */
@@ -57,7 +58,7 @@ export const ConversationList = memo(function ConversationList({
   onRemove,
   width,
   accounts,
-  selectedAccount,
+  selectedAccountId,
   onAccountChange,
   onLoadMore,
   loading,
@@ -88,7 +89,7 @@ export const ConversationList = memo(function ConversationList({
           statusTab={statusTab}
           onStatusChange={setStatusTab}
           accounts={accounts}
-          selectedAccount={selectedAccount}
+          selectedAccountId={selectedAccountId}
           onAccountChange={onAccountChange}
           accountPickerOpen={accountPickerOpen}
           onAccountPickerOpenChange={setAccountPickerOpen}
@@ -268,7 +269,7 @@ const FilterToolbar = memo(function FilterToolbar({
   statusTab,
   onStatusChange,
   accounts,
-  selectedAccount,
+  selectedAccountId,
   onAccountChange,
   accountPickerOpen,
   onAccountPickerOpenChange,
@@ -276,13 +277,17 @@ const FilterToolbar = memo(function FilterToolbar({
   statusTab: StatusTab;
   onStatusChange: (value: StatusTab) => void;
   accounts: readonly Account[];
-  selectedAccount: string | null;
-  onAccountChange: (account: string | null) => void;
+  selectedAccountId: string | null;
+  onAccountChange: (accountId: string | null) => void;
   accountPickerOpen: boolean;
   onAccountPickerOpenChange: (open: boolean) => void;
 }) {
-  const accountLabel = selectedAccount
-    ? extractAccountOperator(selectedAccount)
+  // 选中态存的是 account.id;展示名按 id 反查 accounts(同名账号也唯一区分)。
+  const selectedAccountName = selectedAccountId
+    ? (accounts.find((a) => a.id === selectedAccountId)?.name ?? null)
+    : null;
+  const accountLabel = selectedAccountName
+    ? extractAccountOperator(selectedAccountName)
     : STRINGS.conversationList.accountFallback;
 
   return (
@@ -294,7 +299,7 @@ const FilterToolbar = memo(function FilterToolbar({
       >
         <AccountDropdown
           accounts={accounts}
-          selectedAccount={selectedAccount}
+          selectedAccountId={selectedAccountId}
           onSelect={onAccountChange}
           open={accountPickerOpen}
           onOpenChange={onAccountPickerOpenChange}
@@ -306,11 +311,11 @@ const FilterToolbar = memo(function FilterToolbar({
             aria-expanded={accountPickerOpen}
             className={cn(
               "focus-ring inline-flex h-9 max-w-[96px] shrink-0 items-center gap-1 rounded-md px-2 transition-colors",
-              selectedAccount
+              selectedAccountId
                 ? "bg-workbench-surface-active text-workbench-accent"
                 : "bg-workbench-surface-soft text-workbench-text hover:bg-workbench-surface-active hover:text-workbench-accent",
             )}
-            title={selectedAccount ?? STRINGS.rangePill.allAccountsBare}
+            title={selectedAccountName ?? STRINGS.rangePill.allAccountsBare}
           >
             <span className="min-w-0 truncate">{accountLabel}</span>
             <ChevronDown

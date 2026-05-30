@@ -9,20 +9,24 @@ import { STRINGS } from "./strings";
 
 interface RangePillProps {
   accounts: readonly Account[];
-  selectedAccount: string | null;
-  onAccountChange: (account: string | null) => void;
+  /** 选中账号的 `account.id`(= wecomAccountId),`null` = 全部。展示名按 id 反查 accounts。 */
+  selectedAccountId: string | null;
+  onAccountChange: (accountId: string | null) => void;
 }
 
-export function RangePill({ accounts, selectedAccount, onAccountChange }: RangePillProps) {
+export function RangePill({ accounts, selectedAccountId, onAccountChange }: RangePillProps) {
   const [open, setOpen] = useState(false);
-  const label = selectedAccount ?? STRINGS.rangePill.allAccounts(accounts.length);
+  const selectedAccountName = selectedAccountId
+    ? (accounts.find((a) => a.id === selectedAccountId)?.name ?? null)
+    : null;
+  const label = selectedAccountName ?? STRINGS.rangePill.allAccounts(accounts.length);
 
   return (
     <div className="bg-workbench-surface px-4 pb-1.5 pt-2">
       <div className="flex items-center justify-between gap-3 text-wb-2xs font-medium">
         <AccountDropdown
           accounts={accounts}
-          selectedAccount={selectedAccount}
+          selectedAccountId={selectedAccountId}
           onSelect={onAccountChange}
           open={open}
           onOpenChange={setOpen}
@@ -47,7 +51,7 @@ export function RangePill({ accounts, selectedAccount, onAccountChange }: RangeP
         <button
           type="button"
           onClick={() => onAccountChange(null)}
-          disabled={!selectedAccount}
+          disabled={!selectedAccountId}
           className="focus-ring inline-flex h-8 shrink-0 items-center gap-1 rounded-md px-1.5 text-workbench-text-muted transition-colors hover:bg-workbench-surface-subtle hover:text-workbench-accent disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent disabled:hover:text-workbench-text-muted"
         >
           <X size={12} />

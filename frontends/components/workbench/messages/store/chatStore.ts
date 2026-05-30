@@ -123,11 +123,11 @@ export function markFailed(slice: ConversationSlice, clientMsgId: string): Conve
   return { ...slice, byId: { ...slice.byId, [id]: { ...e, status: "failed" } } };
 }
 
-/** 就地 patch 一条(如撤回置 isRecalled)。不存在则 no-op。 */
+/** 就地 patch 一条(如撤回置 isRecalled、重发补钉 clientMsgId)。不存在则 no-op。 */
 export function patchEntity(
   slice: ConversationSlice,
   id: string,
-  patch: Partial<Message>,
+  patch: Partial<ChatMessageEntity>,
 ): ConversationSlice {
   const e = slice.byId[id];
   if (!e) return slice;
@@ -173,7 +173,7 @@ interface ChatStoreState {
     patch?: Partial<Message>,
   ): void;
   markFailed(conversationId: string, clientMsgId: string): void;
-  patchMessage(conversationId: string, id: string, patch: Partial<Message>): void;
+  patchMessage(conversationId: string, id: string, patch: Partial<ChatMessageEntity>): void;
   removeMessage(conversationId: string, id: string): void;
   setLoading(conversationId: string, loading: boolean): void;
   setError(conversationId: string, error: string | null): void;

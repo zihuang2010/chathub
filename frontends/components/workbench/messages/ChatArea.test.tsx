@@ -194,7 +194,7 @@ function renderChatArea(
     conversation,
     messages: [],
     accounts,
-    selectedAccount: null,
+    selectedAccountId: null,
     onAccountChange: vi.fn(),
     detailsOpen: false,
     onToggleDetails: vi.fn(),
@@ -227,7 +227,7 @@ describe("ChatArea history scrolling", () => {
         conversation={conversation}
         messages={[message("01"), message("02"), message("03")]}
         accounts={accounts}
-        selectedAccount={null}
+        selectedAccountId={null}
         onAccountChange={vi.fn()}
         detailsOpen={false}
         onToggleDetails={vi.fn()}
@@ -273,7 +273,7 @@ describe("ChatArea history scrolling", () => {
         conversation={conversation}
         messages={[message("01"), message("02"), message("03"), message("04"), message("05")]}
         accounts={accounts}
-        selectedAccount={null}
+        selectedAccountId={null}
         onAccountChange={vi.fn()}
         detailsOpen={false}
         onToggleDetails={vi.fn()}
@@ -301,7 +301,7 @@ describe("ChatArea history scrolling", () => {
         conversation={conversation}
         messages={[message("01"), message("02"), message("03")]}
         accounts={accounts}
-        selectedAccount={null}
+        selectedAccountId={null}
         onAccountChange={vi.fn()}
         detailsOpen={false}
         onToggleDetails={vi.fn()}
@@ -328,7 +328,7 @@ describe("ChatArea history scrolling", () => {
         conversation={conversation}
         messages={[message("01"), message("02"), message("03")]}
         accounts={accounts}
-        selectedAccount={null}
+        selectedAccountId={null}
         onAccountChange={vi.fn()}
         detailsOpen={false}
         onToggleDetails={vi.fn()}
@@ -351,7 +351,7 @@ describe("ChatArea unread divider", () => {
   const convUnread: Conversation = { ...conversation, unread: 2 };
   const sharedProps = {
     accounts,
-    selectedAccount: null as string | null,
+    selectedAccountId: null as string | null,
     onAccountChange: vi.fn(),
     detailsOpen: false,
     onToggleDetails: vi.fn(),

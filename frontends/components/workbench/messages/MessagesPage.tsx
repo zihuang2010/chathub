@@ -152,14 +152,15 @@ function extractTextFromNode(node: unknown): string {
 }
 
 interface MessagesPageProps {
-  /** 由 Workbench 提供的账号列表(来自 list_accounts)。下拉用 `account.name` 做选项值;
-   *  接 useRecentFriends 时按 name 反查 `account.id`(= `wecomAccountId`)再传给后端。 */
+  /** 由 Workbench 提供的账号列表(来自 list_accounts)。下拉用 `account.id`(= `wecomAccountId`)
+   *  做选项值与筛选状态,直接传给 useRecentFriends;展示名按 id 反查 accounts。 */
   accounts: readonly Account[];
 }
 
 export function MessagesPage({ accounts }: MessagesPageProps) {
   const [selectedId, setSelectedId] = useState<string>("");
-  const [selectedAccount, setSelectedAccount] = useState<string | null>(null);
+  // 账号筛选状态直接存 `account.id`(= wecomAccountId,唯一);同名账号互不干扰。
+  const [selectedAccountId, setSelectedAccountId] = useState<string | null>(null);
   const [conversationListWidth, setConversationListWidth] = useState(
     CONVERSATION_LIST_DEFAULT_WIDTH,
   );
@@ -172,13 +173,8 @@ export function MessagesPage({ accounts }: MessagesPageProps) {
     chatAreaRef,
   });
 
-  // 顶部账号选择器输出的是 Account.name(跟 conversation.account 同形态),
-  // 接 useRecentFriends 需要 wecomAccountId,从 accounts 表反查;null/未命中传 null = 全部账号。
-  const selectedAccountId = useMemo(() => {
-    if (!selectedAccount) return null;
-    const acct = accounts.find((a) => a.name === selectedAccount);
-    return acct?.id ?? null;
-  }, [accounts, selectedAccount]);
+  // 顶部账号选择器直接输出 wecomAccountId(= account.id),原样传给 useRecentFriends;
+  // null = 全部账号。展示名在 RangePill/ConversationList 内按 id 反查 accounts。
 
   // SyncStatusBadge 现已搬到 Sidebar 用户名下方(全局可见),这里只消费数据相关字段。
   // resyncing / connectionState / lastEventAt / lastRefreshAt / error 由 Sidebar 的
@@ -444,15 +440,16 @@ export function MessagesPage({ accounts }: MessagesPageProps) {
   };
 
   const handleAccountChange = useCallback(
-    (account: string | null) => {
-      setSelectedAccount(account);
-      if (!account || conversation?.account === account) return;
+    (accountId: string | null) => {
+      setSelectedAccountId(accountId);
+      // 当前会话已属该账号则不跳;account 归属用 entry.wecomAccountId 判定(唯一,不靠展示名)。
+      if (!accountId || selectedEntry?.wecomAccountId === accountId) return;
       // 切到该账号下的第一条会话;useRecentFriends 跟随 selectedAccountId 重新拉取后,
       // useEffect 会再校正一次 selectedId。
-      const next = conversations.find((item) => item.account === account);
-      if (next) setSelectedId(next.id);
+      const next = displayEntries.find((e) => e.wecomAccountId === accountId);
+      if (next) setSelectedId(next.conversationId);
     },
-    [conversation?.account, conversations],
+    [selectedEntry?.wecomAccountId, displayEntries],
   );
 
   // ─── 搜索客户 → 打开会话 ─────────────────────────────────────────────────
@@ -531,7 +528,7 @@ export function MessagesPage({ accounts }: MessagesPageProps) {
           onRemove={removeRecent}
           width={conversationListWidth}
           accounts={accounts}
-          selectedAccount={selectedAccount}
+          selectedAccountId={selectedAccountId}
           onAccountChange={handleAccountChange}
           onOpenCustomer={handleOpenCustomer}
           onClearSearch={handleClearSearch}
@@ -588,7 +585,7 @@ export function MessagesPage({ accounts }: MessagesPageProps) {
               conversation={conversation}
               messages={messages}
               accounts={accounts}
-              selectedAccount={selectedAccount}
+              selectedAccountId={selectedAccountId}
               onAccountChange={handleAccountChange}
               detailsOpen={detailsOpen}
               onToggleDetails={toggleDetails}

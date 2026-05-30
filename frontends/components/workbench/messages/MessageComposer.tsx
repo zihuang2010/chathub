@@ -107,6 +107,10 @@ export function MessageComposer({
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const imageInputRef = useRef<HTMLInputElement | null>(null);
   const resizeStartRef = useRef({ y: 0, height });
+  // 防重复提交:连按 Enter 时 draft 清空(异步 setState)尚未生效,submitDraft 可能读到旧
+  // draft 在同一拍内重复触发 onSend → 同一条消息发多份。提交后上锁,本帧内的重复提交被吞掉,
+  // 下一帧(draft 已清空、canSend 已 false)放开。
+  const submitLockRef = useRef(false);
 
   // 文件附件 blob URL 的生命周期由 useFileAttachments store 持有,跨切会话存活:
   // - 用户显式移除 chip → removePendingFileAttachment 立即 revoke
@@ -366,7 +370,8 @@ export function MessageComposer({
   // ─── Submit ───────────────────────────────────────────────────────────────
 
   const submitDraft = () => {
-    if (!canSend) return;
+    if (!canSend || submitLockRef.current) return;
+    submitLockRef.current = true;
     const finalBlocks = blocks.filter((b) => !(b.type === "text" && b.value.trim().length === 0));
     const fileAttachments = pendingFileAttachments;
     onSend?.(
@@ -399,6 +404,10 @@ export function MessageComposer({
       })
       .focus("start")
       .run();
+    // 下一帧放开提交锁:此时 draft 已清空、重渲后 canSend=false,跨拍的连发由 canSend 兜住。
+    requestAnimationFrame(() => {
+      submitLockRef.current = false;
+    });
   };
 
   // ─── Render ───────────────────────────────────────────────────────────────

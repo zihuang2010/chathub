@@ -50,17 +50,18 @@ export function useChatActions({
   // 真发送一条出站消息:把发送时所属会话 id 闭包进来。成功 → markSent 钉 serverId(权威列表
   // 回来时按 serverId 去重收敛,不留重影气泡);失败 → markFailed(供 context menu resend)。
   const deliverMessage = useCallback(
-    async (messageId: string, text: string) => {
+    // clientMsgId = 幂等键:后端按它去重,收敛(markSent/markFailed)也按它定位气泡。默认
+    // 等于 messageId(乐观气泡 id 本就 = clientMsgId);历史消息重发时由调用方显式传入稳定键。
+    async (messageId: string, text: string, clientMsgId: string = messageId) => {
       // store 按 conversationId 分片,故落在 owningConversationId 切片上即可,无需判当前会话。
       const owningConversationId = conversation.id;
       try {
-        // 复用乐观气泡 id 作为 clientMsgId(幂等键),重发时同键不重复。
-        const resp = await onSendMessage?.(text, messageId);
+        const resp = await onSendMessage?.(text, clientMsgId);
         if (resp) {
-          useChatStore.getState().markSent(owningConversationId, messageId, resp.localMessageId);
+          useChatStore.getState().markSent(owningConversationId, clientMsgId, resp.localMessageId);
         }
       } catch {
-        useChatStore.getState().markFailed(owningConversationId, messageId);
+        useChatStore.getState().markFailed(owningConversationId, clientMsgId);
       }
     },
     [conversation.id, onSendMessage],
@@ -97,10 +98,21 @@ export function useChatActions({
   const handleAction = useCallback<UseChatActionsResult["handleAction"]>(
     (action, message) => {
       switch (action) {
-        case "resend":
-          useChatStore.getState().patchMessage(conversation.id, message.id, { status: "sending" });
-          void deliverMessage(message.id, message.text);
+        case "resend": {
+          const entity = useChatStore.getState().conversations[conversation.id]?.byId[message.id];
+          // 在途守卫:已在发送中则忽略重复点击,避免并发重发把同一条重复投递。
+          if (entity?.status === "sending") break;
+          // 幂等键:乐观气泡复用已有 clientMsgId;历史来源失败消息(无 clientMsgId)用其 store id
+          // 钉一个稳定键并写回实体——既让后端按同键去重,又让 markSent/markFailed 能按 clientMsgId
+          // 收敛回这一条,不再每次重发都新增一条失败气泡(原 bug:历史实体无 clientMsgId →
+          // 收敛 no-op + 用服务端 id 当 clientMsgId 后端不认 → 重发即落新行 → 无限累加)。
+          const clientMsgId = entity?.clientMsgId ?? message.id;
+          useChatStore
+            .getState()
+            .patchMessage(conversation.id, message.id, { status: "sending", clientMsgId });
+          void deliverMessage(message.id, message.text, clientMsgId);
           break;
+        }
         case "delete":
           useChatStore.getState().removeMessage(conversation.id, message.id);
           // 若引用预览正指向被删消息,发送时 replyTo 会指向不存在的 id
