@@ -14,6 +14,7 @@
 
 pub mod account_cache;
 pub mod error;
+pub mod friend_detail_cache;
 pub mod local_token;
 pub mod messages;
 pub mod notify_seq;
@@ -24,6 +25,7 @@ pub mod session;
 
 pub use account_cache::{AccountCacheStore, BindingAction, WecomAccountRow};
 pub use error::StateError;
+pub use friend_detail_cache::FriendDetailCacheStore;
 pub use local_token::LocalTokenStore;
 pub use messages::{MessageRow, MessageWindow, MessagesStore, MESSAGE_HOT_CONVERSATIONS_LIMIT};
 pub use notify_seq::NotifySeqStore;

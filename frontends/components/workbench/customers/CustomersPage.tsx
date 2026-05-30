@@ -142,12 +142,13 @@ export function CustomersPage({
     ? accounts.find((a) => a.id === activeCustomer.accountId)
     : undefined;
 
-  // 选中客户的好友详情:按 (accountId, externalUserId=id) 拉取,刷新按钮走强制刷新。
+  // 选中客户的好友详情:按 (accountId, externalUserId) 一组拉取(id 现为复合键,不能再当
+  // externalUserId 用),刷新按钮走强制刷新。
   const {
     detail: activeDetail,
     loading: detailLoading,
     refresh: refreshDetail,
-  } = useFriendDetail(activeCustomer?.accountId, activeCustomer?.id);
+  } = useFriendDetail(activeCustomer?.accountId, activeCustomer?.externalUserId);
   const handleRefreshDetail = useCallback(() => {
     void refreshDetail(true);
   }, [refreshDetail]);

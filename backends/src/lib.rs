@@ -17,9 +17,9 @@ use chathub_net::{
 };
 use chathub_proto::v1::UserProfile;
 use chathub_state::{
-    AccountCacheStore, LocalTokenStore, MessagesStore, NotifySeqStore, QuickRepliesStore,
-    QuickReplyRow, RecentSessionRow, RecentSessionsStore, SessionStore, SqlitePool,
-    WecomAccountRow, MESSAGE_HOT_CONVERSATIONS_LIMIT, RECENT_SESSIONS_GLOBAL_LIMIT,
+    AccountCacheStore, FriendDetailCacheStore, LocalTokenStore, MessagesStore, NotifySeqStore,
+    QuickRepliesStore, QuickReplyRow, RecentSessionRow, RecentSessionsStore, SessionStore,
+    SqlitePool, WecomAccountRow, MESSAGE_HOT_CONVERSATIONS_LIMIT, RECENT_SESSIONS_GLOBAL_LIMIT,
     RECENT_SESSIONS_PER_ACCOUNT_LIMIT,
 };
 use std::time::{Duration, Instant};
@@ -310,22 +310,59 @@ async fn list_friends(
 
 // ============================== friend/detail 好友详情 ==============================
 
-/// 拉取单个外部联系人的好友详情 —— 透传业务后台 `/wecomAggregate/friend/detail`。
+/// 拉取单个外部联系人的好友详情。
 ///
-/// 不入库,临时拉取。`is_force_refresh=true` 打破一天一次的自动刷新限制。
+/// 当天(本地日历日)缓存落 `hub_friend_detail_cache`:
+///   - 非强制且命中当天缓存 → 直接返回本地,零远程往返;
+///   - 强制刷新 / 未命中 / 跨天 → 透传业务后台 `/wecomAggregate/friend/detail` 重拉并覆盖缓存。
+/// `is_force_refresh=true` 同时打破业务后台一天一次的自动刷新限制。
+/// 缓存读写均为 best-effort:失败(含 JSON 损坏)只降级走远程 / 记日志,不影响本次取数。
 #[tauri::command]
 async fn friend_detail(
     hub: State<'_, HubClient>,
+    cache: State<'_, FriendDetailCacheStore>,
     wecom_account_id: String,
     external_user_id: String,
     is_force_refresh: Option<bool>,
 ) -> Result<WecomFriendDetail, AuthError> {
+    let force = is_force_refresh.unwrap_or(false);
+
+    // 非强制:命中当天缓存即返回本地。缓存读取失败 / JSON 损坏均降级走远程。
+    if !force {
+        if let Ok(Some(json)) = cache
+            .get_fresh_today(&wecom_account_id, &external_user_id)
+            .await
+        {
+            if let Ok(detail) = serde_json::from_str::<WecomFriendDetail>(&json) {
+                return Ok(detail);
+            }
+        }
+    }
+
+    // 远程拉取(强制 / 未命中 / 跨天 / 缓存损坏)。
     let req = FriendDetailRequest {
-        wecom_account_id,
-        external_user_id,
-        is_force_refresh: is_force_refresh.unwrap_or(false),
+        wecom_account_id: wecom_account_id.clone(),
+        external_user_id: external_user_id.clone(),
+        is_force_refresh: force,
     };
-    hub.friend_detail(req).await
+    let detail = hub.friend_detail(req).await?;
+
+    // best-effort 写缓存:失败仅记日志,不影响本次返回。
+    match serde_json::to_string(&detail) {
+        Ok(json) => {
+            if let Err(e) = cache
+                .upsert(&wecom_account_id, &external_user_id, &json)
+                .await
+            {
+                tracing::warn!(target: "chathub::cmd", error = %e, "friend_detail 写缓存失败");
+            }
+        }
+        Err(e) => {
+            tracing::warn!(target: "chathub::cmd", error = %e, "friend_detail 序列化缓存失败");
+        }
+    }
+
+    Ok(detail)
 }
 
 // ============================== message/history 历史消息 ==============================
@@ -1280,7 +1317,7 @@ pub fn run() {
 
             // tauri::async_runtime::block_on 在 setup 同步完成 SQLite 与 endpoint 初始化。
             // setup 闭包本身不在 async 上下文,block_on 安全可用。
-            let (auth_api, hub_client, conn_manager, account_cache, recents_store, messages_store, quick_replies_store, message_sync, change_notice_tx) = tauri::async_runtime::block_on(async {
+            let (auth_api, hub_client, conn_manager, account_cache, recents_store, messages_store, quick_replies_store, friend_detail_cache, message_sync, change_notice_tx) = tauri::async_runtime::block_on(async {
                 std::fs::create_dir_all(&app_data).ok();
                 let pool = SqlitePool::open(app_data.join("state.sqlite"))
                     .await.map_err(|e| e.to_string())?;
@@ -1290,6 +1327,7 @@ pub fn run() {
                 let recents_store = RecentSessionsStore::new(pool.clone());
                 let messages_store = MessagesStore::new(pool.clone());
                 let quick_replies_store = QuickRepliesStore::new(pool.clone());
+                let friend_detail_cache = FriendDetailCacheStore::new(pool.clone());
                 let local_store = LocalTokenStore::new(pool);
                 // device_id 从本地 SQLite 取(首次启动生成),不再用 macOS 钥匙串。
                 let device_id = local_store.ensure_device_id()
@@ -1343,7 +1381,7 @@ pub fn run() {
                     change_notice_tx.clone(),
                 ));
                 let auth_api = AuthApi::new(token_store, session_store);
-                Ok::<_, String>((auth_api, hub_client, conn_manager, account_cache, recents_store, messages_store, quick_replies_store, message_sync, change_notice_tx))
+                Ok::<_, String>((auth_api, hub_client, conn_manager, account_cache, recents_store, messages_store, quick_replies_store, friend_detail_cache, message_sync, change_notice_tx))
             }).map_err(Box::<dyn std::error::Error>::from)?;
             let auth_api = Arc::new(auth_api);
             app.manage(Arc::clone(&auth_api));
@@ -1353,6 +1391,7 @@ pub fn run() {
             app.manage(recents_store);
             app.manage(messages_store);
             app.manage(quick_replies_store);
+            app.manage(friend_detail_cache);
             app.manage(message_sync);
             // change_notice_tx 也 manage 一份,Tauri 命令(pin/draft 等)用它直接发 LocalCommand 通知
             app.manage(change_notice_tx);

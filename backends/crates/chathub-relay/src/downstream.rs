@@ -216,6 +216,44 @@ where
     de.deserialize_any(IdVisitor)
 }
 
+/// verifyToken 的 `employeeId` 兼容 `"123"` / `123` / `""` 三种形态,返回 i64。
+/// 雪花 ID 超 JS 安全整数,业务后台发字符串;空串出现在 allowed==false 等无身份场景 → 0。
+fn deserialize_employee_id<'de, D>(de: D) -> Result<i64, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::{Error, Unexpected, Visitor};
+    use std::fmt;
+
+    struct EmpIdVisitor;
+    impl<'de> Visitor<'de> for EmpIdVisitor {
+        type Value = i64;
+
+        fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("an employee id as string, number, or empty string")
+        }
+
+        fn visit_str<E: Error>(self, v: &str) -> Result<Self::Value, E> {
+            if v.is_empty() {
+                return Ok(0);
+            }
+            v.parse::<i64>()
+                .map_err(|_| Error::invalid_value(Unexpected::Str(v), &self))
+        }
+        fn visit_string<E: Error>(self, v: String) -> Result<Self::Value, E> {
+            self.visit_str(&v)
+        }
+        fn visit_i64<E: Error>(self, v: i64) -> Result<Self::Value, E> {
+            Ok(v)
+        }
+        fn visit_u64<E: Error>(self, v: u64) -> Result<Self::Value, E> {
+            Ok(v as i64)
+        }
+    }
+
+    de.deserialize_any(EmpIdVisitor)
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct JddAccessToken {
@@ -230,23 +268,31 @@ pub struct ForwardOutcome {
     pub body: Vec<u8>,
 }
 
-/// verifyToken 响应:relay 据此拿到连接身份。
+/// verifyToken 响应:relay 据此拿到连接身份与放行决策。
 ///
-/// 业务合约(camelCase):
-///   { "employeeId": 1234, "username": "", "nickName": "", "mobile": "", "channel": "" }
+/// 业务合约(camelCase,2026-05-30 对齐 wecom-cs 网关权威响应):
+///   { "allowed": true, "rejectCode": "", "rejectMessage": "",
+///     "employeeId": "2046043266615037952", "configId": "5", "manageableAccountCount": "4" }
 ///
-/// `employeeId == 0`(或缺失)视为未激活,鉴权失败。其它字段当前 relay 不消费,
-/// 仅 `username` / `nickName` 留作未来可能的日志增强,不进 UserCtx。
+/// - `allowed == false` → relay 当场以 `BusinessError` 拒绝(透传 rejectMessage/rejectCode
+///   给客户端展示)。字段缺失(老后台 / mock)→ `None`,不在此层拒,保持既有延迟拒绝行为。
+/// - `employeeId` 雪花算法 ID 超 JS 安全整数,后台序列化为字符串;兼容字符串/数字/空串,
+///   `0` 或缺失视为未激活(鉴权延迟到 Subscribe/Ack/Forward 层友好提示)。
+/// - `configId` / `manageableAccountCount` 当前 relay 不消费,由 serde 忽略。
 #[derive(Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct VerifyTokenResp {
-    /// 员工数值 ID。0 或缺失 → 鉴权失败。
+    /// 放行决策。`Some(false)` → 当场拒绝;`None`(字段缺失)→ 不拒。
     #[serde(default)]
+    pub allowed: Option<bool>,
+    /// `allowed == false` 时的拒绝码 / 文案,原样透传客户端展示。
+    #[serde(default)]
+    pub reject_code: String,
+    #[serde(default)]
+    pub reject_message: String,
+    /// 员工数值 ID。0 或缺失 → 鉴权失败。兼容字符串 / 数字 / 空串。
+    #[serde(default, deserialize_with = "deserialize_employee_id")]
     pub employee_id: i64,
-    #[serde(default)]
-    pub username: String,
-    #[serde(default)]
-    pub nick_name: String,
 }
 
 /// notify/pull 请求体(relay→业务端,§6.4)。list 模式与 range 模式二选一:
@@ -394,8 +440,8 @@ impl DownstreamClient {
             base_url,
             AuthPaths {
                 login: "/account-app/oauth2/token".into(),
-                verify_token: "/wechat-business-app/rpc/v1/wecomAggregate/connection/verifyToken"
-                    .into(),
+                verify_token:
+                    "/wechat-business-app/wecom-cs/v1/wecomAggregate/connection/verifyToken".into(),
                 logout: "/auth/logout".into(),
                 notify_pull: "/wechat-business-app/rpc/v1/wecomAggregate/notify/pull".into(),
             },
@@ -662,6 +708,9 @@ impl DownstreamClient {
 
     /// OAuth2 introspection 风格 verify:Bearer = 要校验的 token,空 JSON body `{}`。
     ///
+    /// 路径走 `wecom-cs/v1`(面向客户端 Bearer 的聚合网关命名空间);早期误用内部
+    /// `rpc/v1` 会被网关拒为 403「接口未授权」。响应解析后,`allowed==false` 当场拒绝。
+    ///
     /// 协议形态(2026-05-16 修复 415 后):
     ///   POST {verify_token_path}
     ///   Authorization: Bearer <client_token>
@@ -749,6 +798,22 @@ impl DownstreamClient {
                 );
                 RelayError::Internal
             })?;
+
+        // allowed==false:业务后台显式拒绝本次连接(token 有效但无权)。透传
+        // rejectMessage/rejectCode 给客户端展示。字段缺失(老后台 / mock)→ None,不拒。
+        if body.allowed == Some(false) {
+            tracing::warn!(
+                target: "chathub_relay::downstream",
+                elapsed_ms,
+                reject_code = %body.reject_code,
+                reject_message = %body.reject_message,
+                "verify_token rejected by business backend (allowed=false)",
+            );
+            return Err(RelayError::BusinessError {
+                service_code: body.reject_code,
+                msg: body.reject_message,
+            });
+        }
 
         tracing::info!(
             target: "chathub_relay::downstream",
@@ -1202,7 +1267,8 @@ mod tests {
         assert!(matches!(err, RelayError::Internal));
     }
 
-    const VERIFY_PATH: &str = "/wechat-business-app/rpc/v1/wecomAggregate/connection/verifyToken";
+    const VERIFY_PATH: &str =
+        "/wechat-business-app/wecom-cs/v1/wecomAggregate/connection/verifyToken";
 
     #[tokio::test(flavor = "multi_thread")]
     async fn verify_token_uses_client_token_as_bearer_and_empty_body() {
@@ -1289,6 +1355,57 @@ mod tests {
         let client = DownstreamClient::new_with_defaults(&mock.uri()).unwrap();
         let err = client.verify_token("bad").await.unwrap_err();
         assert!(matches!(err, RelayError::InvalidCreds));
+    }
+
+    /// 权威合约:`employeeId` 为字符串雪花 ID(超 JS 安全整数),verify_token 应正常解析为 i64。
+    #[tokio::test(flavor = "multi_thread")]
+    async fn verify_token_employee_id_as_string_parses() {
+        let mock = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path(VERIFY_PATH))
+            .respond_with(ResponseTemplate::new(200).set_body_json(envelope_ok_json(
+                serde_json::json!({
+                    "allowed": true,
+                    "rejectCode": "",
+                    "rejectMessage": "",
+                    "employeeId": "2046043266615037952",
+                    "configId": "5",
+                    "manageableAccountCount": "4"
+                }),
+            )))
+            .mount(&mock)
+            .await;
+        let client = DownstreamClient::new_with_defaults(&mock.uri()).unwrap();
+        let resp = client.verify_token("client-xyz").await.unwrap();
+        assert_eq!(resp.employee_id, 2046043266615037952);
+        assert_eq!(resp.allowed, Some(true));
+    }
+
+    /// `allowed == false` → 当场以 BusinessError 拒绝,透传 rejectCode / rejectMessage。
+    #[tokio::test(flavor = "multi_thread")]
+    async fn verify_token_allowed_false_maps_business_error() {
+        let mock = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path(VERIFY_PATH))
+            .respond_with(ResponseTemplate::new(200).set_body_json(envelope_ok_json(
+                serde_json::json!({
+                    "allowed": false,
+                    "rejectCode": "NO_PERMISSION",
+                    "rejectMessage": "无可管理账号",
+                    "employeeId": ""
+                }),
+            )))
+            .mount(&mock)
+            .await;
+        let client = DownstreamClient::new_with_defaults(&mock.uri()).unwrap();
+        let err = client.verify_token("client-xyz").await.unwrap_err();
+        match err {
+            RelayError::BusinessError { service_code, msg } => {
+                assert_eq!(service_code, "NO_PERMISSION");
+                assert_eq!(msg, "无可管理账号");
+            }
+            other => panic!("expected BusinessError, got {other:?}"),
+        }
     }
 
     const NOTIFY_PULL_PATH: &str = "/wechat-business-app/rpc/v1/wecomAggregate/notify/pull";

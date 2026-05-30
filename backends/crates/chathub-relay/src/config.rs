@@ -49,7 +49,7 @@ pub struct Config {
     pub routes: DownstreamRoutes,
     /// Auth.Login 的 OAuth2 路径(env `RELAY_PATH_LOGIN`,默认 `/account-app/oauth2/token`)。
     pub path_login: String,
-    /// verify_token 路径(env `RELAY_PATH_VERIFY_TOKEN`,默认 `/wechat-business-app/rpc/v1/wecomAggregate/connection/verifyToken`)。
+    /// verify_token 路径(env `RELAY_PATH_VERIFY_TOKEN`,默认 `/wechat-business-app/wecom-cs/v1/wecomAggregate/connection/verifyToken`)。
     pub path_verify_token: String,
     /// logout 路径(env `RELAY_PATH_LOGOUT`,默认 `/auth/logout`)。
     pub path_logout: String,
@@ -326,7 +326,7 @@ impl Config {
             path_login: std::env::var("RELAY_PATH_LOGIN")
                 .unwrap_or_else(|_| "/account-app/oauth2/token".into()),
             path_verify_token: std::env::var("RELAY_PATH_VERIFY_TOKEN").unwrap_or_else(|_| {
-                "/wechat-business-app/rpc/v1/wecomAggregate/connection/verifyToken".into()
+                "/wechat-business-app/wecom-cs/v1/wecomAggregate/connection/verifyToken".into()
             }),
             path_logout: std::env::var("RELAY_PATH_LOGOUT")
                 .unwrap_or_else(|_| "/auth/logout".into()),
@@ -848,7 +848,7 @@ mod tests {
         assert_eq!(cfg.path_login, "/account-app/oauth2/token");
         assert_eq!(
             cfg.path_verify_token,
-            "/wechat-business-app/rpc/v1/wecomAggregate/connection/verifyToken"
+            "/wechat-business-app/wecom-cs/v1/wecomAggregate/connection/verifyToken"
         );
         assert_eq!(cfg.path_logout, "/auth/logout");
         assert_eq!(cfg.oauth_client_id, "rh_wxchat");

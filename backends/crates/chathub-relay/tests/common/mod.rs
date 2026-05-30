@@ -213,7 +213,7 @@ pub async fn mount_verify_token(
     // 业务后台 2026-05-17 起统一包络:`{code:1, msg:"成功", data:{...}}`
     Mock::given(method("POST"))
         .and(path(
-            "/wechat-business-app/rpc/v1/wecomAggregate/connection/verifyToken",
+            "/wechat-business-app/wecom-cs/v1/wecomAggregate/connection/verifyToken",
         ))
         .and(header("authorization", &*format!("Bearer {token}")))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({

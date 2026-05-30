@@ -29,6 +29,12 @@ export type CustomerLevel = "A" | "B" | "C" | "D";
 export type CustomerGender = "male" | "female";
 
 export interface Customer {
+  /**
+   * 列表行唯一键。客户页行存来自 `adaptFriendToCustomer`，因同一外部联系人可被多个企业微信
+   * 账号添加而出现多行，故 id 取 `${wecomAccountId}::${externalUserId}` 复合键保证唯一；
+   * messages 页 mock 沿用自有 id。**不要再把 id 当作 externalUserId 使用**，详情 API 改用
+   * 下面的 externalUserId 字段。
+   */
   id: string;
   name: string;
   /** "微信" / "企微" / 等渠道标记。 */
@@ -47,6 +53,8 @@ export interface Customer {
   // ── 客户管理页新增字段（messages mock 不填也合法）─────────────────────────
   /** 与 Account.id 关联；新代码筛选/分组按这个走。 */
   accountId?: string;
+  /** 外部联系人原始 id（external_userid）。与 accountId 成组用于好友详情拉取；messages mock 不填。 */
+  externalUserId?: string;
   /** 客户头像远程 URL（生产取自 external_avatar）；经 cachedImageSrc 走磁盘缩略图缓存显示。 */
   avatarUrl?: string;
   /** 是否被当前用户星标关注。 */

@@ -173,9 +173,9 @@ impl TokenAuthenticator {
         };
 
         // 3. 调 verify_token(只有 leader 的 future 会被 OnceCell 真正 poll)
-        // 新合约只返 {employeeId, username, nickName, mobile, channel} —
-        // employeeId 缺失 / 0 这里不拒,落给 Subscribe/Ack/Forward 层以 FailedPrecondition
-        // 返回更友好的 "business backend upgrade required" 信息(见 hub_service:324/445/478)。
+        // 新合约返 {allowed, rejectCode, rejectMessage, employeeId, ...};allowed==false 在
+        // downstream 层即以 BusinessError 拒。employeeId 缺失 / 0 这里不拒,落给
+        // Subscribe/Ack/Forward 层以 FailedPrecondition 返回更友好的提示(见 hub_service:324/445/478)。
         // device_id 由 Subscribe 自带,UserCtx 这里留空。
         let downstream = self.downstream.clone();
         let token_owned = token.to_string();
@@ -726,7 +726,8 @@ mod tests {
         r
     }
 
-    const VERIFY_PATH: &str = "/wechat-business-app/rpc/v1/wecomAggregate/connection/verifyToken";
+    const VERIFY_PATH: &str =
+        "/wechat-business-app/wecom-cs/v1/wecomAggregate/connection/verifyToken";
 
     /// 2026-05-17 包络化后,业务后台响应统一是 `{code:1, msg:"成功", data:...}`。
     /// 测试 fixture 用这个 helper 把原 payload 包成成功包络。

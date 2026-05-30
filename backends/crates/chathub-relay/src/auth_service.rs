@@ -227,7 +227,7 @@ mod tests {
         // verify_token 必须被调 2 次:logout 清缓存后再 authenticate 必须回源
         Mock::given(method("POST"))
             .and(path(
-                "/wechat-business-app/rpc/v1/wecomAggregate/connection/verifyToken",
+                "/wechat-business-app/wecom-cs/v1/wecomAggregate/connection/verifyToken",
             ))
             .and(header("authorization", "Bearer tok-L"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({

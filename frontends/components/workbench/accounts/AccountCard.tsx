@@ -1,4 +1,4 @@
-import { memo, type KeyboardEvent } from "react";
+import { memo } from "react";
 import {
   AlertTriangle,
   BadgeCheck,
@@ -16,7 +16,6 @@ import { formatNumber, getStatusMeta } from "./utils";
 
 interface AccountCardProps {
   account: Account;
-  onOpen: (id: string) => void;
 }
 
 const STATUS_ICONS: Record<ReturnType<typeof getStatusMeta>["pillIconName"], LucideIcon> = {
@@ -25,7 +24,7 @@ const STATUS_ICONS: Record<ReturnType<typeof getStatusMeta>["pillIconName"], Luc
   MinusCircle,
 };
 
-export const AccountCard = memo(function AccountCard({ account, onOpen }: AccountCardProps) {
+export const AccountCard = memo(function AccountCard({ account }: AccountCardProps) {
   const status = getStatusMeta(account.status);
   const StatusIcon = STATUS_ICONS[status.pillIconName];
 
@@ -33,31 +32,19 @@ export const AccountCard = memo(function AccountCard({ account, onOpen }: Accoun
   const trendColorClass =
     account.status === "abnormal" ? "text-amber-500 dark:text-amber-400" : "text-workbench-accent";
 
-  const handleKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
-    if (e.key === "Enter" || e.key === " ") {
-      e.preventDefault();
-      onOpen(account.id);
-    }
-  };
-
   return (
     <div
-      role="button"
-      tabIndex={0}
-      onClick={() => onOpen(account.id)}
-      onKeyDown={handleKeyDown}
-      aria-label={`查看 ${account.name} 的客户`}
       className={cn(
-        "focus-ring group relative flex flex-col rounded-lg border border-workbench-line bg-workbench-surface p-3.5 text-left",
-        "cursor-pointer transition-colors hover:border-workbench-line-strong hover:bg-workbench-surface-subtle/40",
+        "group relative flex flex-col rounded-lg border border-workbench-line bg-workbench-surface p-3 text-left",
+        "transition-colors hover:border-workbench-line-strong",
       )}
     >
       {/* 顶部：城市头像 + 名称信息 + 状态 pill */}
-      <header className="flex items-start gap-3">
+      <header className="flex items-start gap-2.5">
         <CityAvatar account={account} />
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-1">
-            <span className="truncate text-[14px] font-semibold leading-tight text-workbench-text">
+            <span className="truncate text-[13px] font-semibold leading-tight text-workbench-text">
               {account.name}
             </span>
             {account.verified && (
@@ -69,9 +56,9 @@ export const AccountCard = memo(function AccountCard({ account, onOpen }: Accoun
             )}
           </div>
           <div className="mt-1 flex items-center gap-1.5 text-[12px] leading-tight text-workbench-text-secondary">
-            <span className="min-w-0 truncate">别名：{account.wecomAlias || "—"}</span>
+            <span className="min-w-0 truncate">昵称：{account.wecomAlias || "—"}</span>
             <span className="shrink-0 text-workbench-line-strong">·</span>
-            <span className="shrink-0">岗位：{account.position || "员工"}</span>
+            <span className="shrink-0">职业：{account.position || "员工"}</span>
           </div>
         </div>
         <span
@@ -87,16 +74,16 @@ export const AccountCard = memo(function AccountCard({ account, onOpen }: Accoun
       </header>
 
       {/* 顶部点缀：迷你趋势 sparkline（无坐标轴，全宽细条） */}
-      <AccountTrendChart values={account.trend7d ?? []} className={cn("mt-3", trendColorClass)} />
+      <AccountTrendChart values={account.trend7d ?? []} className={cn("mt-2.5", trendColorClass)} />
 
       {/* KPI：客户数 / 会话数 横排放大，作为卡片视觉重点 */}
-      <div className="mt-2.5 grid grid-cols-2 gap-3">
+      <div className="mt-2 grid grid-cols-2 gap-3">
         <Kpi label="客户数" value={formatNumber(account.customerCount ?? 0)} />
         <Kpi label="会话数" value={formatNumber(account.sessionCount ?? 0)} />
       </div>
 
       {/* 底部：更新时间 + ⋯ overflow */}
-      <div className="mt-3 flex items-center justify-between gap-2 border-t border-workbench-line/60 pt-2.5 text-[11px] text-workbench-text-muted">
+      <div className="mt-2.5 flex items-center justify-between gap-2 border-t border-workbench-line/60 pt-2 text-[11px] text-workbench-text-muted">
         <span className="truncate">
           更新时间：<span className="wb-num tabular-nums">{account.createdAt ?? "—"}</span>
         </span>
@@ -118,7 +105,7 @@ function CityAvatar({ account }: { account: Account }) {
   const label = Array.from(account.name)[0] ?? "";
   return (
     <div
-      className="grid size-10 shrink-0 place-items-center rounded-xl text-[13px] font-semibold text-workbench-text"
+      className="grid size-9 shrink-0 place-items-center rounded-lg text-[12px] font-semibold text-workbench-text"
       style={{ background: `hsl(var(--wb-avatar-${account.colorToken}))` }}
       aria-hidden
     >
@@ -130,7 +117,7 @@ function CityAvatar({ account }: { account: Account }) {
 function Kpi({ label, value }: { label: string; value: string }) {
   return (
     <div className="min-w-0">
-      <div className="wb-num truncate text-[19px] font-semibold tabular-nums leading-none text-workbench-text">
+      <div className="wb-num truncate text-[16px] font-semibold tabular-nums leading-none text-workbench-text">
         {value}
       </div>
       <div className="mt-1 text-[11px] leading-none text-workbench-text-muted">{label}</div>

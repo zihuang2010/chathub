@@ -24,6 +24,33 @@ const STATUS_ICONS: Record<ReturnType<typeof getStatusMeta>["pillIconName"], Luc
   MinusCircle,
 };
 
+/** list 视图列宽模板：表头与数据行共用，保证两者列对齐。 */
+const LIST_GRID_COLS =
+  "grid-cols-[auto_minmax(180px,2fr)_minmax(80px,1fr)_minmax(160px,2fr)_repeat(2,minmax(80px,1fr))_minmax(110px,1fr)_minmax(80px,auto)_auto]";
+
+/** list 视图列头：标注各列含义，尤其让「客户数 / 会话数」两列数字不再无名。 */
+export function AccountListHeader() {
+  return (
+    <div
+      className={cn(
+        "grid items-center gap-4 border-b border-workbench-line bg-workbench-surface-subtle/40 px-4 py-2 text-[11px] font-medium text-workbench-text-muted",
+        LIST_GRID_COLS,
+      )}
+    >
+      {/* 占位宽度需与数据行的头像(size-9)、更多按钮(size-7)一致，否则 auto 列宽不同会导致表头整体偏移。 */}
+      <span className="w-9" aria-hidden />
+      <span>账号名称</span>
+      <span>昵称</span>
+      <span>职业</span>
+      <span className="text-right">客户数</span>
+      <span className="text-right">会话数</span>
+      <span className="text-right">最后登录</span>
+      <span className="text-center">状态</span>
+      <span className="w-7" aria-hidden />
+    </div>
+  );
+}
+
 /**
  * List 视图的紧凑行：一行装下所有关键信息，整行可点跳客户页。
  */
@@ -50,7 +77,7 @@ export const AccountListRow = memo(function AccountListRow({
       aria-label={`查看 ${account.name} 的客户`}
       className={cn(
         "focus-ring group grid cursor-pointer items-center gap-4 border-b border-workbench-line/60 bg-workbench-surface px-4 py-3 transition-colors hover:bg-workbench-surface-subtle/50",
-        "grid-cols-[auto_minmax(180px,2fr)_minmax(80px,1fr)_minmax(160px,2fr)_repeat(2,minmax(80px,1fr))_minmax(110px,1fr)_minmax(80px,auto)_auto]",
+        LIST_GRID_COLS,
       )}
     >
       {/* 城市头像 */}
@@ -74,12 +101,12 @@ export const AccountListRow = memo(function AccountListRow({
         )}
       </div>
 
-      {/* 别名 */}
+      {/* 昵称 */}
       <span className="truncate text-[12px] text-workbench-text-secondary">
         {account.wecomAlias ?? "—"}
       </span>
 
-      {/* 岗位 */}
+      {/* 职业 */}
       <span className="truncate text-[12px] text-workbench-text-secondary">
         {account.position || "员工"}
       </span>

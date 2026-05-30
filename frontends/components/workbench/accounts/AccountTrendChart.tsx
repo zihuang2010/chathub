@@ -38,7 +38,7 @@ export const AccountTrendChart = memo(function AccountTrendChart({
 
   return (
     <svg
-      className={cn("block h-[30px] w-full", className)}
+      className={cn("block h-[24px] w-full", className)}
       viewBox={`0 0 ${VB_W} ${VB_H}`}
       preserveAspectRatio="none"
       aria-hidden

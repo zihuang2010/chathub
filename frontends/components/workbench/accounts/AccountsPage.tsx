@@ -8,7 +8,7 @@ import { downloadCsv } from "@/components/workbench/customers/utils";
 import type { UseAccountsResult } from "@/lib/api/useAccounts";
 
 import { AccountCard } from "./AccountCard";
-import { AccountListRow } from "./AccountListRow";
+import { AccountListHeader, AccountListRow } from "./AccountListRow";
 import { AccountsKpiStrip } from "./AccountsKpiStrip";
 import { AccountsPagination } from "./AccountsPagination";
 import { AccountsTabs } from "./AccountsTabs";
@@ -88,14 +88,15 @@ export function AccountsPage({ accountsState, onOpenInCustomers }: AccountsPageP
               ) : view.viewMode === "grid" ? (
                 <div
                   className="grid gap-3"
-                  style={{ gridTemplateColumns: "repeat(auto-fill, minmax(264px, 1fr))" }}
+                  style={{ gridTemplateColumns: "repeat(4, minmax(0, 1fr))" }}
                 >
                   {view.pageRows.map((row) => (
-                    <AccountCard key={row.id} account={row} onOpen={onOpenInCustomers} />
+                    <AccountCard key={row.id} account={row} />
                   ))}
                 </div>
               ) : (
                 <div className="overflow-hidden rounded-lg border border-workbench-line bg-workbench-surface">
+                  <AccountListHeader />
                   {view.pageRows.map((row) => (
                     <AccountListRow key={row.id} account={row} onOpen={onOpenInCustomers} />
                   ))}

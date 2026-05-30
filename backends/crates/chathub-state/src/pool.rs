@@ -61,6 +61,7 @@ impl SqlitePool {
                     "../migrations/V16__retire_friends_store_and_watermarks.sql"
                 )),
                 M::up(include_str!("../migrations/V17__recents_opened_at.sql")),
+                M::up(include_str!("../migrations/V18__friend_detail_cache.sql")),
             ]);
             migrations
                 .to_latest(c)

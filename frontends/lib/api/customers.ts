@@ -97,7 +97,10 @@ export function adaptFriendToCustomer(friend: WecomFriend, ctx: { accountName: s
   const gender: CustomerGender | undefined =
     friend.externalGender === 1 ? "male" : friend.externalGender === 2 ? "female" : undefined;
   return {
-    id: friend.externalUserId,
+    // 同一外部联系人可被多个企业微信账号添加 → 列表会出现多行;以 (账号, 外部联系人) 复合键
+    // 保证行唯一,避免选中 / 高亮 / 列表 key / 本地态叠加在多行间串扰。
+    id: `${friend.wecomAccountId}::${friend.externalUserId}`,
+    externalUserId: friend.externalUserId,
     name: friend.externalName || "(未命名)",
     channel: friend.externalType === 2 ? "企微" : "微信",
     account: ctx.accountName,
