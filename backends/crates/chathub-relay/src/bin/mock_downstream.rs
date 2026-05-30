@@ -280,9 +280,9 @@ struct ListRecentFriendsReq {
     wecom_account_id: String,
     #[serde(default)]
     only_unread: bool,
-    /// 单好友定位(打开会话流程):非空时只返回该 external_user_id 的会话 + firstConversationId。
+    /// 单好友定位(打开会话流程):非空时只返回该 external_user_id 的会话 + requestConversationId。
     #[serde(default)]
-    external_id: String,
+    external_user_id: String,
     /// 是否随响应带回首屏历史(firstConversationHistory)。
     #[serde(default)]
     include_first_history: bool,
@@ -321,7 +321,7 @@ struct ListRecentFriendsResp {
     records: Vec<MockRecentFriend>,
     /// 打开会话流程才下发(单好友定位);列表/搜索路径为空串 → 跳过序列化。
     #[serde(skip_serializing_if = "String::is_empty")]
-    first_conversation_id: String,
+    request_conversation_id: String,
     /// 打开会话流程才下发首屏历史;否则 None → 跳过序列化。
     #[serde(skip_serializing_if = "Option::is_none")]
     first_conversation_history: Option<MockFirstConversationHistory>,
@@ -1129,10 +1129,10 @@ async fn list_recent_friends(
     // 派生 mock 会话池:每个启用账号取前 N 条 friend 当会话(N=8 给 27 启用账号即 216 条)
     const SESSIONS_PER_ACCOUNT: usize = 8;
 
-    // 单好友定位(打开会话流程):只返回匹配 external_id 的会话 + 顶层 firstConversationId。
+    // 单好友定位(打开会话流程):只返回匹配 external_user_id 的会话 + 顶层 requestConversationId。
     // 命中(该好友在派生会话池里)→ 返回该记录 + 首屏历史;未命中(从未建会话)→
-    // 空 records,但仍给出 firstConversationId(稳定派生),首屏历史空。
-    if !req.external_id.is_empty() {
+    // 空 records,但仍给出 requestConversationId(稳定派生),首屏历史空。
+    if !req.external_user_id.is_empty() {
         let found: Option<MockRecentFriend> = state
             .accounts
             .iter()
@@ -1141,11 +1141,11 @@ async fn list_recent_friends(
                 req.wecom_account_id.is_empty() || a.wecom_account_id == req.wecom_account_id
             })
             .flat_map(|a| generate_recent_sessions(a, SESSIONS_PER_ACCOUNT))
-            .find(|r| r.external_user_id == req.external_id);
+            .find(|r| r.external_user_id == req.external_user_id);
 
         let conversation_id = match &found {
             Some(r) => r.conversation_id.clone(),
-            None => format!("cv-{}-ext-{}", req.wecom_account_id, req.external_id),
+            None => format!("cv-{}-ext-{}", req.wecom_account_id, req.external_user_id),
         };
         let first_conversation_history = if req.include_first_history {
             Some(generate_first_history(&conversation_id, found.as_ref()))
@@ -1158,7 +1158,7 @@ async fn list_recent_friends(
             has_more: false,
             next_cursor: String::new(),
             records,
-            first_conversation_id: conversation_id,
+            request_conversation_id: conversation_id,
             first_conversation_history,
         })
         .into_response();
@@ -1206,7 +1206,7 @@ async fn list_recent_friends(
         next_cursor,
         records,
         // 列表/搜索路径不下发单好友定位字段(skip_serializing_if 跳过)。
-        first_conversation_id: String::new(),
+        request_conversation_id: String::new(),
         first_conversation_history: None,
     })
     .into_response()

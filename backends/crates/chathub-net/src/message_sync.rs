@@ -169,6 +169,19 @@ impl MessageSync {
         // 重对齐前缓存的 newest 水位,用于判断本次是否真有更新消息到达(下方 Stitch 用)。
         let prev_newest_sort_key = window.as_ref().map(|w| w.newest_sort_key.clone());
 
+        // 重对齐全过程日志:本次 fetch_message_history 拉回多少条、首页最新/最旧、分类结果。
+        tracing::debug!(
+            target: "chathub::messages",
+            conversation_id,
+            fetched = resp.records.len(),
+            page_newest_ms,
+            page_oldest = ?page_oldest,
+            page_newest = ?page_newest,
+            prev_newest = ?prev_newest_sort_key,
+            mode = ?mode,
+            "reconcile_newest:已拉取权威首页(fetch_message_history)并分类",
+        );
+
         let rows: Vec<MessageRow> = resp
             .records
             .iter()
@@ -229,6 +242,12 @@ impl MessageSync {
             }
         };
 
+        tracing::debug!(
+            target: "chathub::messages",
+            conversation_id,
+            should_notify,
+            "reconcile_newest:落库完成,should_notify=true 才广播 ChangeNotice 触发前端重读",
+        );
         if should_notify {
             let _ = self.change_notice_tx.send(ChangeNotice::server_upsert(
                 ChangeTopic::ConversationMessages,

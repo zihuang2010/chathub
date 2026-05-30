@@ -98,6 +98,7 @@ function adaptEntryToConversation(entry: RecentFriendListEntry): Conversation {
   return {
     id: entry.conversationId,
     name: clampField(entry.externalName) || "(未命名)",
+    avatar: entry.externalAvatar || undefined,
     preview: clampField(entry.lastMessageSummary),
     account: clampField(entry.wecomAlias || entry.wecomName),
     time: formatRelativeTime(effectiveTimeMs),
@@ -456,9 +457,9 @@ export function MessagesPage({ accounts }: MessagesPageProps) {
 
   // ─── 搜索客户 → 打开会话 ─────────────────────────────────────────────────
   // 顶部搜索框(MessagesContactSearch)直接搜 list_friends(全部客户),点击某客户后由后端
-  // open_friend_conversation 一次性:recentFriends(externalId+includeFirstHistory)定位/建会话、
+  // open_friend_conversation 一次性:recentFriends(externalUserId+includeFirstHistory)定位/建会话、
   // upsert 接待列表、首屏历史冷写入、set_opened 提到非置顶顶部、emit ChangeNotice。
-  // conversationId 取服务端权威 firstConversationId(客户端不自算)。命令落地后行经 useResource
+  // conversationId 取服务端权威 requestConversationId(客户端不自算)。命令落地后行经 useResource
   // 重读进 recentEntries,可能慢于 await 返回,故挂 pendingOpenId,等行出现再选中(见下方 effect)。
   const pendingOpenIdRef = useRef<string | null>(null);
   const handleOpenCustomer = useCallback(
@@ -476,7 +477,10 @@ export function MessagesPage({ accounts }: MessagesPageProps) {
           wecomAlias: accountName,
         });
         pendingOpenIdRef.current = conversationId;
-      } catch {
+      } catch (e) {
+        // 暴露后端原始错误,便于区分失败点(未登录 / list_recent_friends 网络异常 /
+        // 服务端未返回会话 ID / 本地存储异常),通用 toast 看不出具体原因。
+        console.error("[open_friend_conversation] 打开会话失败", e, { friend });
         showToast(STRINGS.conversationList.openConversationFailed, { type: "error" });
       }
     },

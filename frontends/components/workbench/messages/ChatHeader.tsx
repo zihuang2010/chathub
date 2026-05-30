@@ -10,13 +10,18 @@ export function ChatHeader({ conversation }: { conversation: Conversation }) {
   return (
     <div className="flex min-h-[76px] items-center justify-between gap-4 border-b border-workbench-line bg-workbench-surface px-4 py-3.5">
       <div className="flex min-w-0 flex-1 items-center gap-3">
-        <CustomerAvatar name={conversation.name} color={conversation.avatarColor} size="header" />
+        <CustomerAvatar
+          name={conversation.name}
+          color={conversation.avatarColor}
+          avatarUrl={conversation.avatar}
+          size="header"
+        />
         <div className="flex min-w-0 flex-col gap-1 leading-tight">
           <div className="flex min-w-0 items-center gap-2">
             <span className="truncate text-wb-sm font-medium text-workbench-text">
               {conversation.name}
             </span>
-            <span className="shrink-0 rounded bg-workbench-wechat-bg px-1.5 py-px text-wb-3xs font-medium text-workbench-wechat-text">
+            <span className="text-wb-3xs shrink-0 rounded bg-workbench-wechat-bg px-1.5 py-px font-medium text-workbench-wechat-text">
               {STRINGS.header.fromWeChat}
             </span>
           </div>

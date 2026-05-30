@@ -147,9 +147,9 @@ export async function fetchRecentFriendsPage(
 /**
  * 从搜索点开某客户 → 定位/创建其会话并提到非置顶区顶部。
  *
- * 一次 `recentFriends`(externalId + includeFirstHistory)由后端编排:
+ * 一次 `recentFriends`(externalUserId + includeFirstHistory)由后端编排:
  *   - 有接待记录 → upsert 进接待列表;无记录 → 用此处传入的客户资料建空白行。
- *   - conversationId 取服务端 `firstConversationId`(权威,客户端不自算)。
+ *   - conversationId 取服务端 `requestConversationId`(权威,客户端不自算)。
  *   - 首屏历史冷写入消息缓存。
  *   - emit ChangeNotice → useResource 自动重读列表(行出现在非置顶顶部)。
  *

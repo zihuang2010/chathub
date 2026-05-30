@@ -68,7 +68,11 @@ export function useChatActions({
 
   const handleSend = useCallback<UseChatActionsResult["handleSend"]>(
     (text, blocks, attachments, replyTo) => {
-      const id = `local-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+      // 乐观气泡本地 id,同时复用为 clientMsgId / request_message_id(幂等键)。用
+      // crypto.randomUUID 保证全局唯一(与 quickReplies 生成 PK 同源做法),替掉旧的
+      // `Date.now()-Math.random().slice(5)`:后者同毫秒连发或 random 退化(如 0.5→"0.5")
+      // 时后缀仅剩 1~5 字符,可能撞出同一 requestMessageId → 服务端按同键误去重丢消息。
+      const id = `local-${crypto.randomUUID()}`;
       const newMessage: Message = {
         id,
         conversationId: conversation.id,

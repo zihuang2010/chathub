@@ -465,6 +465,27 @@ async fn load_conversation_messages(
     // 异步解析竞态影响可能丢通知,表现为切会话空、需切走再切回/发送才出历史)。
     // 温缓存(已有行)保持秒开 + 后台对齐(stale-while-revalidate),零延迟回归。
     let is_cold = records.is_empty() || window.is_none();
+    let gate_decision = if fresh {
+        "fresh:零网络命中"
+    } else if is_cold {
+        "not-fresh:冷会话→同步reconcile"
+    } else {
+        "not-fresh:温缓存→后台reconcile"
+    };
+    // 会话水位门判定全过程日志:c=缓存窗最新(cache_newest_ms),r=recents 行最新(recents_latest_ms);
+    // fresh ⇔ 两者都有值 且 r>0 且 c>=r。fresh 走零网络,否则按冷/温分流到同步/后台 reconcile。
+    tracing::debug!(
+        target: "chathub::messages",
+        conversation_id = %conversation_id,
+        cache_newest_ms = ?cache_newest_ms,
+        recents_latest_ms = ?recents_latest_ms,
+        has_window = window.is_some(),
+        cached_rows = records.len(),
+        fresh,
+        is_cold,
+        decision = gate_decision,
+        "会话水位门判定(fresh ⇔ r>0 且 c>=r)",
+    );
     if !fresh && is_cold {
         // gRPC forward 隧道无 per-call deadline,必须超时包裹,避免远端慢/挂时卡死命令。
         let outcome = tokio::time::timeout(
@@ -500,7 +521,19 @@ async fn load_conversation_messages(
             .map_err(messages_err)?
             .map(|w| w.has_more_older)
             .unwrap_or(false);
+        tracing::debug!(
+            target: "chathub::messages",
+            conversation_id = %conversation_id,
+            rows_after = records.len(),
+            has_more_older,
+            "冷会话同步 reconcile 完成,已重读本地缓存返回首屏",
+        );
     } else if !fresh {
+        tracing::debug!(
+            target: "chathub::messages",
+            conversation_id = %conversation_id,
+            "温缓存水位落后,后台 spawn reconcile_newest(stale-while-revalidate)",
+        );
         let sync = message_sync.inner().clone();
         let conv = conversation_id.clone();
         let wa = wecom_account_id.clone();
@@ -797,7 +830,7 @@ async fn prefill_to_watermark(
                 external_mobile: String::new(),
                 wecom_account_id: filter.clone().unwrap_or_default(),
                 only_unread: false,
-                external_id: String::new(),
+                external_user_id: String::new(),
                 include_first_history: false,
             })
             .await?;
@@ -869,8 +902,8 @@ struct OpenFriendConversationResp {
 
 /// 从搜索点开某客户 → 定位/创建其会话并提到非置顶区顶部。
 ///
-/// 一次 `recentFriends`(`externalId` + `includeFirstHistory=true`)拿齐:
-///   - `firstConversationId` = 服务端权威会话 ID(records 为空也返回);
+/// 一次 `recentFriends`(`externalUserId` + `includeFirstHistory=true`)拿齐:
+///   - `requestConversationId` = 服务端权威会话 ID(records 为空也返回);
 ///   - `records`:0/1 条该好友的接待记录;
 ///   - `firstConversationHistory.records`:首屏历史。
 ///
@@ -905,7 +938,7 @@ async fn open_friend_conversation(
         .ok_or(AuthError::Unauthenticated)?
         .user_id;
 
-    // 单好友定位:externalId 过滤(size=1)+ 带回首屏历史。
+    // 单好友定位:externalUserId 过滤(size=1)+ 带回首屏历史。
     let resp = hub
         .list_recent_friends(ListRecentFriendsRequest {
             size: 1,
@@ -914,16 +947,16 @@ async fn open_friend_conversation(
             external_mobile: String::new(),
             wecom_account_id: wecom_account_id.clone(),
             only_unread: false,
-            external_id: external_user_id.clone(),
+            external_user_id: external_user_id.clone(),
             include_first_history: true,
         })
         .await?;
 
     let record = resp.records.into_iter().next();
 
-    // conversationId 以服务端 firstConversationId 为准;缺省回退记录自带 id;再无则报错。
-    let conversation_id = if !resp.first_conversation_id.is_empty() {
-        resp.first_conversation_id.clone()
+    // conversationId 以服务端 requestConversationId 为准;缺省回退记录自带 id;再无则报错。
+    let conversation_id = if !resp.request_conversation_id.is_empty() {
+        resp.request_conversation_id.clone()
     } else if let Some(r) = &record {
         r.conversation_id.clone()
     } else {

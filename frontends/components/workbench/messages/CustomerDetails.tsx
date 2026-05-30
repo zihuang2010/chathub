@@ -6,7 +6,7 @@ import { cn } from "@/lib/utils";
 import type { Customer, QuickReply } from "./data";
 import { QuickRepliesPanel } from "./QuickRepliesPanel";
 import { STRINGS } from "./strings";
-import { pickAvatarColor, pickCustomerAvatarImage } from "./utils";
+import { pickAvatarColor, resolveAvatarImageUrl } from "./utils";
 
 type DetailsTab = "profile" | "replies" | "trace";
 
@@ -147,7 +147,7 @@ function ProfileHeader({
         className="size-10 shrink-0 rounded-lg bg-cover bg-center"
         style={{
           backgroundColor: pickAvatarColor(customer.id),
-          backgroundImage: `url(${pickCustomerAvatarImage(customer.name)})`,
+          backgroundImage: `url("${resolveAvatarImageUrl(customer.name, customer.avatarUrl)}")`,
         }}
       />
       <div className="flex min-w-0 flex-col gap-0.5">

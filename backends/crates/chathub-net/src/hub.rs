@@ -597,8 +597,8 @@ pub struct WecomFriendDetail {
 ///   - `cursor = ""` → 首页;`cursor = nextCursor` → 续页
 ///   - `wecom_account_id = ""` → 全部账号聚合;非空 → 仅该账号
 ///   - `external_name / external_mobile = ""` → 不筛选
-///   - `external_id = ""` → 不按单好友定位;非空 → 只取该外部联系人的会话
-///     (配合 `include_first_history`,响应顶层带回 `first_conversation_id` + 首屏历史)
+///   - `external_user_id = ""` → 不按单好友定位;非空 → 只取该外部联系人的会话
+///     (配合 `include_first_history`,响应顶层带回 `request_conversation_id` + 首屏历史)
 ///   - `include_first_history = false` → 不返回首屏历史(列表/搜索路径)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -611,7 +611,7 @@ pub struct ListRecentFriendsRequest {
     pub only_unread: bool,
     /// 单好友定位:按 `external_user_id` 取该好友会话(打开会话流程用)。空串=不定位。
     #[serde(default)]
-    pub external_id: String,
+    pub external_user_id: String,
     /// 是否随响应带回该会话首屏历史(`first_conversation_history`)。
     #[serde(default)]
     pub include_first_history: bool,
@@ -655,8 +655,9 @@ pub struct RecentFriendRecord {
 
 /// session/recentFriends 响应(2xx envelope.data 的形态)。
 ///
-/// `first_conversation_id` / `first_conversation_history` 仅在请求带 `include_first_history=true`
-/// (打开会话流程)时由服务端填充;列表/搜索路径缺省 → 默认值(空串 / None),反序列化兼容。
+/// `request_conversation_id` 在请求带 `external_user_id` 单好友定位时由服务端返回(即使 `records`
+/// 为空也给);`first_conversation_history` 仅在请求带 `include_first_history=true`(打开会话流程)
+/// 时填充。列表/搜索路径两者缺省 → 默认值(空串 / None),反序列化兼容。
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ListRecentFriendsResp {
@@ -666,7 +667,7 @@ pub struct ListRecentFriendsResp {
     pub records: Vec<RecentFriendRecord>,
     /// 服务端权威会话 ID:打开会话流程用此值(即使 `records` 为空也返回)。
     #[serde(default)]
-    pub first_conversation_id: String,
+    pub request_conversation_id: String,
     /// 该会话首屏历史。`null` / 缺省 → None。
     #[serde(default)]
     pub first_conversation_history: Option<FirstConversationHistory>,

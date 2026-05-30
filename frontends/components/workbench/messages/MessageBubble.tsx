@@ -19,6 +19,8 @@ interface MessageBubbleProps {
   message: Message;
   avatarName: string;
   avatarColor?: string;
+  /** 客户真实头像 URL,透传给入向气泡的 CustomerAvatar;空时回退占位图。 */
+  avatarUrl?: string;
   account: string;
   /** Resolved data for `message.replyTo`; pass `undefined` if no reply or unresolved. */
   replyTarget?: ReplyTarget;
@@ -50,6 +52,7 @@ function arePropsEqual(prev: MessageBubbleProps, next: MessageBubbleProps): bool
     prev.message === next.message &&
     prev.avatarName === next.avatarName &&
     prev.avatarColor === next.avatarColor &&
+    prev.avatarUrl === next.avatarUrl &&
     prev.account === next.account &&
     prev.onAction === next.onAction &&
     prev.replyTarget?.senderName === next.replyTarget?.senderName &&
@@ -61,6 +64,7 @@ export const MessageBubble = memo(function MessageBubble({
   message,
   avatarName,
   avatarColor,
+  avatarUrl,
   account,
   replyTarget,
   onAction,
@@ -84,6 +88,7 @@ export const MessageBubble = memo(function MessageBubble({
       message={message}
       avatarName={avatarName}
       avatarColor={avatarColor}
+      avatarUrl={avatarUrl}
       replyTarget={replyTarget}
       onAction={handleAction}
     />
@@ -96,7 +101,7 @@ function RecalledLine({ isOut }: { isOut: boolean }) {
   const label = isOut ? STRINGS.status.recalledByMe : STRINGS.status.recalledByPeer;
   return (
     <div role="status" aria-live="polite" className="flex items-center justify-center py-1.5">
-      <span className="rounded-full bg-workbench-surface-subtle px-2.5 py-0.5 text-wb-3xs text-workbench-text-muted">
+      <span className="text-wb-3xs rounded-full bg-workbench-surface-subtle px-2.5 py-0.5 text-workbench-text-muted">
         {label}
       </span>
     </div>
@@ -113,14 +118,15 @@ function IncomingBubble({
   message,
   avatarName,
   avatarColor,
+  avatarUrl,
   replyTarget,
   onAction,
-}: BubbleVariantProps & { avatarName: string; avatarColor?: string }) {
+}: BubbleVariantProps & { avatarName: string; avatarColor?: string; avatarUrl?: string }) {
   const fullLabel = formatMessageDateTime(message.sentAt);
   const compact = isCompactText(message.text);
   return (
     <div className="flex w-full items-start gap-2 self-start">
-      <CustomerAvatar name={avatarName} color={avatarColor} size="sm" />
+      <CustomerAvatar name={avatarName} color={avatarColor} avatarUrl={avatarUrl} size="sm" />
       <div className="flex min-w-0 max-w-[min(76%,560px)] flex-col items-start">
         <MessageContextMenu message={message} onAction={onAction}>
           <article
@@ -205,14 +211,14 @@ function StatusLine({ status, onResend }: { status?: MessageStatus; onResend: ()
     return (
       <div
         aria-live="polite"
-        className="pointer-events-none absolute right-0 top-full mt-1 flex items-center text-wb-3xs leading-none text-workbench-text-muted/80"
+        className="text-wb-3xs pointer-events-none absolute right-0 top-full mt-1 flex items-center leading-none text-workbench-text-muted/80"
       >
         <StatusIcon status={status} />
       </div>
     );
   }
   return (
-    <div className="wb-num mt-1 flex items-center gap-1.5 text-wb-3xs leading-none text-workbench-text-muted/80">
+    <div className="wb-num text-wb-3xs mt-1 flex items-center gap-1.5 leading-none text-workbench-text-muted/80">
       <StatusIcon status={status} />
       <span className="font-medium text-workbench-text-muted">{STRINGS.errors.sendFailed}</span>
       <button
@@ -268,7 +274,7 @@ function FailedBadge() {
 export function DateDivider({ label }: { label: string }) {
   return (
     <div className="flex items-center justify-center py-2">
-      <span className="wb-num rounded-full bg-workbench-surface-subtle px-2.5 py-0.5 text-wb-3xs font-medium text-workbench-text-muted">
+      <span className="wb-num text-wb-3xs rounded-full bg-workbench-surface-subtle px-2.5 py-0.5 font-medium text-workbench-text-muted">
         {label}
       </span>
     </div>
@@ -278,7 +284,7 @@ export function DateDivider({ label }: { label: string }) {
 export function UnreadDivider({ count }: { count: number }) {
   return (
     <div className="flex items-center justify-center py-2" role="separator">
-      <span className="rounded-full bg-workbench-surface-active px-2.5 py-0.5 text-wb-3xs font-medium text-workbench-accent">
+      <span className="text-wb-3xs rounded-full bg-workbench-surface-active px-2.5 py-0.5 font-medium text-workbench-accent">
         {STRINGS.status.unreadDivider(count)}
       </span>
     </div>
@@ -290,7 +296,7 @@ function MessageTimeTooltip({ label, align }: { label: string; align: "left" | "
     <span
       aria-hidden
       className={cn(
-        "wb-num pointer-events-none absolute -top-5 z-10 whitespace-nowrap text-wb-3xs font-medium leading-none text-workbench-text-muted opacity-0 transition-opacity duration-150 group-hover:opacity-100 group-focus-visible:opacity-100",
+        "wb-num text-wb-3xs pointer-events-none absolute -top-5 z-10 whitespace-nowrap font-medium leading-none text-workbench-text-muted opacity-0 transition-opacity duration-150 group-hover:opacity-100 group-focus-visible:opacity-100",
         align === "right" ? "right-0" : "left-0",
       )}
     >

@@ -377,6 +377,7 @@ const ConversationItem = memo(function ConversationItem({
     id,
     name,
     avatarColor,
+    avatar,
     preview,
     account,
     time,
@@ -428,7 +429,7 @@ const ConversationItem = memo(function ConversationItem({
         </span>
       )}
       <div className="relative mt-1">
-        <ConversationAvatar name={name} color={avatarColor} online={online} />
+        <ConversationAvatar name={name} color={avatarColor} avatarUrl={avatar} online={online} />
       </div>
       <div className="min-w-0 pr-11 pt-px">
         <div className="flex min-w-0 items-center gap-1.5">

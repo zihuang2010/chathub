@@ -292,3 +292,10 @@ export function pickCustomerAvatarImage(seed: string): string {
   const index = (hash % CUSTOMER_AVATAR_IMAGE_COUNT) + 1;
   return `/avatars/a${String(index).padStart(2, "0")}.png`;
 }
+
+// 头像背景图解析:优先客户真实头像 URL(企微外部联系人 externalAvatar),
+// 仅在 isSafeUrl 通过时采用;为空/非法时回退到按 seed 的占位插画图,
+// 保证缺图时不出现空白方块。供 Avatar 组件与 CustomerDetails 复用。
+export function resolveAvatarImageUrl(seed: string, avatarUrl?: string): string {
+  return avatarUrl && isSafeUrl(avatarUrl, "image") ? avatarUrl : pickCustomerAvatarImage(seed);
+}

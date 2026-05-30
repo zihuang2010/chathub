@@ -146,11 +146,27 @@
    - 验证：
 ```
 
+## 2.2 工具调用纪律（避免连环取消）
+
+并行批次（同一条消息里发多个工具调用）中，**只要有一个调用报错，同批次的其余调用会被全部取消**（表现为 `Cancelled: parallel tool call ... errored`），即使它们本身没问题。
+
+必须遵守：
+
+- 操作文件前**先确认文件存在**（`ls` / `find` / Glob），不要凭记忆假设路径再去 `Read` / `sed` / `awk`。
+- **不要发巨大、投机性的并行批次**；把可能失败的调用拆开单独发，或顺序执行。
+- 只对**确定无依赖且确定存在**的目标做并行；有不确定性时先串行探路。
+
+排错时：
+
+- 看到成片 `Cancelled: parallel tool call X errored`，真正出错的是同批次里的 **X 那个调用**，先去修 X；不要把被取消的兄弟调用当成各自失败逐个重试。
+
+---
+
 <!-- gitnexus:start -->
 
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **chathub** (5542 symbols, 10505 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **chathub** (5542 symbols, 10501 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 

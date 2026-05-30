@@ -10,6 +10,8 @@ export interface Conversation {
    *  avatars stay theme-aware (light/dark) by default. Existing inline hex
    *  values are kept for design demos but new records can omit this field. */
   avatarColor?: string;
+  /** 客户真实头像 URL(企微外部联系人 externalAvatar)。空表示无,渲染回退占位图。 */
+  avatar?: string;
   preview: string;
   /** The account that received/initiated the conversation, e.g. "杭州企微-小美". */
   account: string;

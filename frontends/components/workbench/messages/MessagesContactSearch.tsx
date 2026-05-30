@@ -222,7 +222,11 @@ function ContactRow({
       onClick={() => onPick(friend)}
       className="focus-ring flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-workbench-surface-active"
     >
-      <ConversationAvatar name={name} online={false} />
+      <ConversationAvatar
+        name={name}
+        avatarUrl={friend.externalAvatar || undefined}
+        online={false}
+      />
       <div className="flex min-w-0 flex-1 flex-col">
         <div className="truncate text-wb-xs font-medium text-workbench-text">
           {highlightMatch(name, query)}
