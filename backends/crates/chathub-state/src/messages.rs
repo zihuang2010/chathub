@@ -86,6 +86,7 @@ impl MessagesStore {
                        attachments_json, gmt_modified_time, updated_at_ms \
                      ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13) \
                      ON CONFLICT(local_message_id) DO UPDATE SET \
+                       message_direction = excluded.message_direction, \
                        content_text      = excluded.content_text, \
                        send_status       = excluded.send_status, \
                        attachments_json  = excluded.attachments_json, \
@@ -139,6 +140,7 @@ impl MessagesStore {
                    attachments_json, gmt_modified_time, updated_at_ms \
                  ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13) \
                  ON CONFLICT(local_message_id) DO UPDATE SET \
+                   message_direction = excluded.message_direction, \
                    content_text      = excluded.content_text, \
                    send_status       = excluded.send_status, \
                    attachments_json  = excluded.attachments_json, \
@@ -734,5 +736,22 @@ mod tests {
         store.clear_for_employee("u-1").await.unwrap();
         assert!(store.list_recent("u-1", "cA", 10).await.unwrap().is_empty());
         assert_eq!(store.list_recent("u-2", "cB", 10).await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn upsert_heals_message_direction() {
+        // 验证 ON CONFLICT 能纠正已缓存的错误方向（自愈反向老行）
+        let pool = SqlitePool::in_memory().await.unwrap();
+        let store = MessagesStore::new(pool);
+        // 先落一条方向错误(2)的行
+        let mut bad = sample_row("c1", "m1", "sort_0001", 100);
+        bad.message_direction = 2;
+        store.upsert_messages(&[bad]).await.unwrap();
+        // 再以正确方向(1)重 upsert 同 id
+        let mut fixed = sample_row("c1", "m1", "sort_0001", 100);
+        fixed.message_direction = 1;
+        store.upsert_messages(&[fixed]).await.unwrap();
+        let got = store.list_recent("u-1", "c1", 10).await.unwrap();
+        assert_eq!(got[0].message_direction, 1, "ON CONFLICT 应纠正方向");
     }
 }

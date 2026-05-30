@@ -62,6 +62,7 @@ impl SqlitePool {
                 )),
                 M::up(include_str!("../migrations/V17__recents_opened_at.sql")),
                 M::up(include_str!("../migrations/V18__friend_detail_cache.sql")),
+                M::up(include_str!("../migrations/V19__image_meta.sql")),
             ]);
             migrations
                 .to_latest(c)
@@ -100,7 +101,7 @@ mod tests {
                    'hub_secrets', 'hub_settings', \
                    'hub_conversation_recents', \
                    'hub_conversation_messages', 'hub_conversation_message_window', \
-                   'hub_quick_replies'\
+                   'hub_quick_replies', 'hub_image_meta'\
                  )",
                     [],
                     |r| r.get(0),
@@ -111,9 +112,10 @@ mod tests {
             .expect("query");
 
         assert_eq!(
-            table_count, 8,
-            "全部 V1-V16 跑完应剩 8 张 hub_ 前缀业务表(account_seqs/friends_cache 在 V4/V6 DROP;\
-             V16 退役 friends 行存 + 3 张 per-resource 水位表;真正在用的续点水位在 hub_settings.notify_seq)"
+            table_count, 9,
+            "全部 V1-V19 跑完应剩 9 张 hub_ 前缀业务表(account_seqs/friends_cache 在 V4/V6 DROP;\
+             V16 退役 friends 行存 + 3 张 per-resource 水位表;真正在用的续点水位在 hub_settings.notify_seq;\
+             + V19 hub_image_meta)"
         );
     }
 

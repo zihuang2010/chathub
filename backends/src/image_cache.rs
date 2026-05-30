@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
-use image::ImageFormat;
+use image::{GenericImageView, ImageFormat};
 use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Manager};
 
@@ -27,7 +27,10 @@ const MAX_AGE_SECS: u64 = 30 * 24 * 60 * 60; // 30 天
 /// 单张原图下载上限,防超大图把内存/磁盘打爆。
 const MAX_DOWNLOAD_BYTES: u64 = 25 * 1024 * 1024;
 /// SSRF 白名单:仅允许这些域(及其子域)。当前媒体/头像统一走 OSS。
-const ALLOWED_HOST_SUFFIXES: &[&str] = &["aliyuncs.com"];
+/// `filet.jdd51.com` 是聊天附件 OSS 的 CNAME 自定义域名(CNAME → *.aliyuncs.com),
+/// 前端预览 URL 用它拼接(见 messageHistory.ts ATTACHMENT_BASE_URL / oss.rs OSS_UPLOAD_HOST),
+/// 主机名字符串不以 aliyuncs.com 结尾,故必须显式放行,否则消息图片一律被拒(404)无法显示。
+const ALLOWED_HOST_SUFFIXES: &[&str] = &["aliyuncs.com", "filet.jdd51.com"];
 
 pub struct ImageCache {
     dir: PathBuf,
@@ -79,9 +82,10 @@ impl ImageCache {
         let raw = self.download(url).await?;
 
         // 解码 / 缩放 / 编码是 CPU 密集,放 blocking 线程,别堵 async runtime。
-        let out = tauri::async_runtime::spawn_blocking(move || encode_thumbnail(&raw, width))
-            .await
-            .map_err(|e| format!("join: {e}"))??;
+        let (out, _dims) =
+            tauri::async_runtime::spawn_blocking(move || encode_thumbnail(&raw, width))
+                .await
+                .map_err(|e| format!("join: {e}"))??;
 
         write_atomic(&path, &out.bytes);
         // 写入后做一次预算/过期淘汰(后台 blocking,不阻塞本次响应)。
@@ -89,6 +93,27 @@ impl ImageCache {
         tauri::async_runtime::spawn_blocking(move || evict(&dir));
 
         Ok(out)
+    }
+
+    /// 预取：确保 url 的缩略图落盘，返回 (原始宽, 原始高, 本地绝对路径)。
+    /// 每次调用都会下载原图以获取真实尺寸并（重）写缩略图文件（幂等）。
+    pub async fn prefetch(&self, url: &str, width: u32) -> Result<(u32, u32, String), String> {
+        validate_url(url)?;
+        let width = width.clamp(16, 1024);
+        let path = self.key_path(url, width);
+        let raw = self.download(url).await?;
+        let path2 = path.clone();
+        let dims = tauri::async_runtime::spawn_blocking(move || {
+            let (out, dims) = encode_thumbnail(&raw, width)?;
+            write_atomic(&path2, &out.bytes);
+            Ok::<(u32, u32), String>(dims)
+        })
+        .await
+        .map_err(|e| format!("join: {e}"))??;
+        // 写入后触发 LRU 淘汰（后台，不阻塞本次响应）
+        let dir = self.dir.clone();
+        tauri::async_runtime::spawn_blocking(move || evict(&dir));
+        Ok((dims.0, dims.1, path.to_string_lossy().into_owned()))
     }
 
     async fn download(&self, url: &str) -> Result<Vec<u8>, String> {
@@ -164,31 +189,36 @@ fn parse_request(uri: &tauri::http::Uri) -> Option<(String, u32)> {
     Some((url?, width))
 }
 
-fn encode_thumbnail(raw: &[u8], width: u32) -> Result<CachedImage, String> {
+/// 解码原图、生成缩略图字节，同时返回原始宽高。
+/// 返回 `(CachedImage, (orig_width, orig_height))`。
+fn encode_thumbnail(raw: &[u8], width: u32) -> Result<(CachedImage, (u32, u32)), String> {
     let img = image::load_from_memory(raw).map_err(|e| format!("decode: {e}"))?;
+    // 捕获原始宽高（在缩放前读取）。
+    let (ow, oh) = img.dimensions();
     // 仅约束宽度,高度按比例(thumbnail 保持纵横比、缩小到 box 内)。
     let thumb = img.thumbnail(width, 100_000);
     let mut buf = Cursor::new(Vec::new());
-    if thumb.color().has_alpha() {
+    let cached = if thumb.color().has_alpha() {
         // 有透明通道(常见于头像)→ PNG 保 alpha。
         thumb
             .write_to(&mut buf, ImageFormat::Png)
             .map_err(|e| format!("encode png: {e}"))?;
-        Ok(CachedImage {
+        CachedImage {
             bytes: buf.into_inner(),
             mime: "image/png",
-        })
+        }
     } else {
         // 无 alpha(照片类)→ JPEG q=82,体积更小。
         let rgb = thumb.to_rgb8();
         let mut enc = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, 82);
         enc.encode_image(&rgb)
             .map_err(|e| format!("encode jpeg: {e}"))?;
-        Ok(CachedImage {
+        CachedImage {
             bytes: buf.into_inner(),
             mime: "image/jpeg",
-        })
-    }
+        }
+    };
+    Ok((cached, (ow, oh)))
 }
 
 fn sniff_mime(bytes: &[u8]) -> &'static str {
@@ -281,4 +311,27 @@ fn percent_decode(s: &str) -> String {
         i += 1;
     }
     String::from_utf8_lossy(&out).into_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 用 image crate 在内存生成一张 2×1 的红色 PNG（免外部文件依赖）。
+    fn png_2x1() -> Vec<u8> {
+        let mut buf = std::io::Cursor::new(Vec::new());
+        let img = image::RgbImage::from_pixel(2, 1, image::Rgb([255, 0, 0]));
+        image::DynamicImage::ImageRgb8(img)
+            .write_to(&mut buf, ImageFormat::Png)
+            .unwrap();
+        buf.into_inner()
+    }
+
+    /// encode_thumbnail 必须返回原始宽高（2×1），且输出字节非空。
+    #[test]
+    fn encode_thumbnail_reports_original_dims() {
+        let (out, dims) = encode_thumbnail(&png_2x1(), 64).unwrap();
+        assert_eq!(dims, (2, 1), "返回原始宽高");
+        assert!(!out.bytes.is_empty(), "缩略图字节非空");
+    }
 }

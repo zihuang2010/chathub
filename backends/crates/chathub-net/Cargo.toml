@@ -20,6 +20,13 @@ serde_json  = { workspace = true, features = ["raw_value"] }
 uuid        = { workspace = true }
 rand        = "0.8"
 
+# OSS 直传(oss.rs):forward 取凭证/路径 + reqwest 直传 + OSS V1(HMAC-SHA1)签名
+reqwest     = { workspace = true }
+base64      = { workspace = true }
+chrono      = { workspace = true }
+hmac        = "0.12"
+sha1        = "0.10"
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time", "test-util"] }
 tokio-stream = "0.1"

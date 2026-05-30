@@ -708,7 +708,8 @@ pub struct FetchMessageHistoryRequest {
 #[serde(rename_all = "camelCase")]
 pub struct HistoryMessage {
     pub local_message_id: String,
-    /// 1=入(对方发来) / 2=出(自己发出)。
+    /// 原始 spec（针对当前账号）：1=发送(out) / 2=接收(in) / 3=多端同步(out)。
+    /// 落库时经 to_local_direction 转本地约定(1=in,2=out)。
     pub message_direction: i32,
     /// 1=文本 / 2=图片 / 3=...(具体枚举翻译留前端)。
     pub message_type: i32,
@@ -724,13 +725,45 @@ pub struct HistoryMessage {
     pub gmt_modified_time: String,
 }
 
+/// 兼容数字与字符串两种 `fileSize`(上游历史/推送可能给字符串如 "176098");
+/// null / 非法 / 缺失一律兜底 0(尺寸非渲染必需,不因它丢掉整条附件)。
+fn de_i64_flexible<'de, D>(deserializer: D) -> Result<i64, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::Deserialize as _;
+    Ok(match serde_json::Value::deserialize(deserializer)? {
+        serde_json::Value::Number(n) => n.as_i64().unwrap_or(0),
+        serde_json::Value::String(s) => s.trim().parse::<i64>().unwrap_or(0),
+        _ => 0,
+    })
+}
+
+/// 规范附件形态(序列化恒输出 camelCase `mediaId`/`fileType`,前端按此消费)。
+/// 反序列化额外兼容上游业务后台的实时推送/历史返回字段(`ossFilePath`/`fileSuffix`/
+/// 字符串 `fileSize`),各字段都给 default,缺字段也不丢整条附件。
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HistoryAttachment {
+    /// 存 OSS objectName。规范键 `mediaId`;上游键 `ossFilePath`。
+    #[serde(default, alias = "ossFilePath")]
     pub media_id: String,
+    #[serde(default)]
     pub file_name: String,
+    #[serde(default, deserialize_with = "de_i64_flexible")]
     pub file_size: i64,
+    /// 不含点的后缀(如 png)。规范键 `fileType`;上游键 `fileSuffix`。
+    #[serde(default, alias = "fileSuffix")]
     pub file_type: String,
+    /// 图片原始宽度（px），由后台预取注入；服务端不下发时为 None。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<i64>,
+    /// 图片原始高度（px），由后台预取注入；服务端不下发时为 None。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub height: Option<i64>,
+    /// 本地缩略图绝对路径，由后台预取落盘后注入；前端走 asset 协议读取。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_path: Option<String>,
 }
 
 /// 响应(2xx envelope.data 的形态)。
@@ -740,17 +773,30 @@ pub struct HistoryAttachment {
 #[serde(rename_all = "camelCase")]
 pub struct FetchMessageHistoryResp {
     pub records: Vec<HistoryMessage>,
-    pub size: u32,
+    // 分页元数据(size/total/current/pages):客户端**不消费**(reconcile 只用 records/
+    // next_cursor/has_more),仅为契约完整性保留。上游"不维护"时把 total/current/pages
+    // 返回为**字符串** "-1"(而非数字 -1),故统一走 de_i64_flexible 容忍字符串数字 + default。
+    // 否则单个元数据字段类型飘移会让整条响应(含所有 records)解析失败 → 历史一条都加载不出。
+    #[serde(default, deserialize_with = "de_i64_flexible")]
+    pub size: i64,
+    #[serde(default)]
     pub has_more: bool,
+    #[serde(default)]
     pub next_cursor: String,
+    #[serde(default, deserialize_with = "de_i64_flexible")]
     pub total: i64,
-    pub current: i32,
-    pub pages: i32,
+    #[serde(default, deserialize_with = "de_i64_flexible")]
+    pub current: i64,
+    #[serde(default, deserialize_with = "de_i64_flexible")]
+    pub pages: i64,
 }
 
-// ─── send_message typed contract(text-only,messageType=1)────────────────────
+// ─── send_message typed contract(messageType 1=文本/2=图片/3=文件/4=语音)──────
 
-/// message/send 入参。当前仅文本(`message_type = 1`)。
+/// message/send 入参。
+/// 文本(`message_type=1`)带 `content_text`,不带 filePath;图片/文件/语音
+/// (2/3/4)带 `file_path/file_name/file_size`,不带 contentText。混合消息由客户端
+/// 拆成多条单消息分别发送(本契约不接收混合体)。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SendMessageRequest {
@@ -758,9 +804,18 @@ pub struct SendMessageRequest {
     pub request_message_id: String,
     pub wecom_account_id: String,
     pub external_user_id: String,
-    /// 1=文本(目前只对接文本)。
+    /// 1=文本 / 2=图片 / 3=文件 / 4=语音。
     pub message_type: i32,
+    /// 文本内容;非文本消息为空串,空串不序列化(契约不带 contentText)。
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub content_text: String,
+    /// OSS objectName(图片/文件/语音);文本消息为 None,不序列化。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file_size: Option<i64>,
 }
 
 /// 响应(2xx envelope.data 的形态)。
@@ -1219,6 +1274,25 @@ mod tests {
         b.reset();
         let d = b.next();
         assert!(d <= Duration::from_millis(10), "got {d:?}");
+    }
+
+    // 回归:上游分页元数据(total/current/pages)"不维护"时返回**字符串** "-1"(而非数字)。
+    // 早先 i64/i32 严格类型遇字符串即报 `invalid type: string "-1", expected i64`,使整条
+    // 响应(含全部 records)解析失败 → reconcile 报错 → 历史一条都加载不出。de_i64_flexible
+    // 容忍字符串数字后,records 必须正常解析(图片附件 ossFilePath 也要落到 media_id)。
+    #[test]
+    fn fetch_history_resp_tolerates_string_minus_one_metadata() {
+        let raw = r#"{"records":[{"localMessageId":"2060699569984897024","messageDirection":1,"messageType":2,"contentText":"","sendStatus":3,"messageTime":"2026-05-30 20:27:16","sortKey":"1780144036000_00000000000011974113_2060699569984897024","attachments":[{"attachmentType":1,"fileName":"image.png","fileSuffix":"png","fileSize":"434309","ossFilePath":"t/dev/wechat-business-app/2026/05/30/202716_ec80d3fb.png"}],"gmtModifiedTime":"2026-05-30 20:27:16"}],"size":20,"hasMore":true,"nextCursor":"cur1","total":"-1","current":"-1","pages":"-1"}"#;
+        let resp: FetchMessageHistoryResp =
+            serde_json::from_str(raw).expect("字符串 -1 元数据不应导致整条响应解析失败");
+        assert_eq!(resp.records.len(), 1, "records 必须正常解析出来");
+        assert_eq!(resp.total, -1);
+        assert_eq!(
+            resp.records[0].attachments[0].media_id,
+            "t/dev/wechat-business-app/2026/05/30/202716_ec80d3fb.png"
+        );
+        assert!(resp.has_more);
+        assert_eq!(resp.next_cursor, "cur1");
     }
 
     #[test]

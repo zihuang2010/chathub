@@ -19,6 +19,7 @@ pub mod hub;
 pub mod interceptor;
 pub mod message_event;
 pub mod message_sync;
+pub mod oss;
 pub mod recent_session_event;
 pub mod token;
 
@@ -36,6 +37,7 @@ pub use message_event::MessageEventApplier;
 pub use message_sync::{
     classify_reconcile, history_to_row, row_to_history, LoadOlderResult, MessageSync, ReconcileMode,
 };
+pub use oss::{OssStsCredentials, OssUploader, UploadedAttachment};
 pub use recent_session_event::{record_to_remote, RecentSessionEventApplier};
 pub use token::{TokenState, TokenStore};
 

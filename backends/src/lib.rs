@@ -1,4 +1,5 @@
 mod image_cache;
+mod image_prefetch;
 mod logging;
 
 use serde::Serialize;
@@ -13,14 +14,15 @@ use chathub_net::{
     FriendDetailRequest, FriendEventApplier, HistoryMessage, HubClient, ListAccountsFilter,
     ListAccountsItem, ListFriendsRequest, ListFriendsResp, ListRecentFriendsRequest,
     ListRecentFriendsResp, LoggedOutReason, MarkReadRequest, MessageEventApplier, MessageSync,
-    RecentFriendRecord, RecentSessionEventApplier, SendMessageResp, TokenStore, WecomFriendDetail,
+    OssUploader, RecentFriendRecord, RecentSessionEventApplier, SendMessageResp, TokenStore,
+    UploadedAttachment, WecomFriendDetail,
 };
 use chathub_proto::v1::UserProfile;
 use chathub_state::{
-    AccountCacheStore, FriendDetailCacheStore, LocalTokenStore, MessagesStore, NotifySeqStore,
-    QuickRepliesStore, QuickReplyRow, RecentSessionRow, RecentSessionsStore, SessionStore,
-    SqlitePool, WecomAccountRow, MESSAGE_HOT_CONVERSATIONS_LIMIT, RECENT_SESSIONS_GLOBAL_LIMIT,
-    RECENT_SESSIONS_PER_ACCOUNT_LIMIT,
+    AccountCacheStore, FriendDetailCacheStore, ImageMetaStore, LocalTokenStore, MessagesStore,
+    NotifySeqStore, QuickRepliesStore, QuickReplyRow, RecentSessionRow, RecentSessionsStore,
+    SessionStore, SqlitePool, WecomAccountRow, MESSAGE_HOT_CONVERSATIONS_LIMIT,
+    RECENT_SESSIONS_GLOBAL_LIMIT, RECENT_SESSIONS_PER_ACCOUNT_LIMIT,
 };
 use std::time::{Duration, Instant};
 use tokio::sync::broadcast as tokio_broadcast;
@@ -407,6 +409,7 @@ async fn load_conversation_messages(
     recents_store: State<'_, RecentSessionsStore>,
     message_sync: State<'_, MessageSync>,
     auth_api: State<'_, Arc<AuthApi>>,
+    image_prefetcher: State<'_, image_prefetch::ImagePrefetcher>,
     conversation_id: String,
     wecom_account_id: String,
     external_user_id: String,
@@ -546,6 +549,11 @@ async fn load_conversation_messages(
         });
     }
 
+    // 注入图片元数据（本地宽高 + 缩略图路径）；缺失的后台预取（best-effort）。
+    image_prefetcher
+        .enrich_and_prefetch(&mut records, &conversation_id, &employee_id)
+        .await;
+
     Ok(CachedMessagesResp {
         records,
         has_more_older,
@@ -558,6 +566,7 @@ async fn load_conversation_messages(
 async fn load_older_messages(
     message_sync: State<'_, MessageSync>,
     auth_api: State<'_, Arc<AuthApi>>,
+    image_prefetcher: State<'_, image_prefetch::ImagePrefetcher>,
     conversation_id: String,
     page_size: Option<u32>,
 ) -> Result<CachedMessagesResp, AuthError> {
@@ -574,8 +583,13 @@ async fn load_older_messages(
     let result = message_sync
         .load_older(&conversation_id, &employee_id, page_size)
         .await?;
+    let mut records = result.records;
+    // 注入图片元数据（本地宽高 + 缩略图路径）；缺失的后台预取（best-effort）。
+    image_prefetcher
+        .enrich_and_prefetch(&mut records, &conversation_id, &employee_id)
+        .await;
     Ok(CachedMessagesResp {
-        records: result.records,
+        records,
         has_more_older: result.has_more_older,
     })
 }
@@ -583,13 +597,18 @@ async fn load_older_messages(
 /// 发送一条文本消息(`messageType=1`):网络发送 → 落库(出站气泡)→ 发 ConversationMessages
 /// ChangeNotice。打开着的会话经订阅重读缓存,新气泡随权威列表稳定追加(不再依赖乐观气泡)。
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 async fn send_message(
     message_sync: State<'_, MessageSync>,
     auth_api: State<'_, Arc<AuthApi>>,
     conversation_id: String,
     wecom_account_id: String,
     external_user_id: String,
+    message_type: i32,
     content_text: String,
+    file_path: Option<String>,
+    file_name: Option<String>,
+    file_size: Option<i64>,
     client_msg_id: String,
 ) -> Result<SendMessageResp, AuthError> {
     let employee_id = auth_api
@@ -603,9 +622,28 @@ async fn send_message(
             &wecom_account_id,
             &external_user_id,
             &employee_id,
+            message_type,
             &content_text,
+            file_path.as_deref(),
+            file_name.as_deref(),
+            file_size,
             &client_msg_id,
         )
+        .await
+}
+
+/// 上传一个聊天附件到 OSS:取 STS 凭证 → 取 objectName → 直传。返回 objectName 等元数据,
+/// 前端再把 objectName 作 filePath 调 send_message。
+#[tauri::command]
+async fn upload_attachment(
+    oss_uploader: State<'_, OssUploader>,
+    bytes: Vec<u8>,
+    file_name: String,
+    file_suf: String,
+    content_type: Option<String>,
+) -> Result<UploadedAttachment, AuthError> {
+    oss_uploader
+        .upload(bytes, file_name, file_suf, content_type)
         .await
 }
 
@@ -1346,11 +1384,15 @@ pub fn run() {
 
             // 远程图片磁盘缩略图缓存(cachedimg:// 协议消费它)。独立于 SQLite 领域库,纯磁盘文件。
             let img_cache_dir = app.path().app_cache_dir()?.join("img-cache");
-            app.manage(Arc::new(image_cache::ImageCache::new(img_cache_dir)));
+            let img_cache = Arc::new(image_cache::ImageCache::new(img_cache_dir.clone()));
+            app.manage(img_cache.clone());
+            // asset 协议授权图片缓存目录（程序化，避免配置里写死平台相关路径变量）。
+            app.asset_protocol_scope().allow_directory(&img_cache_dir, true)
+                .map_err(|e| format!("asset scope: {e}"))?;
 
             // tauri::async_runtime::block_on 在 setup 同步完成 SQLite 与 endpoint 初始化。
             // setup 闭包本身不在 async 上下文,block_on 安全可用。
-            let (auth_api, hub_client, conn_manager, account_cache, recents_store, messages_store, quick_replies_store, friend_detail_cache, message_sync, change_notice_tx) = tauri::async_runtime::block_on(async {
+            let (auth_api, hub_client, conn_manager, account_cache, recents_store, messages_store, quick_replies_store, friend_detail_cache, message_sync, oss_uploader, change_notice_tx, image_meta_store) = tauri::async_runtime::block_on(async {
                 std::fs::create_dir_all(&app_data).ok();
                 let pool = SqlitePool::open(app_data.join("state.sqlite"))
                     .await.map_err(|e| e.to_string())?;
@@ -1361,6 +1403,8 @@ pub fn run() {
                 let messages_store = MessagesStore::new(pool.clone());
                 let quick_replies_store = QuickRepliesStore::new(pool.clone());
                 let friend_detail_cache = FriendDetailCacheStore::new(pool.clone());
+                // 图片派生元数据存储（按 URL 为键，存宽高 + 本地缩略图路径）
+                let image_meta_store = ImageMetaStore::new(pool.clone());
                 let local_store = LocalTokenStore::new(pool);
                 // device_id 从本地 SQLite 取(首次启动生成),不再用 macOS 钥匙串。
                 let device_id = local_store.ensure_device_id()
@@ -1380,6 +1424,8 @@ pub fn run() {
                     hub_client.clone(),
                     change_notice_tx.clone(),
                 );
+                // OSS 附件上传器:复用 hub_client 的 forward 通道取 STS 凭证 / objectName。
+                let oss_uploader = OssUploader::new(hub_client.clone());
                 // 2026-05-17:Subscribe 流里 ACCOUNT_* 事件 → AccountCacheStore + broadcast。
                 let account_applier = Arc::new(AccountEventApplier::new(
                     account_cache.clone(),
@@ -1414,7 +1460,7 @@ pub fn run() {
                     change_notice_tx.clone(),
                 ));
                 let auth_api = AuthApi::new(token_store, session_store);
-                Ok::<_, String>((auth_api, hub_client, conn_manager, account_cache, recents_store, messages_store, quick_replies_store, friend_detail_cache, message_sync, change_notice_tx))
+                Ok::<_, String>((auth_api, hub_client, conn_manager, account_cache, recents_store, messages_store, quick_replies_store, friend_detail_cache, message_sync, oss_uploader, change_notice_tx, image_meta_store))
             }).map_err(Box::<dyn std::error::Error>::from)?;
             let auth_api = Arc::new(auth_api);
             app.manage(Arc::clone(&auth_api));
@@ -1426,8 +1472,16 @@ pub fn run() {
             app.manage(quick_replies_store);
             app.manage(friend_detail_cache);
             app.manage(message_sync);
+            app.manage(oss_uploader);
             // change_notice_tx 也 manage 一份,Tauri 命令(pin/draft 等)用它直接发 LocalCommand 通知
-            app.manage(change_notice_tx);
+            app.manage(change_notice_tx.clone());
+            // 图片元数据存储 + 后台预取服务（读消息时注入宽高/本地路径，消除图片闪烁）
+            app.manage(image_meta_store.clone());
+            app.manage(image_prefetch::ImagePrefetcher::new(
+                img_cache,
+                image_meta_store,
+                change_notice_tx,
+            ));
 
             // 启动时 try_resume(后台 task,不阻塞 setup);成功后启动 ConnectionManager
             let api_for_resume = Arc::clone(&auth_api);
@@ -1596,7 +1650,7 @@ pub fn run() {
             set_conversation_pinned, set_conversation_draft, set_conversation_removed,
             set_conversation_muted, mark_conversation_read,
             fetch_message_history,
-            load_conversation_messages, load_older_messages, send_message,
+            load_conversation_messages, load_older_messages, send_message, upload_attachment,
             list_quick_replies, create_quick_reply, update_quick_reply, delete_quick_reply,
         ])
         .run(tauri::generate_context!())

@@ -22,7 +22,7 @@ const FALLBACK_THROTTLE_MS: i64 = 1000;
 
 /// spec messageDirection → 本地约定。本地: 2=出站(out), 其余=入站(in)。
 /// spec: 1=我方发送, 2=客户消息, 3=多端同步(=我方)。集中单点,便于将来统一约定时切换。
-fn to_local_direction(spec_dir: i64) -> i32 {
+pub(crate) fn to_local_direction(spec_dir: i64) -> i32 {
     match spec_dir {
         1 | 3 => 2,
         _ => 1,

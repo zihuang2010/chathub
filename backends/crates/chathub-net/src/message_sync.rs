@@ -12,6 +12,7 @@ use crate::hub::{
     FetchMessageHistoryRequest, FirstConversationHistory, HistoryAttachment, HistoryMessage,
     HubClient, SendMessageRequest, SendMessageResp,
 };
+use crate::message_event::to_local_direction;
 use crate::recent_session_event::split_sort_key_ms;
 use chathub_state::{MessageRow, MessageWindow, MessagesStore};
 use tokio::sync::broadcast;
@@ -66,7 +67,7 @@ pub fn history_to_row(
         wecom_account_id: wecom_account_id.to_string(),
         sort_key: h.sort_key.clone(),
         message_time_ms: parse_server_time_to_ms(&h.message_time),
-        message_direction: h.message_direction,
+        message_direction: to_local_direction(h.message_direction as i64),
         message_type: h.message_type,
         content_text: h.content_text.clone(),
         send_status: h.send_status,
@@ -106,6 +107,19 @@ pub fn row_to_history(r: &MessageRow) -> HistoryMessage {
 /// 保证会话水位门两侧 apples-to-apples;sort_key 格式不符则退化为时间解析(再不行则 0 → 门 fail-open)。
 fn message_freshness_ms(h: &HistoryMessage) -> i64 {
     split_sort_key_ms(&h.sort_key).max(parse_server_time_to_ms(&h.message_time))
+}
+
+/// 取一页 records 的 (最旧 sort_key, 最新 sort_key, 最新 freshness_ms),**不依赖数组顺序**。
+/// 背景:上游 `message/history` 实测按时间**降序**返回(新→旧),与早先代码假设的"升序"
+/// 相反;若仍用 `first()=最旧 / last()=最新`,window 的 newest/oldest 边界会取反 ——
+/// reconcile 据此误判 Replace(`delete_conversation` 清库重灌),老历史被删 + 反复 churn。
+/// sort_key 为定长 ms 前缀的复合键,字典序≈时序,故按 min/max 取边界对升序/降序都正确。
+/// 空页返回 (None, None, 0)。
+fn page_bounds(records: &[HistoryMessage]) -> (Option<String>, Option<String>, i64) {
+    let oldest = records.iter().map(|r| r.sort_key.clone()).min();
+    let newest = records.iter().map(|r| r.sort_key.clone()).max();
+    let newest_ms = records.iter().map(message_freshness_ms).max().unwrap_or(0);
+    (oldest, newest, newest_ms)
 }
 
 /// load_older 结果:本次新增的更老消息(升序)+ 翻完后是否还有更老。
@@ -155,10 +169,8 @@ impl MessageSync {
             })
             .await?;
 
-        // records 升序:first=最旧,last=最新。
-        let page_oldest = resp.records.first().map(|r| r.sort_key.clone());
-        let page_newest = resp.records.last().map(|r| r.sort_key.clone());
-        let page_newest_ms = resp.records.last().map(message_freshness_ms).unwrap_or(0);
+        // 不依赖数组顺序取边界(上游 message/history 实测降序返回,与早先"升序"假设相反)。
+        let (page_oldest, page_newest, page_newest_ms) = page_bounds(&resp.records);
 
         let window = self
             .store
@@ -296,15 +308,10 @@ impl MessageSync {
             .collect();
         self.store.upsert_messages(&rows).await.map_err(state_err)?;
 
-        let page_oldest = records
-            .first()
-            .map(|r| r.sort_key.clone())
-            .unwrap_or_default();
-        let page_newest = records
-            .last()
-            .map(|r| r.sort_key.clone())
-            .unwrap_or_default();
-        let newest_ms = records.last().map(message_freshness_ms).unwrap_or(0);
+        // 不依赖数组顺序(上游可能降序返回):按 sort_key min/max 取最旧/最新。
+        let (page_oldest_opt, page_newest_opt, newest_ms) = page_bounds(records);
+        let page_oldest = page_oldest_opt.unwrap_or_default();
+        let page_newest = page_newest_opt.unwrap_or_default();
         let older_cursor = history.next_cursor.as_deref().unwrap_or("");
         let now = now_ms();
         self.store
@@ -344,13 +351,18 @@ impl MessageSync {
     /// 所有数字开头的 key,会把出站气泡永久钉在最底,导致之后到达的入站消息(数字开头)
     /// 反而排到出站消息上方 → 乱序。改用真实 ms 后,出站气泡按发送时刻与入站消息正确穿插。
     /// UPSERT 冻结 sort_key,后续重对齐(Stitch)不会移位。
+    #[allow(clippy::too_many_arguments)]
     pub async fn send_message(
         &self,
         conversation_id: &str,
         wecom_account_id: &str,
         external_user_id: &str,
         employee_id: &str,
+        message_type: i32,
         content_text: &str,
+        file_path: Option<&str>,
+        file_name: Option<&str>,
+        file_size: Option<i64>,
         client_msg_id: &str,
     ) -> Result<SendMessageResp, AuthError> {
         // 幂等键:复用前端传入的 client_msg_id 作为 request_message_id,使重复点击 / 网络
@@ -366,8 +378,11 @@ impl MessageSync {
                 request_message_id,
                 wecom_account_id: wecom_account_id.to_string(),
                 external_user_id: external_user_id.to_string(),
-                message_type: 1,
+                message_type,
                 content_text: content_text.to_string(),
+                file_path: file_path.map(str::to_string),
+                file_name: file_name.map(str::to_string),
+                file_size,
             })
             .await?;
 
@@ -377,6 +392,29 @@ impl MessageSync {
         // 与协议同构:{ms:013}:{dir=2}:{seq:020}。ms 取服务端回填时间(无则用 now),保证按真实
         // 发送时刻与入站消息穿插;seq 用 now 这个大值,使同毫秒内本出站气泡排在入站之后(更靠底)。
         let sort_key = format!("{freshness_ms:013}:2:{now:020}");
+
+        // 落库形态按 message_type 分流:
+        //   - 文本(1):content_text 落实文本,attachments_json 落空数组。
+        //   - 附件(2/3/4):content_text 落空串,attachments_json 落单条 [{mediaId, fileName,
+        //     fileSize, fileType}];mediaId 存 objectName(即 file_path),fileType 从文件名后缀
+        //     推断。发送成功后的 ChangeNotice → 前端重读缓存 → row_to_history → 前端按附件渲染。
+        let (row_content_text, row_attachments_json) = if message_type == 1 {
+            (content_text.to_string(), "[]".to_string())
+        } else {
+            let fname = file_name.unwrap_or("").to_string();
+            let att = HistoryAttachment {
+                media_id: file_path.unwrap_or("").to_string(),
+                file_name: fname.clone(),
+                file_size: file_size.unwrap_or(0),
+                file_type: file_suffix(&fname),
+                // 发送路径无预取元数据，派生字段置 None（读消息时由预取注入）
+                width: None,
+                height: None,
+                local_path: None,
+            };
+            let json = serde_json::to_string(&vec![att]).unwrap_or_else(|_| "[]".to_string());
+            (String::new(), json)
+        };
         let row = MessageRow {
             local_message_id: resp.local_message_id.clone(),
             conversation_id: conversation_id.to_string(),
@@ -385,10 +423,10 @@ impl MessageSync {
             sort_key,
             message_time_ms: freshness_ms,
             message_direction: 2,
-            message_type: 1,
-            content_text: content_text.to_string(),
+            message_type,
+            content_text: row_content_text,
             send_status: resp.send_status,
-            attachments_json: "[]".into(),
+            attachments_json: row_attachments_json,
             gmt_modified_time: resp.message_time.clone(),
             updated_at_ms: now,
         };
@@ -459,11 +497,9 @@ impl MessageSync {
             .map(|h| history_to_row(h, conversation_id, employee_id, &window.wecom_account_id))
             .collect();
         self.store.upsert_messages(&rows).await.map_err(state_err)?;
-        // 推进下界(本页最旧 = records.first)+ 游标 + has_more。newest 不动。
-        let new_oldest = resp
-            .records
-            .first()
-            .map(|r| r.sort_key.clone())
+        // 推进下界(本页最旧 = sort_key 最小,不依赖数组顺序)+ 游标 + has_more。newest 不动。
+        let new_oldest = page_bounds(&resp.records)
+            .0
             .unwrap_or_else(|| window.oldest_sort_key.clone());
         let mut w = window;
         w.oldest_sort_key = new_oldest;
@@ -528,6 +564,14 @@ pub(crate) fn parse_server_time_to_ms(s: &str) -> i64 {
         + mi * 60_000
         + se * 1_000
         - 8 * 3_600_000
+}
+
+/// 从文件名取小写后缀(不含点);无后缀返回空串。落库附件的 fileType 用它。
+fn file_suffix(file_name: &str) -> String {
+    file_name
+        .rsplit_once('.')
+        .map(|(_, ext)| ext.to_ascii_lowercase())
+        .unwrap_or_default()
 }
 
 /// epoch ms(UTC)→ "yyyy-MM-dd HH:mm:ss"(UTC+8,与 server 形态一致;前端按 +08:00 解析)。
@@ -669,5 +713,98 @@ mod tests {
         };
         // sort_key 首段 ms(2024)远大于 time 解析 ms(2020)→ 取首段
         assert_eq!(message_freshness_ms(&h), 1715836200000);
+    }
+
+    // 回归:上游 message/history 按时间**降序**返回(新→旧),page_bounds 必须按 sort_key
+    // min/max 取边界,不被数组顺序带偏 —— 否则 window newest/oldest 反转,reconcile 误删历史。
+    #[test]
+    fn page_bounds_order_independent_descending() {
+        let mk = |sk: &str, t: &str| HistoryMessage {
+            local_message_id: sk.into(),
+            message_direction: 1,
+            message_type: 1,
+            content_text: "".into(),
+            send_status: 3,
+            message_time: t.into(),
+            sort_key: sk.into(),
+            attachments: vec![],
+            gmt_modified_time: "".into(),
+        };
+        // 降序数组:最新在前、最旧在尾(模拟真实上游返回顺序)。
+        let recs = vec![
+            mk("1780144036000_x", "2026-05-30 20:27:16"),
+            mk("1780139423000_x", "2026-05-30 19:10:23"),
+            mk("1780131886000_x", "2026-05-30 17:04:46"),
+        ];
+        let (oldest, newest, newest_ms) = page_bounds(&recs);
+        assert_eq!(
+            oldest.as_deref(),
+            Some("1780131886000_x"),
+            "最旧=sort_key 最小"
+        );
+        assert_eq!(
+            newest.as_deref(),
+            Some("1780144036000_x"),
+            "最新=sort_key 最大"
+        );
+        // 下划线 sort_key 无法被冒号分隔解析,freshness 退化到 message_time,取最新一条。
+        assert_eq!(newest_ms, parse_server_time_to_ms("2026-05-30 20:27:16"));
+        assert_eq!(page_bounds(&[]).0, None, "空页 → None");
+    }
+
+    // 回归:上游业务后台实时推送/历史的附件原始形态(ossFilePath/fileSuffix/字符串 fileSize)
+    // 必须能解析进规范 HistoryAttachment(此前对不上 mediaId/fileType/i64 → 整条附件丢失 → 图片不显示)。
+    #[test]
+    fn history_attachment_parses_upstream_oss_shape() {
+        let raw = r#"{"attachmentType":1,"fileName":"image.png","fileSuffix":"png","fileSize":"176098","ossFilePath":"t/dev/wechat-business-app/2026/05/30/191024_76145588.png","ossPreviewFilePath":"","durationSeconds":null,"transferStatus":2,"transferFailReason":""}"#;
+        let a: HistoryAttachment = serde_json::from_str(raw).expect("上游 OSS 附件形态应能解析");
+        assert_eq!(
+            a.media_id,
+            "t/dev/wechat-business-app/2026/05/30/191024_76145588.png"
+        );
+        assert_eq!(a.file_type, "png");
+        assert_eq!(a.file_size, 176098);
+        assert_eq!(a.file_name, "image.png");
+    }
+
+    // 规范形态(本地发送回显落库的 mediaId/数字 fileSize)仍正常解析,不被上游兼容改动破坏。
+    #[test]
+    fn history_attachment_parses_canonical_shape() {
+        let raw = r#"{"mediaId":"t/x.png","fileName":"x.png","fileSize":42,"fileType":"png"}"#;
+        let a: HistoryAttachment = serde_json::from_str(raw).expect("规范附件形态应能解析");
+        assert_eq!(a.media_id, "t/x.png");
+        assert_eq!(a.file_size, 42);
+        assert_eq!(a.file_type, "png");
+    }
+
+    #[test]
+    fn history_to_row_translates_spec_direction_to_local() {
+        // spec: 1=发送(out) 2=接收(in) 3=多端同步(out)；本地: 2=out 1=in
+        let mk = |dir: i32| HistoryMessage {
+            local_message_id: "m1".into(),
+            message_direction: dir,
+            message_type: 1,
+            content_text: "hi".into(),
+            send_status: 3,
+            message_time: "2026-05-30 10:00:00".into(),
+            sort_key: "1780000000000_x_m1".into(),
+            attachments: vec![],
+            gmt_modified_time: "".into(),
+        };
+        assert_eq!(
+            history_to_row(&mk(1), "c1", "u1", "wa1").message_direction,
+            2,
+            "spec1发送→本地2(out)"
+        );
+        assert_eq!(
+            history_to_row(&mk(2), "c1", "u1", "wa1").message_direction,
+            1,
+            "spec2接收→本地1(in)"
+        );
+        assert_eq!(
+            history_to_row(&mk(3), "c1", "u1", "wa1").message_direction,
+            2,
+            "spec3多端→本地2(out)"
+        );
     }
 }
