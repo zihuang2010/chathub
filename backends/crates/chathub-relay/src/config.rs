@@ -176,6 +176,19 @@ const DEFAULT_ROUTES: &[(&str, HttpMethod, &str, &str)] = &[
         "/wechat-business-app/wecom-cs/v1/wecomAggregate/message/send",
         "RELAY_PATH_SEND_MESSAGE",
     ),
+    // 融合公共上传:聊天附件直传 OSS 前先取 STS 临时凭证 + objectName(GET + query)。
+    (
+        "oss_token_info",
+        HttpMethod::Get,
+        "/basic-public-app/V1/common/oss/tokenInfoByVersion",
+        "RELAY_PATH_OSS_TOKEN_INFO",
+    ),
+    (
+        "oss_gen_post_path",
+        HttpMethod::Get,
+        "/basic-public-app/V1/common/oss/genPostPathByVersion",
+        "RELAY_PATH_OSS_GEN_POST_PATH",
+    ),
     (
         "list_accounts",
         HttpMethod::Get,

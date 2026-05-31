@@ -1,0 +1,98 @@
+---
+name: messages
+description: "Skill for the Messages area of chathub. 224 symbols across 52 files."
+---
+
+# Messages
+
+224 symbols | 52 files | Cohesion: 80%
+
+## When to Use
+
+- Working with code in `frontends/`
+- Understanding how useCustomerSelection, createMentionExtension, blocksToDoc work
+- Modifying messages-related functionality
+
+## Key Files
+
+| File                                                              | Symbols                                                                                                      |
+| ----------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `frontends/components/workbench/messages/useDraftStore.ts`        | getDraft, useDraft, value, getFileAttachments, useFileAttachments (+25)                                      |
+| `frontends/components/workbench/messages/MessageBubble.tsx`       | DateDivider, UnreadDivider, messageAriaText, MessageBubble, RecalledLine (+8)                                |
+| `frontends/components/workbench/messages/utils.ts`                | collectMatches, formatRichText, isSafeUrl, formatFileSize, thumbWidth (+8)                                   |
+| `frontends/components/workbench/messages/MessageComposer.tsx`     | clampComposerHeight, MessageComposer, insertImageFiles, handleImagePicker, removePendingFileAttachment (+7)  |
+| `frontends/components/workbench/messages/MessageContent.tsx`      | MessageContent, PartCard, ImageAttachment, FileAttachment, VoiceAttachment (+7)                              |
+| `frontends/components/workbench/messages/MessagesPage.tsx`        | MessagesPage, formatRelativeTime, clampField, adaptEntryToConversation, extractDraftPreview (+6)             |
+| `frontends/components/workbench/messages/AccountDropdown.tsx`     | AccountDropdown, handleSelect, SearchBox, Group, AllAccountsRow (+4)                                         |
+| `frontends/components/workbench/messages/useDetailsWindow.ts`     | useDetailsWindow, waitForLayoutFrame, closeDetailsWithWindowResize, lockCurrentChatWidth, toggleDetails (+3) |
+| `frontends/components/workbench/messages/CustomerDetails.tsx`     | ProfileHeader, CustomerDetails, Tabs, ProfileTab, TagsRow (+2)                                               |
+| `frontends/components/workbench/messages/composer/docToBlocks.ts` | flushText, visit, blocksToDoc, currentContent, startNewParagraph (+1)                                        |
+
+## Entry Points
+
+Start here when exploring this area:
+
+- **`useCustomerSelection`** (Function) — `frontends/components/workbench/customers/useCustomerSelection.ts:32`
+- **`createMentionExtension`** (Function) — `frontends/components/workbench/messages/composer/MentionExtension.ts:15`
+- **`blocksToDoc`** (Function) — `frontends/components/workbench/messages/composer/docToBlocks.ts:65`
+- **`currentContent`** (Function) — `frontends/components/workbench/messages/composer/docToBlocks.ts:71`
+- **`startNewParagraph`** (Function) — `frontends/components/workbench/messages/composer/docToBlocks.ts:76`
+
+## Key Symbols
+
+| Symbol                        | Type     | File                                                                   | Line |
+| ----------------------------- | -------- | ---------------------------------------------------------------------- | ---- |
+| `useCustomerSelection`        | Function | `frontends/components/workbench/customers/useCustomerSelection.ts`     | 32   |
+| `createMentionExtension`      | Function | `frontends/components/workbench/messages/composer/MentionExtension.ts` | 15   |
+| `blocksToDoc`                 | Function | `frontends/components/workbench/messages/composer/docToBlocks.ts`      | 65   |
+| `currentContent`              | Function | `frontends/components/workbench/messages/composer/docToBlocks.ts`      | 71   |
+| `startNewParagraph`           | Function | `frontends/components/workbench/messages/composer/docToBlocks.ts`      | 76   |
+| `docToBlocks`                 | Function | `frontends/components/workbench/messages/composer/docToBlocks.ts`      | 104  |
+| `getDraft`                    | Function | `frontends/components/workbench/messages/useDraftStore.ts`             | 325  |
+| `useDraft`                    | Function | `frontends/components/workbench/messages/useDraftStore.ts`             | 349  |
+| `value`                       | Function | `frontends/components/workbench/messages/useDraftStore.ts`             | 350  |
+| `getFileAttachments`          | Function | `frontends/components/workbench/messages/useDraftStore.ts`             | 411  |
+| `useFileAttachments`          | Function | `frontends/components/workbench/messages/useDraftStore.ts`             | 434  |
+| `useEscKey`                   | Function | `frontends/lib/useEscKey.ts`                                           | 25   |
+| `EmojiPicker`                 | Function | `frontends/components/workbench/messages/EmojiPicker.tsx`              | 70   |
+| `MessageComposer`             | Function | `frontends/components/workbench/messages/MessageComposer.tsx`          | 85   |
+| `insertImageFiles`            | Function | `frontends/components/workbench/messages/MessageComposer.tsx`          | 204  |
+| `handleImagePicker`           | Function | `frontends/components/workbench/messages/MessageComposer.tsx`          | 232  |
+| `removePendingFileAttachment` | Function | `frontends/components/workbench/messages/MessageComposer.tsx`          | 249  |
+| `handleScreenshot`            | Function | `frontends/components/workbench/messages/MessageComposer.tsx`          | 256  |
+| `handlePointerMove`           | Function | `frontends/components/workbench/messages/MessageComposer.tsx`          | 317  |
+| `handleResizeKeyDown`         | Function | `frontends/components/workbench/messages/MessageComposer.tsx`          | 347  |
+
+## Execution Flows
+
+| Flow                                      | Type            | Steps |
+| ----------------------------------------- | --------------- | ----- |
+| `CustomersPage → ScopeMatches`            | cross_community | 6     |
+| `MessagesContactSearch → ScopeMatches`    | cross_community | 6     |
+| `MessagesContactSearch → PickAvatarColor` | cross_community | 6     |
+| `RenderRowContent → IsSameLocalDay`       | cross_community | 6     |
+| `RenderRowContent → Cn`                   | cross_community | 6     |
+| `CustomerDetails → Cn`                    | cross_community | 6     |
+| `Run → SafeWindow`                        | cross_community | 5     |
+| `Run → StripNode`                         | cross_community | 5     |
+| `MessagesPage → ErrorMessage`             | cross_community | 5     |
+| `CustomersPage → ErrorMessage`            | cross_community | 5     |
+
+## Connected Areas
+
+| Area        | Connections |
+| ----------- | ----------- |
+| Customers   | 33 calls    |
+| Api         | 6 calls     |
+| Tests       | 4 calls     |
+| Cluster_137 | 1 calls     |
+| Cluster_62  | 1 calls     |
+| Build\_     | 1 calls     |
+| Data        | 1 calls     |
+| Components  | 1 calls     |
+
+## How to Explore
+
+1. `gitnexus_context({name: "useCustomerSelection"})` — see callers and callees
+2. `gitnexus_query({query: "messages"})` — find related execution flows
+3. Read key files listed above for implementation details
