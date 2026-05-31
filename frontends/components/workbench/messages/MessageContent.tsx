@@ -6,6 +6,7 @@ import { cachedImageSrc } from "@/lib/cachedImageSrc";
 import { cn } from "@/lib/utils";
 
 import type { MessagePart } from "./data";
+import { getMeasuredDims, rememberMeasuredDims } from "./imageDimsCache";
 import { ImageLightbox } from "./ImageLightbox";
 import { STRINGS } from "./strings";
 import { formatFileSize, formatRichText, isSafeUrl, thumbWidth } from "./utils";
@@ -394,11 +395,16 @@ function MessageImage({ part, alt, maxW = 256, maxH = 320 }: MessageImageProps) 
   // 首次查看(后端预取未回、part 无宽高)时，从已加载 <img> 读其固有宽高，立刻据此切比例盒——
   // 消除"固定 192 方盒 object-contain 把非方图留白边、数秒后预取回来才变原比例"的白边二段跳。
   // 缩略图保持原图纵横比，故测得比例与后端 dims 一致：预取回来时盒比例不变、零位移。
-  const [measuredDims, setMeasuredDims] = useState<{ w: number; h: number } | null>(null);
+  // 重挂时(虚拟列表滚动 / 切会话)从模块缓存恢复已测宽高 → 比例盒首帧即就位,无方盒、无抖动。
+  const [measuredDims, setMeasuredDims] = useState<{ w: number; h: number } | null>(
+    () => getMeasuredDims(part.url) ?? null,
+  );
   const captureNaturalDims = (img: HTMLImageElement | null) => {
     if (!img || part.width || part.height) return;
     if (img.naturalWidth > 0 && img.naturalHeight > 0) {
-      setMeasuredDims((prev) => prev ?? { w: img.naturalWidth, h: img.naturalHeight });
+      const dims = { w: img.naturalWidth, h: img.naturalHeight };
+      rememberMeasuredDims(part.url, dims);
+      setMeasuredDims((prev) => prev ?? dims);
     }
   };
 
@@ -410,7 +416,9 @@ function MessageImage({ part, alt, maxW = 256, maxH = 320 }: MessageImageProps) 
     const img = imgRef.current;
     if (!img || !img.complete || img.naturalWidth <= 0) return;
     if (!part.width && !part.height) {
-      setMeasuredDims((prev) => prev ?? { w: img.naturalWidth, h: img.naturalHeight });
+      const dims = { w: img.naturalWidth, h: img.naturalHeight };
+      rememberMeasuredDims(part.url, dims);
+      setMeasuredDims((prev) => prev ?? dims);
     }
     if (renderState.phase === "loading") {
       rememberLoadedImageSrc(renderState.visibleSrc);
@@ -493,8 +501,10 @@ function MessageImage({ part, alt, maxW = 256, maxH = 320 }: MessageImageProps) 
         decoding={isLocal ? "sync" : "async"}
         onLoad={handleVisibleLoad}
         onError={() => handleImageError(renderState.visibleSrc, "visible")}
+        // transition-opacity:仅"真正网络首加载"(loading→loaded)时 0→1 柔和渐显,软化那一下闪;
+        // 重挂/缓存命中走 loaded 态、初始即满不透明,不触发过渡 → 即时出图、不影响丝滑。
         className={cn(
-          "block h-full w-full object-contain",
+          "block h-full w-full object-contain transition-opacity duration-200",
           renderState.phase === "loading" && "opacity-0",
         )}
       />

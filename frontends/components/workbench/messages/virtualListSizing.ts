@@ -1,4 +1,5 @@
 import type { Message } from "./data";
+import { getMeasuredDims } from "./imageDimsCache";
 import type { TimelineItem } from "./hooks/useChatTimeline";
 
 const DEFAULT_VIRTUAL_OVERSCAN = 5;
@@ -10,13 +11,17 @@ const IMAGE_BOX_FALLBACK_HEIGHT = 192;
 
 function estimateImageBoxHeight(message: Message): number {
   const image = message.parts.find((part) => part.kind === "image");
-  if (!image || !image.width || !image.height || image.width <= 0 || image.height <= 0) {
-    return IMAGE_BOX_FALLBACK_HEIGHT;
-  }
-  const widthScale = IMAGE_BOX_MAX_WIDTH / image.width;
-  const heightScale = IMAGE_BOX_MAX_HEIGHT / image.height;
+  if (!image) return IMAGE_BOX_FALLBACK_HEIGHT;
+  // 估高尺寸源与渲染盒一致:后端 image_meta dims 优先,否则用 MessageImage 测得并缓存的
+  // 固有宽高 —— 使滚出再滚入的图片行「估高」与「实测」相符,虚拟器不再据差值重排(消抖动)。
+  const measured = getMeasuredDims(image.url);
+  const w = image.width ?? measured?.w;
+  const h = image.height ?? measured?.h;
+  if (!w || !h || w <= 0 || h <= 0) return IMAGE_BOX_FALLBACK_HEIGHT;
+  const widthScale = IMAGE_BOX_MAX_WIDTH / w;
+  const heightScale = IMAGE_BOX_MAX_HEIGHT / h;
   const scale = Math.min(widthScale, heightScale, 1);
-  return Math.max(72, Math.round(image.height * scale));
+  return Math.max(72, Math.round(h * scale));
 }
 
 function estimateTextRowHeight(message: Message): number {

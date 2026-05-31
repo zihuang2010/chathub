@@ -437,4 +437,32 @@ describe("MessageImage 比例盒 + asset 源（R1/R2/R4）", () => {
     expect(box.style.aspectRatio).toBe("300 / 150");
     expect(box.style.width).toBe("100%");
   });
+
+  it("重挂从模块缓存恢复固有宽高：比例盒首帧即就位（消重挂抖动）", () => {
+    // 首次渲染并加载 → 固有宽高写入模块缓存。
+    const first = render(
+      <article>
+        <MessageContent parts={[{ kind: "image", url: "https://e.example/remount.png" }]} />
+      </article>,
+    );
+    const img1 = first.container.querySelector("img")!;
+    Object.defineProperty(img1, "naturalWidth", { value: 400, configurable: true });
+    Object.defineProperty(img1, "naturalHeight", { value: 100, configurable: true });
+    act(() => {
+      fireEvent.load(img1);
+    });
+    expect(img1.parentElement!.style.aspectRatio).toBe("400 / 100");
+    first.unmount();
+
+    // 重新挂载同 URL（模拟虚拟列表滚出再滚入 / 切会话重渲）：未触发任何 load，
+    // 比例盒应已从缓存首帧就位——不再是 192 方盒，故不发生"方盒→比例盒"的重排抖动。
+    const second = render(
+      <article>
+        <MessageContent parts={[{ kind: "image", url: "https://e.example/remount.png" }]} />
+      </article>,
+    );
+    const box2 = second.container.querySelector("img")!.parentElement!;
+    expect(box2.style.aspectRatio).toBe("400 / 100");
+    expect(box2.style.width).toBe("100%");
+  });
 });
