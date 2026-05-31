@@ -404,6 +404,9 @@ struct CachedMessagesResp {
 ///      否则后台 spawn `reconcile_newest`(reconcile 完成经 ChangeNotice 通知前端重读)。
 ///   5. 立即返回缓存升序 records + `has_more_older`(无 window → false)。
 #[tauri::command]
+// 入参均为 Tauri State 注入 + IPC 透传字段;拆参会破坏 #[tauri::command] 命令签名与前端
+// 调用约定,故按 clippy 推荐豁免(该函数早因图片预取参数由 8→9 参越阈,属既有问题)。
+#[allow(clippy::too_many_arguments)]
 async fn load_conversation_messages(
     messages_store: State<'_, MessagesStore>,
     recents_store: State<'_, RecentSessionsStore>,
@@ -1480,7 +1483,6 @@ pub fn run() {
             app.manage(image_prefetch::ImagePrefetcher::new(
                 img_cache,
                 image_meta_store,
-                change_notice_tx,
             ));
 
             // 启动时 try_resume(后台 task,不阻塞 setup);成功后启动 ConnectionManager

@@ -145,6 +145,25 @@ impl ImageCache {
         }
         Ok(body.to_vec())
     }
+
+    /// 用 OSS `?x-oss-process=image/info` 廉价取原图宽高(只回小 JSON,不下整图)。
+    /// 复用 validate_url 做 SSRF/https 校验;给 8s 短超时。失败返回 Err,调用方回退下整图。
+    pub async fn fetch_image_info(&self, url: &str) -> Result<(u32, u32), String> {
+        validate_url(url)?;
+        let sep = if url.contains('?') { '&' } else { '?' };
+        let info_url = format!("{url}{sep}x-oss-process=image/info");
+        let resp = self
+            .http
+            .get(&info_url)
+            .send()
+            .await
+            .map_err(|e| format!("info fetch: {e}"))?;
+        if !resp.status().is_success() {
+            return Err(format!("info status {}", resp.status()));
+        }
+        let body = resp.text().await.map_err(|e| format!("info body: {e}"))?;
+        parse_oss_image_info(&body)
+    }
 }
 
 /// Tauri 自定义协议 handler。解析 `?w=&u=`,调缓存,返回缩略图字节;失败一律 404,
@@ -319,6 +338,28 @@ fn evict(dir: &Path) {
     }
 }
 
+/// 解析 OSS image/info 返回的 JSON,取原图宽高。形如
+/// `{"ImageWidth":{"value":"1600"},"ImageHeight":{"value":"1200"}, ...}`。
+/// 任一字段缺失 / 非数字 / 为 0 即 Err(让调用方回退下整图)。
+fn parse_oss_image_info(body: &str) -> Result<(u32, u32), String> {
+    let v: serde_json::Value = serde_json::from_str(body).map_err(|e| format!("info json: {e}"))?;
+    let dim = |key: &str| -> Result<u32, String> {
+        v.get(key)
+            .and_then(|x| x.get("value"))
+            .and_then(|x| x.as_str())
+            .ok_or_else(|| format!("missing {key}"))?
+            .trim()
+            .parse::<u32>()
+            .map_err(|e| format!("{key} parse: {e}"))
+    };
+    let w = dim("ImageWidth")?;
+    let h = dim("ImageHeight")?;
+    if w == 0 || h == 0 {
+        return Err("zero dimension".to_string());
+    }
+    Ok((w, h))
+}
+
 fn validate_url(url: &str) -> Result<(), String> {
     let parsed = reqwest::Url::parse(url).map_err(|_| "bad url".to_string())?;
     if parsed.scheme() != "https" {
@@ -373,5 +414,37 @@ mod tests {
         let (out, dims) = encode_thumbnail(&png_2x1(), 64).unwrap();
         assert_eq!(dims, (2, 1), "返回原始宽高");
         assert!(!out.bytes.is_empty(), "缩略图字节非空");
+    }
+
+    #[test]
+    fn parse_oss_image_info_ok() {
+        let s = r#"{"FileSize":{"value":"123"},"Format":{"value":"jpg"},"ImageHeight":{"value":"1200"},"ImageWidth":{"value":"1600"}}"#;
+        assert_eq!(parse_oss_image_info(s).unwrap(), (1600, 1200));
+    }
+
+    #[test]
+    fn parse_oss_image_info_missing_field() {
+        assert!(parse_oss_image_info(r#"{"ImageWidth":{"value":"1600"}}"#).is_err());
+    }
+
+    #[test]
+    fn parse_oss_image_info_non_numeric() {
+        assert!(parse_oss_image_info(
+            r#"{"ImageWidth":{"value":"abc"},"ImageHeight":{"value":"1200"}}"#
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn parse_oss_image_info_zero() {
+        assert!(parse_oss_image_info(
+            r#"{"ImageWidth":{"value":"0"},"ImageHeight":{"value":"1200"}}"#
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn parse_oss_image_info_garbage() {
+        assert!(parse_oss_image_info("not json").is_err());
     }
 }
