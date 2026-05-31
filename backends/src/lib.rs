@@ -404,9 +404,6 @@ struct CachedMessagesResp {
 ///      否则后台 spawn `reconcile_newest`(reconcile 完成经 ChangeNotice 通知前端重读)。
 ///   5. 立即返回缓存升序 records + `has_more_older`(无 window → false)。
 #[tauri::command]
-// 入参均为 Tauri State 注入 + IPC 透传字段（图片预取接入后新增 image_prefetcher），
-// 拆分会破坏命令签名与前端调用约定，故按 clippy 推荐豁免该函数的参数数量检查。
-#[allow(clippy::too_many_arguments)]
 async fn load_conversation_messages(
     messages_store: State<'_, MessagesStore>,
     recents_store: State<'_, RecentSessionsStore>,

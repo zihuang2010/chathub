@@ -124,30 +124,6 @@ impl ImageCache {
         Ok((dims.0, dims.1, path.to_string_lossy().into_owned()))
     }
 
-    /// 廉价取原图宽高:走 OSS `image/info`,只下回几百字节 JSON 即可拿到真实尺寸,
-    /// 不必下载整张原图。失败(非 OSS / 解析失败 / 超时等)由调用方回退到 `prefetch` 下整图。
-    ///
-    /// 复用 `validate_url` 做 SSRF/https 校验(白名单不变);给较短超时(8s),
-    /// 避免慢响应拖住后台预取的 A 段。
-    pub async fn fetch_image_info(&self, url: &str) -> Result<(u32, u32), String> {
-        validate_url(url)?;
-        // url 本是无 query 的裸 objectName URL;为稳妥仍判断是否已含 '?'。
-        let sep = if url.contains('?') { '&' } else { '?' };
-        let info_url = format!("{url}{sep}x-oss-process=image/info");
-        let resp = self
-            .http
-            .get(&info_url)
-            .timeout(Duration::from_secs(8))
-            .send()
-            .await
-            .map_err(|e| format!("fetch info: {e}"))?;
-        if !resp.status().is_success() {
-            return Err(format!("info status {}", resp.status()));
-        }
-        let body = resp.text().await.map_err(|e| format!("info body: {e}"))?;
-        parse_oss_image_info(&body)
-    }
-
     async fn download(&self, url: &str) -> Result<Vec<u8>, String> {
         let resp = self
             .http
@@ -285,32 +261,6 @@ fn encode_thumbnail(raw: &[u8], width: u32) -> Result<(CachedImage, (u32, u32)),
     Ok((cached, (ow, oh)))
 }
 
-/// 解析阿里云 OSS `image/info` 响应,取出 `(width, height)`。
-/// 形态形如 `{"ImageWidth":{"value":"1600"},"ImageHeight":{"value":"1200"}, ...}`,
-/// 各值是**字符串**。任一缺失 / 非数字 / <=0 即 `Err`(让调用方回退下整图)。
-fn parse_oss_image_info(body: &str) -> Result<(u32, u32), String> {
-    let v: serde_json::Value = serde_json::from_str(body).map_err(|e| format!("info json: {e}"))?;
-    let pick = |key: &str| -> Result<u32, String> {
-        v.get(key)
-            .and_then(|x| x.get("value"))
-            .and_then(|x| x.as_str())
-            .ok_or_else(|| format!("missing {key}.value"))?
-            .trim()
-            .parse::<u32>()
-            .map_err(|_| format!("bad {key}.value"))
-            .and_then(|n| {
-                if n == 0 {
-                    Err(format!("{key} is zero"))
-                } else {
-                    Ok(n)
-                }
-            })
-    };
-    let w = pick("ImageWidth")?;
-    let h = pick("ImageHeight")?;
-    Ok((w, h))
-}
-
 fn sniff_mime(bytes: &[u8]) -> &'static str {
     if bytes.starts_with(&[0x89, 0x50, 0x4E, 0x47]) {
         "image/png"
@@ -423,39 +373,5 @@ mod tests {
         let (out, dims) = encode_thumbnail(&png_2x1(), 64).unwrap();
         assert_eq!(dims, (2, 1), "返回原始宽高");
         assert!(!out.bytes.is_empty(), "缩略图字节非空");
-    }
-
-    /// 正常 OSS image/info JSON：取出 (width, height)。
-    #[test]
-    fn parse_oss_image_info_ok() {
-        let body = r#"{"FileSize":{"value":"21839"},"Format":{"value":"jpg"},"ImageHeight":{"value":"1200"},"ImageWidth":{"value":"1600"}}"#;
-        assert_eq!(parse_oss_image_info(body).unwrap(), (1600, 1200));
-    }
-
-    /// 缺字段（无 ImageHeight）：必须 Err，让调用方回退下整图。
-    #[test]
-    fn parse_oss_image_info_missing_field() {
-        let body = r#"{"ImageWidth":{"value":"1600"}}"#;
-        assert!(parse_oss_image_info(body).is_err(), "缺 ImageHeight 应 Err");
-    }
-
-    /// 非数字 value：必须 Err。
-    #[test]
-    fn parse_oss_image_info_non_numeric() {
-        let body = r#"{"ImageWidth":{"value":"abc"},"ImageHeight":{"value":"1200"}}"#;
-        assert!(parse_oss_image_info(body).is_err(), "非数字宽度应 Err");
-    }
-
-    /// value 为 0：视为非法尺寸，Err（避免落 0×0 比例盒）。
-    #[test]
-    fn parse_oss_image_info_zero_value() {
-        let body = r#"{"ImageWidth":{"value":"0"},"ImageHeight":{"value":"1200"}}"#;
-        assert!(parse_oss_image_info(body).is_err(), "0 宽度应 Err");
-    }
-
-    /// 整个 body 不是合法 JSON：Err。
-    #[test]
-    fn parse_oss_image_info_garbage() {
-        assert!(parse_oss_image_info("<html>404</html>").is_err());
     }
 }
