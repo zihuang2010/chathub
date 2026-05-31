@@ -20,8 +20,6 @@ export interface Conversation {
   time: string;
   unread: number;
   online: boolean;
-  /** Optional explicit link to the Customer record; falls back to id-based lookup. */
-  customerId?: string;
   /**
    * 用户在该会话有未发送草稿时的预览文本(plain text,UI 截断到约 80 字符)。
    * 非空时 preview 区显示 "[草稿] {draftText}",优先级高于 unread/preview。

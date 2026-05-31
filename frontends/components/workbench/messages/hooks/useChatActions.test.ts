@@ -86,7 +86,8 @@ describe("useChatActions", () => {
     expect(t[0].status).toBe("failed");
   });
 
-  it('handleAction "delete" 从 store 移除该条', () => {
+  it('handleAction "delete" 确认后从 store 移除该条', () => {
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
     const { result } = setup(vi.fn());
     act(() => {
       useChatStore.getState().enqueueOptimistic("c1", { ...outMsg("m1"), clientMsgId: "m1" });
@@ -96,7 +97,23 @@ describe("useChatActions", () => {
     act(() => {
       result.current.handleAction("delete", outMsg("m1"));
     });
+    expect(confirmSpy).toHaveBeenCalled();
     expect(timeline()).toHaveLength(0);
+  });
+
+  it('handleAction "delete" 取消则保留该条(防误触)', () => {
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
+    const { result } = setup(vi.fn());
+    act(() => {
+      useChatStore.getState().enqueueOptimistic("c1", { ...outMsg("m1"), clientMsgId: "m1" });
+    });
+    expect(timeline()).toHaveLength(1);
+
+    act(() => {
+      result.current.handleAction("delete", outMsg("m1"));
+    });
+    expect(confirmSpy).toHaveBeenCalled();
+    expect(timeline()).toHaveLength(1);
   });
 
   it('handleAction "recall" 置 isRecalled', () => {

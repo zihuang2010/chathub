@@ -8,8 +8,9 @@ import { cn } from "@/lib/utils";
 import type { MessagePart } from "./data";
 import { getMeasuredDims, rememberMeasuredDims } from "./imageDimsCache";
 import { ImageLightbox } from "./ImageLightbox";
+import { hasLoadedImageSrc, rememberLoadedImageSrc } from "./loadedImageSrcs";
 import { STRINGS } from "./strings";
-import { formatFileSize, formatRichText, isSafeUrl, thumbWidth } from "./utils";
+import { cssUrlSafe, formatFileSize, formatRichText, isSafeUrl, thumbWidth } from "./utils";
 
 type ImagePart = Extract<MessagePart, { kind: "image" }>;
 type FilePart = Extract<MessagePart, { kind: "file" }>;
@@ -20,15 +21,9 @@ interface MessageContentProps {
   parts: MessagePart[];
 }
 
-const LOADED_IMAGE_SRC_LIMIT = 512;
-const loadedImageSrcs = new Set<string>();
-
-function rememberLoadedImageSrc(src: string) {
-  loadedImageSrcs.add(src);
-  if (loadedImageSrcs.size <= LOADED_IMAGE_SRC_LIMIT) return;
-  const oldest = loadedImageSrcs.values().next().value;
-  if (oldest) loadedImageSrcs.delete(oldest);
-}
+// 未知图片尺寸时的中性占位比例(偏常见横图/截图):用于尚未拿到真实宽高的首帧占位盒,
+// 使占位与最终真实比例盒的高度差尽量小,配合 aspect-ratio transition 软化加载时的尺寸收敛。
+const NEUTRAL_IMAGE_ASPECT = "4 / 3";
 
 // 内联部分:文本 + 标记为内联的图片(composer 富文本)。其余(附件图片/文件/语音/
 // 视频)走下方卡片堆叠。
@@ -42,7 +37,8 @@ function isInlinePart(p: MessagePart): boolean {
  */
 export function MessageContent({ parts }: MessageContentProps) {
   if (parts.length === 1 && parts[0].kind === "image") {
-    return <ImageStandalone part={parts[0]} />;
+    // 单图独占大卡与附件图卡视觉/交互一致,复用同一组件(避免重复实现)。
+    return <ImageAttachment part={parts[0]} />;
   }
 
   const inlineParts = parts.filter(isInlinePart);
@@ -168,9 +164,11 @@ function VoiceAttachment({ part }: { part: VoicePart }) {
 }
 
 function VideoAttachment({ part }: { part: VideoPart }) {
-  // 视频 URL 既作链接 href 又作缩略图 CSS background。不安全时一并去掉,
-  // 同时避免 url() 内的 ")" / 引号破坏 CSS 表达式。
+  // 视频 URL 既作链接 href 又作缩略图 CSS background。href 用 isSafeUrl(协议安全即可,
+  // 括号等在 href 上下文合法);CSS background 另用 cssUrlSafe —— 协议白名单通过后再拒绝
+  // CSS 元字符,并以带引号的 url("...") 形式拼接,防止可控 URL 闭合 url() 注入 CSS。
   const safe = isSafeUrl(part.url, "link");
+  const coverUrl = cssUrlSafe(part.url, "link");
   return (
     <a
       href={safe ? part.url : undefined}
@@ -183,9 +181,9 @@ function VideoAttachment({ part }: { part: VideoPart }) {
         aria-hidden
         className="block aspect-video w-64 max-w-full bg-workbench-surface-active"
         style={
-          safe
+          coverUrl
             ? {
-                backgroundImage: `url(${part.url})`,
+                backgroundImage: `url("${coverUrl}")`,
                 backgroundSize: "cover",
                 backgroundPosition: "center",
               }
@@ -279,30 +277,6 @@ function InlineImage({ part }: { part: ImagePart }) {
   );
 }
 
-function ImageStandalone({ part }: { part: ImagePart }) {
-  const [open, setOpen] = useState(false);
-  const safe = isSafeUrl(part.url, "image");
-  return (
-    <>
-      <button
-        type="button"
-        title={STRINGS.attachment.openImage}
-        onClick={() => safe && setOpen(true)}
-        className="focus-ring inline-block max-w-full cursor-pointer overflow-hidden rounded-xl align-bottom leading-none shadow-wb-bubble transition-shadow hover:shadow-wb-popover"
-      >
-        <MessageImage part={part} alt={STRINGS.attachment.imageAlt(part.name)} />
-      </button>
-      {open && safe && (
-        <ImageLightbox
-          src={part.url}
-          alt={STRINGS.attachment.imageAlt(part.name)}
-          onClose={() => setOpen(false)}
-        />
-      )}
-    </>
-  );
-}
-
 // ─── 异步图片加载封装 ─────────────────────────────────────────────────────
 //
 // 渲染源优先级：
@@ -337,7 +311,7 @@ type ImageRenderState =
 
 function initialImageState(src: string, safe: boolean, isLocal: boolean): ImageRenderState {
   if (!safe) return { phase: "error", visibleSrc: src };
-  if (isLocal || loadedImageSrcs.has(src)) return { phase: "loaded", visibleSrc: src };
+  if (isLocal || hasLoadedImageSrc(src)) return { phase: "loaded", visibleSrc: src };
   return { phase: "loading", visibleSrc: src };
 }
 
@@ -353,13 +327,13 @@ function nextImageState(
     if (current.phase === "transition" || current.phase === "error") {
       return { phase: "loaded", visibleSrc: nextSrc };
     }
-    if (loadedImageSrcs.has(nextSrc) && current.phase !== "loaded") {
+    if (hasLoadedImageSrc(nextSrc) && current.phase !== "loaded") {
       return { phase: "loaded", visibleSrc: nextSrc };
     }
     return current;
   }
 
-  if (loadedImageSrcs.has(nextSrc)) {
+  if (hasLoadedImageSrc(nextSrc)) {
     return { phase: "loaded", visibleSrc: nextSrc };
   }
 
@@ -427,18 +401,21 @@ function MessageImage({ part, alt, maxW = 256, maxH = 320 }: MessageImageProps) 
   }, [renderState, part.width, part.height]);
 
   // 比例盒尺寸源优先级：后端 image_meta 注入的原始宽高 → <img> 固有宽高(首次加载即测得) →
-  // 都没有(尚未加载完)才回退固定 192 方盒。任一可用即按真实比例渲染，杜绝白边 letterbox。
+  // 都没有(尚未加载完)才回退中性占位比例。任一真实宽高可用即按真实比例渲染，杜绝白边 letterbox。
   const dimW = part.width ?? measuredDims?.w;
   const dimH = part.height ?? measuredDims?.h;
   const hasDims = !!(dimW && dimH);
-  const boxStyle: React.CSSProperties = hasDims
-    ? {
-        aspectRatio: `${dimW} / ${dimH}`,
-        maxWidth: maxW,
-        maxHeight: maxH,
-        width: "100%",
-      }
-    : { width: 192, height: 192 };
+  // 软化「先大后正常」：未知尺寸不再用 192 正方形(与常见宽图差异大、切换时高方块塌成矮条很跳)，
+  // 而是与有 dims 盒共用同一套宽度口径(width:100% + maxWidth/maxHeight)，仅 aspectRatio 不同 —
+  // 占位用中性 4:3(偏常见横图/截图)。这样宽度跨态恒定，只有高度变化，且用 transition 平滑收敛，
+  // 把「猛跳一下」变成「轻微 ease」。首帧已有 dims(后端注入/模块缓存命中)时无前一帧、不触发过渡。
+  const boxStyle: React.CSSProperties = {
+    aspectRatio: hasDims ? `${dimW} / ${dimH}` : NEUTRAL_IMAGE_ASPECT,
+    maxWidth: maxW,
+    maxHeight: maxH,
+    width: "100%",
+    transition: "aspect-ratio 200ms ease",
+  };
 
   if (renderState.phase === "error") {
     return (

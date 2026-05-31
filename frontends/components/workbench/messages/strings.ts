@@ -20,7 +20,6 @@ export const STRINGS = {
   },
   conversationList: {
     searchPlaceholder: "搜索客户/账号",
-    searchPlaceholderCompact: "搜索客户",
     /** 客户搜索框占位(只按名字搜客户)。 */
     contactSearchPlaceholder: "搜索客户",
     /** 搜索下拉的分组标题。 */
@@ -82,17 +81,20 @@ export const STRINGS = {
     reply: "引用回复",
     recall: "撤回",
     delete: "删除",
+    /** 删除前的二次确认(删除当前仅本地隐藏,重读历史可能补回,故用中性措辞)。 */
+    deleteConfirm: "确定删除这条消息?",
   },
   toast: {
     copySuccess: "已复制到剪贴板",
     copyFailed: "复制失败",
-    recallSuccess: "已撤回",
+    /** 撤回当前仅改本地视图、未接后端,故用中性「本地」措辞,不承诺服务端已生效。
+     *  接后端后改回成功/失败二态(recallFailed)。 */
+    recallLocalOnly: "已在本地撤回",
     recallFailed: "撤回失败,请稍后再试",
     actionDismiss: "关闭",
     screenshotFailed: "截图失败",
     screenshotEmpty: "截图结果为空",
     screenshotPermissionHint: "如在 macOS 中首次使用，请在系统设置中允许 ChatHub 录制屏幕后重试",
-    screenshotUnsupported: "当前浏览器不支持截图",
     screenshotPasteHint:
       "请使用系统截图（Win+Shift+S / Cmd+Shift+Ctrl+4），然后在输入框按 Ctrl/Cmd+V 粘贴",
   },

@@ -29,3 +29,9 @@ export function getMeasuredDims(url: string | undefined): ImageDims | undefined 
   if (!url) return undefined;
   return cache.get(url);
 }
+
+/** 清空全部缓存。切员工(chatStore.reset)时调用,使该模块级辅助缓存与数据真相
+ *  生命周期一致,避免上一员工同 URL 图片的固有宽高残留影响下一员工首帧。 */
+export function clearImageDimsCache(): void {
+  cache.clear();
+}

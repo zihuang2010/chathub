@@ -16,6 +16,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
+use chathub_state::{ImageMeta, ImageMetaStore};
 use image::{GenericImageView, ImageFormat};
 use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Manager};
@@ -67,7 +68,13 @@ impl ImageCache {
     }
 
     /// 取缩略图字节:命中读盘,未命中下载 → 缩放到 `width` → 落盘。
-    pub async fn get(&self, url: &str, width: u32) -> Result<CachedImage, String> {
+    /// 第二个返回值:仅在「未命中、刚下载」时为 `Some((原始宽, 原始高, 本地路径))`,供调用方
+    /// 顺手落 image_meta(命中读盘时为 `None`,不重复写)。
+    pub async fn get(
+        &self,
+        url: &str,
+        width: u32,
+    ) -> Result<(CachedImage, Option<(u32, u32, String)>), String> {
         validate_url(url)?;
         let width = width.clamp(16, 1024);
         let path = self.key_path(url, width);
@@ -75,14 +82,14 @@ impl ImageCache {
         // 命中:缩略图很小(几 KB~几十 KB),同步读可接受。
         if let Ok(bytes) = std::fs::read(&path) {
             let mime = sniff_mime(&bytes);
-            return Ok(CachedImage { bytes, mime });
+            return Ok((CachedImage { bytes, mime }, None));
         }
 
         // 未命中:下载原图(限大小)。
         let raw = self.download(url).await?;
 
         // 解码 / 缩放 / 编码是 CPU 密集,放 blocking 线程,别堵 async runtime。
-        let (out, _dims) =
+        let (out, dims) =
             tauri::async_runtime::spawn_blocking(move || encode_thumbnail(&raw, width))
                 .await
                 .map_err(|e| format!("join: {e}"))??;
@@ -92,7 +99,8 @@ impl ImageCache {
         let dir = self.dir.clone();
         tauri::async_runtime::spawn_blocking(move || evict(&dir));
 
-        Ok(out)
+        let fresh = (dims.0, dims.1, path.to_string_lossy().into_owned());
+        Ok((out, Some(fresh)))
     }
 
     /// 预取：确保 url 的缩略图落盘，返回 (原始宽, 原始高, 本地绝对路径)。
@@ -153,14 +161,46 @@ pub async fn serve(
         return not_found();
     };
     match cache.get(&url, width).await {
-        Ok(img) => tauri::http::Response::builder()
-            .status(200)
-            .header(tauri::http::header::CONTENT_TYPE, img.mime)
-            .header(tauri::http::header::CACHE_CONTROL, "max-age=31536000")
-            .body(img.bytes)
-            .unwrap_or_else(|_| not_found()),
+        Ok((img, fresh)) => {
+            // 展示即落 meta:首次(未命中)展示一张图时顺手把原始宽高写入 image_meta,
+            // 使该图被看过一次后宽高持久化 → 下次启动/跨会话首次查看不再「先大后正常」地闪。
+            // 后台 spawn、不阻塞本次图片响应;不发 ChangeNotice(当前视图前端 <img> onLoad 已
+            // 测得宽高写入 imageDimsCache,无需再触发会话重读)。注:cachedimg 也服务头像,故
+            // hub_image_meta 会含头像行——按 URL 去重、对消息图查询无副作用(by_urls 只取所需)。
+            if let Some((w, h, local_path)) = fresh {
+                if let Some(meta) = app.try_state::<ImageMetaStore>() {
+                    let store = meta.inner().clone();
+                    let url_owned = url.clone();
+                    tauri::async_runtime::spawn(async move {
+                        let _ = store
+                            .upsert(ImageMeta {
+                                url: url_owned,
+                                width: w as i64,
+                                height: h as i64,
+                                local_path,
+                                updated_at_ms: now_ms(),
+                            })
+                            .await;
+                    });
+                }
+            }
+            tauri::http::Response::builder()
+                .status(200)
+                .header(tauri::http::header::CONTENT_TYPE, img.mime)
+                .header(tauri::http::header::CACHE_CONTROL, "max-age=31536000")
+                .body(img.bytes)
+                .unwrap_or_else(|_| not_found())
+        }
         Err(_) => not_found(),
     }
+}
+
+fn now_ms() -> i64 {
+    use std::time::UNIX_EPOCH;
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
 }
 
 fn not_found() -> tauri::http::Response<Vec<u8>> {

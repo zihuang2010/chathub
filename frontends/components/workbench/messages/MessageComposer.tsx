@@ -164,9 +164,10 @@ export function MessageComposer({
     );
   }, [pendingFileAttachments.length, onHeightChange]);
 
-  // 父组件持有 composerHeight 且按 conversation.id 重挂载本组件。若用户在会话 A
-  // 加附件 → 高度 +84，切到 B 时本组件 unmount 但父高度仍是 +84，下一会话开局
-  // 偏高。unmount cleanup 中若 bump 仍生效则回退，保证高度跨会话不漂移。
+  // 本组件已是「持久化编辑器」:父组件(ChatArea)不再按 conversation.id 重挂载它,
+  // 切会话只载草稿、不重建。故此 cleanup 仅在本组件真正卸载(ChatArea 整体卸载)时触发:
+  // 若届时 chip bump 仍生效则把父高度回退 +84,避免残留高度。切会话时的高度回退由上方
+  // 依赖 pendingFileAttachments.length 的 layout effect 正确驱动,不靠本 cleanup。
   useEffect(() => {
     return () => {
       if (chipBumpAppliedRef.current) {

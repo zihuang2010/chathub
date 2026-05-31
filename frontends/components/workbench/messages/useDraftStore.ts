@@ -297,6 +297,15 @@ function touchLRU(id: string): void {
     const evicted = order.shift();
     if (evicted) {
       drafts.delete(evicted);
+      // 与 drafts 一致淘汰以该 id 索引的旁路集合:dirtyBackend 仅在 flush 时 delete,
+      // 若会话未切走就被挤掉淘汰则永不 flush,其 id 会随会话总数无上界残留;一并清掉,
+      // 并提前释放仍挂着的防抖 timer(被淘汰会话本就不该再写回)。
+      dirtyBackend.delete(evicted);
+      const pending = pendingWrites.get(evicted);
+      if (pending) {
+        clearTimeout(pending);
+        pendingWrites.delete(evicted);
+      }
       const w = safeWindow();
       if (w) {
         try {

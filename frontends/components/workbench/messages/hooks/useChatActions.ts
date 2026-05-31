@@ -338,19 +338,28 @@ export function useChatActions({
           void deliverMessage(message.id, message.text, clientMsgId);
           break;
         }
-        case "delete":
+        case "delete": {
+          // 右键删除高误触(轨迹板右击、误选回车),删除即整条气泡消失,故加二次确认。
+          // window.confirm 在本 Tauri WebView 可用(lib/updater.ts 同款用法)。
+          // TODO(接后端):删除应调 delete_message IPC + 失败回滚;当前仅本地 store 移除,
+          // 重读权威历史时服务端数据可能补回。
+          if (!window.confirm(STRINGS.contextMenu.deleteConfirm)) break;
           useChatStore.getState().removeMessage(conversation.id, message.id);
           // 若引用预览正指向被删消息,发送时 replyTo 会指向不存在的 id
           // → buildTimelineItems 解析不到 replyTarget 静默丢失。同步清空。
           setReplyDraft((draft) => (draft?.id === message.id ? null : draft));
           break;
+        }
         case "recall":
           useChatStore
             .getState()
             .patchMessage(conversation.id, message.id, { isRecalled: true, status: undefined });
           // 撤回的消息不再适合作为引用对象,同样清空。
           setReplyDraft((draft) => (draft?.id === message.id ? null : draft));
-          showToast(STRINGS.toast.recallSuccess, { type: "success" });
+          // TODO(接后端):撤回应调 recall_message IPC,成功才提示、失败走 recallFailed。
+          // 当前仅改本地视图、未同步服务端(ChangeNotice 重读权威列表即复活),故用中性
+          // info 文案,不承诺「成功」,避免「假成功」反馈误导坐席。
+          showToast(STRINGS.toast.recallLocalOnly, { type: "info" });
           break;
         case "copy":
           // Already handled inside MessageContextMenu; this is just telemetry.

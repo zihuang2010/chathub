@@ -25,7 +25,8 @@ describe("ImageLightbox", () => {
   it("按 Esc 键触发 onClose", () => {
     const onClose = vi.fn();
     render(<ImageLightbox src="https://filet.jdd51.com/b.png" alt="b" onClose={onClose} />);
-    fireEvent.keyDown(window, { key: "Escape" });
+    // Radix Dialog 的 Esc 监听挂在 document(DismissableLayer),非 window。
+    fireEvent.keyDown(document, { key: "Escape" });
     expect(onClose).toHaveBeenCalled();
   });
 
@@ -62,7 +63,7 @@ describe("ImageLightbox", () => {
       <ImageLightbox src="https://filet.jdd51.com/f.png" alt="f" onClose={onClose} />,
     );
     unmount();
-    fireEvent.keyDown(window, { key: "Escape" });
+    fireEvent.keyDown(document, { key: "Escape" });
     expect(onClose).not.toHaveBeenCalled();
   });
 });

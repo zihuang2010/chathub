@@ -67,7 +67,7 @@ describe("MessageContent blocks path", () => {
     const { container } = renderContent({
       blocks: [{ type: "image", url: "https://e.example/solo.png" }],
     });
-    // 重构后 ImageStandalone 使用 button[title] 而非 a[title]（点击打开灯箱）。
+    // 单图独占大卡复用 ImageAttachment,使用 button[title] 而非 a[title]（点击打开灯箱）。
     const standalone = container.querySelector("button[title]");
     expect(standalone).not.toBeNull();
     // img src 包含原始 URL
@@ -180,10 +180,10 @@ describe("MessageImage layout-shift + error fallback", () => {
     expect(img).not.toBeNull();
     // img stays opacity-0 until onLoad fires — 杜绝 broken-icon 闪现。
     expect(img?.className).toContain("opacity-0");
-    // 无宽高时回退固定 192×192 方盒（内联样式）。
+    // 无宽高时占位用中性 4:3 比例盒(width:100%),非旧的 192 方盒 — 宽度跨态恒定、只高度收敛。
     const sizedContainer = img!.parentElement!;
-    expect(sizedContainer.style.width).toBe("192px");
-    expect(sizedContainer.style.height).toBe("192px");
+    expect(sizedContainer.style.width).toBe("100%");
+    expect(sizedContainer.style.aspectRatio).toBe("4 / 3");
     // 骨架 overlay 存在。
     const skeleton = container.querySelector("span.animate-pulse");
     expect(skeleton).not.toBeNull();
@@ -332,7 +332,7 @@ describe("MessageImage 比例盒 + asset 源（R1/R2/R4）", () => {
     expect(box.style.aspectRatio).toBe("400 / 200");
   });
 
-  it("无宽高时回退 192×192 固定尺寸盒（向后兼容）", () => {
+  it("无宽高时回退中性 4:3 占位比例盒（width:100%，非正方形）", () => {
     const { container } = render(
       <article>
         <MessageContent parts={[{ kind: "image", url: "https://e.example/img.png" }]} />
@@ -341,9 +341,9 @@ describe("MessageImage 比例盒 + asset 源（R1/R2/R4）", () => {
     const img = container.querySelector("img");
     expect(img).not.toBeNull();
     const box = img!.parentElement!;
-    // 无宽高：内联 style.width 和 style.height 均为 192px
-    expect(box.style.width).toBe("192px");
-    expect(box.style.height).toBe("192px");
+    // 无宽高：占位盒用 width:100% + 中性 4:3 比例(与有 dims 盒同宽度口径),不再是固定 192 方盒。
+    expect(box.style.width).toBe("100%");
+    expect(box.style.aspectRatio).toBe("4 / 3");
   });
 
   it("有本地路径时不渲染骨架", () => {
@@ -423,9 +423,9 @@ describe("MessageImage 比例盒 + asset 源（R1/R2/R4）", () => {
       </article>,
     );
     const img = container.querySelector("img")!;
-    // 加载前无任何 dims → 固定 192 方盒（此刻 object-contain 会把非方图留白边）。
-    expect(img.parentElement!.style.width).toBe("192px");
-    expect(img.parentElement!.style.height).toBe("192px");
+    // 加载前无任何 dims → 中性 4:3 占位比例盒(width:100%);加载后切到真实比例,宽度恒定只高度收敛。
+    expect(img.parentElement!.style.width).toBe("100%");
+    expect(img.parentElement!.style.aspectRatio).toBe("4 / 3");
     // jsdom 不解码，手动赋固有宽高模拟"图片字节加载完"。
     Object.defineProperty(img, "naturalWidth", { value: 300, configurable: true });
     Object.defineProperty(img, "naturalHeight", { value: 150, configurable: true });

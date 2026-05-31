@@ -45,7 +45,8 @@ export function formatMessageDate(sentAt: string): string {
   return dateFormatter.format(date);
 }
 
-export function formatMessageTime(sentAt: string): string {
+// 仅本文件内使用(被 formatMessageDateTime 调用),不对外导出。
+function formatMessageTime(sentAt: string): string {
   return timeFormatter.format(new Date(sentAt));
 }
 
@@ -192,6 +193,19 @@ export function isSafeUrl(url: string | undefined, kind: "link" | "image"): bool
   return false;
 }
 
+// CSS url() 上下文专用守卫。isSafeUrl 只保证协议安全(适用于 href / <img src>,
+// 浏览器按 URL 语义解析),但把外部 URL 放进 CSS `background: url(...)` 时,URL 里
+// 裸的引号/括号/反斜杠/尖括号/分号/空白可提前闭合 url() 并追加任意 CSS 声明
+// (外链加载做追踪、数据外带)。此函数在 isSafeUrl 通过后额外拒绝一切 CSS 元字符:
+// 合法的 http(s)/mediaproxy/blob/data:image/cachedimg URL 不含这些裸字符
+// (会被 %-编码),故对正常输入零影响。不安全返回 null,调用方回退占位/不设背景。
+// 注意:调用方仍应使用带引号的 url("...") 形式作为第二层防御。
+export function cssUrlSafe(url: string | undefined, kind: "link" | "image"): string | null {
+  if (!url || !isSafeUrl(url, kind)) return null;
+  if (/["'()\\<>;\s]/.test(url)) return null;
+  return url;
+}
+
 // ─── Reply preview ──────────────────────────────────────────────────────────
 //
 // 引用预览(composer 顶上的引用条 + 气泡内 ReplyBlock)优先展示文本;若文本
@@ -226,10 +240,6 @@ export function messageReplyPreview(message: Message): string {
 }
 
 // ─── Misc helpers ───────────────────────────────────────────────────────────
-
-export function isAtBottom(node: HTMLElement, threshold = 24): boolean {
-  return node.scrollHeight - node.scrollTop - node.clientHeight < threshold;
-}
 
 // Human-readable byte size with locale-aware decimal separator. Falls back to
 // "0 B" for zero/negative inputs to keep the UI stable when sizes are missing.
@@ -293,9 +303,11 @@ export function pickCustomerAvatarImage(seed: string): string {
   return `/avatars/a${String(index).padStart(2, "0")}.png`;
 }
 
-// 头像背景图解析:优先客户真实头像 URL(企微外部联系人 externalAvatar),
-// 仅在 isSafeUrl 通过时采用;为空/非法时回退到按 seed 的占位插画图,
+// 头像背景图解析:优先客户真实头像 URL(企微外部联系人 externalAvatar)。
+// 头像值最终落入 CSS background url("..."),故用 cssUrlSafe(协议白名单 + 拒绝 CSS
+// 元字符)而非仅 isSafeUrl,从根上消除可控 avatarUrl 闭合引号注入 CSS 的风险;
+// 为空/非法时回退到按 seed 的占位插画图(/avatars/aNN.png,本就 CSS 安全),
 // 保证缺图时不出现空白方块。供 Avatar 组件与 CustomerDetails 复用。
 export function resolveAvatarImageUrl(seed: string, avatarUrl?: string): string {
-  return avatarUrl && isSafeUrl(avatarUrl, "image") ? avatarUrl : pickCustomerAvatarImage(seed);
+  return cssUrlSafe(avatarUrl, "image") ?? pickCustomerAvatarImage(seed);
 }

@@ -4,10 +4,22 @@ import type { TimelineItem } from "./hooks/useChatTimeline";
 
 const DEFAULT_VIRTUAL_OVERSCAN = 5;
 const IMAGE_DENSE_VIRTUAL_OVERSCAN = 3;
-const MEDIA_ROW_EXTRA_HEIGHT = 60;
+// 图片行在「图片盒高」之外的额外高度,按是否套气泡 chrome 区分(向实测对齐):
+//  - 媒体独占消息(isMediaOnly):气泡不套底色/内边距/描边(见 MessageBubble),仅圆角,
+//    额外高接近 0,给 12 兜底行间微差。原先统一用 60 对这类(占图片消息绝大多数)系统性高估,
+//    首帧 measureElement 校正幅度大 → 可见「整列下沉」。
+//  - 图文混排(图片 + 文本同条):仍有气泡 padding + 时间戳,沿用 60。
+const MEDIA_ONLY_ROW_EXTRA_HEIGHT = 12;
+const MEDIA_IN_BUBBLE_EXTRA_HEIGHT = 60;
 const IMAGE_BOX_MAX_WIDTH = 256;
 const IMAGE_BOX_MAX_HEIGHT = 320;
 const IMAGE_BOX_FALLBACK_HEIGHT = 192;
+
+// 与 MessageBubble.isMediaOnly 同义:仅图片/视频、无文本的消息不套气泡 chrome。
+function isMediaOnlyMessage(message: Message): boolean {
+  const parts = message.parts;
+  return parts.length > 0 && parts.every((part) => part.kind === "image" || part.kind === "video");
+}
 
 function estimateImageBoxHeight(message: Message): number {
   const image = message.parts.find((part) => part.kind === "image");
@@ -38,7 +50,10 @@ export function estimateTimelineRowHeight(item: TimelineItem): number {
   if (item.type !== "message") return 64;
   const parts = item.message.parts;
   if (parts.some((part) => part.kind === "image")) {
-    return estimateImageBoxHeight(item.message) + MEDIA_ROW_EXTRA_HEIGHT;
+    const extra = isMediaOnlyMessage(item.message)
+      ? MEDIA_ONLY_ROW_EXTRA_HEIGHT
+      : MEDIA_IN_BUBBLE_EXTRA_HEIGHT;
+    return estimateImageBoxHeight(item.message) + extra;
   }
   if (parts.some((part) => part.kind === "video")) return 212;
   if (parts.some((part) => part.kind === "file")) return 88;

@@ -17,10 +17,6 @@ interface AccountDropdownProps {
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
   children: ReactNode;
-  align?: "start" | "center" | "end";
-  side?: "top" | "right" | "bottom" | "left";
-  sideOffset?: number;
-  contentClassName?: string;
   title?: string;
 }
 
@@ -40,10 +36,6 @@ export function AccountDropdown({
   open,
   onOpenChange,
   children,
-  align = "start",
-  side = "bottom",
-  sideOffset = 4,
-  contentClassName,
   title,
 }: AccountDropdownProps) {
   const [query, setQuery] = useState("");
@@ -79,9 +71,9 @@ export function AccountDropdown({
       <Popover.Trigger asChild>{children}</Popover.Trigger>
       <Popover.Portal>
         <Popover.Content
-          align={align}
-          side={side}
-          sideOffset={sideOffset}
+          align="start"
+          side="bottom"
+          sideOffset={4}
           role="dialog"
           aria-label={title ?? STRINGS.conversationList.accountListLabel}
           className={cn(
@@ -89,7 +81,6 @@ export function AccountDropdown({
             "z-20 flex max-h-[480px] w-[280px] flex-col overflow-hidden rounded-xl border border-workbench-line bg-workbench-surface shadow-wb-popover-strong outline-none",
             // 开/合补间:fade + zoom + 贴边滑入,150ms;reduced-motion 直接跳过。
             "duration-150 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[side=bottom]:slide-in-from-top-1 data-[side=left]:slide-in-from-right-1 data-[side=right]:slide-in-from-left-1 data-[side=top]:slide-in-from-bottom-1 motion-reduce:animate-none",
-            contentClassName,
           )}
         >
           {title && (

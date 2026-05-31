@@ -1,4 +1,4 @@
-import { memo } from "react";
+import { memo, type KeyboardEvent } from "react";
 import { Loader2 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
@@ -42,6 +42,24 @@ function messageAriaText(message: Message): string {
 function isMediaOnly(message: Message): boolean {
   const parts = message.parts;
   return parts.length > 0 && parts.every((p) => p.kind === "image" || p.kind === "video");
+}
+
+// 让纯键盘用户也能唤出消息操作:气泡聚焦后按 ContextMenu 键或 Shift+F10(WAI-ARIA 约定),
+// 在气泡中心合成一个 contextmenu 事件,触发包裹它的 Radix MessageContextMenu。复用同一菜单、
+// 无新增可见入口,故不引入额外 hover/布局抖动。
+function openContextMenuFromKeyboard(e: KeyboardEvent<HTMLElement>) {
+  if (e.key !== "ContextMenu" && !(e.shiftKey && e.key === "F10")) return;
+  e.preventDefault();
+  const el = e.currentTarget;
+  const r = el.getBoundingClientRect();
+  el.dispatchEvent(
+    new MouseEvent("contextmenu", {
+      bubbles: true,
+      cancelable: true,
+      clientX: Math.round(r.left + r.width / 2),
+      clientY: Math.round(r.top + r.height / 2),
+    }),
+  );
 }
 
 // Custom equality for memo: timeline rebuilds replyTarget objects fresh each
@@ -141,6 +159,7 @@ function IncomingBubble({
           <article
             tabIndex={0}
             role="article"
+            onKeyDown={openContextMenuFromKeyboard}
             aria-label={`${avatarName}: ${messageAriaText(message)}，发送时间 ${fullLabel}`}
             className={cn(
               "group relative flex min-w-0 max-w-full flex-col gap-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-workbench-accent/40",
@@ -181,6 +200,7 @@ function OutgoingBubble({
           <article
             tabIndex={0}
             role="article"
+            onKeyDown={openContextMenuFromKeyboard}
             aria-label={`我：${messageAriaText(message)}，发送时间 ${fullLabel}`}
             className={cn(
               "group relative flex min-w-0 max-w-full flex-col gap-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-workbench-accent/40",

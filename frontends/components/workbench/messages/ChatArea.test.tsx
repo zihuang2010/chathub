@@ -387,9 +387,11 @@ describe("ChatArea virtual list sizing", () => {
       isFirstInBurst: true,
     });
 
-    expect(wideImage).toBeLessThan(252);
+    // 媒体独占图片行额外高已按 isMediaOnly 降为 +12(不再统一 +60):无 dims 回退
+    // 192 + 12 = 204;有真实 dims 的宽图按比例更矮,短于回退盒。
+    expect(wideImage).toBeLessThan(unknownImage);
     expect(tallImage).toBeGreaterThan(wideImage);
-    expect(unknownImage).toBe(252);
+    expect(unknownImage).toBe(204);
   });
 
   it("uses a smaller overscan window for image-dense histories", () => {

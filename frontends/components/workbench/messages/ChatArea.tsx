@@ -26,6 +26,14 @@ function rowHeightCacheKey(conversationId: string, itemId: string): string {
   return `${conversationId}:${itemId}`;
 }
 
+// 虚拟分支每行的顶部间距(px),与下方渲染用的 pt-6(24)/pt-7(28) 严格同源:首行无间距;
+// 同发送者连续消息 24;首条/分隔等 28。estimateSize 与渲染必须用同一份口径——否则估算缺这段
+// 间距,而 measureElement 实测把它计入,虚拟器据差值逐行校正,首屏表现为「整列上抖」。
+function rowTopSpacingPx(item: TimelineItem, index: number): number {
+  if (index === 0) return 0;
+  return item.type === "message" && !item.isFirstInBurst ? 24 : 28;
+}
+
 interface ChatAreaProps {
   conversation: Conversation;
   messages: Message[];
@@ -173,7 +181,10 @@ export const ChatArea = memo(function ChatArea({
     estimateSize: (index) => {
       const item = timelineItems[index];
       const cacheKey = rowHeightCacheKey(conversation.id, item.id);
-      return measuredRowHeightsRef.current.get(cacheKey) ?? estimateTimelineRowHeight(item);
+      const measured = measuredRowHeightsRef.current.get(cacheKey);
+      if (measured !== undefined) return measured;
+      // 补上与渲染同源的顶部间距:measureElement 实测含它,估算不补则系统性偏矮 → 开场抖动。
+      return estimateTimelineRowHeight(item) + rowTopSpacingPx(item, index);
     },
     // 图片密集历史降低屏外预渲染量,减少同时挂载/解码的 <img>;文本历史保留 5 行缓冲,
     // 快速滚动仍有足够预渲染空间。
@@ -257,15 +268,10 @@ export const ChatArea = memo(function ChatArea({
                   const item = timelineItems[vi.index];
                   const idx = vi.index;
                   // 间距用 padding(而非 margin)以并入 measureElement 量到的高度;
-                  // margin 在盒外不计入 getBoundingClientRect。
-                  const spacing =
-                    idx === 0
-                      ? ""
-                      : item.type === "message"
-                        ? item.isFirstInBurst
-                          ? "pt-7"
-                          : "pt-6"
-                        : "pt-7";
+                  // margin 在盒外不计入 getBoundingClientRect。值与 estimateSize 同源
+                  // (rowTopSpacingPx):0→无、24→pt-6、28→pt-7。
+                  const spacingPx = rowTopSpacingPx(item, idx);
+                  const spacing = spacingPx === 0 ? "" : spacingPx === 24 ? "pt-6" : "pt-7";
                   return (
                     <div
                       key={item.id}
@@ -332,7 +338,9 @@ export const ChatArea = memo(function ChatArea({
       </div>
       {/* 翻历史 spinner:length>0 时的 loading 必是翻页加载(初次加载 length===0 走
           ChatLoadingState 分支)。绝对定位顶部居中,不挤压消息流、不引发回弹位移。 */}
-      {!error && localMessages.length > 0 && loading && hasMoreHistory && <HistoryLoadingPill />}
+      {!error && localMessages.length > 0 && loading && hasMoreHistory && (
+        <HistoryLoadingSkeleton />
+      )}
       {!loading && !error && localMessages.length > 0 && !atBottom && (
         <ScrollToBottomButton
           count={unreadBelow}
@@ -437,20 +445,48 @@ const UnreadAbovePill = memo(function UnreadAbovePill({
 });
 
 // ─── Floating history-loading pill ──────────────────────────────────────────
-// 顶部居中的"加载更早消息"指示。非交互(role=status),只在向上翻页拉取时出现。
-// 绝对定位 + translate 居中,不参与消息流布局,避免 prepend 时与内容互相挤压。
-const HistoryLoadingPill = memo(function HistoryLoadingPill() {
+// 翻历史"加载更早消息"骨架浮层。只在向上翻页拉取时出现,非交互(role=status)。
+// 关键:绝对定位 + pointer-events-none + 渐变淡出,纯覆盖在视口顶部,**不改 scrollHeight/
+// scrollTop**——不参与消息流布局、不与翻历史 prepend 锚点相互作用,故不引入滚动跳动。
+// 用骨架气泡(而非纯 spinner 药丸)呈现"上方还有内容在来"的预期,落地后被真实更旧页顶替。
+const HistoryLoadingSkeleton = memo(function HistoryLoadingSkeleton() {
   return (
     <div
       role="status"
       aria-live="polite"
+      aria-label={STRINGS.status.loadingHistory}
       className={cn(
-        "pointer-events-none absolute left-1/2 top-3 z-20 inline-flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-workbench-line bg-workbench-surface px-2.5 py-1 text-wb-2xs font-medium text-workbench-text-secondary shadow-wb-popover",
-        "animate-in fade-in slide-in-from-top-2",
+        "pointer-events-none absolute inset-x-0 top-0 z-20 flex flex-col gap-3 px-4 pb-8 pt-5",
+        // 向下渐隐,与下方真实消息平滑衔接,避免骨架与内容的硬边界。
+        "bg-gradient-to-b from-workbench-surface via-workbench-surface/95 to-transparent",
+        "animate-in fade-in",
       )}
     >
-      <Loader2 size={13} className="shrink-0 animate-spin motion-reduce:animate-none" aria-hidden />
-      <span>{STRINGS.status.loadingHistory}</span>
+      <HistorySkeletonRow />
+      <HistorySkeletonRow wide />
+      <div className="flex items-center justify-center gap-1.5 pt-0.5 text-wb-2xs font-medium text-workbench-text-secondary">
+        <Loader2
+          size={13}
+          className="shrink-0 animate-spin motion-reduce:animate-none"
+          aria-hidden
+        />
+        <span>{STRINGS.status.loadingHistory}</span>
+      </div>
     </div>
   );
 });
+
+// 单行骨架气泡(头像块 + 气泡块),自包含、不依赖 ChatStates 的 framer-motion stagger 容器。
+function HistorySkeletonRow({ wide }: { wide?: boolean }) {
+  return (
+    <div className="flex items-center gap-2">
+      <div className="size-9 shrink-0 animate-pulse rounded-lg bg-workbench-line-subtle" />
+      <div
+        className={cn(
+          "h-9 animate-pulse rounded-md bg-workbench-line-subtle",
+          wide ? "w-[55%]" : "w-[38%]",
+        )}
+      />
+    </div>
+  );
+}

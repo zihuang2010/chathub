@@ -20,6 +20,8 @@
 import { useCallback, useEffect, useMemo, useRef } from "react";
 
 import type { Message } from "@/components/workbench/messages/data";
+import { clearImageDimsCache } from "@/components/workbench/messages/imageDimsCache";
+import { clearLoadedImageSrcs } from "@/components/workbench/messages/loadedImageSrcs";
 import { selectTimeline, useChatStore } from "@/components/workbench/messages/store/chatStore";
 import { changeBus } from "@/lib/data/changeBus";
 import { useCurrentEmployeeId } from "@/lib/data/useCurrentEmployeeId";
@@ -97,6 +99,10 @@ export function useMessageHistory(opts: UseMessageHistoryOptions): UseMessageHis
   useEffect(() => {
     if (prevEmployeeRef.current && employeeId && prevEmployeeRef.current !== employeeId) {
       useChatStore.getState().reset();
+      // 数据真相 reset 的同时,清掉图片渲染相关的模块级辅助缓存,使其与数据真相生命
+      // 周期一致,避免跨员工残留影响下一员工同 URL 图片首帧渲染态(详见各 clear 注释)。
+      clearImageDimsCache();
+      clearLoadedImageSrcs();
     }
     if (employeeId) prevEmployeeRef.current = employeeId;
   }, [employeeId]);
