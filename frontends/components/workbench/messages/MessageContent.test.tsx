@@ -279,6 +279,62 @@ describe("MessageImage layout-shift + error fallback", () => {
     expect(second.container.querySelector("img")?.className).not.toContain("opacity-0");
   });
 
+  it("data: 内联图发送瞬间直接 loaded(无骨架、eager+sync),消除发图首帧骨架闪", () => {
+    const { container } = renderContent({
+      blocks: [{ type: "image", url: "data:image/png;base64,iVBORw0KGgo=" }],
+    });
+    const img = container.querySelector("img")!;
+    expect(img).not.toBeNull();
+    // 首帧即 loaded:无骨架 overlay、img 不 opacity-0。
+    expect(container.querySelector('[data-testid="image-loading-placeholder"]')).toBeNull();
+    expect(img.className).not.toContain("opacity-0");
+    // 内存源 eager + sync,同帧出像素(不走远程源的 lazy/async)。
+    expect(img.getAttribute("loading")).toBe("eager");
+    expect(img.getAttribute("decoding")).toBe("sync");
+  });
+
+  it("收敛切源塌缩时复用已解码的过渡 <img>(不原地改写可见 src → 不重解码、不闪)", () => {
+    // 乐观气泡:内联图 data: 源,首帧即 loaded。
+    const { container, rerender } = render(
+      <article>
+        <MessageContent
+          parts={buildMessageParts("", undefined, [
+            { type: "image", url: "data:image/png;base64,iVBORw0KGgo=" },
+          ])}
+        />
+      </article>,
+    );
+
+    // 收敛:权威重读把 url 换成远端 OSS,触发过渡态(保留 data: 可见、隐藏预载远端源)。
+    rerender(
+      <article>
+        <MessageContent
+          parts={buildMessageParts("", undefined, [
+            { type: "image", url: "https://e.example/conv.png" },
+          ])}
+        />
+      </article>,
+    );
+    const images = container.querySelectorAll("img");
+    expect(images).toHaveLength(2);
+    // 隐藏的过渡 <img> 承载远端源(opacity-0,后台解码)。
+    const pending = images[1];
+    expect(pending.getAttribute("src")).toContain("e.example");
+    expect(pending.className).toContain("opacity-0");
+
+    // 远端源解码完成 → 塌缩成单图。关键:存活的那个 <img> 必须是「过渡元素本身」(已解码),
+    // 而非旧 data: 元素被改写 src(那会逼可见元素重新解码 → 闪)。
+    act(() => {
+      fireEvent.load(pending);
+    });
+    const survivors = container.querySelectorAll("img");
+    expect(survivors).toHaveLength(1);
+    expect(survivors[0]).toBe(pending); // 同一 DOM 节点被复用,而非旧元素改写 src
+    expect(survivors[0].getAttribute("src")).toContain("e.example");
+    expect(survivors[0].className).not.toContain("opacity-0");
+    expect(container.querySelector('[data-testid="image-loading-placeholder"]')).toBeNull();
+  });
+
   it("keeps the loaded remote image visible while switching to a pending asset src", () => {
     const { container, rerender } = render(
       <article>
@@ -496,7 +552,9 @@ describe("MessageImage 比例盒 + asset 源（R1/R2/R4）", () => {
     );
     const box2 = second.container.querySelector("img")!.parentElement!;
     expect(box2.style.aspectRatio).toBe("400 / 100");
-    expect(box2.style.width).toBe("100%");
+    // 有尺寸的非配文图用确定 px 宽(= min(上限256, 真实宽400) = 256),让 aspectRatio 首帧即
+    // 算出高度、不依赖图片解码 —— 消除发图首帧「盒子宽塌成 0→解码后弹满」的整列位移。
+    expect(box2.style.width).toBe("256px");
   });
 });
 

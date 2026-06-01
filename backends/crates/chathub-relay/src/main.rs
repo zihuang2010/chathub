@@ -41,6 +41,22 @@ async fn main() -> anyhow::Result<()> {
             Ok(c) => {
                 let c = Arc::new(c);
                 c.register_push().await;
+                // 启动期探一次下游发现并打印解析到的地址,便于确认 relay 实际会请求/回调到哪个后台。
+                // 仅此一次,不动每请求热路径(discover_base_url 自身按请求调用且只在 miss 时 debug)。
+                match c.discover_base_url().await {
+                    Some(url) => tracing::info!(
+                        target: "chathub_relay::nacos",
+                        service = %cfg.nacos.discovery_service,
+                        base_url = %url,
+                        "discovered downstream base_url from Nacos",
+                    ),
+                    None => tracing::info!(
+                        target: "chathub_relay::nacos",
+                        service = %cfg.nacos.discovery_service,
+                        fallback = %cfg.downstream_url,
+                        "no healthy downstream instance yet — will fall back to static url",
+                    ),
+                }
                 Some(c)
             }
             Err(e) => {
@@ -186,10 +202,8 @@ async fn main() -> anyhow::Result<()> {
             tracing::info!(cert=%cert.display(), "tonic Server TLS enabled");
             Some(ServerTlsConfig::new().identity(Identity::from_pem(&cert_pem, &key_pem)))
         }
-        (None, None) => {
-            tracing::warn!("tonic Server TLS not configured (plaintext gRPC) — set RELAY_TLS_CERT_PATH + RELAY_TLS_KEY_PATH for production");
-            None
-        }
+        // 第一版仅内网,故意明文 gRPC;不再告警(将来对外暴露时配 cert/key 即自动启 TLS)。
+        (None, None) => None,
         _ => anyhow::bail!(
             "RELAY_TLS_CERT_PATH and RELAY_TLS_KEY_PATH must be both set or both unset"
         ),
@@ -288,8 +302,11 @@ fn init_tracing(cfg: &Config) -> anyhow::Result<WorkerGuard> {
     let file_appender = tracing_appender::rolling::daily(&cfg.log.dir, &cfg.log.file_prefix);
     let (file_writer, guard) = tracing_appender::non_blocking(file_appender);
 
-    let env_filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("info,chathub_relay=debug"));
+    // 默认过滤:压掉 nacos-sdk gRPC 健康检查的启动期噪声(connection 未注册 / 转换失败,
+    // SDK 自述"重试成功即可忽略")。保留 error 级,真实故障仍会冒出。设 RUST_LOG 可整体覆盖本默认。
+    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+        EnvFilter::new("info,chathub_relay=debug,nacos_sdk::common::remote::grpc=error")
+    });
 
     let file_layer = tracing_subscriber::fmt::layer()
         .json()

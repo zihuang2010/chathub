@@ -26,6 +26,7 @@ import {
   RESIZE_KEYBOARD_STEP,
 } from "./constants";
 import type { Conversation, MessageAttachment, MessageBlock, QuickReply } from "./data";
+import { attachmentTypeFromExt } from "./data";
 import { AiPolishPopover } from "./composer/AiPolishPopover";
 import { SendButtonGroup } from "./composer/SendButtonGroup";
 import { blocksToDoc, docToBlocks } from "./composer/docToBlocks";
@@ -250,12 +251,17 @@ export function MessageComposer({
 
   const handleFilePicker = (event: ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(event.target.files ?? []);
-    const next: MessageAttachment[] = files.map((file) => ({
-      type: "file",
-      url: URL.createObjectURL(file),
-      name: file.name,
-      sizeBytes: file.size,
-    }));
+    const next: MessageAttachment[] = files.map((file) => {
+      // 按文件后缀判定附件类型,使 messageType 正确分流(如 amr→voice→4),与接收侧一致。
+      const dot = file.name.lastIndexOf(".");
+      const ext = dot >= 0 ? file.name.slice(dot + 1) : "";
+      return {
+        type: attachmentTypeFromExt(ext),
+        url: URL.createObjectURL(file),
+        name: file.name,
+        sizeBytes: file.size,
+      };
+    });
     setPendingFileAttachments([...pendingFileAttachments, ...next]);
     event.target.value = "";
   };

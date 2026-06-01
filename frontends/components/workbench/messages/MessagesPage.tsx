@@ -359,6 +359,7 @@ export function MessagesPage({ accounts }: MessagesPageProps) {
         filePath: options?.filePath,
         fileName: options?.fileName,
         fileSize: options?.fileSize,
+        durationSeconds: options?.durationSeconds,
       });
     },
     [conversation, selectedEntry],

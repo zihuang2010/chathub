@@ -114,6 +114,7 @@ function ImageAttachment({ part, fill = false }: { part: ImagePart; fill?: boole
         <MessageImage
           part={part}
           alt={STRINGS.attachment.imageAlt(part.name)}
+          fill={fill}
           maxW={fill ? 360 : undefined}
           maxH={fill ? 460 : undefined}
         />
@@ -450,6 +451,10 @@ interface MessageImageProps {
   maxW?: number;
   /** 显示上限高度（px），默认 320。 */
   maxH?: number;
+  /** 配文图:外层 block w-full、宽度确定,盒子 width:100% 铺满即可。
+   *  非配文(默认):外层是 shrink-to-fit 的 inline-block,盒子须用确定 px 宽,否则解码前
+   *  宽度塌成 0 → aspectRatio 算出 0 高 → 解码后弹满,造成发图首帧整列位移(文本+图+文本)。 */
+  fill?: boolean;
 }
 
 type ImageRenderState =
@@ -458,9 +463,17 @@ type ImageRenderState =
   | { phase: "transition"; visibleSrc: string; pendingSrc: string }
   | { phase: "error"; visibleSrc: string; pendingSrc?: undefined };
 
+// data:/blob: 是已在内存、用户刚在 composer 看过的本地源(内联图 data:、托盘图 blob:):
+// 字节已就绪、无网络等待 → 首帧直接判 loaded,消除「发送瞬间先闪一帧骨架」。
+function isInstantSrc(src: string): boolean {
+  return src.startsWith("data:") || src.startsWith("blob:");
+}
+
 function initialImageState(src: string, safe: boolean, isLocal: boolean): ImageRenderState {
   if (!safe) return { phase: "error", visibleSrc: src };
-  if (isLocal || hasLoadedImageSrc(src)) return { phase: "loaded", visibleSrc: src };
+  if (isLocal || isInstantSrc(src) || hasLoadedImageSrc(src)) {
+    return { phase: "loaded", visibleSrc: src };
+  }
   return { phase: "loading", visibleSrc: src };
 }
 
@@ -493,7 +506,7 @@ function nextImageState(
   return initialImageState(nextSrc, safe, isLocal);
 }
 
-function MessageImage({ part, alt, maxW = 256, maxH = 320 }: MessageImageProps) {
+function MessageImage({ part, alt, maxW = 256, maxH = 320, fill = false }: MessageImageProps) {
   // 本地 asset 源（优先）
   const local = assetImageSrc(part.localPath);
   // 回退源（cachedImageSrc / 原 URL）
@@ -503,6 +516,9 @@ function MessageImage({ part, alt, maxW = 256, maxH = 320 }: MessageImageProps) 
 
   // 有 localPath 且未进回退 → asset 源已同步缓存，直接 loaded；否则走 loading
   const isLocal = !useFallback && !!local;
+  // 「即时源」:asset 本地缩略 + data:/blob: 内存源。都已落盘/在内存,可 eager+sync 同帧出
+  // 像素;远程源(cachedimg://)才需 lazy+async 省屏外解码内存。
+  const instant = isLocal || isInstantSrc(src);
   // 安全性检查基于原始 https URL，asset URL 本身是程序化生成的不需要再检查
   const safe = isSafeUrl(part.url, "image");
   const [renderState, setRenderState] = useState<ImageRenderState>(() =>
@@ -558,13 +574,15 @@ function MessageImage({ part, alt, maxW = 256, maxH = 320 }: MessageImageProps) 
   const dimW = layoutDims?.w;
   const dimH = layoutDims?.h;
   const hasDims = !!(dimW && dimH);
-  // 未知尺寸不再用 192 正方形(与常见宽图差异大、切换时高方块塌成矮条很跳)，
-  // 而是与有 dims 盒共用同一套宽度口径(width:100% + maxWidth/maxHeight)。
+  // 非配文图(inline-block 父级,shrink-to-fit):给盒子确定 px 宽,aspectRatio 首帧即算出
+  // 高度,不依赖父级宽度/图片解码 → 消除「解码前塌成 0、解码后弹满」的发图首帧位移。
+  // 宽度 = min(上限, 真实宽);无尺寸回退到上限。配文图(fill)外层 block w-full 宽度本就
+  // 确定,保留 width:100% 铺满气泡。
   const boxStyle: React.CSSProperties = {
     aspectRatio: hasDims ? `${dimW} / ${dimH}` : NEUTRAL_IMAGE_ASPECT,
     maxWidth: maxW,
     maxHeight: maxH,
-    width: "100%",
+    width: !fill && hasDims ? Math.min(maxW, dimW) : "100%",
   };
 
   if (renderState.phase === "error") {
@@ -618,14 +636,26 @@ function MessageImage({ part, alt, maxW = 256, maxH = 320 }: MessageImageProps) 
       style={boxStyle}
     >
       <img
+        // key 锚定到 src:收敛切源(data:→cachedimg://→asset://)时,过渡态预载的隐藏 <img>
+        // 已把新源解码完毕。用 src 作 key 让 React 在塌缩成单图时「复用那个已解码的元素」、
+        // 卸掉旧元素,而不是原地改写可见 <img> 的 src 逼其重新解码——后者正是 WKWebView 上
+        // 发图后那一下「闪」的来源(自定义协议跨元素不共享解码位图 + async 解码露白帧)。
+        key={renderState.visibleSrc}
         ref={imgRef}
         src={renderState.visibleSrc}
         alt={alt}
-        // 本地 asset 图(磁盘命中、WebView 可靠缓存)→ eager + 同步解码:重挂/切回/上滑回看
-        // 时在插入 DOM 同帧就解码出像素,消除"元素已挂载但像素未解码"的空白闪;远程回退源
-        // (cachedimg://,首次预取未完成的过渡态)仍 lazy + 异步,省屏外解码内存。
-        loading={isLocal ? "eager" : "lazy"}
-        decoding={isLocal ? "sync" : "async"}
+        // 固有宽高属性:在 <img> 解码完成前就给浏览器内在尺寸,打破「inline-block 父级
+        // shrink-to-fit ↔ 盒子 width:100% ↔ 等 img 解码」的循环 —— 否则解码前盒子宽塌成 0、
+        // aspectRatio 算出 0 高,解码后再弹到满高,造成发图首帧整列位移(尤其文本+图+文本)。
+        // 实际显示尺寸仍由下方 h-full/w-full + object-contain 决定,属性仅用于首帧占位。
+        // 无尺寸时为 undefined,React 自动省略,行为不变。
+        width={dimW}
+        height={dimH}
+        // 即时源(本地 asset 磁盘命中 / data:|blob: 内存源)→ eager + 同步解码:插入 DOM 同帧
+        // 就解码出像素,消除"元素已挂载但像素未解码"的空白闪;远程回退源(cachedimg://,首次
+        // 预取未完成的过渡态)仍 lazy + 异步,省屏外解码内存。
+        loading={instant ? "eager" : "lazy"}
+        decoding={instant ? "sync" : "async"}
         onLoad={handleVisibleLoad}
         onError={() => handleImageError(renderState.visibleSrc, "visible")}
         className={cn(
@@ -635,6 +665,7 @@ function MessageImage({ part, alt, maxW = 256, maxH = 320 }: MessageImageProps) 
       />
       {renderState.phase === "transition" && (
         <img
+          key={renderState.pendingSrc}
           src={renderState.pendingSrc}
           alt=""
           aria-hidden

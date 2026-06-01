@@ -602,15 +602,30 @@ impl NacosConfig {
             .map(|v| v == "true" || v == "1")
             .unwrap_or(false);
 
-        // register_ip 默认:push_addr 是具体非通配 IP 则取之;0.0.0.0/:: 时留空(validate 要求显式给)。
-        let default_register_ip = {
-            let ip = push_addr.ip();
-            if ip.is_unspecified() {
-                String::new()
-            } else {
-                ip.to_string()
+        // register_ip 解析:显式 env > 具体 bind IP > 通配时自动探测本地/容器出口 IP。
+        //   不传 RELAY_NACOS_REGISTER_IP 且 push_addr 绑通配地址(0.0.0.0/::)时,
+        //   自动探测本机/容器 IP 注册进 Nacos;探测失败才留空(由 validate 兜底报错)。
+        let explicit_register_ip = std::env::var("RELAY_NACOS_REGISTER_IP")
+            .ok()
+            .filter(|s| !s.is_empty());
+        let detected_ip = if enabled
+            && explicit_register_ip.is_none()
+            && push_addr.ip().is_unspecified()
+        {
+            let d = detect_local_ip();
+            if let Some(ref ip) = d {
+                // from_env 在 init_tracing 之前运行,用 eprintln 而非 tracing。
+                eprintln!(
+                    "[chathub-relay] INFO: RELAY_NACOS_REGISTER_IP 未设且 RELAY_PUSH_ADDR 为通配地址,\
+                     自动探测到本机网卡 IP={ip}(已跳过 docker/虚拟网卡);若该 IP 业务后台不可达\
+                     (如经 NAT 端口映射、或多网卡选错),请显式设置 RELAY_NACOS_REGISTER_IP",
+                );
             }
+            d
+        } else {
+            None
         };
+        let register_ip = resolve_register_ip(explicit_register_ip, push_addr.ip(), detected_ip);
 
         Ok(Self {
             enabled,
@@ -636,10 +651,7 @@ impl NacosConfig {
                 .ok()
                 .filter(|s| !s.is_empty())
                 .unwrap_or_else(|| "chathub-relay".into()),
-            register_ip: std::env::var("RELAY_NACOS_REGISTER_IP")
-                .ok()
-                .filter(|s| !s.is_empty())
-                .unwrap_or(default_register_ip),
+            register_ip,
             register_port: std::env::var("RELAY_NACOS_REGISTER_PORT")
                 .ok()
                 .and_then(|s| s.parse().ok())
@@ -672,6 +684,90 @@ fn parse_kv_metadata(raw: Option<&str>) -> HashMap<String, String> {
         }
     }
     map
+}
+
+/// 解析 Nacos 注册 IP(纯函数,便于单测):
+///   1. `explicit` 非空 → 用之(显式优先);
+///   2. `push_ip` 是具体非通配 IP → 取之;
+///   3. 通配(0.0.0.0/::)→ 用探测到的 `detected`;`None`(未探测/探测失败)→ 空,validate 兜底报错。
+fn resolve_register_ip(
+    explicit: Option<String>,
+    push_ip: std::net::IpAddr,
+    detected: Option<String>,
+) -> String {
+    if let Some(ip) = explicit.filter(|s| !s.is_empty()) {
+        return ip;
+    }
+    if !push_ip.is_unspecified() {
+        return push_ip.to_string();
+    }
+    detected.unwrap_or_default()
+}
+
+/// best-effort 探测本机注册 IP:枚举本机网卡,跳过 loopback / link-local 及 docker/虚拟网卡,
+/// 取第一块「真实」网卡的地址(IPv4 优先,无 IPv4 才退 IPv6)。失败 / 无候选返回 `None`。
+///
+/// 不再用「connect 外部地址求出口源 IP」的旧法 —— 纯内网部署常无公网路由,内核会把这条
+/// 路由落到 docker 网桥,误把网桥网关地址(如 `172.x.x.1`)当成本机 IP(后台不可达)。
+/// 仍是 best-effort:多块真实网卡 / 自定义命名的虚拟网卡等场景仍可能挑错,
+/// 此时按启动日志提示显式设置 `RELAY_NACOS_REGISTER_IP`。
+fn detect_local_ip() -> Option<String> {
+    let mut v4: Option<String> = None;
+    let mut v6: Option<String> = None;
+    for iface in if_addrs::get_if_addrs().ok()? {
+        if iface.is_loopback() || is_virtual_iface(&iface.name) {
+            continue;
+        }
+        let ip = iface.ip();
+        if ip.is_loopback() || ip.is_unspecified() || is_link_local(ip) {
+            continue;
+        }
+        match ip {
+            std::net::IpAddr::V4(_) if v4.is_none() => v4 = Some(ip.to_string()),
+            std::net::IpAddr::V6(_) if v6.is_none() => v6 = Some(ip.to_string()),
+            _ => {}
+        }
+    }
+    v4.or(v6)
+}
+
+/// docker / 容器 / VPN / 虚拟网桥等「非业务」网卡名前缀 —— 这些网卡上的地址(如 docker
+/// 网桥网关 `172.x.x.1`)业务后台通常不可达,自动探测时跳过。前缀匹配,覆盖常见命名;
+/// 命名诡异的环境请改用显式 `RELAY_NACOS_REGISTER_IP`。
+fn is_virtual_iface(name: &str) -> bool {
+    const VIRTUAL_PREFIXES: &[&str] = &[
+        "docker",
+        "br-",
+        "veth",
+        "virbr",
+        "vnet",
+        "cni",
+        "flannel",
+        "cali",
+        "tunl",
+        "kube",
+        "dummy",
+        "tun",
+        "tap",
+        "utun",
+        "awdl",
+        "llw",
+        "vmnet",
+        "vmenet",
+        "bridge",
+        "zt",
+        "wg",
+        "tailscale",
+    ];
+    VIRTUAL_PREFIXES.iter().any(|p| name.starts_with(p))
+}
+
+/// link-local 地址:IPv4 `169.254.0.0/16`、IPv6 `fe80::/10`。仅本链路有效,不能作注册 IP。
+fn is_link_local(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(v4) => v4.is_link_local(),
+        std::net::IpAddr::V6(v6) => (v6.segments()[0] & 0xffc0) == 0xfe80,
+    }
 }
 
 /// 可选 secret 的 *_FILE 回退:优先 file_var(去空白),其次 direct_var,二者皆缺 → None。
@@ -1346,19 +1442,61 @@ mod tests {
         clear_all();
     }
 
+    // 通配 push_addr 时 register_ip 的解析:显式 > 具体 IP > 自动探测;探测失败留空交 validate 兜底。
+    // 用纯函数测,避免依赖运行环境的真实网络探测结果(detect_local_ip)。
     #[test]
-    fn nacos_wildcard_push_addr_requires_register_ip() {
-        let _g = ENV_LOCK.lock();
-        clear_all();
-        set_required();
-        set_nacos_enabled_minimal();
-        std::env::set_var("RELAY_PUSH_ADDR", "0.0.0.0:50052"); // 通配 → register_ip 留空
-        let err = Config::from_env().unwrap_err();
-        match err {
-            ConfigError::ValidationFailed(m) => assert!(m.contains("RELAY_NACOS_REGISTER_IP")),
-            other => panic!("wrong: {other:?}"),
+    fn resolve_register_ip_priority_and_autodetect() {
+        use std::net::IpAddr;
+        let wildcard: IpAddr = "0.0.0.0".parse().unwrap();
+        let concrete: IpAddr = "10.0.0.5".parse().unwrap();
+        // 1) 显式优先,压过探测值
+        assert_eq!(
+            resolve_register_ip(Some("1.2.3.4".into()), wildcard, Some("9.9.9.9".into())),
+            "1.2.3.4"
+        );
+        // 2) 具体 bind IP → 取之
+        assert_eq!(resolve_register_ip(None, concrete, None), "10.0.0.5");
+        // 3) 通配 + 探测成功 → 用探测到的本地/容器 IP
+        assert_eq!(
+            resolve_register_ip(None, wildcard, Some("192.168.1.20".into())),
+            "192.168.1.20"
+        );
+        // 4) 通配 + 探测失败 → 空(交由 validate 兜底报错)
+        assert_eq!(resolve_register_ip(None, wildcard, None), "");
+        // 5) 显式空串视作未设
+        assert_eq!(
+            resolve_register_ip(Some(String::new()), concrete, None),
+            "10.0.0.5"
+        );
+    }
+
+    // detect_local_ip 的网卡过滤判定(纯函数,不依赖真实网卡):
+    //   docker/虚拟网卡名 + link-local 地址都应被跳过,真实网卡名不误杀。
+    #[test]
+    fn detect_ip_helpers_skip_virtual_and_link_local() {
+        use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+        // 虚拟 / 容器 / VPN 网卡名 → 跳过
+        for n in [
+            "docker0",
+            "br-1a2b3c",
+            "veth9f8c",
+            "virbr0",
+            "utun3",
+            "tailscale0",
+        ] {
+            assert!(is_virtual_iface(n), "{n} 应判为虚拟网卡");
         }
-        clear_all();
+        // 真实网卡名 → 不误杀
+        for n in ["eth0", "en0", "ens192", "enp3s0", "wlan0"] {
+            assert!(!is_virtual_iface(n), "{n} 不应判为虚拟网卡");
+        }
+        // link-local 识别(含触发本次 bug 的 docker 私网段对照:172.19.0.x 非 link-local)
+        assert!(is_link_local(IpAddr::V4(Ipv4Addr::new(169, 254, 1, 2))));
+        assert!(is_link_local(IpAddr::V6(
+            "fe80::1".parse::<Ipv6Addr>().unwrap()
+        )));
+        assert!(!is_link_local(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 20))));
+        assert!(!is_link_local(IpAddr::V4(Ipv4Addr::new(172, 19, 0, 5))));
     }
 
     #[test]

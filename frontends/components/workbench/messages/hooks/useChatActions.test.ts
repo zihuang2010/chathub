@@ -3,7 +3,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { Conversation, Message } from "../data";
 import { selectTimeline, useChatStore } from "../store/chatStore";
-import { useChatActions, type UseChatActionsParams } from "./useChatActions";
+import {
+  toAmrFileName,
+  useChatActions,
+  voiceExceedsLimit,
+  type UseChatActionsParams,
+} from "./useChatActions";
 
 vi.mock("@/components/ui/toast", () => ({ showToast: vi.fn() }));
 
@@ -210,5 +215,21 @@ describe("useChatActions", () => {
     expect(timeline()).toHaveLength(1);
     expect(timeline()[0].status).toBe("failed");
     expect(timeline()[0].clientMsgId).toBe("m1");
+  });
+});
+
+describe("语音发送前置校验", () => {
+  it("toAmrFileName 把后缀改成 .amr,无后缀则追加", () => {
+    expect(toAmrFileName("hello.mp3")).toBe("hello.amr");
+    expect(toAmrFileName("a.b.wav")).toBe("a.b.amr");
+    expect(toAmrFileName("novoice")).toBe("novoice.amr");
+  });
+
+  it("voiceExceedsLimit 超 60 秒或超 2MB 判超限,缺时长时仅看大小", () => {
+    expect(voiceExceedsLimit(30, 100_000)).toBe(false);
+    expect(voiceExceedsLimit(60, 100_000)).toBe(false);
+    expect(voiceExceedsLimit(61, 100_000)).toBe(true);
+    expect(voiceExceedsLimit(undefined, 100_000)).toBe(false);
+    expect(voiceExceedsLimit(undefined, 3 * 1024 * 1024)).toBe(true);
   });
 });

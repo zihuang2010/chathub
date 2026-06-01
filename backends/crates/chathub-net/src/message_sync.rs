@@ -402,6 +402,7 @@ impl MessageSync {
         file_path: Option<&str>,
         file_name: Option<&str>,
         file_size: Option<i64>,
+        duration_seconds: Option<i32>,
         client_msg_id: &str,
     ) -> Result<SendMessageResp, AuthError> {
         // 幂等键:复用前端传入的 client_msg_id 作为 request_message_id,使重复点击 / 网络
@@ -422,6 +423,7 @@ impl MessageSync {
                 file_path: file_path.map(str::to_string),
                 file_name: file_name.map(str::to_string),
                 file_size,
+                duration_seconds,
             })
             .await?;
 

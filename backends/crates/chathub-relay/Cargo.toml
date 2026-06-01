@@ -64,6 +64,8 @@ num_cpus           = { workspace = true }
 
 # Nacos 服务注册/发现
 nacos-sdk          = { workspace = true }
+# 网卡枚举:自动探测注册到 Nacos 的本机 IP(跳过 docker/虚拟网卡)
+if-addrs           = { workspace = true }
 
 # 同 workspace 内 codegen
 chathub-proto      = { path = "../chathub-proto" }

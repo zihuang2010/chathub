@@ -72,6 +72,35 @@ describe("chatStore reducers", () => {
     expect(markSent(slice, "missing", "x")).toBe(slice);
   });
 
+  it("markSent 竞态:权威回显已先于 markSent 落地时就地塌缩成一行(不留瞬时双行)", () => {
+    // 后端重读抢在发送 resp 之前 → replaceAuthoritative 把权威回显(id=server-1)放进切片,
+    // 乐观气泡(c-1,serverId 未知)被当作 in-flight 追加在末尾 → 双行(发图抖动根因)。
+    // markSent 拿到 server-1 应按 id===serverId 对上权威回显:删乐观、保权威、带 clientMsgId。
+    const echo = msg("server-1", { direction: "out", status: "sent" });
+    const slice = sliceWith([echo, optimistic("c-1")]);
+    const next = markSent(slice, "c-1", "server-1");
+    expect(selectTimeline(next).map((e) => e.id)).toEqual(["server-1"]);
+    expect(next.byId["c-1"]).toBeUndefined();
+    // 行 key 稳定:clientMsgId 带到权威条目;状态收敛为 sent。
+    expect(next.byId["server-1"].clientMsgId).toBe("c-1");
+    expect(next.byId["server-1"].status).toBe("sent");
+  });
+
+  it("markSent 竞态:塌缩含图片的权威回显时保留乐观本地宽高(防尺寸回跳)", () => {
+    const echo = msg("server-1", {
+      direction: "out",
+      status: "sent",
+      parts: [{ kind: "image", url: "https://filet.jdd51.com/a.png", width: 901, height: 1599 }],
+    });
+    const opt = optimistic("c-1", {
+      parts: [{ kind: "image", url: "data:image/png;base64,abc", width: 900, height: 1600 }],
+    });
+    const next = markSent(sliceWith([echo, opt]), "c-1", "server-1");
+    expect(next.byId["server-1"].parts).toEqual([
+      expect.objectContaining({ kind: "image", width: 900, height: 1600 }),
+    ]);
+  });
+
   it("markFailed flips status to failed (keeps bubble for resend)", () => {
     const next = markFailed(sliceWith([optimistic("c-1")]), "c-1");
     expect(next.byId["c-1"].status).toBe("failed");

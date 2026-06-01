@@ -164,9 +164,29 @@ export function markSent(
   const id = findIdByClientMsgId(slice, clientMsgId);
   if (!id) return slice;
   const e = slice.byId[id];
+  // 竞态收敛:后端 conversation-messages 重读(replaceAuthoritative)可能抢在本 markSent 之前
+  // 落地,使权威回显条目(id === serverId)已在切片内,而乐观气泡(id === clientMsgId、serverId
+  // 尚未钉上)无键可与之对上 → 被当作 in-flight 追加在末尾,同一条消息瞬时变两行(发送成功瞬间
+  // +82px 又 -82px 的整列「上顶再回落」抖动)。拿到 serverId 的此刻即可精确按 id === serverId 命中
+  // 权威回显:就地塌缩成一行 —— 保留权威条目、带上 clientMsgId 稳住跨「乐观→权威」行 key、沿用
+  // preserveOptimisticImageDimensions 防图尺寸回跳、删掉乐观条目。把双行窗口从「等下一次重读」
+  // (~230ms)压到 markSent 当帧(~4ms,浏览器基本无机会绘出双行),消除抖动。无回显时退化为原逻辑。
+  const echo = serverId !== id ? slice.byId[serverId] : undefined;
+  if (echo) {
+    const merged: ChatMessageEntity = {
+      ...preserveOptimisticImageDimensions(echo, e),
+      clientMsgId,
+      serverId,
+      status: "sent",
+    };
+    const byId = { ...slice.byId, [serverId]: merged };
+    delete byId[id];
+    return { ...slice, byId, order: slice.order.filter((x) => x !== id) };
+  }
+  const patched: ChatMessageEntity = { ...e, ...patch, serverId, status: "sent" };
   return {
     ...slice,
-    byId: { ...slice.byId, [id]: { ...e, ...patch, serverId, status: "sent" } },
+    byId: { ...slice.byId, [id]: patched },
   };
 }
 

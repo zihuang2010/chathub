@@ -613,6 +613,7 @@ async fn send_message(
     file_path: Option<String>,
     file_name: Option<String>,
     file_size: Option<i64>,
+    duration_seconds: Option<i32>,
     client_msg_id: String,
 ) -> Result<SendMessageResp, AuthError> {
     let employee_id = auth_api
@@ -631,6 +632,7 @@ async fn send_message(
             file_path.as_deref(),
             file_name.as_deref(),
             file_size,
+            duration_seconds,
             &client_msg_id,
         )
         .await

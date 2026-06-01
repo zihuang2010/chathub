@@ -816,6 +816,9 @@ pub struct SendMessageRequest {
     pub file_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub file_size: Option<i64>,
+    /// 语音时长(秒,整数);仅语音(message_type=4)带,其余消息为 None,不序列化。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration_seconds: Option<i32>,
 }
 
 /// 响应(2xx envelope.data 的形态)。

@@ -93,6 +93,18 @@ export type MessagePart =
   | { kind: "voice"; url: string; durationSec?: number }
   | { kind: "video"; url: string; name?: string };
 
+// 按文件后缀(扩展名,不含点;大小写不敏感)判定附件类型,进而决定后端 messageType:
+// image=2 / voice=4 / video / file=3。收(历史消息)发(本地选文件)两侧共用此单一规则,
+// 避免分类漂移(曾因发送侧硬编码 "file" 导致 amr 语音被按 messageType=3 当文件发出)。
+// 其余后缀(pdf/doc/docx/xls/xlsx/ppt/pptx/txt/zip/rar 等)落入 file=3。
+export function attachmentTypeFromExt(ext: string): MessageAttachment["type"] {
+  const lower = ext.toLowerCase();
+  if (["jpg", "jpeg", "png", "gif", "webp"].includes(lower)) return "image";
+  if (lower === "amr" || lower === "mp3" || lower === "wav") return "voice";
+  if (lower === "mp4" || lower === "mov") return "video";
+  return "file";
+}
+
 function attachmentToPart(a: MessageAttachment): MessagePart {
   switch (a.type) {
     case "image":
@@ -183,6 +195,8 @@ export interface Message {
   filePath?: string;
   fileName?: string;
   fileSize?: number;
+  /** 语音时长(秒,整数);仅语音(messageType=4)出站气泡写,供发送/重发携带 durationSeconds。 */
+  durationSeconds?: number;
 }
 
 // `Customer` is now defined in `@/lib/types/customer` so the customers page and

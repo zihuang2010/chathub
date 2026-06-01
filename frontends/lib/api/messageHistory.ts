@@ -5,7 +5,7 @@
 //        → Tauri:HubClient.fetch_message_history → relay → 业务后台 → records 透传
 //        → UI 适配扁平 records[] 成 Message[] 喂给现有渲染逻辑
 
-import { buildMessageParts } from "@/components/workbench/messages/data";
+import { attachmentTypeFromExt, buildMessageParts } from "@/components/workbench/messages/data";
 import type { Message, MessageAttachment } from "@/components/workbench/messages/data";
 
 import { invokeWithTimeout } from "./invokeClient";
@@ -18,7 +18,10 @@ const SEND_TIMEOUT_MS = 30_000;
 const UPLOAD_TIMEOUT_MS = 60_000;
 
 // 附件预览域名前缀:落库的 objectName 拼此前缀得到可访问 URL。
-const ATTACHMENT_BASE_URL = "https://filet.jdd51.com";
+// 构建期由 CI 注入(VITE_CHATHUB_ATTACHMENT_BASE_URL,与 Rust 侧 CHATHUB_ATTACHMENT_BASE_URL 同源);
+// dev/test 无注入时回落 filet.jdd51.com。
+const ATTACHMENT_BASE_URL =
+  import.meta.env.VITE_CHATHUB_ATTACHMENT_BASE_URL ?? "https://filet.jdd51.com";
 
 /**
  * 把后端返回的相对 objectName 拼成完整预览 URL;已是完整 http(s) URL 则原样返回。
@@ -163,6 +166,8 @@ export async function sendMessage(params: {
   filePath?: string;
   fileName?: string;
   fileSize?: number;
+  /** 语音时长(秒,整数);仅语音(messageType=4)传。 */
+  durationSeconds?: number;
 }): Promise<SendMessageResp> {
   // 纯文本旧调用向后兼容:不传 file 字段时不下发对应键。
   const args: Record<string, unknown> = {
@@ -176,6 +181,7 @@ export async function sendMessage(params: {
   if (params.filePath !== undefined) args.filePath = params.filePath;
   if (params.fileName !== undefined) args.fileName = params.fileName;
   if (params.fileSize !== undefined) args.fileSize = params.fileSize;
+  if (params.durationSeconds !== undefined) args.durationSeconds = params.durationSeconds;
   return invokeWithTimeout<SendMessageResp>("send_message", args, SEND_TIMEOUT_MS);
 }
 
@@ -250,14 +256,7 @@ function compareHistoryRecords(a: HistoryMessage, b: HistoryMessage): number {
 }
 
 function historyAttachmentToMessage(a: HistoryAttachment): MessageAttachment {
-  const lower = a.fileType.toLowerCase();
-  const kind: MessageAttachment["type"] = ["jpg", "jpeg", "png", "gif", "webp"].includes(lower)
-    ? "image"
-    : lower === "mp3" || lower === "wav" || lower === "amr"
-      ? "voice"
-      : lower === "mp4" || lower === "mov"
-        ? "video"
-        : "file";
+  const kind = attachmentTypeFromExt(a.fileType);
   return {
     type: kind,
     // 媒体走 OSS 链接:mediaId 若是完整 https 原样用;若是相对 objectName 则拼预览域名。

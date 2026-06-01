@@ -97,6 +97,9 @@ export const STRINGS = {
     screenshotPermissionHint: "如在 macOS 中首次使用，请在系统设置中允许 ChatHub 录制屏幕后重试",
     screenshotPasteHint:
       "请使用系统截图（Win+Shift+S / Cmd+Shift+Ctrl+4），然后在输入框按 Ctrl/Cmd+V 粘贴",
+    // 企微语音仅支持 AMR-NB 且时长 ≤60s / 体积 ≤2MB,超限或转码失败时提示。
+    voiceTooLong: "语音超过 60 秒或体积过大，无法作为语音发送",
+    voiceTranscodeFailed: "语音转码失败，请换一段或改用文件发送",
   },
   errors: {
     pageUnavailable: "消息页暂时不可用",

@@ -20,8 +20,9 @@ use chathub_net::HistoryMessage;
 use chathub_state::{ImageMeta, ImageMetaStore};
 use tauri::async_runtime;
 
-/// 聊天附件图片 CDN 基地址（与前端 messageHistory.ts ATTACHMENT_BASE_URL 同构）。
-const ATTACHMENT_BASE_URL: &str = "https://filet.jdd51.com";
+/// 聊天附件图片 CDN 基地址（与前端 messageHistory.ts ATTACHMENT_BASE_URL 同源）。
+/// 编译期由 build.rs 从 CHATHUB_ATTACHMENT_BASE_URL env 注入,缺省回落 filet.jdd51.com。
+const ATTACHMENT_BASE_URL: &str = env!("CHATHUB_ATTACHMENT_BASE_URL_RESOLVED");
 
 /// 缩略图固定宽度（px）。高分屏 2x 时气泡显示宽约 256，按 512 预取确保清晰。
 const THUMB_W: u32 = 512;

@@ -33,6 +33,8 @@ export interface SendMessageOptions {
   filePath?: string;
   fileName?: string;
   fileSize?: number;
+  /** 语音时长(秒,整数);仅语音(messageType=4)传。 */
+  durationSeconds?: number;
 }
 
 export interface UseChatActionsParams {
@@ -170,6 +172,52 @@ async function fetchBytes(url: string): Promise<Uint8Array> {
   return new Uint8Array(buf);
 }
 
+// 企微语音消息只接受 AMR-NB(8kHz 单声道),且时长 ≤60s、大小 ≤2MB。
+const VOICE_MAX_SEC = 60;
+const VOICE_MAX_BYTES = 2 * 1024 * 1024;
+
+// 语音是否超出企微限制(时长 / 大小)。durationSec 缺省(解码取不到)时仅用大小兜底。
+export function voiceExceedsLimit(durationSec: number | undefined, byteLength: number): boolean {
+  return (durationSec ?? 0) > VOICE_MAX_SEC || byteLength > VOICE_MAX_BYTES;
+}
+
+// 把文件名后缀改成 .amr(转码后用);无后缀直接追加。
+export function toAmrFileName(name: string): string {
+  const dot = name.lastIndexOf(".");
+  return `${dot >= 0 ? name.slice(0, dot) : name}.amr`;
+}
+
+// 发送前把语音规整成 amr。复用 MessageContent 同款 benz-amr-recorder:
+//   - amr:原样,仅解码取时长(整数秒);
+//   - 非 amr(mp3/wav 等):benz initWithBlob 内部用 WebAudio 解码 + 重编码成 8kHz AMR-NB,
+//     getBlob() 取转码后字节(下游企微只认 amr,原样上传对端放不出)。
+// 解码失败 / 超限返回 ok:false,由调用方提示并标失败。
+async function prepareVoiceForSend(
+  bytes: Uint8Array,
+  fileSuf: string,
+): Promise<{ ok: true; bytes: Uint8Array; durationSec?: number } | { ok: false; reason: string }> {
+  let out = bytes;
+  let durationSec: number | undefined;
+  try {
+    const { default: BenzAMRRecorder } = await import("benz-amr-recorder");
+    const amr = new BenzAMRRecorder();
+    await amr.initWithBlob(new Blob([new Uint8Array(bytes)]));
+    const sec = Math.round(amr.getDuration());
+    durationSec = sec > 0 ? sec : undefined;
+    if (fileSuf !== "amr") {
+      const blob = amr.getBlob();
+      if (!blob) throw new Error("benz 未产出 amr blob");
+      out = new Uint8Array(await blob.arrayBuffer());
+    }
+  } catch {
+    return { ok: false, reason: STRINGS.toast.voiceTranscodeFailed };
+  }
+  if (voiceExceedsLimit(durationSec, out.byteLength)) {
+    return { ok: false, reason: STRINGS.toast.voiceTooLong };
+  }
+  return { ok: true, bytes: out, durationSec };
+}
+
 export function useChatActions({
   conversation,
   chatStoreKey,
@@ -212,25 +260,47 @@ export function useChatActions({
     async (clientMsgId: string, unit: Extract<SendUnit, { kind: "attachment" }>) => {
       const owningStoreKey = chatStoreKey;
       try {
-        const bytes = await fetchBytes(unit.url);
+        let bytes = await fetchBytes(unit.url);
+        let fileSuf = inferFileSuf(unit.name, unit.url);
+        let fileName = unit.name;
+        let contentType = inferContentType(unit.name, unit.url);
+        let durationSeconds: number | undefined;
+        // 语音统一规整成 amr 再发(企微只认 amr):非 amr 转码,amr 仅取时长;超限/失败即停。
+        if (unit.attachmentType === "voice") {
+          const voice = await prepareVoiceForSend(bytes, fileSuf);
+          if (!voice.ok) {
+            showToast(voice.reason, { type: "error" });
+            useChatStore.getState().markFailed(owningStoreKey, clientMsgId);
+            return false;
+          }
+          bytes = voice.bytes;
+          durationSeconds = voice.durationSec;
+          if (fileSuf !== "amr") {
+            fileSuf = "amr";
+            fileName = toAmrFileName(unit.name);
+            contentType = "audio/amr";
+          }
+        }
         const uploaded = await uploadAttachment({
           bytes,
-          fileName: unit.name,
-          fileSuf: inferFileSuf(unit.name, unit.url),
-          contentType: inferContentType(unit.name, unit.url),
+          fileName,
+          fileSuf,
+          contentType,
         });
-        // 回写已上传信息到气泡,便于失败重发复用 objectName、不再重传 OSS。
+        // 回写已上传信息到气泡,便于失败重发复用 objectName、不再重传 OSS;语音一并存时长供重发携带。
         useChatStore.getState().patchMessage(owningStoreKey, clientMsgId, {
           messageType: unit.messageType,
           filePath: uploaded.objectName,
           fileName: uploaded.fileName,
           fileSize: uploaded.fileSize,
+          durationSeconds,
         });
         return await deliverMessage(clientMsgId, "", clientMsgId, {
           messageType: unit.messageType,
           filePath: uploaded.objectName,
           fileName: uploaded.fileName,
           fileSize: uploaded.fileSize,
+          durationSeconds,
         });
       } catch {
         // 上传阶段抛错(取字节 / OSS 失败)→ 标失败。发送阶段失败已在 deliverMessage 内标过。
@@ -345,6 +415,7 @@ export function useChatActions({
               filePath,
               fileName: entity?.fileName ?? message.fileName,
               fileSize: entity?.fileSize ?? message.fileSize,
+              durationSeconds: entity?.durationSeconds ?? message.durationSeconds,
             });
             break;
           }

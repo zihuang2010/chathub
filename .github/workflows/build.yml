@@ -92,6 +92,10 @@ jobs:
           # 编译期烘进客户端的 relay 地址(chathub-net/build.rs)。repo Variable，
           # 不是 secret：地址本就会进二进制。缺它则 build.rs 回落到 relay.example.com 占位串。
           CHATHUB_RELAY_URL: ${{ vars.CHATHUB_RELAY_URL }}
+          # 编译期烘进客户端的附件预览域名:backends/build.rs(Rust)与前端 Vite 同一来源。
+          # 同为 repo Variable、非 secret;缺它则两侧都回落 filet.jdd51.com(当前真实值)。
+          CHATHUB_ATTACHMENT_BASE_URL: ${{ vars.CHATHUB_ATTACHMENT_BASE_URL }}
+          VITE_CHATHUB_ATTACHMENT_BASE_URL: ${{ vars.CHATHUB_ATTACHMENT_BASE_URL }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         shell: bash
@@ -169,7 +173,7 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  # 服务端组件:relay(常驻进程)+ mock(联调下游),静态 musl 二进制,x86_64 + arm64。
+  # 服务端组件:relay(常驻进程),静态 musl 二进制,x86_64 + arm64。
   # ring(rustls 后端)与 rusqlite bundled 含 C，aarch64-musl 需真实交叉工具链，故用 cross。
   server:
     needs: verify
@@ -199,10 +203,10 @@ jobs:
         with:
           tool: cross
 
-      - name: build relay + mock (static musl)
+      - name: build relay (static musl)
         run: |
           cross build --profile release-server --locked --target ${{ matrix.target }} \
-            -p chathub-relay --bin chathub-relay --bin chathub-mock-downstream
+            -p chathub-relay --bin chathub-relay
 
       - name: package binaries + checksums
         shell: bash
@@ -223,7 +227,7 @@ jobs:
             done
             return 1
           }
-          for bin in chathub-relay chathub-mock-downstream; do
+          for bin in chathub-relay; do
             src="$(locate_bin "$bin")" \
               || { echo "::error::missing built binary: $bin (looked in target/ and backends/target/)"; exit 1; }
             tar -C "$(dirname "$src")" -czf "$OUT/${bin}-${VERSION}-${TRIPLE}.tar.gz" "$bin"
@@ -241,7 +245,7 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  # Windows 版 relay + mock(供 Windows 本地联调)。上面的 server job 用 cross,
+  # Windows 版 relay(供 Windows 本地部署)。上面的 server job 用 cross,
   # 其工具链是 Linux-musl 专用、无法目标 Windows,故单列一个 windows-latest 原生
   # cargo build 任务。产物随 release 包一同上传(make-latest-json 用固定平台表,
   # 不读这个目录,所以不影响 updater)。
@@ -260,11 +264,11 @@ jobs:
           workspaces: . -> target
           key: server-windows-x86_64
 
-      - name: build relay + mock (windows-msvc)
+      - name: build relay (windows-msvc)
         shell: bash
         run: |
           cargo build --profile release-server --locked --target x86_64-pc-windows-msvc \
-            -p chathub-relay --bin chathub-relay --bin chathub-mock-downstream
+            -p chathub-relay --bin chathub-relay
 
       - name: package binaries + checksums
         shell: bash
@@ -284,7 +288,7 @@ jobs:
             done
             return 1
           }
-          for bin in chathub-relay chathub-mock-downstream; do
+          for bin in chathub-relay; do
             src="$(locate_bin "${bin}.exe")" \
               || { echo "::error::missing built binary: ${bin}.exe (looked in target/ and backends/target/)"; exit 1; }
             tar -C "$(dirname "$src")" -czf "$OUT/${bin}-${VERSION}-${TRIPLE}.tar.gz" "${bin}.exe"

@@ -28,10 +28,10 @@ const MAX_AGE_SECS: u64 = 30 * 24 * 60 * 60; // 30 天
 /// 单张原图下载上限,防超大图把内存/磁盘打爆。
 const MAX_DOWNLOAD_BYTES: u64 = 25 * 1024 * 1024;
 /// SSRF 白名单:仅允许这些域(及其子域)。当前媒体/头像统一走 OSS。
-/// `filet.jdd51.com` 是聊天附件 OSS 的 CNAME 自定义域名(CNAME → *.aliyuncs.com),
-/// 前端预览 URL 用它拼接(见 messageHistory.ts ATTACHMENT_BASE_URL / oss.rs OSS_UPLOAD_HOST),
-/// 主机名字符串不以 aliyuncs.com 结尾,故必须显式放行,否则消息图片一律被拒(404)无法显示。
-const ALLOWED_HOST_SUFFIXES: &[&str] = &["aliyuncs.com", "filet.jdd51.com"];
+/// 第二项是聊天附件 OSS 的 CNAME 自定义域名(默认 filet.jdd51.com,CNAME → *.aliyuncs.com):
+/// 编译期由 build.rs 从 CHATHUB_ATTACHMENT_BASE_URL 取 host 注入,与附件预览 URL 同源。
+/// 该 host 不以 aliyuncs.com 结尾,故必须显式放行,否则消息图片一律被拒(404)无法显示。
+const ALLOWED_HOST_SUFFIXES: &[&str] = &["aliyuncs.com", env!("CHATHUB_ATTACHMENT_HOST_RESOLVED")];
 
 pub struct ImageCache {
     dir: PathBuf,
