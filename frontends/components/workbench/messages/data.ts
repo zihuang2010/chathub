@@ -59,6 +59,8 @@ export interface MessageAttachment {
   height?: number;
   /** 本地缩略图绝对路径，由后端 image_meta 注入；前端走 Tauri asset 协议读取。 */
   localPath?: string;
+  /** 附件转存状态:0=无需转存,1=待转存,2=成功,3=失败。缺省视为就绪。 */
+  transferStatus?: number;
 }
 
 export type MessageBlock =
@@ -88,10 +90,12 @@ export type MessagePart =
       localPath?: string;
       /** true=随文本内联(composer 富文本);否则按附件大卡渲染。 */
       inline?: boolean;
+      /** 附件转存状态:1=待转存,3=失败;缺省/其余视为就绪。 */
+      transferStatus?: number;
     }
-  | { kind: "file"; url: string; name?: string; sizeBytes?: number }
-  | { kind: "voice"; url: string; durationSec?: number }
-  | { kind: "video"; url: string; name?: string };
+  | { kind: "file"; url: string; name?: string; sizeBytes?: number; transferStatus?: number }
+  | { kind: "voice"; url: string; durationSec?: number; transferStatus?: number }
+  | { kind: "video"; url: string; name?: string; durationSec?: number; transferStatus?: number };
 
 // 按文件后缀(扩展名,不含点;大小写不敏感)判定附件类型,进而决定后端 messageType:
 // image=2 / voice=4 / video / file=3。收(历史消息)发(本地选文件)两侧共用此单一规则,
@@ -116,13 +120,31 @@ function attachmentToPart(a: MessageAttachment): MessagePart {
         width: a.width,
         height: a.height,
         localPath: a.localPath,
+        transferStatus: a.transferStatus,
       };
     case "file":
-      return { kind: "file", url: a.url, name: a.name, sizeBytes: a.sizeBytes };
+      return {
+        kind: "file",
+        url: a.url,
+        name: a.name,
+        sizeBytes: a.sizeBytes,
+        transferStatus: a.transferStatus,
+      };
     case "voice":
-      return { kind: "voice", url: a.url, durationSec: a.durationSec };
+      return {
+        kind: "voice",
+        url: a.url,
+        durationSec: a.durationSec,
+        transferStatus: a.transferStatus,
+      };
     case "video":
-      return { kind: "video", url: a.url, name: a.name };
+      return {
+        kind: "video",
+        url: a.url,
+        name: a.name,
+        durationSec: a.durationSec,
+        transferStatus: a.transferStatus,
+      };
   }
 }
 

@@ -1,4 +1,8 @@
 //! axum router: `POST /rpc/v1/wecomAggregate/notify/push` (spec §3 字段) + `GET /healthz`。
+//!
+//! push 响应统一走业务后台响应包络 `{ code, serviceCode, msg, data }`:成功 `code=1`
+//! 且 `data` 装 [`PushBatchAck`];错误沿用原 HTTP 状态码 + `code=0`、`data=null`、`msg`
+//! 透传错误文案。`serviceCode` 固定 `"260000000"`。`GET /healthz` 仍为纯文本探活,不包络。
 
 use crate::event_policy::{self, EventPolicy};
 use crate::hub_service::TokenAuthenticator;
@@ -84,6 +88,48 @@ pub struct PushBatchAck {
     pub control_count: usize,
 }
 
+/// 业务后台统一响应包络(产出端):`{ code, serviceCode, msg, data }`。
+/// 成功 = `code == 1`(`data` 装 payload);错误 = `code == 0`(`data` 为 null,`msg` 透传错误文案)。
+/// `serviceCode` 固定为本服务标识 [`PUSH_SERVICE_CODE`],由消费方按统一约定解析。
+const PUSH_SERVICE_CODE: &str = "260000000";
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Envelope<T: Serialize> {
+    code: i32,
+    service_code: String,
+    msg: String,
+    data: T,
+}
+
+/// 成功包络:HTTP 200 + `code=1` + `data=payload`。
+fn ok_envelope<T: Serialize>(data: T) -> axum::response::Response {
+    (
+        StatusCode::OK,
+        Json(Envelope {
+            code: 1,
+            service_code: PUSH_SERVICE_CODE.to_string(),
+            msg: "成功".to_string(),
+            data,
+        }),
+    )
+        .into_response()
+}
+
+/// 错误包络:沿用原 HTTP 状态码 + `code=0` + `data=null`,`msg` 透传错误文案。
+fn err_envelope(status: StatusCode, msg: &str) -> axum::response::Response {
+    (
+        status,
+        Json(Envelope {
+            code: 0,
+            service_code: PUSH_SERVICE_CODE.to_string(),
+            msg: msg.to_string(),
+            data: serde_json::Value::Null,
+        }),
+    )
+        .into_response()
+}
+
 #[tracing::instrument(
     skip_all,
     fields(
@@ -104,7 +150,7 @@ async fn handle_push(
     let header_val = headers.get("authorization").and_then(|v| v.to_str().ok());
     if !bearer_matches(header_val, &state.secret) {
         tracing::warn!(status = 401, "push auth failed");
-        return (StatusCode::UNAUTHORIZED, "invalid secret").into_response();
+        return err_envelope(StatusCode::UNAUTHORIZED, "invalid secret");
     }
 
     // 2. clientId 白名单(env-driven)
@@ -118,17 +164,17 @@ async fn handle_push(
             client_id = %body.client_id,
             "push client_id rejected (not in RELAY_ALLOWED_CLIENT_IDS)"
         );
-        return (StatusCode::FORBIDDEN, "client_id not allowed").into_response();
+        return err_envelope(StatusCode::FORBIDDEN, "client_id not allowed");
     }
 
     // 3. 基本字段校验
     if body.employee_id == 0 {
         tracing::warn!(status = 400, "push employee_id missing");
-        return (StatusCode::BAD_REQUEST, "employeeId required").into_response();
+        return err_envelope(StatusCode::BAD_REQUEST, "employeeId required");
     }
     if body.events.is_empty() {
         tracing::warn!(status = 400, "push events empty");
-        return (StatusCode::BAD_REQUEST, "events must be non-empty").into_response();
+        return err_envelope(StatusCode::BAD_REQUEST, "events must be non-empty");
     }
 
     // 4. 分类 + 准备 EventRow(Persist 类) / 计数 Control 类。
@@ -147,7 +193,7 @@ async fn handle_push(
         Ok(c) => c,
         Err(index) => {
             tracing::warn!(status = 400, event_index = index, "push missing eventType",);
-            return (StatusCode::BAD_REQUEST, "events[i].eventType required").into_response();
+            return err_envelope(StatusCode::BAD_REQUEST, "events[i].eventType required");
         }
     };
 
@@ -184,7 +230,7 @@ async fn handle_push(
         Ok(n) => n,
         Err(e) => {
             tracing::warn!(status = 500, error = %e, "push persist failed (fanout may have already sent)");
-            return (StatusCode::INTERNAL_SERVER_ERROR, "persist").into_response();
+            return err_envelope(StatusCode::INTERNAL_SERVER_ERROR, "persist");
         }
     };
 
@@ -231,15 +277,11 @@ async fn handle_push(
         "push ok",
     );
 
-    (
-        StatusCode::OK,
-        Json(PushBatchAck {
-            notify_seq: body.notify_seq,
-            inserted,
-            control_count,
-        }),
-    )
-        .into_response()
+    ok_envelope(PushBatchAck {
+        notify_seq: body.notify_seq,
+        inserted,
+        control_count,
+    })
 }
 
 /// `convert_batch_to_rows` 的结果:待入库的 Persist 行 + 控制/未知计数。
@@ -432,7 +474,9 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(ack["inserted"], 1);
+        assert_eq!(ack["code"], 1);
+        assert_eq!(ack["serviceCode"], "260000000");
+        assert_eq!(ack["data"]["inserted"], 1);
         let rows = log.query_since(42, 0, 10).await.unwrap();
         assert_eq!(rows.len(), 1);
         let payload: serde_json::Value = serde_json::from_str(&rows[0].payload_json).unwrap();
@@ -442,7 +486,7 @@ mod tests {
     #[tokio::test]
     async fn push_auth_failure_returns_401() {
         let st = make_state().await;
-        let (status, _) = post(
+        let (status, ack) = post(
             app(st),
             body(
                 1,
@@ -453,6 +497,11 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::UNAUTHORIZED);
+        // 错误也走统一包络:沿用 HTTP 状态码 + code=0 / serviceCode 固定 / data=null
+        assert_eq!(ack["code"], 0);
+        assert_eq!(ack["serviceCode"], "260000000");
+        assert_eq!(ack["msg"], "invalid secret");
+        assert!(ack["data"].is_null());
     }
 
     #[tokio::test]
@@ -487,9 +536,9 @@ mod tests {
             ]),
         );
         let (_, ack1) = post(app(st.clone()), b.clone(), "ps").await;
-        assert_eq!(ack1["inserted"], 2);
+        assert_eq!(ack1["data"]["inserted"], 2);
         let (_, ack2) = post(app(st), b, "ps").await;
-        assert_eq!(ack2["inserted"], 0);
+        assert_eq!(ack2["data"]["inserted"], 0);
         let rows = log.query_since(42, 0, 100).await.unwrap();
         assert_eq!(rows.len(), 2);
     }
@@ -511,8 +560,8 @@ mod tests {
         );
         let (status, ack) = post(app(st.clone()), b, "ps").await;
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(ack["inserted"], 0);
-        assert_eq!(ack["controlCount"], 1);
+        assert_eq!(ack["data"]["inserted"], 0);
+        assert_eq!(ack["data"]["controlCount"], 1);
 
         // 客户端立即收到 PushBatchOut(含 FORCE_CLOSE)
         let frame = tokio::time::timeout(std::time::Duration::from_millis(200), rx.recv())
@@ -588,7 +637,7 @@ mod tests {
         );
         let (status, ack) = post(app(st.clone()), b, "ps").await;
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(ack["inserted"], 1);
+        assert_eq!(ack["data"]["inserted"], 1);
 
         let frame = tokio::time::timeout(std::time::Duration::from_millis(500), rx.recv())
             .await
@@ -669,7 +718,7 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(ack["inserted"], 1);
+        assert_eq!(ack["data"]["inserted"], 1);
         let rows = log.query_since(42, 0, 10).await.unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].event_type, "FUTURE_EVENT_TYPE");

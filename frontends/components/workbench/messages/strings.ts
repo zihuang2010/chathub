@@ -125,7 +125,10 @@ export const STRINGS = {
     voiceDuration: (sec: number) => `${sec}″`,
     imageAlt: (name?: string) => name ?? "图片附件",
     openImage: "查看大图",
+    openVideo: "播放视频",
     imageLoadFailed: "图片加载失败",
+    processing: "处理中",
+    unavailable: "附件暂不可查看",
   },
   composer: {
     placeholder: "请输入消息",

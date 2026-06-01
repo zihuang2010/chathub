@@ -764,6 +764,13 @@ pub struct HistoryAttachment {
     /// 本地缩略图绝对路径，由后台预取落盘后注入；前端走 asset 协议读取。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub local_path: Option<String>,
+    /// 附件转存状态:0=无需转存,1=待转存(可能尚无 ossFilePath),2=转存成功,3=转存失败。
+    /// 上游键 `transferStatus`(与规范键同名);缺失默认 0(视为就绪,向后兼容旧缓存)。
+    #[serde(default)]
+    pub transfer_status: i32,
+    /// 媒体时长(秒);语音/视频由上游下发,其余为 None。上游键 `durationSeconds`(可能为 null)。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_seconds: Option<i32>,
 }
 
 /// 响应(2xx envelope.data 的形态)。

@@ -212,8 +212,10 @@ async fn push_persists_event_and_returns_ack() {
     let resp = do_push(&h.push_url, &h.push_secret, &body).await;
     assert_eq!(resp.status(), 200);
     let ack: serde_json::Value = resp.json().await.unwrap();
-    assert_eq!(ack["inserted"], 1);
-    assert_eq!(ack["notifySeq"], 1);
+    assert_eq!(ack["code"], 1);
+    assert_eq!(ack["serviceCode"], "260000000");
+    assert_eq!(ack["data"]["inserted"], 1);
+    assert_eq!(ack["data"]["notifySeq"], 1);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -231,13 +233,13 @@ async fn push_idempotent_on_retry() {
         .json()
         .await
         .unwrap();
-    assert_eq!(r1["inserted"], 1);
+    assert_eq!(r1["data"]["inserted"], 1);
     let r2: serde_json::Value = do_push(&h.push_url, &h.push_secret, &body)
         .await
         .json()
         .await
         .unwrap();
-    assert_eq!(r2["inserted"], 0);
+    assert_eq!(r2["data"]["inserted"], 0);
 }
 
 #[tokio::test(flavor = "multi_thread")]

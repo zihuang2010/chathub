@@ -1,12 +1,13 @@
 import { Fragment, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { Download, FileText, ImageOff, Pause, Play } from "lucide-react";
+import { Download, FileText, ImageOff, Loader2, Pause, Play } from "lucide-react";
 
 import { assetImageSrc } from "@/lib/assetImageSrc";
 import { cachedImageSrc } from "@/lib/cachedImageSrc";
 import { downloadAttachment } from "@/lib/downloadAttachment";
 import { openExternal } from "@/lib/openExternal";
 import { openImagePreviewWindow } from "@/lib/openImagePreviewWindow";
+import { openVideoPreviewWindow } from "@/lib/openVideoPreviewWindow";
 import { cn } from "@/lib/utils";
 
 import type { MessagePart } from "./data";
@@ -14,7 +15,7 @@ import { getMeasuredDims, rememberMeasuredDims } from "./imageDimsCache";
 import { ImageLightbox } from "./ImageLightbox";
 import { hasLoadedImageSrc, rememberLoadedImageSrc } from "./loadedImageSrcs";
 import { STRINGS } from "./strings";
-import { cssUrlSafe, formatFileSize, formatRichText, isSafeUrl, thumbWidth } from "./utils";
+import { formatFileSize, formatRichText, isSafeUrl, thumbWidth } from "./utils";
 
 type ImagePart = Extract<MessagePart, { kind: "image" }>;
 type FilePart = Extract<MessagePart, { kind: "file" }>;
@@ -33,6 +34,14 @@ const NEUTRAL_IMAGE_ASPECT = "4 / 3";
 // 视频)走下方卡片堆叠。
 function isInlinePart(p: MessagePart): boolean {
   return p.kind === "text" || (p.kind === "image" && p.inline === true);
+}
+
+// 附件转存态:1=待转存(loading 占位),3=转存失败(占位),0/2/缺省=就绪正常渲染。
+type TransferState = "ready" | "pending" | "failed";
+function transferState(s?: number): TransferState {
+  if (s === 1) return "pending";
+  if (s === 3) return "failed";
+  return "ready";
 }
 
 /**
@@ -88,6 +97,30 @@ function PartCard({ part, fill }: { part: MessagePart; fill?: boolean }) {
 
 function ImageAttachment({ part, fill = false }: { part: ImagePart; fill?: boolean }) {
   const [open, setOpen] = useState(false);
+  const state = transferState(part.transferStatus);
+  if (state !== "ready") {
+    // 转存中/失败:用与就绪图卡尺寸相近的占位盒(参考 error 卡风格),避免布局跳动。
+    return (
+      <span
+        role="img"
+        aria-label={
+          state === "pending" ? STRINGS.attachment.processing : STRINGS.attachment.unavailable
+        }
+        className="text-wb-3xs grid aspect-[4/3] w-40 max-w-full place-items-center rounded-xl bg-workbench-surface-soft text-workbench-text-muted ring-1 ring-workbench-line"
+      >
+        <span className="flex flex-col items-center gap-1.5">
+          {state === "pending" ? (
+            <Loader2 size={20} strokeWidth={1.6} className="animate-spin" aria-hidden />
+          ) : (
+            <ImageOff size={22} strokeWidth={1.5} aria-hidden />
+          )}
+          <span>
+            {state === "pending" ? STRINGS.attachment.processing : STRINGS.attachment.unavailable}
+          </span>
+        </span>
+      </span>
+    );
+  }
   const safe = isSafeUrl(part.url, "image");
   return (
     <>
@@ -132,6 +165,24 @@ function ImageAttachment({ part, fill = false }: { part: ImagePart; fill?: boole
 }
 
 function FileAttachment({ part }: { part: FilePart }) {
+  const state = transferState(part.transferStatus);
+  if (state !== "ready") {
+    // 转存中/失败:复用文件卡外壳,左侧图标换 loading/失败,文案右移,保持卡片尺寸不跳。
+    return (
+      <div className="flex w-72 max-w-full items-center gap-3 rounded-2xl border border-workbench-line bg-workbench-surface px-3.5 py-3 shadow-wb-bubble">
+        <span className="grid size-11 shrink-0 place-items-center rounded-xl bg-workbench-surface-soft text-workbench-text-muted">
+          {state === "pending" ? (
+            <Loader2 size={20} strokeWidth={1.6} className="animate-spin" aria-hidden />
+          ) : (
+            <FileText size={22} strokeWidth={1.6} aria-hidden />
+          )}
+        </span>
+        <span className="min-w-0 flex-1 truncate text-wb-xs text-workbench-text-muted">
+          {state === "pending" ? STRINGS.attachment.processing : STRINGS.attachment.unavailable}
+        </span>
+      </div>
+    );
+  }
   const name = part.name ?? STRINGS.attachment.file;
   const size = formatFileSize(part.sizeBytes);
   const safe = isSafeUrl(part.url, "link");
@@ -174,6 +225,7 @@ function audioExtension(url: string): string {
 type BenzAMRInstance = InstanceType<typeof import("benz-amr-recorder").default>;
 
 function VoiceAttachment({ part }: { part: VoicePart }) {
+  const state = transferState(part.transferStatus);
   // durationSec 缺省时,amr 解码后用 getDuration() 补一个时长用于显示;有 prop 时以 prop 为准。
   const [amrDuration, setAmrDuration] = useState(0);
   const seconds = part.durationSec ?? amrDuration;
@@ -257,6 +309,29 @@ function VoiceAttachment({ part }: { part: VoicePart }) {
     }
   };
 
+  if (state !== "ready") {
+    // 转存中/失败:保持语音胶囊外形,内容换 loading/失败,避免布局跳动。
+    // 注:早返回须在全部 hooks 之后,遵守 hooks 规则。
+    return (
+      <span
+        role="img"
+        aria-label={
+          state === "pending" ? STRINGS.attachment.processing : STRINGS.attachment.unavailable
+        }
+        className="text-wb-3xs inline-flex items-center gap-2 rounded-2xl border border-workbench-line bg-workbench-surface px-3 py-2 text-workbench-text-muted shadow-wb-bubble"
+      >
+        {state === "pending" ? (
+          <Loader2 size={14} strokeWidth={1.6} className="animate-spin" aria-hidden />
+        ) : (
+          <ImageOff size={14} strokeWidth={1.6} aria-hidden />
+        )}
+        <span>
+          {state === "pending" ? STRINGS.attachment.processing : STRINGS.attachment.unavailable}
+        </span>
+      </span>
+    );
+  }
+
   return (
     <>
       <button
@@ -304,32 +379,75 @@ function VoiceAttachment({ part }: { part: VoicePart }) {
 }
 
 function VideoAttachment({ part }: { part: VideoPart }) {
-  // 视频 URL 既作链接 href 又作缩略图 CSS background。href 用 isSafeUrl(协议安全即可,
-  // 括号等在 href 上下文合法);CSS background 另用 cssUrlSafe —— 协议白名单通过后再拒绝
-  // CSS 元字符,并以带引号的 url("...") 形式拼接,防止可控 URL 闭合 url() 注入 CSS。
-  const safe = isSafeUrl(part.url, "link");
-  const coverUrl = cssUrlSafe(part.url, "link");
-  return (
-    <a
-      href={safe ? part.url : undefined}
-      target="_blank"
-      rel="noopener noreferrer"
-      aria-label={STRINGS.attachment.video}
-      className="focus-ring relative inline-block max-w-full overflow-hidden rounded-lg"
-    >
+  // 封面截帧加载失败(非 OSS 视频 / 不支持截帧 / 解码失败)时回退灰底盒;hook 须在早返回前
+  // 声明(遵守 hooks 规则)。
+  const [posterFailed, setPosterFailed] = useState(false);
+  const state = transferState(part.transferStatus);
+  if (state !== "ready") {
+    // 转存中/失败:保持 aspect-video w-64 盒子(与就绪封面同尺寸),内容居中,避免布局跳动。
+    return (
       <span
-        aria-hidden
-        className="block aspect-video w-64 max-w-full bg-workbench-surface-active"
-        style={
-          coverUrl
-            ? {
-                backgroundImage: `url("${coverUrl}")`,
-                backgroundSize: "cover",
-                backgroundPosition: "center",
-              }
-            : undefined
+        role="img"
+        aria-label={
+          state === "pending" ? STRINGS.attachment.processing : STRINGS.attachment.unavailable
         }
-      />
+        className="text-wb-3xs grid aspect-video w-64 max-w-full place-items-center rounded-lg bg-workbench-surface-active text-workbench-text-muted"
+      >
+        <span className="flex flex-col items-center gap-1.5">
+          {state === "pending" ? (
+            <Loader2 size={22} strokeWidth={1.6} className="animate-spin" aria-hidden />
+          ) : (
+            <ImageOff size={24} strokeWidth={1.5} aria-hidden />
+          )}
+          <span>
+            {state === "pending" ? STRINGS.attachment.processing : STRINGS.attachment.unavailable}
+          </span>
+        </span>
+      </span>
+    );
+  }
+  // href 用 isSafeUrl(协议安全即可,括号等在 href 上下文合法)。
+  const safe = isSafeUrl(part.url, "link");
+  // 封面:对直链 OSS 视频用 `?x-oss-process=video/snapshot,t_1000,f_jpg` 截第 1 秒一帧 JPG 作
+  // 封面渲染成真实 <img>(此前把 mp4 URL 直接当 CSS background,浏览器无法解码 → 只剩灰底)。
+  // 截帧 URL 再经 cachedImageSrc 走磁盘缓存 + 本地降采样(与消息图一致,控 webview 解码内存;
+  // 后端 cachedimg 是原样下载、本地缩放,不与 video/snapshot 参数冲突)。query 分隔符镜像后端
+  // image_cache 约定(已有 `?` 用 `&`)。加载失败 → onError 置位回退灰底盒。
+  const sep = part.url.includes("?") ? "&" : "?";
+  const poster =
+    isSafeUrl(part.url, "image") && !posterFailed
+      ? cachedImageSrc(
+          `${part.url}${sep}x-oss-process=video/snapshot,t_1000,f_jpg`,
+          thumbWidth(256 * 2),
+        )
+      : undefined;
+  return (
+    <button
+      type="button"
+      onClick={() => {
+        if (!safe) return;
+        // 优先在独立预览窗打开;非 Tauri 环境(返回 false)回退到系统默认应用打开外链。
+        void openVideoPreviewWindow({ src: part.url, name: part.name }).then((opened) => {
+          if (!opened) void openExternal(part.url);
+        });
+      }}
+      aria-label={STRINGS.attachment.video}
+      title={STRINGS.attachment.openVideo}
+      className="focus-ring relative inline-block max-w-full cursor-pointer overflow-hidden rounded-lg"
+    >
+      <span aria-hidden className="block aspect-video w-64 max-w-full bg-workbench-surface-active">
+        {poster && (
+          <img
+            src={poster}
+            alt=""
+            aria-hidden
+            loading="lazy"
+            decoding="async"
+            onError={() => setPosterFailed(true)}
+            className="h-full w-full object-cover"
+          />
+        )}
+      </span>
       <span
         aria-hidden
         className="absolute inset-0 grid place-items-center bg-black/15 transition-colors hover:bg-black/25"
@@ -338,7 +456,13 @@ function VideoAttachment({ part }: { part: VideoPart }) {
           <Play size={20} strokeWidth={1.6} fill="currentColor" />
         </span>
       </span>
-    </a>
+      {part.durationSec !== undefined && (
+        // 视频时长徽标:右下角黑色半透明小圆角,仅在后端下发时长时显示。
+        <span className="wb-num text-wb-3xs absolute bottom-1.5 right-1.5 rounded bg-black/55 px-1.5 py-0.5 text-white">
+          {STRINGS.attachment.voiceDuration(part.durationSec)}
+        </span>
+      )}
+    </button>
   );
 }
 

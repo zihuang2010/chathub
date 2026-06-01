@@ -105,6 +105,8 @@ mod tests {
                 width: None,
                 height: None,
                 local_path: None,
+                transfer_status: 2,
+                duration_seconds: None,
             }],
             gmt_modified_time: "".into(),
         }

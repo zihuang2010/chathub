@@ -275,14 +275,15 @@ describe("ChatArea history scrolling", () => {
     expect(container.querySelector("[data-index]")).toBeNull();
   });
 
-  it("uses a compact history-loading indicator instead of animated skeleton rows", () => {
-    const { container, getByRole } = renderChatArea({
+  it("shows no history-loading indicator while older messages load (silent prepend)", () => {
+    const { container, queryByRole } = renderChatArea({
       messages: [message("03"), message("04"), message("05")],
       loading: true,
       hasMoreHistory: true,
     });
 
-    expect(getByRole("status", { name: "加载更早的消息" })).toBeTruthy();
+    // 翻历史不再显示"加载更早的消息"指示器,也无骨架动画 —— 旧消息静默插入。
+    expect(queryByRole("status", { name: "加载更早的消息" })).toBeNull();
     expect(container.querySelector(".animate-pulse")).toBeNull();
   });
 
@@ -532,6 +533,46 @@ describe("ChatArea history scrolling", () => {
 
     // 锚点未被滚轮重捕，仍用最初的 {1000,0}：T_new = 1420 − 1000 + 0 = 420。
     expect(scrollAreaMock.scrollTop).toBe(420);
+  });
+
+  it("defers the older-history load until scrolling settles at the top (no trigger mid-inertia)", () => {
+    const loadMore = vi.fn().mockResolvedValue(undefined);
+    renderChatArea({
+      messages: [message("03"), message("04"), message("05")],
+      hasMoreHistory: true,
+      onLoadMoreHistory: loadMore,
+    });
+
+    // 挂载已用同步 raf 完成首屏 snap;此处切到手动 raf 队列,逐帧推进以模拟惯性。
+    const rafCbs: FrameRequestCallback[] = [];
+    vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) => {
+      rafCbs.push(cb);
+      return rafCbs.length;
+    });
+    const flushFrame = () => {
+      const pending = rafCbs.splice(0, rafCbs.length);
+      pending.forEach((cb) => cb(0));
+    };
+
+    // 到顶触发停稳监测,但 raf 未推进 → 不再像旧逻辑那样同步立刻加载。
+    scrollAreaMock.scrollTop = 0;
+    fireEvent.scroll(scrollAreaMock.viewport!);
+    expect(loadMore).not.toHaveBeenCalled();
+
+    // 惯性中:scrollTop 持续变化 → 停稳计数不断清零 → 不触发加载。
+    scrollAreaMock.scrollTop = 6;
+    flushFrame();
+    scrollAreaMock.scrollTop = 2;
+    flushFrame();
+    expect(loadMore).not.toHaveBeenCalled();
+
+    // 惯性结束:回到顶部并连续稳定若干帧 → 触发恰好一次加载。
+    scrollAreaMock.scrollTop = 0;
+    flushFrame(); // 2→0 仍判定为移动,稳定计数清零
+    flushFrame(); // 稳定第 1 帧
+    flushFrame(); // 稳定第 2 帧
+    flushFrame(); // 稳定第 3 帧 → 触发
+    expect(loadMore).toHaveBeenCalledTimes(1);
   });
 
   it("restores the scroll offset by scrollHeight delta when image rows are prepended", async () => {

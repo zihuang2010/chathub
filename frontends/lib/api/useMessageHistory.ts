@@ -19,6 +19,7 @@
 
 import { useCallback, useEffect, useMemo, useRef } from "react";
 
+import { OLDER_PAGE_SIZE } from "@/components/workbench/messages/constants";
 import type { Message } from "@/components/workbench/messages/data";
 import { clearImageDimsCache } from "@/components/workbench/messages/imageDimsCache";
 import { clearLoadedImageSrcs } from "@/components/workbench/messages/loadedImageSrcs";
@@ -222,7 +223,9 @@ export function useMessageHistory(opts: UseMessageHistoryOptions): UseMessageHis
     const requestKey = activeTargetKey;
     useChatStore.getState().setLoading(requestKey, true);
     try {
-      const resp = await loadOlderMessages({ conversationId, pageSize });
+      // 翻更旧页固定用 OLDER_PAGE_SIZE(小页);pageSize(=20)只服务首屏 readCache,二者解耦:
+      // 首屏要撑满视口可滚,翻页要小步、低撑高以减小惯性下的锚点跳动。
+      const resp = await loadOlderMessages({ conversationId, pageSize: OLDER_PAGE_SIZE });
       if (targetKeyRef.current !== requestKey) return;
       const older = adaptHistoryRecords(resp.records, conversationId);
       useChatStore.getState().prependOlder(requestKey, older, resp.hasMoreOlder);
@@ -233,7 +236,8 @@ export function useMessageHistory(opts: UseMessageHistoryOptions): UseMessageHis
       useChatStore.getState().setLoading(requestKey, false);
       loadingOlderRef.current = false;
     }
-  }, [ready, hasMore, loading, activeTargetKey, conversationId, pageSize]);
+    // pageSize 仅首屏 readCache 用,loadMore 走 OLDER_PAGE_SIZE,故不入本 deps。
+  }, [ready, hasMore, loading, activeTargetKey, conversationId]);
 
   const retry = useCallback(() => {
     useChatStore.getState().setError(activeTargetKey, null);

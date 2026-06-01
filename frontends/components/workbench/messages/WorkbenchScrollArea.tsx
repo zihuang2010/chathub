@@ -28,6 +28,10 @@ interface WorkbenchScrollAreaProps {
   onWheelCapture?: WheelEventHandler<HTMLDivElement>;
   /** 到顶继续上推时给一个极轻的 transform 回弹(不碰 scrollTop)。默认关,仅消息区开。 */
   overscrollBounce?: boolean;
+  /** 仅消息区:接近顶部时钳制单次 wheel 步长,削快滚冲顶尖峰、让到顶更跟手(配合翻页停稳门控,
+   *  减小惯性下的锚点跳动)。默认关。WKWebView 上"接管平滑滚动"会与原生惯性双写打架,故只做近顶
+   *  钳制、不接管滚动。可独立摘除(见 ChatArea)。 */
+  smoothWheel?: boolean;
 }
 
 // 早先版本把 scrollbar 当作 viewport 的"兄弟节点"(custom WorkbenchScrollbar 渲染
@@ -48,6 +52,7 @@ export function WorkbenchScrollArea({
   onUserScroll,
   onWheelCapture,
   overscrollBounce,
+  smoothWheel,
 }: WorkbenchScrollAreaProps) {
   // 内部 ref 始终持有真实 DOM,所有 effect/listener 都通过 internalRef.current 读取,
   // 不依赖父传 ref 的引用一致性。父传的 scrollRef 由 setViewportRef 桥接转发。
@@ -158,7 +163,7 @@ export function WorkbenchScrollArea({
       window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     if (reduceMotion) return;
 
-    const MAX_PULL = 14; // 最大回弹位移(px)
+    const MAX_PULL = 8; // 最大回弹位移(px;从 14 调小,快滚到顶时回弹更克制、过冲近半)
     const DAMP = 0.28; // 阻尼:越界滚动量 → 位移
     const RELEASE_MS = 90; // 停止上推后多久开始回弹
     let offset = 0;
@@ -191,6 +196,36 @@ export function WorkbenchScrollArea({
       content.style.transform = "";
     };
   }, [overscrollBounce]);
+
+  // 近顶区 wheel 步长钳制(opt-in,仅消息区)。只在"最后一屏、向上滚、单次 deltaY 超 MAX_STEP"时
+  // 钳制并手动滚一小步,削掉快滚冲顶的尖峰、降低到顶速度 → 让翻页停稳门控更快触发、惯性更小。
+  // 远离顶部 / 向下 / 未超限一律放行原生,不接管滚动(避免 WKWebView 上与惯性双写打架)。
+  // 与 onWheelCapture(scrollTop<=1 才介入)区间不重叠;reduce-motion 下禁用。
+  useEffect(() => {
+    if (!smoothWheel) return;
+    const viewport = internalRef.current;
+    if (!viewport) return;
+    const reduceMotion =
+      typeof window !== "undefined" &&
+      typeof window.matchMedia === "function" &&
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (reduceMotion) return;
+
+    const MAX_STEP = 60; // 近顶区单次向上滚最大步长(px)
+
+    const onWheel = (e: WheelEvent) => {
+      if (e.deltaY >= 0) return; // 只管向上
+      const top = viewport.scrollTop;
+      if (top <= 0) return; // 已到顶 → 交给 onWheelCapture / overscrollBounce
+      if (top > viewport.clientHeight) return; // 远离顶部(超过一屏)→ 全交原生,零干预
+      if (-e.deltaY <= MAX_STEP) return; // 未超限 → 原生处理
+      e.preventDefault();
+      viewport.scrollTop = Math.max(0, top - MAX_STEP);
+    };
+
+    viewport.addEventListener("wheel", onWheel, { passive: false });
+    return () => viewport.removeEventListener("wheel", onWheel);
+  }, [smoothWheel]);
 
   return (
     <div className={cn("min-h-0", className)}>

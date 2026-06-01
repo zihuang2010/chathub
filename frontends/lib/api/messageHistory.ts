@@ -71,6 +71,10 @@ export interface HistoryAttachment {
   height?: number;
   /** 本地缩略图绝对路径，由后端 image_meta 注入；前端走 Tauri asset 协议读取。 */
   localPath?: string;
+  /** 附件转存状态:0=无需转存,1=待转存,2=成功,3=失败。缺省视为就绪。 */
+  transferStatus?: number;
+  /** 媒体时长(秒);语音/视频由后端下发。 */
+  durationSeconds?: number;
 }
 
 export interface FetchMessageHistoryResp {
@@ -268,6 +272,9 @@ function historyAttachmentToMessage(a: HistoryAttachment): MessageAttachment {
     width: a.width,
     height: a.height,
     localPath: a.localPath,
+    // 转存态 + 媒体时长(后端 durationSeconds → 前端 durationSec)
+    transferStatus: a.transferStatus,
+    durationSec: a.durationSeconds,
   };
 }
 

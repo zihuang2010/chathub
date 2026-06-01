@@ -452,6 +452,10 @@ impl MessageSync {
                 width: None,
                 height: None,
                 local_path: None,
+                // 我方已上传 OSS，视为转存成功
+                transfer_status: 2,
+                // 发送回显暂不带时长，reconcile 后由权威字段补齐
+                duration_seconds: None,
             };
             let json = serde_json::to_string(&vec![att]).unwrap_or_else(|_| "[]".to_string());
             (String::new(), json)
@@ -808,6 +812,8 @@ mod tests {
         assert_eq!(a.file_type, "png");
         assert_eq!(a.file_size, 176098);
         assert_eq!(a.file_name, "image.png");
+        assert_eq!(a.transfer_status, 2);
+        assert_eq!(a.duration_seconds, None);
     }
 
     // 规范形态(本地发送回显落库的 mediaId/数字 fileSize)仍正常解析,不被上游兼容改动破坏。
@@ -818,6 +824,7 @@ mod tests {
         assert_eq!(a.media_id, "t/x.png");
         assert_eq!(a.file_size, 42);
         assert_eq!(a.file_type, "png");
+        assert_eq!(a.transfer_status, 0);
     }
 
     #[test]

@@ -19,7 +19,14 @@ import {
 
 import { showToast } from "@/components/ui/toast";
 
-import { AT_BOTTOM_THRESHOLD } from "../constants";
+import {
+  AT_BOTTOM_THRESHOLD,
+  REASSERT_MAX_FRAMES,
+  REASSERT_STABLE_FRAMES,
+  SETTLE_MAX_WAIT_MS,
+  SETTLE_SCROLLTOP_EPSILON,
+  SETTLE_STABLE_FRAMES,
+} from "../constants";
 import type { Conversation, Message } from "../data";
 import { STRINGS } from "../strings";
 import type { ScrollMetrics } from "../WorkbenchScrollArea";
@@ -31,8 +38,15 @@ const HISTORY_TOP_LOAD_THRESHOLD = 1;
 interface PrependAnchor {
   conversationId: string;
   messageCount: number;
+  // 闭式回退(jsdom 无布局 / 未捕获到参照行时用):prepend 前后 scrollHeight 差值。
   scrollHeight: number;
   scrollTop: number;
+  // 参照行锚(真实浏览器主路径):视口顶部第一条可见消息行的 id + 其相对视口顶的偏移。
+  // prepend 后把同一行恢复到同一偏移,**只看这一行的视觉位置、不依赖总高**,因此免疫:
+  // 边界处 burst 间距/日期分隔增减、占位盒、以及"加载窗口内底部来新消息撑高 scrollHeight"
+  // 等一切会让闭式差值偏的情况 —— 当前页面视觉真正不动。
+  refId: string | null;
+  refTopRel: number | null;
 }
 
 interface ConversationCount {
@@ -87,6 +101,14 @@ export function useScrollController({
   const prependAnchorRef = useRef<PrependAnchor | null>(null);
   const historyLoadInFlightRef = useRef(false);
   const historyPrependAppliedMessageCountRef = useRef<number | null>(null);
+  // 停稳门控:到顶后用 rAF 连续帧观察 scrollTop,惯性停了才真正触发翻页(见 scheduleBoundaryLoadWhenSettled)。
+  const settleRafRef = useRef<number | null>(null);
+  const settleLastTopRef = useRef(0);
+  const settleStableFramesRef = useRef(0);
+  const settleDeadlineRef = useRef(0);
+  const settlePendingRef = useRef(false);
+  // prepend 后有限重断言锚点的 rAF 句柄(见锚点恢复 layout effect)。
+  const reassertRafRef = useRef<number | null>(null);
   // 记录当前活动会话,给定时器/异步回调判断"我所属的会话是否还活着"。
   const activeConversationIdRef = useRef(conversation.id);
 
@@ -143,11 +165,28 @@ export function useScrollController({
     if (!hasMoreHistory || loading || !onLoadMoreHistory) return false;
     if (pendingInitialScrollToLatestRef.current) return false;
 
+    // 捕获视口顶部第一条可见行作参照锚:行 key=message.id 稳定,prepend 后不 remount,可按
+    // data-message-row-id 找回。比 scrollHeight 差值更稳——只盯这一行的视觉位置。
+    const vTop = node.getBoundingClientRect().top;
+    let refId: string | null = null;
+    let refTopRel: number | null = null;
+    const rows = node.querySelectorAll<HTMLElement>("[data-message-row-id]");
+    for (let i = 0; i < rows.length; i++) {
+      const rRect = rows[i].getBoundingClientRect();
+      if (rRect.bottom > vTop + 0.5) {
+        refId = rows[i].getAttribute("data-message-row-id");
+        refTopRel = rRect.top - vTop;
+        break;
+      }
+    }
+
     prependAnchorRef.current = {
       conversationId: conversation.id,
       messageCount: localMessagesLengthRef.current,
       scrollHeight: node.scrollHeight,
       scrollTop: node.scrollTop,
+      refId,
+      refTopRel,
     };
     historyLoadInFlightRef.current = true;
 
@@ -165,12 +204,79 @@ export function useScrollController({
     return true;
   }, [conversation.id, hasMoreHistory, loading, onLoadMoreHistory]);
 
+  const cancelSettleWatch = useCallback(() => {
+    if (settleRafRef.current != null) cancelAnimationFrame(settleRafRef.current);
+    settleRafRef.current = null;
+    settlePendingRef.current = false;
+    settleStableFramesRef.current = 0;
+  }, []);
+
+  // 停稳门控:不在飞滚(惯性)中翻页。到顶后用 rAF 逐帧观察 scrollTop,连续 SETTLE_STABLE_FRAMES
+  // 帧不变(惯性结束)且仍贴顶,才真正调 loadOlderHistoryAtBoundary 记锚点 + 拉数据;否则继续等,
+  // SETTLE_MAX_WAIT_MS 兜底。这样 prepend 落地时已无惯性,单次 scrollTop 锚定即可落定(再配合锚点
+  // 恢复处的有限重断言兜住残余)。返回 true 表示"已接管/在处理"(沿用 loadOlderHistoryAtBoundary
+  // 语义),让 wheel 路径据此 preventDefault、吞掉飞滚不冲破锚点。
+  const scheduleBoundaryLoadWhenSettled = useCallback(() => {
+    const node = scrollRef.current;
+    if (!node) return false;
+    if (historyLoadInFlightRef.current) return true;
+    if (prependAnchorRef.current?.conversationId === conversation.id) return true;
+    if (!hasMoreHistory || loading || !onLoadMoreHistory) return false;
+    if (pendingInitialScrollToLatestRef.current) return false;
+    if (settlePendingRef.current) return true; // 已在监测停稳
+
+    settlePendingRef.current = true;
+    settleLastTopRef.current = node.scrollTop;
+    settleStableFramesRef.current = 0;
+    settleDeadlineRef.current = performance.now() + SETTLE_MAX_WAIT_MS;
+
+    const tick = () => {
+      const n = scrollRef.current;
+      if (!n || activeConversationIdRef.current !== conversation.id) {
+        cancelSettleWatch();
+        return;
+      }
+      // 期间别处已触发加载 / 已有锚点 → 放弃本次监测。
+      if (
+        historyLoadInFlightRef.current ||
+        prependAnchorRef.current?.conversationId === conversation.id
+      ) {
+        cancelSettleWatch();
+        return;
+      }
+      const top = n.scrollTop;
+      const moved = Math.abs(top - settleLastTopRef.current) > SETTLE_SCROLLTOP_EPSILON;
+      settleLastTopRef.current = top;
+      settleStableFramesRef.current = moved ? 0 : settleStableFramesRef.current + 1;
+
+      const settled =
+        settleStableFramesRef.current >= SETTLE_STABLE_FRAMES ||
+        performance.now() >= settleDeadlineRef.current;
+      if (!settled) {
+        settleRafRef.current = requestAnimationFrame(tick);
+        return;
+      }
+      // 停稳了:仍贴顶才加载(惯性可能已把视口带离顶部 → 用户回滚离开,不应再翻页)。
+      cancelSettleWatch();
+      if (top <= HISTORY_TOP_LOAD_THRESHOLD) loadOlderHistoryAtBoundary();
+    };
+    settleRafRef.current = requestAnimationFrame(tick);
+    return true;
+  }, [
+    conversation.id,
+    hasMoreHistory,
+    loading,
+    onLoadMoreHistory,
+    loadOlderHistoryAtBoundary,
+    cancelSettleWatch,
+  ]);
+
   const maybeLoadOlderHistory = useCallback(
     (m: ScrollMetrics) => {
       if (m.scrollTop > HISTORY_TOP_LOAD_THRESHOLD) return;
-      loadOlderHistoryAtBoundary();
+      scheduleBoundaryLoadWhenSettled();
     },
-    [loadOlderHistoryAtBoundary],
+    [scheduleBoundaryLoadWhenSettled],
   );
 
   const handleWheelCapture = useCallback(
@@ -188,11 +294,11 @@ export function useScrollController({
         return;
       }
 
-      if (loadOlderHistoryAtBoundary()) {
+      if (scheduleBoundaryLoadWhenSettled()) {
         event.preventDefault();
       }
     },
-    [conversation.id, loadOlderHistoryAtBoundary],
+    [conversation.id, scheduleBoundaryLoadWhenSettled],
   );
 
   // 仅由 user-initiated scroll event 触发。在这里把 pill 出现/消失的逻辑全部解决:
@@ -264,6 +370,10 @@ export function useScrollController({
     prependAnchorRef.current = null;
     historyLoadInFlightRef.current = false;
     historyPrependAppliedMessageCountRef.current = null;
+    // 取消上个会话悬挂的停稳监测 / 重断言 rAF,防跨会话野回调改新会话 scrollTop。
+    cancelSettleWatch();
+    if (reassertRafRef.current != null) cancelAnimationFrame(reassertRafRef.current);
+    reassertRafRef.current = null;
     wasAtBottomRef.current = true;
     // 切会话**不**点亮顶部 pill。pill 只有当用户从底部主动向上滚动且 divider 仍在视口上方时触发。
     hasSeenDividerRef.current = false;
@@ -310,18 +420,71 @@ export function useScrollController({
 
     const node = scrollRef.current;
     if (!node) return;
-    // 唯一恢复路径:scrollHeight 差值,paint 前一次性到位。行高在挂载首帧已冻结
-    // (图片盒 layoutDims + object-contain,加载后不改行高),故插入即终值、单次精确,
-    // 不需要可见行锚点、不需要后置逐帧稳定器(那会在绘制后自主改写 scrollTop,正是抖动源)。
-    node.scrollTop = Math.max(0, node.scrollHeight - anchor.scrollHeight + anchor.scrollTop);
+
+    // 目标 scrollTop:主路径=参照行锚 —— 把捕获到的那条可见行恢复到它原来的视口偏移,只依赖这
+    // 一行的实测位置,免疫 prepend 前后总高的任何变化(边界 burst 间距/日期分隔增减、占位盒、以及
+    // "加载窗口内底部来新消息撑高 scrollHeight"——后者正是闭式差值会偏的主因)。无布局(jsdom)或
+    // 找不到参照行时回退到 scrollHeight 差值闭式(单测走这条,行为同原逻辑)。
+    const targetFor = (n: HTMLDivElement): number => {
+      const vRect = n.getBoundingClientRect();
+      if (vRect.height > 0 && anchor.refId != null && anchor.refTopRel != null) {
+        const rows = n.querySelectorAll<HTMLElement>("[data-message-row-id]");
+        for (let i = 0; i < rows.length; i++) {
+          if (rows[i].getAttribute("data-message-row-id") === anchor.refId) {
+            const curRel = rows[i].getBoundingClientRect().top - vRect.top;
+            return Math.max(0, n.scrollTop + (curRel - anchor.refTopRel));
+          }
+        }
+      }
+      return Math.max(0, n.scrollHeight - anchor.scrollHeight + anchor.scrollTop);
+    };
+
+    // 1) paint 前单次到位。
+    node.scrollTop = targetFor(node);
+
+    // 锚点清理 / prepend 标记 / atBottom 同步 —— 时机与原逻辑一致,不依赖下面的重断言结果,
+    // 故"新消息贴底跟随"effect 仍靠 historyPrependAppliedMessageCountRef 跳过本次增长,行为不变。
     prependAnchorRef.current = null;
     historyLoadInFlightRef.current = false;
     historyPrependAppliedMessageCountRef.current = localMessages.length;
-
     const nextAtBottom =
       node.scrollHeight - node.scrollTop - node.clientHeight < AT_BOTTOM_THRESHOLD;
     wasAtBottomRef.current = nextAtBottom;
     setAtBottom((prev) => (prev === nextAtBottom ? prev : nextAtBottom));
+
+    // 2) 有界重断言:逐帧重新对齐参照行(快滚残余惯性、边界处晚到的高度变化都扳回)。WebKit 无
+    //    overflow-anchor 兜底,全靠这里。连续 REASSERT_STABLE_FRAMES 帧已对齐即停,或最多
+    //    REASSERT_MAX_FRAMES 帧硬停 —— 双上限,只在 prepend 后 ~100ms 窗口生效、窗口外静默,
+    //    绝不退化成此前被删掉的"持续逐帧稳定器"。会话切换/卸载取消本 rAF(见上下两处 cleanup)。
+    if (reassertRafRef.current != null) cancelAnimationFrame(reassertRafRef.current);
+    let frames = 0;
+    let stable = 0;
+    const reassert = () => {
+      const n = scrollRef.current;
+      if (!n || activeConversationIdRef.current !== conversation.id) {
+        reassertRafRef.current = null;
+        return;
+      }
+      frames += 1;
+      const target = targetFor(n);
+      if (Math.abs(n.scrollTop - target) > SETTLE_SCROLLTOP_EPSILON) {
+        n.scrollTop = target;
+        stable = 0;
+      } else {
+        stable += 1;
+      }
+      if (stable >= REASSERT_STABLE_FRAMES || frames >= REASSERT_MAX_FRAMES) {
+        reassertRafRef.current = null;
+        return;
+      }
+      reassertRafRef.current = requestAnimationFrame(reassert);
+    };
+    reassertRafRef.current = requestAnimationFrame(reassert);
+
+    return () => {
+      if (reassertRafRef.current != null) cancelAnimationFrame(reassertRafRef.current);
+      reassertRafRef.current = null;
+    };
   }, [conversation.id, loading, localMessages.length]);
 
   const scrollToUnread = useCallback(() => {
@@ -358,6 +521,16 @@ export function useScrollController({
       setUnreadBelow((current) => current + incomingArrivals);
     }
   }, [localMessages]);
+
+  // 卸载时取消悬挂的停稳监测 / 重断言 rAF,防野回调。
+  useEffect(
+    () => () => {
+      cancelSettleWatch();
+      if (reassertRafRef.current != null) cancelAnimationFrame(reassertRafRef.current);
+      reassertRafRef.current = null;
+    },
+    [cancelSettleWatch],
+  );
 
   return {
     setScrollNode,
