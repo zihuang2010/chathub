@@ -163,30 +163,27 @@ export function useTransientVisibility(
 ): TransientVisibility {
   const [rendered, setRendered] = useState(active);
   const [leaving, setLeaving] = useState(false);
-  const shownAtRef = useRef<number>(active ? Date.now() : 0);
-  // 镜像 rendered 供 effect 同步读取；effect 仅依赖 active，避免显隐 setState 反过来
-  // 重跑 effect 造成重复排程。
-  const renderedRef = useRef(rendered);
-  renderedRef.current = rendered;
+  const shownAtRef = useRef<number>(0);
   const timersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
 
+  // 显示：active 时在渲染期收敛点亮（React 官方「渲染期 setState」模式，React 丢弃当前渲染
+  // 并立即重渲，条件收敛不死循环）。渲染期保持纯净，不调用 Date.now() 等不纯函数。
+  if (active && !rendered) setRendered(true);
+  if (active && leaving) setLeaving(false);
+
+  // 记录"变为显示"的时刻：effect 可用不纯的 Date.now，且只写 ref、不 setState。
   useEffect(() => {
-    const clearTimers = () => {
+    if (active) shownAtRef.current = Date.now();
+  }, [active]);
+
+  // 隐藏：active 转 false 时排程「补足最小展示 → 淡出 → 卸载」。所有 setState 都在计时器
+  // 回调里（异步，符合 react-hooks/set-state-in-effect）；effect 体内只做排程/清理。
+  useEffect(() => {
+    if (active || !rendered) {
       timersRef.current.forEach(clearTimeout);
       timersRef.current = [];
-    };
-
-    if (active) {
-      clearTimers();
-      if (!renderedRef.current) shownAtRef.current = Date.now();
-      setLeaving(false);
-      setRendered(true);
       return;
     }
-
-    if (!renderedRef.current) return;
-
-    clearTimers();
     const elapsed = Date.now() - shownAtRef.current;
     const holdMs = Math.max(0, minVisibleMs - elapsed);
     const beginLeave = () => {
@@ -199,20 +196,17 @@ export function useTransientVisibility(
       );
     };
     timersRef.current.push(setTimeout(beginLeave, holdMs));
-  }, [active, minVisibleMs, fadeMs]);
-
-  // 组件卸载兜底清理（timersRef 跨 effect 运行持续，不在每次 effect 退出时清）。
-  useEffect(
-    () => () => {
+    return () => {
       timersRef.current.forEach(clearTimeout);
       timersRef.current = [];
-    },
-    [],
-  );
+    };
+  }, [active, rendered, minVisibleMs, fadeMs]);
 
   return { rendered, leaving };
 }
 ```
+
+> 实现说明：相较初版，为满足 `react-hooks/set-state-in-effect`（effect 体内禁同步 setState）与 `react-hooks/purity`（渲染期禁调 `Date.now()`），改为「渲染期收敛点亮 + effect 记录显示时刻 + 计时器回调里 setState」。行为契约与测试不变。
 
 - [ ] **Step 4: 跑测试确认通过**
 
