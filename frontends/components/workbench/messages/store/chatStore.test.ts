@@ -96,6 +96,23 @@ describe("chatStore reducers", () => {
     expect(next.byId["c-1"]).toBeUndefined();
   });
 
+  it("replaceAuthoritative 收敛时把乐观气泡的 clientMsgId 带到权威条目(供稳定 React key,消发图闪)", () => {
+    // 发图闪根因:乐观气泡 id=clientMsgId,权威条目 id=serverId;若行 key 跟着 id 由
+    // clientMsgId 变 serverId,React 会 remount 整行 → MessageImage 重建走骨架态闪一下。
+    // 修法:收敛时把 clientMsgId 带到权威条目,上层据此给一个跨「乐观→权威」稳定的 key。
+    const sent = optimistic("c-1", { status: "sent", serverId: "server-1" });
+    const next = replaceAuthoritative(sliceWith([sent]), [
+      msg("server-1", { direction: "out", status: "sent" }),
+    ]);
+    expect(next.byId["server-1"].clientMsgId).toBe("c-1");
+  });
+
+  it("replaceAuthoritative 对没有乐观来源的历史消息不附加 clientMsgId(key 回退到 id)", () => {
+    const next = replaceAuthoritative(emptySlice(), [msg("h1"), msg("h2")]);
+    expect(next.byId["h1"].clientMsgId).toBeUndefined();
+    expect(next.byId["h2"].clientMsgId).toBeUndefined();
+  });
+
   it("replaceAuthoritative 收敛已发送图片时保留本地已知宽高，防止权威回读缺 meta 后尺寸回跳", () => {
     const sent = optimistic("c-1", {
       status: "sent",

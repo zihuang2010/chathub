@@ -17,6 +17,7 @@ import { DateDivider, MessageBubble, type ReplyTarget, UnreadDivider } from "./M
 import { MessageComposer } from "./MessageComposer";
 import type { MessageActionType } from "./MessageContextMenu";
 import { RangePill } from "./RangePill";
+import type { ChatMessageEntity } from "./store/chatStore";
 import { STRINGS } from "./strings";
 import { WorkbenchScrollArea } from "./WorkbenchScrollArea";
 
@@ -196,9 +197,16 @@ export const ChatArea = memo(function ChatArea({
           >
             <div role="log" aria-live="polite" aria-atomic="false" className="flex flex-col">
               {timelineItems.map((item, idx) => {
+                // 消息行 key 用 clientMsgId(收敛后由 replaceAuthoritative 带到权威条目),使
+                // 「乐观→权威」收敛时 key 不变、整行不 remount → 发图时 MessageImage 实例存活,
+                // 其内建 transition 接管 data:→服务端 src 切换,首帧不闪。历史消息无 clientMsgId 回退 id。
+                const rowKey =
+                  item.type === "message"
+                    ? ((item.message as ChatMessageEntity).clientMsgId ?? item.id)
+                    : item.id;
                 return (
                   <MessageTimelineRow
-                    key={item.id}
+                    key={rowKey}
                     item={item}
                     index={idx}
                     avatarName={conversation.name}
