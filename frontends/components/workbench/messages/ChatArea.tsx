@@ -12,10 +12,12 @@ import type { Conversation, Message, QuickReply } from "./data";
 import { useChatActions, type SendMessageOptions } from "./hooks/useChatActions";
 import { useChatTimeline } from "./hooks/useChatTimeline";
 import { useScrollController } from "./hooks/useScrollController";
+import { useTransientVisibility } from "./hooks/useTransientVisibility";
 import { DateDivider, MessageBubble, type ReplyTarget, UnreadDivider } from "./MessageBubble";
 import { MessageComposer } from "./MessageComposer";
 import type { MessageActionType } from "./MessageContextMenu";
 import { RangePill } from "./RangePill";
+import type { ChatMessageEntity } from "./store/chatStore";
 import { STRINGS } from "./strings";
 import { WorkbenchScrollArea } from "./WorkbenchScrollArea";
 
@@ -152,6 +154,15 @@ export const ChatArea = memo(function ChatArea({
     setReplyDraft,
   });
 
+  // 翻历史 spinner 的显隐(最小展示时长 + 淡入淡出)托管给 useTransientVisibility,消除
+  // IPC 快时的一闪。active: length>0 的 loading 必是翻页加载(初次加载走 ChatLoadingState)。
+  const historySpinnerActive =
+    !error && localMessages.length > 0 && Boolean(loading) && hasMoreHistory;
+  const historySpinner = useTransientVisibility(historySpinnerActive, {
+    minVisibleMs: 400,
+    fadeMs: 180,
+  });
+
   // 切会话即时切换(无 crossfade):标题与消息区随 conversation 直接重渲,同步硬切,
   // 无淡入淡出延迟、无双倍 DOM —— 跟手丝滑(IM 桌面端标准)。
   return (
@@ -179,15 +190,23 @@ export const ChatArea = memo(function ChatArea({
             onScrollMetrics={handleScrollMetrics}
             onUserScroll={handleUserScroll}
             onWheelCapture={handleWheelCapture}
+            overscrollBounce
             className="flex-1 bg-workbench-surface"
             viewportClassName="overscroll-contain [overflow-anchor:none] bg-workbench-surface px-4 pt-5 pb-10 pr-6"
             contentClassName="flex w-full flex-col"
           >
             <div role="log" aria-live="polite" aria-atomic="false" className="flex flex-col">
               {timelineItems.map((item, idx) => {
+                // 消息行 key 用 clientMsgId(收敛后由 replaceAuthoritative 带到权威条目),使
+                // 「乐观→权威」收敛时 key 不变、整行不 remount → 发图时 MessageImage 实例存活,
+                // 其内建 transition 接管 data:→服务端 src 切换,首帧不闪。历史消息无 clientMsgId 回退 id。
+                const rowKey =
+                  item.type === "message"
+                    ? ((item.message as ChatMessageEntity).clientMsgId ?? item.id)
+                    : item.id;
                 return (
                   <MessageTimelineRow
-                    key={item.id}
+                    key={rowKey}
                     item={item}
                     index={idx}
                     avatarName={conversation.name}
@@ -203,11 +222,9 @@ export const ChatArea = memo(function ChatArea({
           </WorkbenchScrollArea>
         )}
       </div>
-      {/* 翻历史 spinner:length>0 时的 loading 必是翻页加载(初次加载 length===0 走
-          ChatLoadingState 分支)。绝对定位顶部居中,不挤压消息流、不引发回弹位移。 */}
-      {!error && localMessages.length > 0 && loading && hasMoreHistory && (
-        <HistoryLoadingIndicator />
-      )}
+      {/* 翻历史 spinner:显隐由 useTransientVisibility 托管(见上 historySpinner)。
+          绝对定位顶部居中,不挤压消息流、不引发回弹位移。 */}
+      {historySpinner.rendered && <HistoryLoadingIndicator leaving={historySpinner.leaving} />}
       {!loading && !error && localMessages.length > 0 && !atBottom && (
         <ScrollToBottomButton
           count={unreadBelow}
@@ -392,16 +409,23 @@ const UnreadAbovePill = memo(function UnreadAbovePill({
 // ─── Floating history-loading indicator ─────────────────────────────────────
 // 翻历史反馈改为轻量状态条:不占消息流、不遮挡大面积内容、不 pulse 重绘。
 // 位置由滚动锚点控制,状态条只表达"上方数据正在到来",类似桌面 IM 的顶部加载提示。
-const HistoryLoadingIndicator = memo(function HistoryLoadingIndicator() {
+const HistoryLoadingIndicator = memo(function HistoryLoadingIndicator({
+  leaving,
+}: {
+  leaving: boolean;
+}) {
   return (
     <div
       role="status"
       aria-live="polite"
+      data-state={leaving ? "leaving" : "shown"}
       aria-label={STRINGS.status.loadingHistory}
       className={cn(
         "pointer-events-none absolute left-1/2 top-3 z-20 -translate-x-1/2",
         "inline-flex items-center gap-1.5 rounded-full border border-workbench-line bg-workbench-surface/95 px-2.5 py-1 text-wb-2xs font-medium text-workbench-text-secondary shadow-wb-popover backdrop-blur-md",
-        "animate-in fade-in slide-in-from-top-1",
+        "duration-200 data-[state=shown]:animate-in data-[state=shown]:fade-in data-[state=shown]:slide-in-from-top-1",
+        "data-[state=leaving]:animate-out data-[state=leaving]:fade-out data-[state=leaving]:slide-out-to-top-1",
+        "motion-reduce:animate-none",
       )}
     >
       <Loader2 size={13} className="shrink-0 animate-spin motion-reduce:animate-none" aria-hidden />

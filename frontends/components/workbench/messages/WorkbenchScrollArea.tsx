@@ -26,6 +26,8 @@ interface WorkbenchScrollAreaProps {
    *  emit 不能触发 pill,只有用户主动滚动才可以。 */
   onUserScroll?: (metrics: ScrollMetrics) => void;
   onWheelCapture?: WheelEventHandler<HTMLDivElement>;
+  /** 到顶继续上推时给一个极轻的 transform 回弹(不碰 scrollTop)。默认关,仅消息区开。 */
+  overscrollBounce?: boolean;
 }
 
 // 早先版本把 scrollbar 当作 viewport 的"兄弟节点"(custom WorkbenchScrollbar 渲染
@@ -45,10 +47,12 @@ export function WorkbenchScrollArea({
   onScrollMetrics,
   onUserScroll,
   onWheelCapture,
+  overscrollBounce,
 }: WorkbenchScrollAreaProps) {
   // 内部 ref 始终持有真实 DOM,所有 effect/listener 都通过 internalRef.current 读取,
   // 不依赖父传 ref 的引用一致性。父传的 scrollRef 由 setViewportRef 桥接转发。
   const internalRef = useRef<HTMLDivElement | null>(null);
+  const contentRef = useRef<HTMLDivElement | null>(null);
 
   const setViewportRef = useCallback(
     (node: HTMLDivElement | null) => {
@@ -141,6 +145,53 @@ export function WorkbenchScrollArea({
     };
   }, []);
 
+  // A2:到顶继续上推时给一个极轻的 overscroll 回弹(纯 transform,不碰 scrollTop/不破锚定)。
+  // 默认关,仅消息区开;reduce-motion 下整段禁用、不挂监听。
+  useEffect(() => {
+    if (!overscrollBounce) return;
+    const viewport = internalRef.current;
+    const content = contentRef.current;
+    if (!viewport || !content) return;
+    const reduceMotion =
+      typeof window !== "undefined" &&
+      typeof window.matchMedia === "function" &&
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (reduceMotion) return;
+
+    const MAX_PULL = 14; // 最大回弹位移(px)
+    const DAMP = 0.28; // 阻尼:越界滚动量 → 位移
+    const RELEASE_MS = 90; // 停止上推后多久开始回弹
+    let offset = 0;
+    let releaseTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const settle = () => {
+      offset = 0;
+      content.style.transition = "transform 220ms cubic-bezier(0.22, 1, 0.36, 1)";
+      content.style.transform = "translateY(0px)";
+    };
+
+    const onWheel = (e: WheelEvent) => {
+      // 仅"贴顶 + 继续上推"才回弹;其余交回原生滚动。
+      if (e.deltaY >= 0 || viewport.scrollTop > 0) {
+        if (offset !== 0) settle();
+        return;
+      }
+      offset = Math.min(MAX_PULL, offset + -e.deltaY * DAMP);
+      content.style.transition = "transform 0ms";
+      content.style.transform = `translateY(${offset}px)`;
+      if (releaseTimer) clearTimeout(releaseTimer);
+      releaseTimer = setTimeout(settle, RELEASE_MS);
+    };
+
+    viewport.addEventListener("wheel", onWheel, { passive: true });
+    return () => {
+      viewport.removeEventListener("wheel", onWheel);
+      if (releaseTimer) clearTimeout(releaseTimer);
+      content.style.transition = "";
+      content.style.transform = "";
+    };
+  }, [overscrollBounce]);
+
   return (
     <div className={cn("min-h-0", className)}>
       <div
@@ -148,7 +199,9 @@ export function WorkbenchScrollArea({
         onWheelCapture={onWheelCapture}
         className={cn("h-full overflow-y-auto overflow-x-hidden", viewportClassName)}
       >
-        <div className={contentClassName}>{children}</div>
+        <div ref={contentRef} className={contentClassName}>
+          {children}
+        </div>
       </div>
     </div>
   );

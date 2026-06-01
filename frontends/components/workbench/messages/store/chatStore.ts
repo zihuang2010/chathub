@@ -114,7 +114,14 @@ export function replaceAuthoritative(
   const order: string[] = [];
   const echoLookup = buildEchoLookup(slice);
   for (const m of messages) {
-    byId[m.id] = { ...preserveOptimisticImageDimensions(m, echoLookup.get(m.id)) };
+    const echo = echoLookup.get(m.id);
+    const merged: ChatMessageEntity = { ...preserveOptimisticImageDimensions(m, echo) };
+    // 收敛时把乐观气泡的 clientMsgId 带到权威条目:权威条目 id=serverId,若行 key 跟随 id
+    // 由 clientMsgId 变 serverId,React 会 remount 整行 → MessageImage 重建、走骨架态闪一下。
+    // 上层据此 clientMsgId 给消息行一个跨「乐观→权威」稳定的 key,收敛零 remount、首帧不闪。
+    // 历史消息无乐观来源(echo 无 clientMsgId)→ 不附加,行 key 回退到 id。
+    if (echo?.clientMsgId) merged.clientMsgId = echo.clientMsgId;
+    byId[m.id] = merged;
     order.push(m.id);
   }
   for (const e of pendingLocal) {
