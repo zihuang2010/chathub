@@ -189,6 +189,7 @@ export const ChatArea = memo(function ChatArea({
             onScrollMetrics={handleScrollMetrics}
             onUserScroll={handleUserScroll}
             onWheelCapture={handleWheelCapture}
+            overscrollBounce
             className="flex-1 bg-workbench-surface"
             viewportClassName="overscroll-contain [overflow-anchor:none] bg-workbench-surface px-4 pt-5 pb-10 pr-6"
             contentClassName="flex w-full flex-col"
