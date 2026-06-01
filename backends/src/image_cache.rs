@@ -76,7 +76,9 @@ impl ImageCache {
         width: u32,
     ) -> Result<(CachedImage, Option<(u32, u32, String)>), String> {
         validate_url(url)?;
-        let width = width.clamp(16, 1024);
+        // 上限放宽到 2560:灯箱大图预览复用 cachedimg 协议取较大缩略图。
+        // thumbnail 只缩不放,即使请求宽度大于原图也不会放大,安全。
+        let width = width.clamp(16, 2560);
         let path = self.key_path(url, width);
 
         // 命中:缩略图很小(几 KB~几十 KB),同步读可接受。
@@ -360,7 +362,7 @@ fn parse_oss_image_info(body: &str) -> Result<(u32, u32), String> {
     Ok((w, h))
 }
 
-fn validate_url(url: &str) -> Result<(), String> {
+pub(crate) fn validate_url(url: &str) -> Result<(), String> {
     let parsed = reqwest::Url::parse(url).map_err(|_| "bad url".to_string())?;
     if parsed.scheme() != "https" {
         return Err("only https allowed".into());

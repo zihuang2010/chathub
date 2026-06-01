@@ -89,4 +89,6 @@ export interface Customer {
   region?: string;
   /** 详细地址。 */
   address?: string;
+  /** 好友 followRemark（微信备注名）；客户卡片「微信」行展示，手机号取不到时的替代联系字段。 */
+  followRemark?: string;
 }

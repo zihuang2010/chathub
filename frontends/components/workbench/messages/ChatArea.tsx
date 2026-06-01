@@ -1,6 +1,5 @@
-import { memo, useMemo, useRef, useState } from "react";
+import { memo, useMemo, useState } from "react";
 import { ArrowDown, ArrowUp, Loader2 } from "lucide-react";
-import { useVirtualizer } from "@tanstack/react-virtual";
 
 import type { SendMessageResp } from "@/lib/api/messageHistory";
 import type { Account } from "@/lib/types/account";
@@ -11,31 +10,31 @@ import { ChatHeader } from "./ChatHeader";
 import { COMPOSER_DEFAULT_HEIGHT } from "./constants";
 import type { Conversation, Message, QuickReply } from "./data";
 import { useChatActions, type SendMessageOptions } from "./hooks/useChatActions";
-import { useChatTimeline, type TimelineItem } from "./hooks/useChatTimeline";
+import { useChatTimeline } from "./hooks/useChatTimeline";
 import { useScrollController } from "./hooks/useScrollController";
 import { DateDivider, MessageBubble, type ReplyTarget, UnreadDivider } from "./MessageBubble";
 import { MessageComposer } from "./MessageComposer";
+import type { MessageActionType } from "./MessageContextMenu";
 import { RangePill } from "./RangePill";
 import { STRINGS } from "./strings";
-import { estimateTimelineRowHeight, getVirtualOverscan } from "./virtualListSizing";
 import { WorkbenchScrollArea } from "./WorkbenchScrollArea";
 
-const VIRTUALIZE_THRESHOLD = 60;
+type MessageTimelineItem = ReturnType<typeof useChatTimeline>[number];
 
-function rowHeightCacheKey(conversationId: string, itemId: string): string {
-  return `${conversationId}:${itemId}`;
-}
-
-// 虚拟分支每行的顶部间距(px),与下方渲染用的 pt-6(24)/pt-7(28) 严格同源:首行无间距;
-// 同发送者连续消息 24;首条/分隔等 28。estimateSize 与渲染必须用同一份口径——否则估算缺这段
-// 间距,而 measureElement 实测把它计入,虚拟器据差值逐行校正,首屏表现为「整列上抖」。
-function rowTopSpacingPx(item: TimelineItem, index: number): number {
-  if (index === 0) return 0;
-  return item.type === "message" && !item.isFirstInBurst ? 24 : 28;
+interface MessageTimelineRowProps {
+  item: MessageTimelineItem;
+  index: number;
+  avatarName: string;
+  avatarColor?: string;
+  avatarUrl?: string;
+  account: string;
+  onAction: (action: MessageActionType, message: Message) => void;
+  setUnreadDividerNode: (node: HTMLDivElement | null) => void;
 }
 
 interface ChatAreaProps {
   conversation: Conversation;
+  chatStoreKey: string;
   messages: Message[];
   accounts: readonly Account[];
   selectedAccountId: string | null;
@@ -81,6 +80,7 @@ interface ChatAreaProps {
 
 export const ChatArea = memo(function ChatArea({
   conversation,
+  chatStoreKey,
   messages,
   accounts,
   selectedAccountId,
@@ -112,13 +112,6 @@ export const ChatArea = memo(function ChatArea({
     () => messages.filter((m) => m.conversationId === conversation.id),
     [messages, conversation.id],
   );
-  const measuredRowHeightsRef = useRef(new Map<string, number>());
-  const measuredRowsConversationRef = useRef(conversation.id);
-  if (measuredRowsConversationRef.current !== conversation.id) {
-    measuredRowsConversationRef.current = conversation.id;
-    measuredRowHeightsRef.current.clear();
-  }
-
   // 时间线派生(日期/未读分隔 + 气泡 + 未读锚点冻结)抽到 useChatTimeline(Stage 4d),纯派生。
   const timelineItems = useChatTimeline({ localMessages, conversation });
 
@@ -129,13 +122,13 @@ export const ChatArea = memo(function ChatArea({
     setUnreadDividerNode,
     handleScrollMetrics,
     handleUserScroll,
+    handleWheelCapture,
     scrollToBottom,
     scrollToUnread,
     atBottom,
     unreadBelow,
     unreadAbove,
     wasAtBottomRef,
-    scrollElementRef,
   } = useScrollController({
     conversation,
     localMessages,
@@ -153,75 +146,11 @@ export const ChatArea = memo(function ChatArea({
   // 消息动作(发送/重发/删除/撤回/引用)抽到 useChatActions(Stage 4d),走 chatStore。
   const { handleSend, handleAction } = useChatActions({
     conversation,
+    chatStoreKey,
     onSendMessage,
     wasAtBottomRef,
     setReplyDraft,
   });
-
-  // Stage 3.2 消息区虚拟化:仅超长会话(>阈值)启用,中短会话走全量渲染(零虚拟化抖动)。
-  // 阈值 20→60:此前下调到 20 是为压低图片解码内存,但代价是几十条的常见会话也被虚拟化 ——
-  // 可变高度气泡(多行文本/多图/文本+图)的 estimateSize 必然与 measureElement 实测不符,
-  // 滚动时虚拟器据实测重算偏移 → 内容"一抖一抖"。几十条全量渲染内存可控(图片走固定 192
-  // 缩略图盒,解码量有限),换取常见会话零抖动;只有真正超长(>60)会话才虚拟化,把同时存活的
-  // <img> 压到可视窗口量级。现有测试用例消息数都 <20,仍走全量渲染分支,保持绿。
-  const shouldVirtualize = timelineItems.length > VIRTUALIZE_THRESHOLD;
-  const virtualOverscan = useMemo(() => getVirtualOverscan(timelineItems), [timelineItems]);
-  // 虚拟器与滚动视口(WorkbenchScrollArea)都常驻、跨会话持久(消息区不再按会话重挂),
-  // 故无「实例持久 vs 视口重挂」错配。getItemKey 按消息 id 缓存测量,杜绝跨会话按 index 串台。
-  const rowVirtualizer = useVirtualizer({
-    count: timelineItems.length,
-    // 仅虚拟模式才把滚动元素交给虚拟器:否则虚拟器挂载时会 scrollTo initialOffset=0,
-    // 覆盖 useScrollController 的 snap 置底(短会话/测试都会被波及)。返回 null 时虚拟器惰性。
-    getScrollElement: () => (shouldVirtualize ? scrollElementRef.current : null),
-    // 按内容类型估高:打开会话置底时,虚拟器先按估算值算总高、据此置底,首帧后再
-    // measureElement 量真实高度并校正——估算与真实差得越多,这次校正越大,表现为
-    // "整列跳一下"。图片气泡用固定 192 缩略图盒(整行≈250),与旧的统一 76 差近 175px,
-    // 跳动最明显;纯文字行≈66,与 76 也差约 10px,长会话累计到可视区十几行同样可见。
-    // 按 kind 给出接近真实的估算,使可视区底部那批行首帧误差趋零,基本消除开场跳动。
-    estimateSize: (index) => {
-      const item = timelineItems[index];
-      const cacheKey = rowHeightCacheKey(conversation.id, item.id);
-      const measured = measuredRowHeightsRef.current.get(cacheKey);
-      if (measured !== undefined) return measured;
-      // 补上与渲染同源的顶部间距:measureElement 实测含它,估算不补则系统性偏矮 → 开场抖动。
-      return estimateTimelineRowHeight(item) + rowTopSpacingPx(item, index);
-    },
-    // 图片密集历史降低屏外预渲染量,减少同时挂载/解码的 <img>;文本历史保留 5 行缓冲,
-    // 快速滚动仍有足够预渲染空间。
-    overscan: virtualOverscan,
-    getItemKey: (index) => timelineItems[index].id,
-  });
-
-  const measureVirtualRow = (node: HTMLDivElement | null) => {
-    if (!node) return;
-    rowVirtualizer.measureElement(node);
-    const indexAttr = node.dataset.index;
-    if (!indexAttr) return;
-    const index = Number(indexAttr);
-    const item = timelineItems[index];
-    if (!item) return;
-    const height = node.getBoundingClientRect().height;
-    if (height > 0) {
-      measuredRowHeightsRef.current.set(rowHeightCacheKey(conversation.id, item.id), height);
-    }
-  };
-
-  // 单条 timeline 行的内容(不含间距/包裹):虚拟分支用。
-  const renderRowContent = (item: TimelineItem) => {
-    if (item.type === "date-divider") return <DateDivider label={item.label} />;
-    if (item.type === "unread-divider") return <UnreadDivider count={item.count} />;
-    return (
-      <MessageBubble
-        message={item.message}
-        avatarName={conversation.name}
-        avatarColor={conversation.avatarColor}
-        avatarUrl={conversation.avatar}
-        account={conversation.account}
-        replyTarget={item.replyTarget}
-        onAction={handleAction}
-      />
-    );
-  };
 
   // 切会话即时切换(无 crossfade):标题与消息区随 conversation 直接重渲,同步硬切,
   // 无淡入淡出延迟、无双倍 DOM —— 跟手丝滑(IM 桌面端标准)。
@@ -249,97 +178,35 @@ export const ChatArea = memo(function ChatArea({
             scrollRef={setScrollNode}
             onScrollMetrics={handleScrollMetrics}
             onUserScroll={handleUserScroll}
+            onWheelCapture={handleWheelCapture}
             className="flex-1 bg-workbench-surface"
-            viewportClassName="overscroll-contain bg-workbench-surface px-4 pt-5 pb-10 pr-6"
+            viewportClassName="overscroll-contain [overflow-anchor:none] bg-workbench-surface px-4 pt-5 pb-10 pr-6"
             contentClassName="flex w-full flex-col"
           >
-            {shouldVirtualize ? (
-              <div
-                role="log"
-                aria-live="polite"
-                aria-atomic="false"
-                style={{
-                  position: "relative",
-                  width: "100%",
-                  height: rowVirtualizer.getTotalSize(),
-                }}
-              >
-                {rowVirtualizer.getVirtualItems().map((vi) => {
-                  const item = timelineItems[vi.index];
-                  const idx = vi.index;
-                  // 间距用 padding(而非 margin)以并入 measureElement 量到的高度;
-                  // margin 在盒外不计入 getBoundingClientRect。值与 estimateSize 同源
-                  // (rowTopSpacingPx):0→无、24→pt-6、28→pt-7。
-                  const spacingPx = rowTopSpacingPx(item, idx);
-                  const spacing = spacingPx === 0 ? "" : spacingPx === 24 ? "pt-6" : "pt-7";
-                  return (
-                    <div
-                      key={item.id}
-                      data-index={idx}
-                      ref={measureVirtualRow}
-                      style={{
-                        position: "absolute",
-                        top: 0,
-                        left: 0,
-                        width: "100%",
-                        transform: `translateY(${vi.start}px)`,
-                      }}
-                    >
-                      <div
-                        ref={item.type === "unread-divider" ? setUnreadDividerNode : undefined}
-                        className={spacing}
-                      >
-                        {renderRowContent(item)}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            ) : (
-              <div role="log" aria-live="polite" aria-atomic="false" className="flex flex-col">
-                {timelineItems.map((item, idx) => {
-                  if (item.type === "date-divider") {
-                    return (
-                      <div key={item.id} className={idx === 0 ? "" : "mt-7"}>
-                        <DateDivider label={item.label} />
-                      </div>
-                    );
-                  }
-                  if (item.type === "unread-divider") {
-                    return (
-                      <div
-                        key={item.id}
-                        ref={setUnreadDividerNode}
-                        className={idx === 0 ? "" : "mt-7"}
-                      >
-                        <UnreadDivider count={item.count} />
-                      </div>
-                    );
-                  }
-                  const spacing = idx === 0 ? "" : item.isFirstInBurst ? "mt-7" : "mt-6";
-                  return (
-                    <div key={item.id} className={spacing}>
-                      <MessageBubble
-                        message={item.message}
-                        avatarName={conversation.name}
-                        avatarColor={conversation.avatarColor}
-                        avatarUrl={conversation.avatar}
-                        account={conversation.account}
-                        replyTarget={item.replyTarget}
-                        onAction={handleAction}
-                      />
-                    </div>
-                  );
-                })}
-              </div>
-            )}
+            <div role="log" aria-live="polite" aria-atomic="false" className="flex flex-col">
+              {timelineItems.map((item, idx) => {
+                return (
+                  <MessageTimelineRow
+                    key={item.id}
+                    item={item}
+                    index={idx}
+                    avatarName={conversation.name}
+                    avatarColor={conversation.avatarColor}
+                    avatarUrl={conversation.avatar}
+                    account={conversation.account}
+                    onAction={handleAction}
+                    setUnreadDividerNode={setUnreadDividerNode}
+                  />
+                );
+              })}
+            </div>
           </WorkbenchScrollArea>
         )}
       </div>
       {/* 翻历史 spinner:length>0 时的 loading 必是翻页加载(初次加载 length===0 走
           ChatLoadingState 分支)。绝对定位顶部居中,不挤压消息流、不引发回弹位移。 */}
       {!error && localMessages.length > 0 && loading && hasMoreHistory && (
-        <HistoryLoadingSkeleton />
+        <HistoryLoadingIndicator />
       )}
       {!loading && !error && localMessages.length > 0 && !atBottom && (
         <ScrollToBottomButton
@@ -373,6 +240,84 @@ export const ChatArea = memo(function ChatArea({
     </div>
   );
 });
+
+const MessageTimelineRow = memo(function MessageTimelineRow({
+  item,
+  index,
+  avatarName,
+  avatarColor,
+  avatarUrl,
+  account,
+  onAction,
+  setUnreadDividerNode,
+}: MessageTimelineRowProps) {
+  if (item.type === "date-divider") {
+    return (
+      <div className={index === 0 ? "" : "mt-7"}>
+        <DateDivider label={item.label} />
+      </div>
+    );
+  }
+  if (item.type === "unread-divider") {
+    return (
+      <div ref={setUnreadDividerNode} className={index === 0 ? "" : "mt-7"}>
+        <UnreadDivider count={item.count} />
+      </div>
+    );
+  }
+
+  // 间距加大:容纳浮在气泡下方间距里的「重发」状态行(见 MessageBubble.StatusLine,单行
+  // 约 16px),并让上下两条气泡有充裕留白。续条 44px / 换发送者 48px。
+  // containment 去掉 paint(仅留 layout)——失败/重发行与悬停时间戳是浮出行盒的绝对定位
+  // 元素,paint 裁剪会把它们切掉。
+  const spacing = index === 0 ? "" : item.isFirstInBurst ? "mt-12" : "mt-11";
+  return (
+    <div data-message-row-id={item.id} className={cn("[contain:layout_style]", spacing)}>
+      <MessageBubble
+        message={item.message}
+        avatarName={avatarName}
+        avatarColor={avatarColor}
+        avatarUrl={avatarUrl}
+        account={account}
+        replyTarget={item.replyTarget}
+        onAction={onAction}
+      />
+    </div>
+  );
+}, areTimelineRowPropsEqual);
+
+function areTimelineRowPropsEqual(
+  prev: MessageTimelineRowProps,
+  next: MessageTimelineRowProps,
+): boolean {
+  if (prev.item.type !== next.item.type) return false;
+  if ((prev.index === 0) !== (next.index === 0)) return false;
+
+  if (prev.item.type === "date-divider" && next.item.type === "date-divider") {
+    return prev.item.label === next.item.label;
+  }
+
+  if (prev.item.type === "unread-divider" && next.item.type === "unread-divider") {
+    return (
+      prev.item.count === next.item.count && prev.setUnreadDividerNode === next.setUnreadDividerNode
+    );
+  }
+
+  if (prev.item.type !== "message" || next.item.type !== "message") return false;
+  // Prepending older history can change whether the old first visible row is
+  // considered the first item in a same-sender burst. Keeping the existing
+  // spacing avoids a small but visible "nudge" in the already-read viewport.
+  return (
+    prev.item.message === next.item.message &&
+    prev.item.replyTarget?.senderName === next.item.replyTarget?.senderName &&
+    prev.item.replyTarget?.text === next.item.replyTarget?.text &&
+    prev.avatarName === next.avatarName &&
+    prev.avatarColor === next.avatarColor &&
+    prev.avatarUrl === next.avatarUrl &&
+    prev.account === next.account &&
+    prev.onAction === next.onAction
+  );
+}
 
 // ─── Floating scroll-to-bottom pill ─────────────────────────────────────────
 
@@ -444,49 +389,23 @@ const UnreadAbovePill = memo(function UnreadAbovePill({
   );
 });
 
-// ─── Floating history-loading pill ──────────────────────────────────────────
-// 翻历史"加载更早消息"骨架浮层。只在向上翻页拉取时出现,非交互(role=status)。
-// 关键:绝对定位 + pointer-events-none + 渐变淡出,纯覆盖在视口顶部,**不改 scrollHeight/
-// scrollTop**——不参与消息流布局、不与翻历史 prepend 锚点相互作用,故不引入滚动跳动。
-// 用骨架气泡(而非纯 spinner 药丸)呈现"上方还有内容在来"的预期,落地后被真实更旧页顶替。
-const HistoryLoadingSkeleton = memo(function HistoryLoadingSkeleton() {
+// ─── Floating history-loading indicator ─────────────────────────────────────
+// 翻历史反馈改为轻量状态条:不占消息流、不遮挡大面积内容、不 pulse 重绘。
+// 位置由滚动锚点控制,状态条只表达"上方数据正在到来",类似桌面 IM 的顶部加载提示。
+const HistoryLoadingIndicator = memo(function HistoryLoadingIndicator() {
   return (
     <div
       role="status"
       aria-live="polite"
       aria-label={STRINGS.status.loadingHistory}
       className={cn(
-        "pointer-events-none absolute inset-x-0 top-0 z-20 flex flex-col gap-3 px-4 pb-8 pt-5",
-        // 向下渐隐,与下方真实消息平滑衔接,避免骨架与内容的硬边界。
-        "bg-gradient-to-b from-workbench-surface via-workbench-surface/95 to-transparent",
-        "animate-in fade-in",
+        "pointer-events-none absolute left-1/2 top-3 z-20 -translate-x-1/2",
+        "inline-flex items-center gap-1.5 rounded-full border border-workbench-line bg-workbench-surface/95 px-2.5 py-1 text-wb-2xs font-medium text-workbench-text-secondary shadow-wb-popover backdrop-blur-md",
+        "animate-in fade-in slide-in-from-top-1",
       )}
     >
-      <HistorySkeletonRow />
-      <HistorySkeletonRow wide />
-      <div className="flex items-center justify-center gap-1.5 pt-0.5 text-wb-2xs font-medium text-workbench-text-secondary">
-        <Loader2
-          size={13}
-          className="shrink-0 animate-spin motion-reduce:animate-none"
-          aria-hidden
-        />
-        <span>{STRINGS.status.loadingHistory}</span>
-      </div>
+      <Loader2 size={13} className="shrink-0 animate-spin motion-reduce:animate-none" aria-hidden />
+      <span>{STRINGS.status.loadingHistory}</span>
     </div>
   );
 });
-
-// 单行骨架气泡(头像块 + 气泡块),自包含、不依赖 ChatStates 的 framer-motion stagger 容器。
-function HistorySkeletonRow({ wide }: { wide?: boolean }) {
-  return (
-    <div className="flex items-center gap-2">
-      <div className="size-9 shrink-0 animate-pulse rounded-lg bg-workbench-line-subtle" />
-      <div
-        className={cn(
-          "h-9 animate-pulse rounded-md bg-workbench-line-subtle",
-          wide ? "w-[55%]" : "w-[38%]",
-        )}
-      />
-    </div>
-  );
-}

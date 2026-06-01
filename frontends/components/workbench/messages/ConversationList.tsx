@@ -310,7 +310,9 @@ const FilterToolbar = memo(function FilterToolbar({
             aria-haspopup="listbox"
             aria-expanded={accountPickerOpen}
             className={cn(
-              "focus-ring inline-flex h-9 max-w-[96px] shrink-0 items-center gap-1 rounded-md px-2 transition-colors",
+              // min-w-0(替原 shrink-0):账号名过长时让账号按钮收缩截断,把宽度让给后面
+              // 短而固定的状态 Tab(全部/未读/@我),避免 @我 被挤进 overflow 滚动区不可见。
+              "focus-ring inline-flex h-9 min-w-0 max-w-[96px] items-center gap-1 rounded-md px-2 transition-colors",
               selectedAccountId
                 ? "bg-workbench-surface-active text-workbench-accent"
                 : "bg-workbench-surface-soft text-workbench-text hover:bg-workbench-surface-active hover:text-workbench-accent",
@@ -402,8 +404,8 @@ const ConversationItem = memo(function ConversationItem({
     <button
       type="button"
       onClick={() => onSelect(id)}
-      // 列表-导航语义:屏幕阅读器据此播报"当前项";视觉上再叠加左侧 accent 竖条,
-      // 与 hover 的临时浅蓝拉开层级(hover 与 selected 共用 surface-active 底色)。
+      // 列表-导航语义:屏幕阅读器据此播报"当前项";视觉上 selected 以常驻 surface-active
+      // 底色与 hover 的临时浅蓝区分(共用同一底色,selected 常驻、hover 临时)。
       aria-current={selected ? "true" : undefined}
       className={cn(
         "focus-ring group relative grid w-full grid-cols-[44px_minmax(0,1fr)] items-start gap-3 overflow-hidden rounded-md px-3 py-1.5 text-left transition-colors duration-100",
@@ -415,13 +417,6 @@ const ConversationItem = memo(function ConversationItem({
         selected ? "bg-workbench-surface-active" : "hover:bg-workbench-surface-active",
       )}
     >
-      {/* 选中态左侧 2px accent 竖条:非颜色冗余标识,与 hover 浅蓝区分当前选中项。 */}
-      {selected && (
-        <span
-          aria-hidden
-          className="pointer-events-none absolute inset-y-1 left-0 w-[2px] rounded-full bg-workbench-accent"
-        />
-      )}
       {/* 置顶标记:右上角 18px 折角(G 方案)。背景用 --wb-pin-fold token(随
           light/dark 切换);内层 span 沿斜边画 1px 折痕高光(等价 mockup ::after)。
           top-0 right-0 与右下角 time/未读/mute 簇垂直错开,不撞布局。 */}

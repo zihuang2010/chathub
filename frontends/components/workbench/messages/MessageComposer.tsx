@@ -31,6 +31,7 @@ import { SendButtonGroup } from "./composer/SendButtonGroup";
 import { blocksToDoc, docToBlocks } from "./composer/docToBlocks";
 import { RichComposer } from "./composer/RichComposer";
 import { EmojiPicker } from "./EmojiPicker";
+import { readImageFileDimensions } from "./imageFileDimensions";
 import type { ReplyTarget } from "./MessageBubble";
 import { QuickRepliesPanel } from "./QuickRepliesPanel";
 import { STRINGS } from "./strings";
@@ -218,16 +219,23 @@ export function MessageComposer({
     // 体积代价:base64 比 raw 多 ~33%;超过 useDraftStore 500KB 持久化上限时内存
     // 仍保留,仅丢失重载后的恢复——切会话场景不受影响。
     files.forEach((file) => {
+      const dimensions = readImageFileDimensions(file);
       const reader = new FileReader();
-      reader.onload = () => {
+      reader.onload = async () => {
         const dataUrl = typeof reader.result === "string" ? reader.result : null;
         if (!dataUrl || !editorRef.current) return;
+        const dims = await dimensions;
         editorRef.current
           .chain()
           .focus()
           .insertContent({
             type: "image",
-            attrs: { src: dataUrl, alt: file.name },
+            attrs: {
+              src: dataUrl,
+              alt: file.name,
+              width: dims?.width,
+              height: dims?.height,
+            },
           })
           .run();
       };
@@ -464,13 +472,9 @@ export function MessageComposer({
                 aria-label={STRINGS.composer.emoji}
                 aria-haspopup="dialog"
                 aria-expanded={emojiOpen}
-                className="focus-ring group relative grid h-9 w-9 place-items-center rounded-lg text-workbench-text-secondary transition-colors hover:bg-workbench-surface-subtle hover:text-workbench-text"
+                className="focus-ring grid h-9 w-9 place-items-center rounded-lg text-workbench-text-secondary transition-colors hover:bg-workbench-surface-subtle hover:text-workbench-text"
               >
                 <Laugh size={18} strokeWidth={1.6} />
-                <span
-                  aria-hidden
-                  className="pointer-events-none absolute bottom-1.5 right-1.5 size-[3px] rounded-full bg-current opacity-0 transition-opacity group-hover:opacity-60"
-                />
               </button>
             </Popover.Trigger>
             <Popover.Portal>

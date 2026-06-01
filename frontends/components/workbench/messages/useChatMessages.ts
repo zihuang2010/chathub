@@ -19,6 +19,7 @@ export interface UseChatMessagesResult {
   retry: () => void;
   hasMore: boolean;
   loadMore: () => Promise<void>;
+  storeKey: string;
 }
 
 export interface UseChatMessagesOptions {
@@ -49,5 +50,6 @@ export function useChatMessages({
     retry: real.retry,
     hasMore: real.hasMore,
     loadMore: real.loadMore,
+    storeKey: real.storeKey,
   };
 }

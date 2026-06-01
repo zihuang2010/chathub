@@ -113,4 +113,35 @@ describe("useMessageHistory loading 派生(防开场空态闪帧)", () => {
     expect(result.current.loading).toBe(false);
     expect(result.current.messages.map((m) => m.id)).toEqual(["m1", "m2"]);
   });
+
+  it("同 conversationId 在不同账号/客户上下文下隔离 store 切片，切用户首帧不串消息", async () => {
+    loadMock.mockResolvedValueOnce({
+      records: [msg("acct-a-msg")] as unknown as HistoryMessage[],
+      hasMoreOlder: false,
+    });
+    loadMock.mockResolvedValueOnce({
+      records: [msg("acct-b-msg")] as unknown as HistoryMessage[],
+      hasMoreOlder: false,
+    });
+
+    const renders: Array<{ account: string; loading: boolean; ids: string[] }> = [];
+    const { rerender } = renderHook(
+      (props: { wecomAccountId: string; externalUserId: string }) => {
+        const r = useMessageHistory({ ...props, conversationId: "same-conv" });
+        renders.push({
+          account: props.wecomAccountId,
+          loading: r.loading,
+          ids: r.messages.map((m) => m.id),
+        });
+        return r;
+      },
+      { initialProps: { wecomAccountId: "acct-a", externalUserId: "user-a" } },
+    );
+    await flush();
+
+    rerender({ wecomAccountId: "acct-b", externalUserId: "user-b" });
+
+    const firstBRender = renders.find((r) => r.account === "acct-b");
+    expect(firstBRender).toEqual({ account: "acct-b", loading: true, ids: [] });
+  });
 });

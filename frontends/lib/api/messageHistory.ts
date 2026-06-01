@@ -209,11 +209,11 @@ export async function uploadAttachment(params: {
 
 // ─── 形态转换:HistoryMessage → Message ─────────────────────────────────────
 //
-// 服务端 records 已按 sortKey **升序**(早→晚)扁平返回,UI 也期望升序
-// (新消息在底部),直接顺序 map 即可,无需 reverse。
+// UI 期望升序(早→晚,新消息在底部)。后端正常也返回升序,这里仍做一次
+// 防御性排序,避免冷启动/翻页遇到上游新→旧页时首帧顺序反转。
 
 export function adaptHistoryRecords(records: HistoryMessage[], conversationId: string): Message[] {
-  return records.map((r) => historyToMessage(r, conversationId));
+  return [...records].sort(compareHistoryRecords).map((r) => historyToMessage(r, conversationId));
 }
 
 function historyToMessage(h: HistoryMessage, conversationId: string): Message {
@@ -223,15 +223,30 @@ function historyToMessage(h: HistoryMessage, conversationId: string): Message {
   const text = h.messageType === 2 ? "" : h.contentText;
   const attachments =
     h.attachments.length > 0 ? h.attachments.map(historyAttachmentToMessage) : undefined;
+  const direction = normalizeLocalDirection(h.messageDirection);
   return {
     id: h.localMessageId,
     conversationId,
-    direction: h.messageDirection === 2 ? "out" : "in",
+    direction: direction === 2 ? "out" : "in",
     text,
     sentAt: parseServerTimeToIso(h.messageTime),
-    status: h.messageDirection === 2 ? mapSendStatus(h.sendStatus) : undefined,
+    status: direction === 2 ? mapSendStatus(h.sendStatus) : undefined,
     parts: buildMessageParts(text, undefined, attachments),
   };
+}
+
+function normalizeLocalDirection(messageDirection: number): number {
+  return messageDirection === 2 ? 2 : 1;
+}
+
+function compareHistoryRecords(a: HistoryMessage, b: HistoryMessage): number {
+  const bySortKey = a.sortKey.localeCompare(b.sortKey);
+  if (bySortKey !== 0) return bySortKey;
+  const byTime = parseServerTimeToIso(a.messageTime).localeCompare(
+    parseServerTimeToIso(b.messageTime),
+  );
+  if (byTime !== 0) return byTime;
+  return a.localMessageId.localeCompare(b.localMessageId);
 }
 
 function historyAttachmentToMessage(a: HistoryAttachment): MessageAttachment {

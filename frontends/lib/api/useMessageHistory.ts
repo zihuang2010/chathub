@@ -53,6 +53,7 @@ export interface UseMessageHistoryResult {
   hasMore: boolean;
   loadMore: () => Promise<void>;
   retry: () => void;
+  storeKey: string;
 }
 
 function errorMessage(e: unknown): string {
@@ -60,6 +61,18 @@ function errorMessage(e: unknown): string {
     return String((e as { message: unknown }).message);
   }
   return String(e);
+}
+
+export function messageHistoryStoreKey({
+  conversationId,
+  wecomAccountId,
+  externalUserId,
+}: {
+  conversationId: string;
+  wecomAccountId: string;
+  externalUserId: string;
+}): string {
+  return `${wecomAccountId}\u001f${externalUserId}\u001f${conversationId}`;
 }
 
 export function useMessageHistory(opts: UseMessageHistoryOptions): UseMessageHistoryResult {
@@ -74,8 +87,11 @@ export function useMessageHistory(opts: UseMessageHistoryOptions): UseMessageHis
   const employeeId = useCurrentEmployeeId();
 
   const ready = Boolean(enabled && wecomAccountId && externalUserId && conversationId);
-  // 缓存按 conversationId 主键,故会话切换的唯一判别键 = conversationId。
-  const activeTargetKey = ready ? conversationId : "";
+  // 前端 store 必须按账号+客户+会话隔离。仅 conversationId 不够:切用户/账号后同 ID
+  // 会复用上一上下文切片,首帧出现消息跑边/头像串台,随后重读才纠正。
+  const activeTargetKey = ready
+    ? messageHistoryStoreKey({ conversationId, wecomAccountId, externalUserId })
+    : "";
 
   // 单一真相:消息 / hasMore / error / loading 全来自 store 的本会话分片(loading 走 store 而非
   // React useState,使 effect 里的读取只触达外部 store、不触发 react-hooks/set-state-in-effect)。
@@ -122,7 +138,7 @@ export function useMessageHistory(opts: UseMessageHistoryOptions): UseMessageHis
       // 否则重读的「整窗 REPLACE」会覆盖掉 loadMore 刚 prepend 的更旧页。
       if (readingRef.current || loadingOlderRef.current) return;
       readingRef.current = true;
-      const requestKey = conversationId;
+      const requestKey = activeTargetKey;
       if (showLoading) useChatStore.getState().setLoading(requestKey, true);
       try {
         const resp = await loadConversationMessages({
@@ -144,7 +160,7 @@ export function useMessageHistory(opts: UseMessageHistoryOptions): UseMessageHis
         readingRef.current = false;
       }
     },
-    [ready, conversationId, wecomAccountId, externalUserId, pageSize],
+    [ready, activeTargetKey, conversationId, wecomAccountId, externalUserId, pageSize],
   );
 
   // 切会话 / mount:重置过期守卫 + 缓存优先读首屏(秒开)。store 按 conversationId 分片,
@@ -154,14 +170,14 @@ export function useMessageHistory(opts: UseMessageHistoryOptions): UseMessageHis
       targetKeyRef.current = "";
       return;
     }
-    targetKeyRef.current = conversationId;
+    targetKeyRef.current = activeTargetKey;
     // 热会话(store 已有该分片缓存)直接秒开复用旧分片,不再 showLoading —— 否则每次切换都
     // 把 loading 翻 true→false,既触发 ChatArea 重渲染,也 invalidate useScrollController 里
     // 以 loading 为依赖的 layout effect(切换路径平白多跑滚动重算),切换显钝。仅冷会话(无缓存)
     // 才显 loading 等 IPC;热会话走 stale-while-revalidate,后台读到新数据再平滑替换。
-    const cached = (useChatStore.getState().conversations[conversationId]?.order.length ?? 0) > 0;
+    const cached = (useChatStore.getState().conversations[activeTargetKey]?.order.length ?? 0) > 0;
     void readCache(!cached);
-  }, [ready, conversationId, readCache]);
+  }, [ready, activeTargetKey, readCache]);
 
   // 订阅 conversation-messages:后台 reconcile 落库 → 重读缓存(不显 loading,stale-while-revalidate)。
   useEffect(() => {
@@ -200,10 +216,10 @@ export function useMessageHistory(opts: UseMessageHistoryOptions): UseMessageHis
   const loadMore = useCallback(async () => {
     if (!ready || !hasMore || loading || loadingOlderRef.current || readingRef.current) return;
     // 已达单会话内存上限:停止继续向上加载更旧页,防止安静会话被无限上滚撑爆内存。
-    const loadedCount = useChatStore.getState().conversations[conversationId]?.order.length ?? 0;
+    const loadedCount = useChatStore.getState().conversations[activeTargetKey]?.order.length ?? 0;
     if (loadedCount >= MAX_MESSAGES_IN_MEMORY) return;
     loadingOlderRef.current = true;
-    const requestKey = conversationId;
+    const requestKey = activeTargetKey;
     useChatStore.getState().setLoading(requestKey, true);
     try {
       const resp = await loadOlderMessages({ conversationId, pageSize });
@@ -217,12 +233,12 @@ export function useMessageHistory(opts: UseMessageHistoryOptions): UseMessageHis
       useChatStore.getState().setLoading(requestKey, false);
       loadingOlderRef.current = false;
     }
-  }, [ready, hasMore, loading, conversationId, pageSize]);
+  }, [ready, hasMore, loading, activeTargetKey, conversationId, pageSize]);
 
   const retry = useCallback(() => {
-    useChatStore.getState().setError(conversationId, null);
+    useChatStore.getState().setError(activeTargetKey, null);
     void readCache(true);
-  }, [conversationId, readCache]);
+  }, [activeTargetKey, readCache]);
 
   return {
     messages,
@@ -231,5 +247,6 @@ export function useMessageHistory(opts: UseMessageHistoryOptions): UseMessageHis
     hasMore,
     loadMore,
     retry,
+    storeKey: activeTargetKey,
   };
 }

@@ -17,9 +17,9 @@ describe("ImageLightbox", () => {
     // 原图展示（img alt）
     const img = screen.getByAltText("a") as HTMLImageElement;
     expect(img.src).toContain("a.png");
-    // 下载按钮（aria-label 含"下载"）—— getByRole 找到则非 null
-    const downloadLink = screen.getByRole("link", { name: /下载|download/i });
-    expect(downloadLink).toBeTruthy();
+    // 下载按钮（aria-label 含"下载"）—— 重构后为 button(整卡/灯箱统一走 downloadAttachment)
+    const downloadBtn = screen.getByRole("button", { name: /下载|download/i });
+    expect(downloadBtn).toBeTruthy();
   });
 
   it("按 Esc 键触发 onClose", () => {

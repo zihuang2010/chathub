@@ -96,6 +96,48 @@ describe("chatStore reducers", () => {
     expect(next.byId["c-1"]).toBeUndefined();
   });
 
+  it("replaceAuthoritative 收敛已发送图片时保留本地已知宽高，防止权威回读缺 meta 后尺寸回跳", () => {
+    const sent = optimistic("c-1", {
+      status: "sent",
+      serverId: "server-1",
+      parts: [{ kind: "image", url: "data:image/png;base64,abc", width: 900, height: 1600 }],
+    });
+    const slice = sliceWith([sent]);
+
+    const next = replaceAuthoritative(slice, [
+      msg("server-1", {
+        direction: "out",
+        status: "sent",
+        parts: [{ kind: "image", url: "https://filet.jdd51.com/a.png", width: 901, height: 1599 }],
+      }),
+    ]);
+
+    expect(next.byId["server-1"].parts).toEqual([
+      expect.objectContaining({ kind: "image", width: 900, height: 1600 }),
+    ]);
+  });
+
+  it("replaceAuthoritative 收敛已发送图片时不让权威宽高覆盖本地稳定占位，避免读尺寸失败后突然变大", () => {
+    const sent = optimistic("c-1", {
+      status: "sent",
+      serverId: "server-1",
+      parts: [{ kind: "image", url: "data:image/png;base64,abc" }],
+    });
+    const slice = sliceWith([sent]);
+
+    const next = replaceAuthoritative(slice, [
+      msg("server-1", {
+        direction: "out",
+        status: "sent",
+        parts: [{ kind: "image", url: "https://filet.jdd51.com/a.png", width: 400, height: 1200 }],
+      }),
+    ]);
+
+    expect(next.byId["server-1"].parts).toEqual([
+      expect.objectContaining({ kind: "image", width: undefined, height: undefined }),
+    ]);
+  });
+
   it("replaceAuthoritative keeps a sent-but-not-yet-echoed bubble to avoid flicker", () => {
     // markSent 后 serverId=server-1,但权威窗口尚未刷新出 server-1 → 保留乐观副本,避免气泡先消失。
     const sent = optimistic("c-1", { status: "sent", serverId: "server-1" });

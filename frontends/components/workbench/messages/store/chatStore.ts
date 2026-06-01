@@ -12,7 +12,7 @@
 
 import { create } from "zustand";
 
-import type { Message } from "../data";
+import type { Message, MessagePart } from "../data";
 
 export interface ChatMessageEntity extends Message {
   /** 乐观气泡幂等键(= 前端生成的 local id);权威收敛按它 / serverId 匹配。 */
@@ -41,6 +41,53 @@ function findIdByClientMsgId(slice: ConversationSlice, clientMsgId: string): str
   return undefined;
 }
 
+function buildEchoLookup(slice: ConversationSlice): Map<string, ChatMessageEntity> {
+  const out = new Map<string, ChatMessageEntity>();
+  for (const id of slice.order) {
+    const entity = slice.byId[id];
+    if (!entity) continue;
+    out.set(entity.id, entity);
+    if (entity.serverId) out.set(entity.serverId, entity);
+  }
+  return out;
+}
+
+function mergeImagePresentation(
+  authoritative: MessagePart,
+  local: MessagePart | undefined,
+): MessagePart {
+  if (authoritative.kind !== "image" || local?.kind !== "image") return authoritative;
+  if (!local.width || !local.height) {
+    return {
+      ...authoritative,
+      width: undefined,
+      height: undefined,
+    };
+  }
+  return {
+    ...authoritative,
+    width: local.width,
+    height: local.height,
+  };
+}
+
+function preserveOptimisticImageDimensions(message: Message, local?: ChatMessageEntity): Message {
+  if (!local || !message.parts.some((part) => part.kind === "image")) return message;
+  const localImageParts = local.parts.filter((part) => part.kind === "image");
+  if (localImageParts.length === 0) return message;
+  let imageIndex = 0;
+  return {
+    ...message,
+    parts: message.parts.map((part, index) => {
+      const localPart =
+        part.kind === "image"
+          ? (localImageParts[imageIndex++] ?? local.parts[index])
+          : local.parts[index];
+      return mergeImagePresentation(part, localPart);
+    }),
+  };
+}
+
 // ─── 纯收敛 reducer(导出供单测) ─────────────────────────────────────────────
 
 /**
@@ -65,8 +112,9 @@ export function replaceAuthoritative(
 
   const byId: Record<string, ChatMessageEntity> = {};
   const order: string[] = [];
+  const echoLookup = buildEchoLookup(slice);
   for (const m of messages) {
-    byId[m.id] = { ...m };
+    byId[m.id] = { ...preserveOptimisticImageDimensions(m, echoLookup.get(m.id)) };
     order.push(m.id);
   }
   for (const e of pendingLocal) {

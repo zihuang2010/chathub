@@ -63,6 +63,9 @@ impl SqlitePool {
                 M::up(include_str!("../migrations/V17__recents_opened_at.sql")),
                 M::up(include_str!("../migrations/V18__friend_detail_cache.sql")),
                 M::up(include_str!("../migrations/V19__image_meta.sql")),
+                M::up(include_str!(
+                    "../migrations/V20__normalize_message_direction.sql"
+                )),
             ]);
             migrations
                 .to_latest(c)
@@ -113,9 +116,9 @@ mod tests {
 
         assert_eq!(
             table_count, 9,
-            "全部 V1-V19 跑完应剩 9 张 hub_ 前缀业务表(account_seqs/friends_cache 在 V4/V6 DROP;\
+            "全部 V1-V20 跑完应剩 9 张 hub_ 前缀业务表(account_seqs/friends_cache 在 V4/V6 DROP;\
              V16 退役 friends 行存 + 3 张 per-resource 水位表;真正在用的续点水位在 hub_settings.notify_seq;\
-             + V19 hub_image_meta)"
+             + V19 hub_image_meta;V20 仅修数据)"
         );
     }
 
@@ -124,5 +127,68 @@ mod tests {
         // 再开一次:迁移已 idempotent,不应报错(rusqlite_migration 会比对版本)
         let _p1 = SqlitePool::in_memory().await.expect("first");
         let _p2 = SqlitePool::in_memory().await.expect("second");
+    }
+
+    #[test]
+    fn v20_migration_repairs_cached_message_direction_from_source_sort_key() {
+        let conn = rusqlite::Connection::open_in_memory().expect("open in-memory sqlite");
+        conn.execute_batch(include_str!("../migrations/V14__conversation_messages.sql"))
+            .expect("create conversation message tables");
+        conn.execute(
+            "INSERT INTO hub_conversation_messages ( \
+               local_message_id, conversation_id, employee_id, wecom_account_id, sort_key, \
+               message_time_ms, message_direction, message_type, content_text, send_status, \
+               attachments_json, gmt_modified_time, updated_at_ms \
+             ) VALUES (?1, 'c1', 'u1', 'wa1', ?2, 0, ?3, 1, 'hi', 3, '[]', '', 0)",
+            rusqlite::params!["m-in", "1770000000000:2:00000000000000009001:m-in", 2],
+        )
+        .expect("insert incoming row with wrong cached direction");
+        conn.execute(
+            "INSERT INTO hub_conversation_messages ( \
+               local_message_id, conversation_id, employee_id, wecom_account_id, sort_key, \
+               message_time_ms, message_direction, message_type, content_text, send_status, \
+               attachments_json, gmt_modified_time, updated_at_ms \
+             ) VALUES (?1, 'c1', 'u1', 'wa1', ?2, 0, ?3, 1, 'hi', 3, '[]', '', 0)",
+            rusqlite::params!["m-out", "1770000000001:1:00000000000000009002:m-out", 1],
+        )
+        .expect("insert outgoing row with wrong cached direction");
+        conn.execute(
+            "INSERT INTO hub_conversation_messages ( \
+               local_message_id, conversation_id, employee_id, wecom_account_id, sort_key, \
+               message_time_ms, message_direction, message_type, content_text, send_status, \
+               attachments_json, gmt_modified_time, updated_at_ms \
+             ) VALUES (?1, 'c1', 'u1', 'wa1', ?2, 0, ?3, 1, 'hi', 3, '[]', '', 0)",
+            rusqlite::params!["m-sync", "1770000000002:3:00000000000000009003:m-sync", 1],
+        )
+        .expect("insert sync row with wrong cached direction");
+
+        conn.execute_batch(include_str!(
+            "../migrations/V20__normalize_message_direction.sql"
+        ))
+        .expect("run V20 migration");
+
+        let direction = |id: &str| -> i64 {
+            conn.query_row(
+                "SELECT message_direction FROM hub_conversation_messages WHERE local_message_id = ?1",
+                [id],
+                |r| r.get(0),
+            )
+            .expect("read message_direction")
+        };
+        assert_eq!(
+            direction("m-in"),
+            1,
+            "source direction 2=客户/接收方,应迁移为本地 in"
+        );
+        assert_eq!(
+            direction("m-out"),
+            2,
+            "source direction 1=发送方,应迁移为本地 out"
+        );
+        assert_eq!(
+            direction("m-sync"),
+            2,
+            "source direction 3=多端同步方,应迁移为本地 out"
+        );
     }
 }

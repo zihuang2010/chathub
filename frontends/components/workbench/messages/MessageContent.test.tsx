@@ -56,9 +56,9 @@ describe("MessageContent legacy path (no blocks)", () => {
         { type: "file", url: "https://e.example/y.pdf", name: "y.pdf", sizeBytes: 1024 },
       ],
     });
-    const link = container.querySelector("a[download]");
-    expect(link).not.toBeNull();
-    expect(link?.getAttribute("href")).toBe("https://e.example/y.pdf");
+    // 文件卡仅以下载按钮触发保存(不再是整卡 a[download]);校验卡片渲染 + 下载按钮存在。
+    expect(container.textContent).toContain("y.pdf");
+    expect(container.querySelector("button[aria-label]")).not.toBeNull();
   });
 });
 
@@ -145,7 +145,7 @@ describe("MessageContent blocks path", () => {
     });
     // 重构后内联图片包裹在 button.mx-1
     expect(container.querySelectorAll("button.mx-1")).toHaveLength(1); // the inline image
-    expect(container.querySelector("a[download]")).not.toBeNull(); // the file card
+    expect(container.textContent).toContain("doc.pdf"); // the file card
   });
 
   it("renders link / mention / emoji decorations inside text blocks", () => {
@@ -184,9 +184,20 @@ describe("MessageImage layout-shift + error fallback", () => {
     const sizedContainer = img!.parentElement!;
     expect(sizedContainer.style.width).toBe("100%");
     expect(sizedContainer.style.aspectRatio).toBe("4 / 3");
-    // 骨架 overlay 存在。
-    const skeleton = container.querySelector("span.animate-pulse");
-    expect(skeleton).not.toBeNull();
+    // 静态占位 overlay 存在,不做 pulse 动画。
+    const placeholder = container.querySelector('[data-testid="image-loading-placeholder"]');
+    expect(placeholder).not.toBeNull();
+    expect(placeholder?.className).not.toContain("animate-pulse");
+  });
+
+  it("uses a static loading placeholder so prepended history images do not visually flash", () => {
+    const { container } = renderContent({
+      attachments: [{ type: "image", url: "https://e.example/history.png", name: "history.png" }],
+    });
+
+    const placeholder = container.querySelector('[data-testid="image-loading-placeholder"]');
+    expect(placeholder).not.toBeNull();
+    expect(placeholder?.className).not.toContain("animate-pulse");
   });
 
   it("reveals img and drops skeleton after onLoad", () => {
@@ -199,7 +210,7 @@ describe("MessageImage layout-shift + error fallback", () => {
       fireEvent.load(img!);
     });
     expect(img?.className).not.toContain("opacity-0");
-    expect(container.querySelector("span.animate-pulse")).toBeNull();
+    expect(container.querySelector('[data-testid="image-loading-placeholder"]')).toBeNull();
   });
 
   it("swaps to error placeholder (no img element) when onError fires", () => {
@@ -247,7 +258,7 @@ describe("MessageImage layout-shift + error fallback", () => {
     expect(images[0].className).not.toContain("opacity-0");
     expect(images[1].getAttribute("src")).toContain("b.png");
     expect(images[1].className).toContain("opacity-0");
-    expect(container.querySelector("span.animate-pulse")).toBeNull();
+    expect(container.querySelector('[data-testid="image-loading-placeholder"]')).toBeNull();
   });
 
   it("skips skeleton when the same image src has already loaded once", () => {
@@ -264,7 +275,7 @@ describe("MessageImage layout-shift + error fallback", () => {
       attachments: [{ type: "image", url: "https://e.example/warm.png", name: "warm.png" }],
     });
 
-    expect(second.container.querySelector("span.animate-pulse")).toBeNull();
+    expect(second.container.querySelector('[data-testid="image-loading-placeholder"]')).toBeNull();
     expect(second.container.querySelector("img")?.className).not.toContain("opacity-0");
   });
 
@@ -302,7 +313,7 @@ describe("MessageImage layout-shift + error fallback", () => {
     expect(images[0].className).not.toContain("opacity-0");
     expect(images[1].getAttribute("src")).toContain("asset://localhost");
     expect(images[1].className).toContain("opacity-0");
-    expect(container.querySelector("span.animate-pulse")).toBeNull();
+    expect(container.querySelector('[data-testid="image-loading-placeholder"]')).toBeNull();
   });
 });
 
@@ -363,7 +374,7 @@ describe("MessageImage 比例盒 + asset 源（R1/R2/R4）", () => {
       </article>,
     );
     // 有 localPath → asset src → 初始为 loaded，不画骨架
-    expect(container.querySelector("span.animate-pulse")).toBeNull();
+    expect(container.querySelector('[data-testid="image-loading-placeholder"]')).toBeNull();
     // img 不应该是 opacity-0
     const img = container.querySelector("img");
     expect(img).not.toBeNull();
@@ -416,7 +427,7 @@ describe("MessageImage 比例盒 + asset 源（R1/R2/R4）", () => {
     expect(remoteImg.getAttribute("decoding")).toBe("async");
   });
 
-  it("首次无后端宽高：onLoad 读 <img> 固有宽高即切比例盒（消白边二段跳）", () => {
+  it("首次无后端宽高：onLoad 只缓存固有宽高，不改当前已绘制比例盒", () => {
     const { container } = render(
       <article>
         <MessageContent parts={[{ kind: "image", url: "https://e.example/p.png" }]} />
@@ -432,14 +443,36 @@ describe("MessageImage 比例盒 + asset 源（R1/R2/R4）", () => {
     act(() => {
       fireEvent.load(img);
     });
-    // 加载后立刻按固有比例 2:1 切比例盒（不再 192 方盒、不再留白边）。
+    // 当前已绘制行保持稳定 4:3，不因图片逐张加载而推高/塌陷整列。
     const box = img.parentElement!;
-    expect(box.style.aspectRatio).toBe("300 / 150");
+    expect(box.style.aspectRatio).toBe("4 / 3");
     expect(box.style.width).toBe("100%");
   });
 
-  it("重挂从模块缓存恢复固有宽高：比例盒首帧即就位（消重挂抖动）", () => {
-    // 首次渲染并加载 → 固有宽高写入模块缓存。
+  it("首次无宽高时，即使后续权威回读补齐宽高，当前已绘制行也不二段改变比例", () => {
+    const { container, rerender } = render(
+      <article>
+        <MessageContent parts={[{ kind: "image", url: "https://e.example/late-meta.png" }]} />
+      </article>,
+    );
+    const box = container.querySelector("img")!.parentElement!;
+    expect(box.style.aspectRatio).toBe("4 / 3");
+
+    rerender(
+      <article>
+        <MessageContent
+          parts={[
+            { kind: "image", url: "https://e.example/late-meta.png", width: 300, height: 900 },
+          ]}
+        />
+      </article>,
+    );
+
+    expect(container.querySelector("img")!.parentElement!.style.aspectRatio).toBe("4 / 3");
+  });
+
+  it("onLoad 缓存固有宽高后，重挂首帧按缓存比例就位", () => {
+    // 首次渲染并加载：当前行不改比例，但固有宽高写入模块缓存。
     const first = render(
       <article>
         <MessageContent parts={[{ kind: "image", url: "https://e.example/remount.png" }]} />
@@ -451,7 +484,7 @@ describe("MessageImage 比例盒 + asset 源（R1/R2/R4）", () => {
     act(() => {
       fireEvent.load(img1);
     });
-    expect(img1.parentElement!.style.aspectRatio).toBe("400 / 100");
+    expect(img1.parentElement!.style.aspectRatio).toBe("4 / 3");
     first.unmount();
 
     // 重新挂载同 URL（模拟虚拟列表滚出再滚入 / 切会话重渲）：未触发任何 load，
@@ -464,5 +497,49 @@ describe("MessageImage 比例盒 + asset 源（R1/R2/R4）", () => {
     const box2 = second.container.querySelector("img")!.parentElement!;
     expect(box2.style.aspectRatio).toBe("400 / 100");
     expect(box2.style.width).toBe("100%");
+  });
+});
+
+describe("图文图片铺满 + 独占图本征宽度", () => {
+  it("带配文的图片附件铺满气泡宽度(block w-full)", () => {
+    const { container } = renderContent({
+      text: "看图",
+      attachments: [{ type: "image", url: "https://e.example/cap.png", name: "cap.png" }],
+    });
+    const btn = container.querySelector("button[title]")!;
+    expect(btn.className).toContain("block w-full");
+    expect(btn.className).not.toContain("inline-block");
+  });
+
+  it("独占单图保持本征宽度(inline-block,不强制铺满)", () => {
+    const { container } = renderContent({
+      attachments: [{ type: "image", url: "https://e.example/solo2.png", name: "solo2.png" }],
+    });
+    const btn = container.querySelector("button[title]")!;
+    expect(btn.className).toContain("inline-block");
+    expect(btn.className).not.toContain("block w-full");
+  });
+});
+
+describe("VoiceAttachment 播放接线", () => {
+  it("Web 可解码格式(mp3)渲染 <audio> 元素", () => {
+    const { container } = renderContent({
+      attachments: [{ type: "voice", url: "https://e.example/clip.mp3", durationSec: 5 }],
+    });
+    const audio = container.querySelector("audio");
+    expect(audio).not.toBeNull();
+    expect(audio!.getAttribute("src")).toContain("clip.mp3");
+    // 播放按钮存在(点击在应用内播放)。
+    expect(container.querySelector("button")).not.toBeNull();
+  });
+
+  it("amr 不渲染原生 <audio>(改用 benz-amr-recorder 应用内解码播放)", () => {
+    const { container } = renderContent({
+      attachments: [{ type: "voice", url: "https://e.example/clip.amr", durationSec: 5 }],
+    });
+    // amr 不挂原生 <audio>:点击时经后端取字节 + benz 解码在应用内播放。
+    expect(container.querySelector("audio")).toBeNull();
+    // 仍渲染播放按钮。
+    expect(container.querySelector("button")).not.toBeNull();
   });
 });

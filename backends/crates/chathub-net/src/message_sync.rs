@@ -2,9 +2,9 @@
 //!
 //! 与 recent_session_event.rs 同构:持有 store + hub + change_notice_tx。
 //!
-//! **记录顺序约定**:`FetchMessageHistoryResp.records` 升序(早→晚),故
-//! `records.first()` = 最旧、`records.last()` = 最新。游标分页语义固定 earlier-only
-//! (`next_cursor` 用于继续往更旧翻),故 `older_cursor = next_cursor` / `has_more_older = has_more`。
+//! **记录顺序约定**:进入本模块的 `FetchMessageHistoryResp.records` 会先被收敛为升序
+//! (早→晚)。游标分页语义固定 earlier-only(`next_cursor` 用于继续往更旧翻),
+//! 故 `older_cursor = next_cursor` / `has_more_older = has_more`。
 
 use crate::change_notice::{ChangeNotice, ChangeScope, ChangeTopic};
 use crate::error::AuthError;
@@ -90,7 +90,10 @@ pub fn history_to_row(
 pub fn row_to_history(r: &MessageRow) -> HistoryMessage {
     HistoryMessage {
         local_message_id: r.local_message_id.clone(),
-        message_direction: r.message_direction,
+        message_direction: normalize_local_direction_from_sort_key(
+            r.message_direction,
+            &r.sort_key,
+        ),
         message_type: r.message_type,
         content_text: r.content_text.clone(),
         send_status: r.send_status,
@@ -99,6 +102,25 @@ pub fn row_to_history(r: &MessageRow) -> HistoryMessage {
         attachments: serde_json::from_str::<Vec<HistoryAttachment>>(&r.attachments_json)
             .unwrap_or_default(),
         gmt_modified_time: r.gmt_modified_time.clone(),
+    }
+}
+
+fn normalize_local_direction_from_sort_key(stored_direction: i32, sort_key: &str) -> i32 {
+    let source_direction = sort_key
+        .split(':')
+        .nth(1)
+        .and_then(|s| s.parse::<i64>().ok());
+    match source_direction {
+        Some(direction @ 1..=3) => to_local_direction(direction),
+        _ => normalize_stored_local_direction(stored_direction),
+    }
+}
+
+fn normalize_stored_local_direction(stored_direction: i32) -> i32 {
+    if stored_direction == 2 {
+        2
+    } else {
+        1
     }
 }
 
@@ -120,6 +142,22 @@ fn page_bounds(records: &[HistoryMessage]) -> (Option<String>, Option<String>, i
     let newest = records.iter().map(|r| r.sort_key.clone()).max();
     let newest_ms = records.iter().map(message_freshness_ms).max().unwrap_or(0);
     (oldest, newest, newest_ms)
+}
+
+fn sort_history_records_ascending(records: &mut [HistoryMessage]) {
+    records.sort_by(|a, b| {
+        a.sort_key
+            .cmp(&b.sort_key)
+            .then_with(|| {
+                parse_server_time_to_ms(&a.message_time)
+                    .cmp(&parse_server_time_to_ms(&b.message_time))
+            })
+            .then_with(|| a.local_message_id.cmp(&b.local_message_id))
+    });
+}
+
+fn outgoing_sort_key(freshness_ms: i64, now_ms: i64) -> String {
+    format!("{freshness_ms:013}:1:{now_ms:020}")
 }
 
 /// load_older 结果:本次新增的更老消息(升序)+ 翻完后是否还有更老。
@@ -169,8 +207,9 @@ impl MessageSync {
             })
             .await?;
 
-        // 不依赖数组顺序取边界(上游 message/history 实测降序返回,与早先"升序"假设相反)。
-        let (page_oldest, page_newest, page_newest_ms) = page_bounds(&resp.records);
+        let mut records = resp.records;
+        sort_history_records_ascending(&mut records);
+        let (page_oldest, page_newest, page_newest_ms) = page_bounds(&records);
 
         let window = self
             .store
@@ -185,7 +224,7 @@ impl MessageSync {
         tracing::debug!(
             target: "chathub::messages",
             conversation_id,
-            fetched = resp.records.len(),
+            fetched = records.len(),
             page_newest_ms,
             page_oldest = ?page_oldest,
             page_newest = ?page_newest,
@@ -194,8 +233,7 @@ impl MessageSync {
             "reconcile_newest:已拉取权威首页(fetch_message_history)并分类",
         );
 
-        let rows: Vec<MessageRow> = resp
-            .records
+        let rows: Vec<MessageRow> = records
             .iter()
             .map(|h| history_to_row(h, conversation_id, employee_id, wecom_account_id))
             .collect();
@@ -287,7 +325,8 @@ impl MessageSync {
         employee_id: &str,
         history: &FirstConversationHistory,
     ) -> Result<(), AuthError> {
-        let records = &history.records;
+        let mut records = history.records.clone();
+        sort_history_records_ascending(&mut records);
         if records.is_empty() {
             return Ok(());
         }
@@ -309,7 +348,7 @@ impl MessageSync {
         self.store.upsert_messages(&rows).await.map_err(state_err)?;
 
         // 不依赖数组顺序(上游可能降序返回):按 sort_key min/max 取最旧/最新。
-        let (page_oldest_opt, page_newest_opt, newest_ms) = page_bounds(records);
+        let (page_oldest_opt, page_newest_opt, newest_ms) = page_bounds(&records);
         let page_oldest = page_oldest_opt.unwrap_or_default();
         let page_newest = page_newest_opt.unwrap_or_default();
         let older_cursor = history.next_cursor.as_deref().unwrap_or("");
@@ -346,7 +385,7 @@ impl MessageSync {
     /// 发送一条文本消息(`messageType=1`):调 hub → 落库(出站气泡)→ 推进/建窗 →
     /// 发 ConversationMessages ChangeNotice 让打开着的会话重读缓存追加气泡。
     ///
-    /// 排序键用与协议同构的 `{ms:013}:2:{seq:020}`(`2`=出站方向),与入站/历史/推送的
+    /// 排序键用与协议同构的 `{ms:013}:1:{seq:020}`(`1`=发送方),与入站/历史/推送的
     /// `{epochMs}:{dir}:{seq}` 同源可比。**不能再用旧的 `~{ms}` 前缀**:`~`(0x7E)词典序大于
     /// 所有数字开头的 key,会把出站气泡永久钉在最底,导致之后到达的入站消息(数字开头)
     /// 反而排到出站消息上方 → 乱序。改用真实 ms 后,出站气泡按发送时刻与入站消息正确穿插。
@@ -389,9 +428,9 @@ impl MessageSync {
         let now = now_ms();
         let parsed_ms = parse_server_time_to_ms(&resp.message_time);
         let freshness_ms = if parsed_ms > 0 { parsed_ms } else { now };
-        // 与协议同构:{ms:013}:{dir=2}:{seq:020}。ms 取服务端回填时间(无则用 now),保证按真实
+        // 与协议同构:{ms:013}:{dir=1}:{seq:020}。ms 取服务端回填时间(无则用 now),保证按真实
         // 发送时刻与入站消息穿插;seq 用 now 这个大值,使同毫秒内本出站气泡排在入站之后(更靠底)。
-        let sort_key = format!("{freshness_ms:013}:2:{now:020}");
+        let sort_key = outgoing_sort_key(freshness_ms, now);
 
         // 落库形态按 message_type 分流:
         //   - 文本(1):content_text 落实文本,attachments_json 落空数组。
@@ -480,7 +519,9 @@ impl MessageSync {
                 cursor: window.older_cursor.clone(),
             })
             .await?;
-        if resp.records.is_empty() {
+        let mut records = resp.records;
+        sort_history_records_ascending(&mut records);
+        if records.is_empty() {
             // 服务端没有更老了:仅翻 has_more_older=false。
             let mut w = window;
             w.has_more_older = false;
@@ -491,14 +532,14 @@ impl MessageSync {
                 has_more_older: false,
             });
         }
-        let rows: Vec<MessageRow> = resp
-            .records
+        let rows: Vec<MessageRow> = records
             .iter()
             .map(|h| history_to_row(h, conversation_id, employee_id, &window.wecom_account_id))
             .collect();
         self.store.upsert_messages(&rows).await.map_err(state_err)?;
+        let frontend_records: Vec<HistoryMessage> = rows.iter().map(row_to_history).collect();
         // 推进下界(本页最旧 = sort_key 最小,不依赖数组顺序)+ 游标 + has_more。newest 不动。
-        let new_oldest = page_bounds(&resp.records)
+        let new_oldest = page_bounds(&records)
             .0
             .unwrap_or_else(|| window.oldest_sort_key.clone());
         let mut w = window;
@@ -508,7 +549,7 @@ impl MessageSync {
         w.updated_at_ms = now_ms();
         self.store.upsert_window(w).await.map_err(state_err)?;
         Ok(LoadOlderResult {
-            records: resp.records,
+            records: frontend_records,
             has_more_older: resp.has_more,
         })
     }
@@ -778,8 +819,8 @@ mod tests {
     }
 
     #[test]
-    fn history_to_row_translates_spec_direction_to_local() {
-        // spec: 1=发送(out) 2=接收(in) 3=多端同步(out)；本地: 2=out 1=in
+    fn history_to_row_translates_source_direction_to_local() {
+        // 上游方向契约:1=发送方,2=客户/接收方,3=多端同步方;本地:2=out,1=in。
         let mk = |dir: i32| HistoryMessage {
             local_message_id: "m1".into(),
             message_direction: dir,
@@ -794,17 +835,105 @@ mod tests {
         assert_eq!(
             history_to_row(&mk(1), "c1", "u1", "wa1").message_direction,
             2,
-            "spec1发送→本地2(out)"
+            "1=发送方 → 本地 2(out)"
         );
         assert_eq!(
             history_to_row(&mk(2), "c1", "u1", "wa1").message_direction,
             1,
-            "spec2接收→本地1(in)"
+            "2=客户/接收方 → 本地 1(in)"
         );
         assert_eq!(
             history_to_row(&mk(3), "c1", "u1", "wa1").message_direction,
             2,
-            "spec3多端→本地2(out)"
+            "3=多端同步方 → 本地 2(out)"
+        );
+    }
+
+    #[test]
+    fn row_to_history_normalizes_cached_source_direction_from_sort_key() {
+        let mut row = MessageRow {
+            local_message_id: "m1".into(),
+            conversation_id: "c1".into(),
+            employee_id: "u1".into(),
+            wecom_account_id: "wa1".into(),
+            sort_key: "1770000000000:2:00000000000000009001:m1".into(),
+            message_time_ms: parse_server_time_to_ms("2026-05-30 10:00:00"),
+            message_direction: 2,
+            message_type: 1,
+            content_text: "hi".into(),
+            send_status: 3,
+            attachments_json: "[]".into(),
+            gmt_modified_time: "".into(),
+            updated_at_ms: 0,
+        };
+
+        assert_eq!(
+            row_to_history(&row).message_direction,
+            1,
+            "sort_key 第二段 2=客户/接收方,应返回本地 in"
+        );
+
+        row.sort_key = "1770000000000:1:00000000000000009001:m1".into();
+        row.message_direction = 1;
+        assert_eq!(
+            row_to_history(&row).message_direction,
+            2,
+            "sort_key 第二段 1=发送方,应返回本地 out"
+        );
+
+        row.sort_key = "1770000000000:3:00000000000000009001:m1".into();
+        row.message_direction = 1;
+        assert_eq!(
+            row_to_history(&row).message_direction,
+            2,
+            "sort_key 第二段 3=多端同步方,应返回本地 out"
+        );
+
+        row.sort_key = "legacy_sort_key_without_direction".into();
+        row.message_direction = 2;
+        assert_eq!(
+            row_to_history(&row).message_direction,
+            2,
+            "不可解析 sort_key 时保留本地 out,不能再按源方向把 2 翻成 in"
+        );
+    }
+
+    #[test]
+    fn outgoing_sort_key_uses_sender_direction_segment() {
+        assert_eq!(
+            outgoing_sort_key(1_780_000_000_000, 1_780_000_000_123),
+            "1780000000000:1:00000001780000000123",
+            "本端发送的合成 sort_key 必须用 1=发送方,不能用 2=接收方"
+        );
+    }
+
+    #[test]
+    fn sort_history_records_ascending_normalizes_descending_pages() {
+        let mk = |id: &str, sort_key: &str| HistoryMessage {
+            local_message_id: id.into(),
+            message_direction: 1,
+            message_type: 1,
+            content_text: id.into(),
+            send_status: 3,
+            message_time: "2026-05-30 10:00:00".into(),
+            sort_key: sort_key.into(),
+            attachments: vec![],
+            gmt_modified_time: "".into(),
+        };
+        let mut recs = vec![
+            mk("new", "1780144036000:2:00000000000000000003:new"),
+            mk("mid", "1780139423000:2:00000000000000000002:mid"),
+            mk("old", "1780131886000:1:00000000000000000001:old"),
+        ];
+
+        sort_history_records_ascending(&mut recs);
+
+        assert_eq!(
+            recs.iter()
+                .map(|r| r.local_message_id.as_str())
+                .collect::<Vec<_>>(),
+            ["old", "mid", "new"],
+            "无论上游页是新→旧还是旧→新,入库/返回前都必须规整为旧→新"
         );
     }
 }

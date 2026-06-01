@@ -40,4 +40,5 @@ tokio = { workspace = true }
 reqwest = { workspace = true }
 sha2 = { workspace = true }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif"] }
+tauri-plugin-dialog = "2.7.1"
 

@@ -110,6 +110,7 @@ export function adaptFriendToCustomer(friend: WecomFriend, ctx: { accountName: s
     remark: friend.followDescription || "",
     phone: friend.externalMobile,
     weChat: friend.externalUserId,
+    followRemark: friend.followRemark || "",
     company: friend.externalCorpName || friend.remarkCorpName || "—",
     source: addWayToSource(friend.addWay),
     addedAt: friend.addTime,

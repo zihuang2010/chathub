@@ -5,7 +5,12 @@ import type { Account } from "@/lib/types/account";
 
 import { ChatArea } from "./ChatArea";
 import type { Conversation, Message } from "./data";
-import { estimateTimelineRowHeight, getVirtualOverscan } from "./virtualListSizing";
+import { clearImageDimsCache, rememberMeasuredDims } from "./imageDimsCache";
+import {
+  estimateTimelineRowHeight,
+  getVirtualOverscan,
+  timelineRowHeightCacheKey,
+} from "./virtualListSizing";
 import type { ScrollMetrics } from "./WorkbenchScrollArea";
 
 const scrollAreaMock = vi.hoisted(() => ({
@@ -13,12 +18,18 @@ const scrollAreaMock = vi.hoisted(() => ({
   scrollTop: 0,
   scrollHeight: 900,
   clientHeight: 300,
+  preventedWheels: 0,
   reset() {
     this.viewport = null;
     this.scrollTop = 0;
     this.scrollHeight = 900;
     this.clientHeight = 300;
+    this.preventedWheels = 0;
   },
+}));
+
+const messageBubbleMock = vi.hoisted(() => ({
+  render: vi.fn(),
 }));
 
 vi.mock("framer-motion", async () => {
@@ -72,8 +83,10 @@ vi.mock("./MessageBubble", async () => {
   return {
     DateDivider: ({ label }: { label: string }) =>
       React.createElement("div", { "data-testid": "date-divider" }, label),
-    MessageBubble: ({ message }: { message: Message }) =>
-      React.createElement("div", { "data-testid": "message" }, message.text),
+    MessageBubble: ({ message }: { message: Message }) => (
+      messageBubbleMock.render(message.id),
+      React.createElement("div", { "data-testid": "message" }, message.text)
+    ),
     UnreadDivider: ({ count }: { count: number }) =>
       React.createElement("div", { "data-testid": "unread-divider" }, `${count}`),
   };
@@ -103,11 +116,13 @@ vi.mock("./WorkbenchScrollArea", async () => {
       scrollRef,
       onScrollMetrics,
       onUserScroll,
+      onWheelCapture,
     }: {
       children: React.ReactNode;
       scrollRef?: React.Ref<HTMLDivElement>;
       onScrollMetrics?: (metrics: ScrollMetrics) => void;
       onUserScroll?: (metrics: ScrollMetrics) => void;
+      onWheelCapture?: React.WheelEventHandler<HTMLDivElement>;
     }) => {
       const ref = React.useRef<HTMLDivElement | null>(null);
       React.useLayoutEffect(() => {
@@ -148,6 +163,10 @@ vi.mock("./WorkbenchScrollArea", async () => {
         {
           "data-testid": "viewport",
           ref,
+          onWheelCapture: (event: React.WheelEvent<HTMLDivElement>) => {
+            onWheelCapture?.(event);
+            if (event.isDefaultPrevented()) scrollAreaMock.preventedWheels += 1;
+          },
           onScroll: () => {
             onUserScroll?.(computeMetrics());
             onScrollMetrics?.(computeMetrics());
@@ -211,6 +230,7 @@ function renderChatArea(
 ) {
   const props = {
     conversation,
+    chatStoreKey: "c1",
     messages: [],
     accounts,
     selectedAccountId: null,
@@ -224,6 +244,7 @@ function renderChatArea(
 
 beforeEach(() => {
   scrollAreaMock.reset();
+  messageBubbleMock.render.mockClear();
   vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) => {
     cb(0);
     return 1;
@@ -233,10 +254,67 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  clearImageDimsCache();
   cleanup();
 });
 
 describe("ChatArea history scrolling", () => {
+  it("renders long image-heavy timelines as stable DOM rows instead of variable-height virtual rows", async () => {
+    const manyImages = Array.from({ length: 80 }, (_, i) => ({
+      ...imageMessage(String(i + 1).padStart(2, "0"), {
+        width: i % 2 === 0 ? 320 : 900,
+        height: i % 2 === 0 ? 900 : 320,
+      }),
+      sentAt: `2026-05-19T10:${String(i % 50).padStart(2, "0")}:00.000Z`,
+    }));
+
+    const { container } = renderChatArea({ messages: manyImages });
+    await act(async () => undefined);
+
+    expect(container.querySelectorAll('[data-testid="message"]')).toHaveLength(80);
+    expect(container.querySelector("[data-index]")).toBeNull();
+  });
+
+  it("uses a compact history-loading indicator instead of animated skeleton rows", () => {
+    const { container, getByRole } = renderChatArea({
+      messages: [message("03"), message("04"), message("05")],
+      loading: true,
+      hasMoreHistory: true,
+    });
+
+    expect(getByRole("status", { name: "加载更早的消息" })).toBeTruthy();
+    expect(container.querySelector(".animate-pulse")).toBeNull();
+  });
+
+  it("does not re-render existing message bubbles when older rows are prepended", async () => {
+    const msg03 = message("03");
+    const msg04 = message("04");
+    const msg05 = message("05");
+    const { rerender } = renderChatArea({
+      messages: [msg03, msg04, msg05],
+      hasMoreHistory: true,
+    });
+    await act(async () => undefined);
+    messageBubbleMock.render.mockClear();
+
+    rerender(
+      <ChatArea
+        conversation={conversation}
+        chatStoreKey="c1"
+        messages={[imageMessage("01"), imageMessage("02"), msg03, msg04, msg05]}
+        accounts={accounts}
+        selectedAccountId={null}
+        onAccountChange={vi.fn()}
+        detailsOpen={false}
+        onToggleDetails={vi.fn()}
+        hasMoreHistory
+      />,
+    );
+    await act(async () => undefined);
+
+    expect(messageBubbleMock.render.mock.calls.map(([id]) => id)).toEqual(["01", "02"]);
+  });
+
   it("scrolls to the latest message after the first real history page mounts", async () => {
     const { rerender } = renderChatArea({ loading: true, messages: [] });
 
@@ -244,6 +322,7 @@ describe("ChatArea history scrolling", () => {
     rerender(
       <ChatArea
         conversation={conversation}
+        chatStoreKey="c1"
         messages={[message("01"), message("02"), message("03")]}
         accounts={accounts}
         selectedAccountId={null}
@@ -259,7 +338,7 @@ describe("ChatArea history scrolling", () => {
     expect(scrollAreaMock.scrollTop).toBe(1200);
   });
 
-  it("loads older history when the user scrolls near the top", () => {
+  it("does not load older history until the viewport reaches the top", () => {
     const loadMore = vi.fn().mockResolvedValue(undefined);
     renderChatArea({
       messages: [message("03"), message("04"), message("05")],
@@ -269,18 +348,53 @@ describe("ChatArea history scrolling", () => {
 
     scrollAreaMock.scrollTop = 60;
     fireEvent.scroll(scrollAreaMock.viewport!);
+    expect(loadMore).not.toHaveBeenCalled();
 
+    scrollAreaMock.scrollTop = 0;
+    fireEvent.scroll(scrollAreaMock.viewport!);
     expect(loadMore).toHaveBeenCalledTimes(1);
   });
 
-  it("preserves the visible anchor when older history is prepended", async () => {
+  it("triggers history loading from an upward wheel at the real top and consumes only that boundary wheel", async () => {
+    const loadMore = vi.fn().mockResolvedValue(undefined);
+    renderChatArea({
+      messages: [message("03"), message("04"), message("05")],
+      hasMoreHistory: true,
+      onLoadMoreHistory: loadMore,
+    });
+    const viewport = scrollAreaMock.viewport!;
+
+    scrollAreaMock.scrollTop = 4;
+    const aboveTopWheel = fireEvent.wheel(viewport, { deltaY: -40, cancelable: true });
+    expect(aboveTopWheel).toBe(true);
+    expect(loadMore).not.toHaveBeenCalled();
+
+    scrollAreaMock.scrollTop = 0;
+    fireEvent.wheel(viewport, { deltaY: -40, cancelable: true });
+    expect(scrollAreaMock.preventedWheels).toBe(1);
+    expect(loadMore).toHaveBeenCalledTimes(1);
+
+    fireEvent.wheel(viewport, { deltaY: -40, cancelable: true });
+    expect(scrollAreaMock.preventedWheels).toBe(2);
+    expect(loadMore).toHaveBeenCalledTimes(1);
+
+    await act(async () => undefined);
+    fireEvent.wheel(viewport, { deltaY: -40, cancelable: true });
+    expect(scrollAreaMock.preventedWheels).toBe(3);
+    expect(loadMore).toHaveBeenCalledTimes(1);
+
+    const downWheel = fireEvent.wheel(viewport, { deltaY: 40, cancelable: true });
+    expect(downWheel).toBe(true);
+  });
+
+  it("restores the scroll offset when older history is prepended", async () => {
     const loadMore = vi.fn().mockResolvedValue(undefined);
     const { rerender } = renderChatArea({
       messages: [message("03"), message("04"), message("05")],
       hasMoreHistory: true,
       onLoadMoreHistory: loadMore,
     });
-    scrollAreaMock.scrollTop = 50;
+    scrollAreaMock.scrollTop = 0;
     scrollAreaMock.scrollHeight = 1000;
 
     fireEvent.scroll(scrollAreaMock.viewport!);
@@ -290,6 +404,7 @@ describe("ChatArea history scrolling", () => {
     rerender(
       <ChatArea
         conversation={conversation}
+        chatStoreKey="c1"
         messages={[message("01"), message("02"), message("03"), message("04"), message("05")]}
         accounts={accounts}
         selectedAccountId={null}
@@ -303,7 +418,159 @@ describe("ChatArea history scrolling", () => {
 
     await act(async () => undefined);
 
-    expect(scrollAreaMock.scrollTop).toBe(470);
+    expect(scrollAreaMock.scrollTop).toBe(420);
+  });
+
+  it("keeps the original page anchor while history is loading", async () => {
+    let resolveLoadMore: (() => void) | undefined;
+    const loadMore = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveLoadMore = resolve;
+        }),
+    );
+    const { rerender } = renderChatArea({
+      messages: [message("03"), message("04"), message("05")],
+      hasMoreHistory: true,
+      onLoadMoreHistory: loadMore,
+    });
+    scrollAreaMock.scrollTop = 0;
+    scrollAreaMock.scrollHeight = 1000;
+
+    const viewport = scrollAreaMock.viewport!;
+    // 贴顶滚轮上滑触发加载，锚点捕获于 {scrollHeight:1000, scrollTop:0}。
+    fireEvent.wheel(viewport, { deltaY: -40, cancelable: true });
+    expect(loadMore).toHaveBeenCalledTimes(1);
+    expect(scrollAreaMock.preventedWheels).toBe(1);
+
+    // 加载进行中：后续滚轮被冻结（preventDefault），页面不动、不再重复加载。
+    fireEvent.wheel(viewport, { deltaY: -40, cancelable: true });
+    expect(scrollAreaMock.preventedWheels).toBe(2);
+    expect(loadMore).toHaveBeenCalledTimes(1);
+    expect(scrollAreaMock.scrollTop).toBe(0);
+
+    // 下一页到达：prepend 后用 scrollHeight 差值在 paint 前一次性恢复。
+    scrollAreaMock.scrollHeight = 1420;
+    rerender(
+      <ChatArea
+        conversation={conversation}
+        chatStoreKey="c1"
+        messages={[
+          imageMessage("01"),
+          imageMessage("02"),
+          message("03"),
+          message("04"),
+          message("05"),
+        ]}
+        accounts={accounts}
+        selectedAccountId={null}
+        onAccountChange={vi.fn()}
+        detailsOpen={false}
+        onToggleDetails={vi.fn()}
+        hasMoreHistory
+        onLoadMoreHistory={loadMore}
+      />,
+    );
+    resolveLoadMore?.();
+    await act(async () => undefined);
+
+    // T_new = max(0, scrollHeight_new − scrollHeight_old + scrollTop_old) = 1420 − 1000 + 0 = 420
+    expect(scrollAreaMock.scrollTop).toBe(420);
+  });
+
+  it("does not retarget the prepend anchor from wheel movement while loading", async () => {
+    let resolveLoadMore: (() => void) | undefined;
+    const loadMore = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveLoadMore = resolve;
+        }),
+    );
+    const { rerender } = renderChatArea({
+      messages: [message("03"), message("04"), message("05")],
+      hasMoreHistory: true,
+      onLoadMoreHistory: loadMore,
+    });
+    scrollAreaMock.scrollTop = 0;
+    scrollAreaMock.scrollHeight = 1000;
+
+    const viewport = scrollAreaMock.viewport!;
+    // 触发加载，锚点固定为 {scrollHeight:1000, scrollTop:0}。
+    fireEvent.wheel(viewport, { deltaY: -40, cancelable: true });
+    expect(loadMore).toHaveBeenCalledTimes(1);
+
+    // 加载中连续滚轮都被冻结，不得重捕锚点、不得二次加载。
+    fireEvent.wheel(viewport, { deltaY: -40, cancelable: true });
+    fireEvent.wheel(viewport, { deltaY: -40, cancelable: true });
+    expect(scrollAreaMock.preventedWheels).toBe(3);
+    expect(loadMore).toHaveBeenCalledTimes(1);
+    expect(scrollAreaMock.scrollTop).toBe(0);
+
+    scrollAreaMock.scrollHeight = 1420;
+    rerender(
+      <ChatArea
+        conversation={conversation}
+        chatStoreKey="c1"
+        messages={[
+          imageMessage("01"),
+          imageMessage("02"),
+          message("03"),
+          message("04"),
+          message("05"),
+        ]}
+        accounts={accounts}
+        selectedAccountId={null}
+        onAccountChange={vi.fn()}
+        detailsOpen={false}
+        onToggleDetails={vi.fn()}
+        hasMoreHistory
+        onLoadMoreHistory={loadMore}
+      />,
+    );
+    resolveLoadMore?.();
+    await act(async () => undefined);
+
+    // 锚点未被滚轮重捕，仍用最初的 {1000,0}：T_new = 1420 − 1000 + 0 = 420。
+    expect(scrollAreaMock.scrollTop).toBe(420);
+  });
+
+  it("restores the scroll offset by scrollHeight delta when image rows are prepended", async () => {
+    const loadMore = vi.fn().mockResolvedValue(undefined);
+    const baseProps = {
+      conversation,
+      chatStoreKey: "c1",
+      accounts,
+      selectedAccountId: null,
+      onAccountChange: vi.fn(),
+      detailsOpen: false,
+      onToggleDetails: vi.fn(),
+      hasMoreHistory: true,
+      onLoadMoreHistory: loadMore,
+    };
+    const { rerender } = renderChatArea({
+      messages: [message("03"), message("04"), message("05")],
+      hasMoreHistory: true,
+      onLoadMoreHistory: loadMore,
+    });
+    scrollAreaMock.scrollTop = 0;
+    scrollAreaMock.scrollHeight = 1000;
+
+    fireEvent.scroll(scrollAreaMock.viewport!);
+    expect(loadMore).toHaveBeenCalledTimes(1);
+
+    const withOlderImages = [
+      imageMessage("01", { width: 300, height: 900 }),
+      imageMessage("02", { width: 900, height: 300 }),
+      message("03"),
+      message("04"),
+      message("05"),
+    ];
+
+    // 图片行高在挂载首帧即冻结，prepend 后高度即终值 → 单次差值恢复到位：1420 − 1000 + 0 = 420。
+    scrollAreaMock.scrollHeight = 1420;
+    rerender(<ChatArea {...baseProps} messages={withOlderImages} />);
+    await act(async () => undefined);
+    expect(scrollAreaMock.scrollTop).toBe(420);
   });
 
   it("keeps the latest message pinned when image content increases scroll height", async () => {
@@ -318,6 +585,7 @@ describe("ChatArea history scrolling", () => {
     rerender(
       <ChatArea
         conversation={conversation}
+        chatStoreKey="c1"
         messages={[message("01"), message("02"), message("03")]}
         accounts={accounts}
         selectedAccountId={null}
@@ -345,6 +613,7 @@ describe("ChatArea history scrolling", () => {
     rerender(
       <ChatArea
         conversation={conversation}
+        chatStoreKey="c1"
         messages={[message("01"), message("02"), message("03")]}
         accounts={accounts}
         selectedAccountId={null}
@@ -410,11 +679,26 @@ describe("ChatArea virtual list sizing", () => {
 
     expect(getVirtualOverscan(imageDense)).toBeLessThan(getVirtualOverscan(textDense));
   });
+
+  it("includes image layout dimensions in row height cache key so stale placeholder measurements are not reused", () => {
+    const item = {
+      type: "message" as const,
+      id: "image-row",
+      message: imageMessage("cache-key"),
+      isFirstInBurst: true,
+    };
+    const before = timelineRowHeightCacheKey("c1", item);
+
+    rememberMeasuredDims("asset://image-cache-key", { w: 400, h: 100 });
+
+    expect(timelineRowHeightCacheKey("c1", item)).not.toBe(before);
+  });
 });
 
 describe("ChatArea unread divider", () => {
   const convUnread: Conversation = { ...conversation, unread: 2 };
   const sharedProps = {
+    chatStoreKey: "c1",
     accounts,
     selectedAccountId: null as string | null,
     onAccountChange: vi.fn(),

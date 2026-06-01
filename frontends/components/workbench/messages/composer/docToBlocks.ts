@@ -14,6 +14,11 @@ interface AccumulatorState {
   pendingText: string;
 }
 
+function imageDimension(value: unknown): number | undefined {
+  const n = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(n) && n > 0 ? Math.round(n) : undefined;
+}
+
 function flushText(state: AccumulatorState) {
   if (state.pendingText.length === 0) return;
   state.blocks.push({ type: "text", value: state.pendingText });
@@ -49,6 +54,8 @@ function visit(node: JSONNode, state: AccumulatorState) {
         type: "image",
         url: String(attrs.src ?? ""),
         name: typeof attrs.alt === "string" ? attrs.alt : undefined,
+        width: imageDimension(attrs.width),
+        height: imageDimension(attrs.height),
       });
       return;
     }
@@ -82,7 +89,12 @@ export function blocksToDoc(blocks: MessageBlock[]): JSONNode {
     if (block.type === "image") {
       currentContent().push({
         type: "image",
-        attrs: { src: block.url, alt: block.name ?? null },
+        attrs: {
+          src: block.url,
+          alt: block.name ?? null,
+          width: block.width,
+          height: block.height,
+        },
       });
       continue;
     }

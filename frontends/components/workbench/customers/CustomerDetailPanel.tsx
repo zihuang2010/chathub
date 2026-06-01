@@ -347,15 +347,15 @@ function CustomerInfoSection({
       </h3>
       <dl className="flex flex-col gap-2.5 text-[12px]">
         <InfoRow
+          label={f.weChat}
+          value={customer.followRemark ?? ""}
+          onCopy={() => onCopy(f.weChat, customer.followRemark ?? "")}
+        />
+        <InfoRow
           label={f.phone}
           value={customer.phone}
           numeric
           onCopy={() => onCopy(f.phone, customer.phone)}
-        />
-        <InfoRow
-          label={f.weChat}
-          value={customer.weChat}
-          onCopy={() => onCopy(f.weChat, customer.weChat)}
         />
         <InfoRow label={f.company} value={customer.company} />
         <InfoRow label={f.source} value={customer.source} />

@@ -19,7 +19,13 @@ function setup(onSendMessage?: UseChatActionsParams["onSendMessage"]) {
   const wasAtBottomRef = { current: false };
   const setReplyDraft = vi.fn();
   const { result } = renderHook(() =>
-    useChatActions({ conversation, onSendMessage, wasAtBottomRef, setReplyDraft }),
+    useChatActions({
+      conversation,
+      chatStoreKey: "c1",
+      onSendMessage,
+      wasAtBottomRef,
+      setReplyDraft,
+    }),
   );
   return { result, wasAtBottomRef, setReplyDraft };
 }
@@ -84,6 +90,32 @@ describe("useChatActions", () => {
     const t = timeline();
     expect(t).toHaveLength(1);
     expect(t[0].status).toBe("failed");
+  });
+
+  it("handleSend 图片块乐观气泡保留本地宽高，避免发送后权威回读时变尺寸", () => {
+    const { result } = setup(vi.fn());
+
+    act(() => {
+      result.current.handleSend("", [
+        {
+          type: "image",
+          url: "data:image/png;base64,iVBORw0KGgo=",
+          name: "photo.png",
+          width: 900,
+          height: 1600,
+        },
+      ]);
+    });
+
+    const [message] = timeline();
+    expect(message.parts).toEqual([
+      expect.objectContaining({
+        kind: "image",
+        url: "data:image/png;base64,iVBORw0KGgo=",
+        width: 900,
+        height: 1600,
+      }),
+    ]);
   });
 
   it('handleAction "delete" 确认后从 store 移除该条', () => {
@@ -154,7 +186,29 @@ describe("useChatActions", () => {
     });
     expect(onSendMessage).toHaveBeenCalledWith("m1", "m1");
     await flush();
+    // 就地收敛同一条:不在下方新增气泡。
+    expect(timeline()).toHaveLength(1);
     expect(timeline()[0].status).toBe("sent");
     expect(timeline()[0].serverId).toBe("srv-9");
+  });
+
+  it('handleAction "resend" 再次失败仍就地复用同一条(不新增、沿用原 requestMessageId)', async () => {
+    const onSendMessage = vi.fn().mockRejectedValue(new Error("network"));
+    const { result } = setup(onSendMessage);
+    act(() => {
+      useChatStore.getState().enqueueOptimistic("c1", { ...outMsg("m1"), clientMsgId: "m1" });
+    });
+
+    await act(async () => {
+      result.current.handleAction("resend", outMsg("m1"));
+    });
+    await flush();
+
+    // 复用原 clientMsgId(= request_message_id)发送,而非生成新键。
+    expect(onSendMessage).toHaveBeenCalledWith("m1", "m1");
+    // 再次失败:仍只有 1 条,就地回到 failed,clientMsgId 不变。
+    expect(timeline()).toHaveLength(1);
+    expect(timeline()[0].status).toBe("failed");
+    expect(timeline()[0].clientMsgId).toBe("m1");
   });
 });

@@ -106,6 +106,38 @@ describe("docToBlocks", () => {
     ).toEqual([{ type: "image", url: "blob:x" }]);
   });
 
+  it("保留图片节点宽高，避免发送乐观气泡先用占位比例再二段跳", () => {
+    expect(
+      docToBlocks({
+        type: "doc",
+        content: [
+          {
+            type: "paragraph",
+            content: [
+              {
+                type: "image",
+                attrs: {
+                  src: "data:image/png;base64,abc",
+                  alt: "shot.png",
+                  width: 900,
+                  height: 1600,
+                },
+              },
+            ],
+          },
+        ],
+      }),
+    ).toEqual([
+      {
+        type: "image",
+        url: "data:image/png;base64,abc",
+        name: "shot.png",
+        width: 900,
+        height: 1600,
+      },
+    ]);
+  });
+
   it("mention 转成 @label 文本", () => {
     expect(
       docToBlocks({
@@ -156,5 +188,13 @@ describe("blocksToDoc", () => {
     ];
     const doc = blocksToDoc(blocks);
     expect(docToBlocks(doc)).toEqual(blocks);
+  });
+
+  it("round-trip 保留图片宽高", () => {
+    const blocks = [
+      { type: "image" as const, url: "blob:abc", name: "wide.png", width: 1280, height: 720 },
+    ];
+
+    expect(docToBlocks(blocksToDoc(blocks))).toEqual(blocks);
   });
 });

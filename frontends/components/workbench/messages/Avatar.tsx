@@ -19,12 +19,14 @@ interface CustomerAvatarProps {
   size: "header" | "sm";
 }
 
-export function CustomerAvatar({ name, color, avatarUrl }: CustomerAvatarProps) {
+export function CustomerAvatar({ name, color, avatarUrl, size }: CustomerAvatarProps) {
+  // 气泡内(sm)头像收小到 36px,让每条消息更紧凑;聊天头部(header)保持 44px 不变。
+  const sizeClass = size === "header" ? "size-11" : "size-9";
   return (
     <div
       role="img"
       aria-label={name}
-      className="size-11 shrink-0 rounded-lg bg-cover bg-center shadow-[inset_0_0_0_1px_rgba(255,255,255,0.48)]"
+      className={`${sizeClass} shrink-0 rounded-lg bg-cover bg-center shadow-[inset_0_0_0_1px_rgba(255,255,255,0.48)]`}
       style={{
         backgroundColor: resolveAvatarColor(name, color),
         backgroundImage: `url("${resolveAvatarImageUrl(name, avatarUrl)}")`,
@@ -41,7 +43,7 @@ export function AgentAvatar({ account }: { account: string }) {
     <div
       role="img"
       aria-label={account}
-      className="size-11 shrink-0 rounded-lg bg-cover bg-center shadow-[inset_0_0_0_1px_rgba(255,255,255,0.48)]"
+      className="size-9 shrink-0 rounded-lg bg-cover bg-center shadow-[inset_0_0_0_1px_rgba(255,255,255,0.48)]"
       style={{
         backgroundColor: pickAvatarColor(account),
         backgroundImage: `url(${pickCustomerAvatarImage(account)})`,

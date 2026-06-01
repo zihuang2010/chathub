@@ -36,12 +36,17 @@ function messageAriaText(message: Message): string {
   return trimmed ? `${trimmed}（含 ${imageCount} 张图片）` : `（含 ${imageCount} 张图片）`;
 }
 
-// 媒体独占消息(仅图片/视频、无文本):气泡不套底色/内边距/描边,让媒体卡片本身作视觉容器,
-// 消除"灰色气泡框 + 白色图片框"的双重边框(IM 标准:图片消息即图片本身,不加聊天气泡 chrome)。
-// 带引用的消息排除在外:仍用气泡承载引用块的上下文。
+// 附件独占消息(仅图片/视频/文件/语音、无文本):气泡不套底色/内边距/描边,让附件卡片本身作
+// 视觉容器,消除"灰色气泡框 + 白色卡片框"的双重边框(IM 标准:附件消息即附件本身,不加聊天
+// 气泡 chrome)。带文本(图文混排)或带引用的消息排除在外:仍用气泡承载文字/引用块的上下文。
 function isMediaOnly(message: Message): boolean {
   const parts = message.parts;
-  return parts.length > 0 && parts.every((p) => p.kind === "image" || p.kind === "video");
+  return (
+    parts.length > 0 &&
+    parts.every(
+      (p) => p.kind === "image" || p.kind === "video" || p.kind === "file" || p.kind === "voice",
+    )
+  );
 }
 
 // 让纯键盘用户也能唤出消息操作:气泡聚焦后按 ContextMenu 键或 Shift+F10(WAI-ARIA 约定),
@@ -166,8 +171,8 @@ function IncomingBubble({
               mediaOnly
                 ? "rounded-xl"
                 : cn(
-                    "rounded-2xl rounded-tl-md bg-workbench-bubble-in text-[13.5px] font-[450] leading-[1.65] text-workbench-text shadow-wb-bubble ring-1 ring-workbench-bubble-in-border/50",
-                    compact ? "px-3.5 py-2" : "px-4 py-2.5",
+                    "rounded-xl rounded-tl-md bg-workbench-bubble-in text-[13.5px] font-[450] leading-[1.65] text-workbench-text shadow-wb-bubble ring-1 ring-workbench-bubble-in-border/50",
+                    compact ? "px-3.5 py-1.5" : "px-4 py-2",
                   ),
             )}
           >
@@ -207,8 +212,8 @@ function OutgoingBubble({
               mediaOnly
                 ? "rounded-xl"
                 : cn(
-                    "rounded-2xl rounded-tr-md bg-workbench-bubble-out text-[13.5px] font-[450] leading-[1.65] text-workbench-text shadow-wb-bubble ring-1 ring-workbench-bubble-out-border/50",
-                    compact ? "px-3.5 py-2" : "px-4 py-2.5",
+                    "rounded-xl rounded-tr-md bg-workbench-bubble-out text-[13.5px] font-[450] leading-[1.65] text-workbench-text shadow-wb-bubble ring-1 ring-workbench-bubble-out-border/50",
+                    compact ? "px-3.5 py-1.5" : "px-4 py-2",
                   ),
             )}
           >
@@ -244,21 +249,24 @@ function StatusLine({ status, onResend }: { status?: MessageStatus; onResend: ()
   // "sent" used to render a tick — product wants no read-receipt UI, so the
   // status line is only meaningful while in-flight or after a failure.
   if (!status || status === "sent") return null;
-  // Sending is transient (~800ms) and used to push the bubble's column up by
-  // ~16px when the status flipped to "sent" — visible as a screen jump. Float
-  // the spinner out of layout so the column height never changes.
+  // 状态行(sending / failed)一律脱离文档流(absolute + top-full),浮在气泡下方的
+  // 行间距里。这样 sending / failed / sent 三态下气泡列高完全一致 —— 点「重发」时
+  // failed→sending→failed 不再让列高一塌一涨、带动下方消息上下抖动(原先 failed 占
+  // 文档流高度、sending 脱流,二者切换即抖)。也顺带消了发送成功瞬间 sending→sent 的
+  // ~16px 上跳。失败行需要可点击「重发」,故不加 pointer-events-none。
+  // 注:ChatArea 的消息行已去掉 paint containment,避免浮出行盒的本状态行被裁切。
   if (status === "sending") {
     return (
       <div
         aria-live="polite"
-        className="text-wb-3xs pointer-events-none absolute right-0 top-full mt-1 flex items-center leading-none text-workbench-text-muted/80"
+        className="text-wb-3xs pointer-events-none absolute right-0 top-full mt-2 flex items-center leading-none text-workbench-text-muted/80"
       >
         <StatusIcon status={status} />
       </div>
     );
   }
   return (
-    <div className="wb-num text-wb-3xs mt-1 flex items-center gap-1.5 leading-none text-workbench-text-muted/80">
+    <div className="wb-num text-wb-3xs absolute right-0 top-full mt-2 flex items-center gap-1.5 whitespace-nowrap leading-none text-workbench-text-muted/80">
       <StatusIcon status={status} />
       <span className="font-medium text-workbench-text-muted">{STRINGS.errors.sendFailed}</span>
       <button
@@ -332,11 +340,13 @@ export function UnreadDivider({ count }: { count: number }) {
 }
 
 function MessageTimeTooltip({ label, align }: { label: string; align: "left" | "right" }) {
+  // 悬停时间戳紧贴气泡上方 8px(bottom-full + mb-2),与失败/重发行贴气泡下方 8px
+  // (top-full + mt-2)对称等距 —— 时间戳归属其气泡而非飘在行间距中央贴到上一条。
   return (
     <span
       aria-hidden
       className={cn(
-        "wb-num text-wb-3xs pointer-events-none absolute -top-5 z-10 whitespace-nowrap font-medium leading-none text-workbench-text-muted opacity-0 transition-opacity duration-150 group-hover:opacity-100 group-focus-visible:opacity-100",
+        "wb-num text-wb-3xs pointer-events-none absolute bottom-full z-10 mb-2 whitespace-nowrap font-medium leading-none text-workbench-text-muted opacity-0 transition-opacity duration-150 group-hover:opacity-100 group-focus-visible:opacity-100",
         align === "right" ? "right-0" : "left-0",
       )}
     >

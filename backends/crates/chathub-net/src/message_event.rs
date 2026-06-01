@@ -20,10 +20,10 @@ const FALLBACK_PAGE_SIZE: u32 = 20;
 /// 兜底节流窗口:1 秒内多次兜底合并为一次(同 RecentSessionEventApplier)。
 const FALLBACK_THROTTLE_MS: i64 = 1000;
 
-/// spec messageDirection → 本地约定。本地: 2=出站(out), 其余=入站(in)。
-/// spec: 1=我方发送, 2=客户消息, 3=多端同步(=我方)。集中单点,便于将来统一约定时切换。
-pub(crate) fn to_local_direction(spec_dir: i64) -> i32 {
-    match spec_dir {
+/// 上游消息方向 → 本地约定。本地:1=入站(in),2=出站(out)。
+/// 上游:1=发送方,2=客户/接收方,3=多端同步方。
+pub(crate) fn to_local_direction(direction: i64) -> i32 {
+    match direction {
         1 | 3 => 2,
         _ => 1,
     }
@@ -47,7 +47,7 @@ fn attachments_transferring(msg: &serde_json::Value) -> bool {
         .unwrap_or(false)
 }
 
-/// 把一个 `MESSAGE_UPSERT` 事件 Value 解码为 `MessageRow`(含方向翻译)。
+/// 把一个 `MESSAGE_UPSERT` 事件 Value 解码为 `MessageRow`(含方向收敛)。
 /// 必填:`message.localMessageId` / `message.sortKey` / 事件级 `conversationId` 非空。
 /// 缺失 → None(调用者走兜底)。`employee_id` 来自 batch,不在 payload。
 fn decode_message_row(ev: &serde_json::Value, employee_id: &str) -> Option<MessageRow> {
@@ -65,8 +65,8 @@ fn decode_message_row(ev: &serde_json::Value, employee_id: &str) -> Option<Messa
         return None;
     }
     let message_time = str_or_empty(msg, "messageTime");
-    // 缺省按 spec 2(客户消息)处理 → 翻译为本地 in。
-    let spec_dir = msg
+    // 缺省按客户/接收方处理,避免缺方向时误画成我方发送。
+    let direction = msg
         .get("messageDirection")
         .and_then(|v| v.as_i64())
         .unwrap_or(2);
@@ -82,7 +82,7 @@ fn decode_message_row(ev: &serde_json::Value, employee_id: &str) -> Option<Messa
         wecom_account_id: str_or_empty(ev, "wecomAccountId"),
         sort_key: sort_key.to_string(),
         message_time_ms: freshness,
-        message_direction: to_local_direction(spec_dir),
+        message_direction: to_local_direction(direction),
         message_type: msg.get("messageType").and_then(|v| v.as_i64()).unwrap_or(1) as i32,
         content_text: str_or_empty(msg, "contentText"),
         send_status: msg.get("sendStatus").and_then(|v| v.as_i64()).unwrap_or(0) as i32,
@@ -278,7 +278,7 @@ fn push_fallback(acc: &mut Vec<(String, String, String)>, ev: &serde_json::Value
 mod tests {
     use super::*;
 
-    fn full_event(conv: &str, spec_dir: i64) -> serde_json::Value {
+    fn full_event(conv: &str, direction: i64) -> serde_json::Value {
         serde_json::json!({
             "eventType": "MESSAGE_UPSERT",
             "eventReason": "CUSTOMER_MESSAGE_RECEIVED",
@@ -287,10 +287,10 @@ mod tests {
             "externalUserId": "ext-1",
             "message": {
                 "localMessageId": "LM_A",
-                "messageDirection": spec_dir,
+                "messageDirection": direction,
                 "messageType": 1,
                 "sendStatus": 3,
-                "sortKey": "1770000000000:2:00000000000000002001:LM_A",
+                "sortKey": format!("1770000000000:{direction}:00000000000000002001:LM_A"),
                 "messageTime": "2026-05-14 10:30:00",
                 "contentText": "你好",
                 "contentSummary": "你好",
@@ -301,31 +301,31 @@ mod tests {
 
     #[test]
     fn decode_full_payload_translates_customer_direction_to_in() {
-        let ev = full_event("c1", 2); // spec 2 = 客户消息
+        let ev = full_event("c1", 2); // 2 = 客户/接收方
         let r = decode_message_row(&ev, "42").expect("full payload decodes");
         assert_eq!(r.local_message_id, "LM_A");
         assert_eq!(r.conversation_id, "c1");
         assert_eq!(r.employee_id, "42", "employee_id 来自 batch,不在 payload");
-        assert_eq!(r.message_direction, 1, "spec 2(客户) → 本地 1(in)");
+        assert_eq!(r.message_direction, 1, "2=客户/接收方 → 本地 1(in)");
         assert_eq!(r.content_text, "你好");
         assert!(r.message_time_ms > 0);
     }
 
     #[test]
-    fn decode_translates_our_send_and_sync_to_out() {
+    fn decode_translates_sender_and_sync_to_out() {
         assert_eq!(
             decode_message_row(&full_event("c1", 1), "42")
                 .unwrap()
                 .message_direction,
             2,
-            "spec 1(我方发送) → 本地 2(out)"
+            "1=发送方 → 本地 2(out)"
         );
         assert_eq!(
             decode_message_row(&full_event("c1", 3), "42")
                 .unwrap()
                 .message_direction,
             2,
-            "spec 3(多端同步=我方) → 本地 2(out)"
+            "3=多端同步方 → 本地 2(out)"
         );
     }
 

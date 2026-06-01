@@ -61,6 +61,24 @@ export function estimateTimelineRowHeight(item: TimelineItem): number {
   return estimateTextRowHeight(item.message);
 }
 
+export function timelineItemHeightSignature(item: TimelineItem): string {
+  if (item.type !== "message") return item.type;
+  const imageParts = item.message.parts.filter((part) => part.kind === "image");
+  if (imageParts.length === 0) return item.message.parts.map((part) => part.kind).join(",");
+  return imageParts
+    .map((image) => {
+      const measured = getMeasuredDims(image.url);
+      const w = image.width ?? measured?.w ?? 0;
+      const h = image.height ?? measured?.h ?? 0;
+      return `${image.url}:${w}x${h}`;
+    })
+    .join("|");
+}
+
+export function timelineRowHeightCacheKey(conversationId: string, item: TimelineItem): string {
+  return `${conversationId}:${item.id}:${timelineItemHeightSignature(item)}`;
+}
+
 export function getVirtualOverscan(timelineItems: readonly TimelineItem[]): number {
   if (timelineItems.length === 0) return DEFAULT_VIRTUAL_OVERSCAN;
   const imageRows = timelineItems.reduce(

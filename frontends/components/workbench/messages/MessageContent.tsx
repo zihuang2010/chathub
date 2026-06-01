@@ -1,8 +1,12 @@
-import { Fragment, useLayoutEffect, useRef, useState } from "react";
-import { Download, FileText, ImageOff, Play } from "lucide-react";
+import { Fragment, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import { Download, FileText, ImageOff, Pause, Play } from "lucide-react";
 
 import { assetImageSrc } from "@/lib/assetImageSrc";
 import { cachedImageSrc } from "@/lib/cachedImageSrc";
+import { downloadAttachment } from "@/lib/downloadAttachment";
+import { openExternal } from "@/lib/openExternal";
+import { openImagePreviewWindow } from "@/lib/openImagePreviewWindow";
 import { cn } from "@/lib/utils";
 
 import type { MessagePart } from "./data";
@@ -21,8 +25,8 @@ interface MessageContentProps {
   parts: MessagePart[];
 }
 
-// 未知图片尺寸时的中性占位比例(偏常见横图/截图):用于尚未拿到真实宽高的首帧占位盒,
-// 使占位与最终真实比例盒的高度差尽量小,配合 aspect-ratio transition 软化加载时的尺寸收敛。
+// 未知图片尺寸时的中性占位比例(偏常见横图/截图):用于尚未拿到真实宽高的首帧占位盒。
+// 当前挂载周期内比例不二次收敛；真实宽高会写缓存，下一次挂载再首帧使用。
 const NEUTRAL_IMAGE_ASPECT = "4 / 3";
 
 // 内联部分:文本 + 标记为内联的图片(composer 富文本)。其余(附件图片/文件/语音/
@@ -56,7 +60,8 @@ export function MessageContent({ parts }: MessageContentProps) {
       {cardParts.length > 0 && (
         <div className={hasInline ? "mt-2 flex flex-col gap-2" : "flex flex-col gap-2"}>
           {cardParts.map((p, i) => (
-            <PartCard key={`${p.kind}-${i}`} part={p} />
+            // 带配文(hasInline)的图片附件铺满气泡内容宽度,与文字左对齐齐平;独占附件保持本征尺寸。
+            <PartCard key={`${p.kind}-${i}`} part={p} fill={hasInline} />
           ))}
         </div>
       )}
@@ -66,10 +71,10 @@ export function MessageContent({ parts }: MessageContentProps) {
 
 // ─── Attachment cards ───────────────────────────────────────────────────────
 
-function PartCard({ part }: { part: MessagePart }) {
+function PartCard({ part, fill }: { part: MessagePart; fill?: boolean }) {
   switch (part.kind) {
     case "image":
-      return <ImageAttachment part={part} />;
+      return <ImageAttachment part={part} fill={fill} />;
     case "voice":
       return <VoiceAttachment part={part} />;
     case "video":
@@ -81,7 +86,7 @@ function PartCard({ part }: { part: MessagePart }) {
   }
 }
 
-function ImageAttachment({ part }: { part: ImagePart }) {
+function ImageAttachment({ part, fill = false }: { part: ImagePart; fill?: boolean }) {
   const [open, setOpen] = useState(false);
   const safe = isSafeUrl(part.url, "image");
   return (
@@ -89,15 +94,35 @@ function ImageAttachment({ part }: { part: ImagePart }) {
       <button
         type="button"
         title={STRINGS.attachment.openImage}
-        onClick={() => safe && setOpen(true)}
-        className="focus-ring inline-block max-w-full cursor-pointer overflow-hidden rounded-xl align-bottom leading-none shadow-wb-bubble transition-shadow hover:shadow-wb-popover"
+        onClick={() => {
+          if (!safe) return;
+          // 优先在独立预览窗打开;非 Tauri 环境(返回 false)回退到应用内灯箱 Dialog。
+          void openImagePreviewWindow({
+            src: part.url,
+            alt: STRINGS.attachment.imageAlt(part.name),
+            localPath: part.localPath,
+          }).then((opened) => {
+            if (!opened) setOpen(true);
+          });
+        }}
+        className={cn(
+          "focus-ring cursor-pointer overflow-hidden rounded-xl align-bottom leading-none shadow-wb-bubble transition-shadow hover:shadow-wb-popover",
+          // 带配文时铺满气泡宽度(随配文,封顶 360);独占图保持本征宽度上限 256。
+          fill ? "block w-full" : "inline-block max-w-full",
+        )}
       >
-        <MessageImage part={part} alt={STRINGS.attachment.imageAlt(part.name)} />
+        <MessageImage
+          part={part}
+          alt={STRINGS.attachment.imageAlt(part.name)}
+          maxW={fill ? 360 : undefined}
+          maxH={fill ? 460 : undefined}
+        />
       </button>
       {open && safe && (
         <ImageLightbox
           src={part.url}
           alt={STRINGS.attachment.imageAlt(part.name)}
+          localPath={part.localPath}
           onClose={() => setOpen(false)}
         />
       )}
@@ -108,58 +133,172 @@ function ImageAttachment({ part }: { part: ImagePart }) {
 function FileAttachment({ part }: { part: FilePart }) {
   const name = part.name ?? STRINGS.attachment.file;
   const size = formatFileSize(part.sizeBytes);
-  const href = isSafeUrl(part.url, "link") ? part.url : undefined;
+  const safe = isSafeUrl(part.url, "link");
   return (
-    <a
-      href={href}
-      download={part.name}
-      target="_blank"
-      rel="noopener noreferrer"
-      aria-label={`${STRINGS.attachment.download} ${name}`}
-      className="focus-ring flex w-64 max-w-full items-center gap-2.5 rounded-xl border border-workbench-line bg-workbench-surface p-2.5 shadow-wb-bubble transition-colors hover:bg-workbench-surface-subtle"
-    >
-      <span className="grid size-10 shrink-0 place-items-center rounded-lg bg-workbench-surface-soft text-workbench-accent">
-        <FileText size={19} strokeWidth={1.55} aria-hidden />
+    // 整卡不再可点:仅右侧下载按钮触发保存(另存为)。卡片本体只承载文件名/大小展示。
+    <div className="flex w-72 max-w-full items-center gap-3 rounded-2xl border border-workbench-line bg-workbench-surface px-3.5 py-3 shadow-wb-bubble">
+      <span className="grid size-11 shrink-0 place-items-center rounded-xl bg-workbench-surface-soft text-workbench-accent">
+        <FileText size={22} strokeWidth={1.6} aria-hidden />
       </span>
-      <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-        <span className="truncate text-wb-2xs font-medium text-workbench-text">{name}</span>
+      <span className="flex min-w-0 flex-1 flex-col gap-1">
+        <span className="truncate text-wb-xs font-medium text-workbench-text">{name}</span>
         <span className="wb-num text-wb-3xs text-workbench-text-muted">{size}</span>
       </span>
-      <Download
-        size={14}
-        strokeWidth={1.6}
-        className="shrink-0 text-workbench-text-muted"
-        aria-hidden
-      />
-    </a>
+      <button
+        type="button"
+        disabled={!safe}
+        aria-label={`${STRINGS.attachment.download} ${name}`}
+        title={STRINGS.attachment.download}
+        onClick={() => void downloadAttachment(part.url, part.name ?? undefined)}
+        className="focus-ring grid size-8 shrink-0 place-items-center rounded-lg text-workbench-text-muted transition-colors hover:bg-workbench-surface-subtle hover:text-workbench-accent disabled:cursor-not-allowed disabled:opacity-40"
+      >
+        <Download size={16} strokeWidth={1.6} aria-hidden />
+      </button>
+    </div>
   );
 }
 
+// WebView 原生 <audio> 能解 mp3/wav/m4a 等,但解不了企微常见的 silk。amr 走 benz-amr-recorder
+// 在应用内解码播放(见下),不在此集合;silk/sil 仍无解码方案 → 外部打开。其余(含无扩展名的
+// OSS 链接)乐观地在应用内 <audio> 播放,play() 失败再回退。
+const WEB_UNPLAYABLE_AUDIO = new Set(["silk", "sil"]);
+
+function audioExtension(url: string): string {
+  const path = url.split(/[?#]/, 1)[0] ?? url;
+  const dot = path.lastIndexOf(".");
+  return dot >= 0 ? path.slice(dot + 1).toLowerCase() : "";
+}
+
+// benz-amr-recorder 实例类型(默认导出类),用于 useRef 持有应用内 amr 播放器。
+type BenzAMRInstance = InstanceType<typeof import("benz-amr-recorder").default>;
+
 function VoiceAttachment({ part }: { part: VoicePart }) {
-  const seconds = part.durationSec ?? 0;
+  // durationSec 缺省时,amr 解码后用 getDuration() 补一个时长用于显示;有 prop 时以 prop 为准。
+  const [amrDuration, setAmrDuration] = useState(0);
+  const seconds = part.durationSec ?? amrDuration;
   // Wave bar count scales with duration so a 5s voice doesn't visually claim
   // the same width as a 60s one. Cap at 18 bars for layout stability.
   const barCount = Math.min(18, Math.max(6, Math.ceil(seconds / 2)));
+  const safe = isSafeUrl(part.url, "link");
+  const ext = audioExtension(part.url);
+  const isAmr = ext === "amr";
+  // amr 走 benz 应用内解码;silk/sil 仍无解码 → 外部打开;其余(mp3/wav 等)用原生 <audio>。
+  const nativePlayable = safe && !WEB_UNPLAYABLE_AUDIO.has(ext) && !isAmr;
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const amrRef = useRef<BenzAMRInstance | null>(null);
+  const [playing, setPlaying] = useState(false);
+  // amr 首次播放需异步取字节 + 解码,loading 期间防重复点击。
+  const [loading, setLoading] = useState(false);
+
+  // 卸载时停掉 amr 播放,避免后台残留音频。
+  useEffect(() => {
+    return () => {
+      amrRef.current?.stop();
+    };
+  }, []);
+
+  const playAmr = async () => {
+    // 已有实例 → 直接切换播放/停止,无需重新取字节解码。
+    const existing = amrRef.current;
+    if (existing) {
+      if (existing.isPlaying()) existing.stop();
+      else existing.play();
+      return;
+    }
+    if (loading) return;
+    setLoading(true);
+    try {
+      // 默认导出是 BenzAMRRecorder 类(见 node_modules 自带 .d.ts)。
+      const { default: BenzAMRRecorder } = await import("benz-amr-recorder");
+      // 经后端命令取字节:JS fetch/WebAudio 直读 OSS 受 CORS 限制取不到,Tauri 命令不受此限。
+      const bytes = await invoke<number[]>("fetch_media_bytes", { url: part.url });
+      const amr = new BenzAMRRecorder();
+      await amr.initWithBlob(new Blob([new Uint8Array(bytes)]));
+      amr.onPlay(() => setPlaying(true));
+      amr.onStop(() => setPlaying(false));
+      amr.onEnded(() => setPlaying(false));
+      // durationSec 缺省时用解码后的真实时长补显示。
+      if (!part.durationSec) {
+        const d = Math.round(amr.getDuration());
+        if (d > 0) setAmrDuration(d);
+      }
+      amrRef.current = amr;
+      amr.play();
+    } catch {
+      // 取字节/解码失败 → 回退系统播放器并复位状态。
+      setPlaying(false);
+      void openExternal(part.url);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleClick = () => {
+    if (!safe) return;
+    if (isAmr) {
+      void playAmr();
+      return;
+    }
+    const el = audioRef.current;
+    if (!nativePlayable || !el) {
+      // 不可解码格式(silk/sil) / 无 audio 元素 → 系统默认播放器打开。
+      void openExternal(part.url);
+      return;
+    }
+    if (el.paused) {
+      void el.play().catch(() => {
+        // 解码/网络失败 → 回退系统播放器。
+        setPlaying(false);
+        void openExternal(part.url);
+      });
+    } else {
+      el.pause();
+    }
+  };
+
   return (
-    <button
-      type="button"
-      aria-label={`${STRINGS.attachment.voice} ${seconds}″`}
-      className="focus-ring inline-flex items-center gap-2 rounded-full bg-workbench-surface-subtle px-3 py-1.5 transition-colors hover:bg-workbench-surface-active"
-    >
-      <Play size={14} strokeWidth={2} className="shrink-0 text-workbench-accent" aria-hidden />
-      <span className="flex h-4 items-end gap-[2px]" aria-hidden>
-        {Array.from({ length: barCount }).map((_, i) => (
-          <span
-            key={i}
-            className="w-[2px] rounded-full bg-workbench-accent/60"
-            style={{ height: `${30 + ((i * 17) % 70)}%` }}
-          />
-        ))}
-      </span>
-      <span className="wb-num text-wb-3xs text-workbench-text-muted">
-        {STRINGS.attachment.voiceDuration(seconds)}
-      </span>
-    </button>
+    <>
+      <button
+        type="button"
+        onClick={handleClick}
+        aria-label={`${STRINGS.attachment.voice} ${seconds}″`}
+        className="focus-ring inline-flex items-center gap-2.5 rounded-2xl border border-workbench-line bg-workbench-surface px-3 py-2 shadow-wb-bubble transition-colors hover:bg-workbench-surface-subtle"
+      >
+        <span className="grid size-7 shrink-0 place-items-center rounded-full bg-workbench-accent text-white">
+          {playing ? (
+            <Pause size={13} strokeWidth={2} fill="currentColor" aria-hidden />
+          ) : (
+            <Play size={13} strokeWidth={2} fill="currentColor" aria-hidden />
+          )}
+        </span>
+        <span
+          className={cn("flex h-4 items-end gap-[2px]", playing && "animate-pulse")}
+          aria-hidden
+        >
+          {Array.from({ length: barCount }).map((_, i) => (
+            <span
+              key={i}
+              className="w-[2px] rounded-full bg-workbench-accent/60"
+              style={{ height: `${30 + ((i * 17) % 70)}%` }}
+            />
+          ))}
+        </span>
+        <span className="wb-num text-wb-3xs text-workbench-text-muted">
+          {STRINGS.attachment.voiceDuration(seconds)}
+        </span>
+      </button>
+      {nativePlayable && (
+        <audio
+          ref={audioRef}
+          src={part.url}
+          preload="none"
+          className="hidden"
+          onPlay={() => setPlaying(true)}
+          onPause={() => setPlaying(false)}
+          onEnded={() => setPlaying(false)}
+        />
+      )}
+    </>
   );
 }
 
@@ -256,7 +395,16 @@ function InlineImage({ part }: { part: ImagePart }) {
     <>
       <button
         type="button"
-        onClick={() => setOpen(true)}
+        onClick={() => {
+          // 优先在独立预览窗打开;非 Tauri 环境(返回 false)回退到应用内灯箱 Dialog。
+          void openImagePreviewWindow({
+            src: part.url,
+            alt: part.name ?? STRINGS.attachment.image,
+            localPath: part.localPath,
+          }).then((opened) => {
+            if (!opened) setOpen(true);
+          });
+        }}
         className="focus-ring mx-1 inline-block cursor-pointer overflow-hidden rounded-xl align-bottom leading-none"
       >
         <MessageImage
@@ -270,6 +418,7 @@ function InlineImage({ part }: { part: ImagePart }) {
         <ImageLightbox
           src={part.url}
           alt={part.name ?? STRINGS.attachment.image}
+          localPath={part.localPath}
           onClose={() => setOpen(false)}
         />
       )}
@@ -285,7 +434,7 @@ function InlineImage({ part }: { part: ImagePart }) {
 //
 // 比例盒策略：
 //   - 有宽高 → style.aspectRatio + maxW/maxH 上限 + object-contain（不裁切）
-//   - 无宽高 → 固定 192×192 方盒（向后兼容）
+//   - 无宽高 → 中性 4:3 稳定占位盒
 //
 // 三态（盒子恒定尺寸，零位移）：
 //   loading → 骨架 overlay + 隐形 img（opacity-0）
@@ -366,19 +515,19 @@ function MessageImage({ part, alt, maxW = 256, maxH = 320 }: MessageImageProps) 
     setRenderState(nextImageState(renderState, src, safe, isLocal));
   }
 
-  // 首次查看(后端预取未回、part 无宽高)时，从已加载 <img> 读其固有宽高，立刻据此切比例盒——
-  // 消除"固定 192 方盒 object-contain 把非方图留白边、数秒后预取回来才变原比例"的白边二段跳。
-  // 缩略图保持原图纵横比，故测得比例与后端 dims 一致：预取回来时盒比例不变、零位移。
-  // 重挂时(虚拟列表滚动 / 切会话)从模块缓存恢复已测宽高 → 比例盒首帧即就位,无方盒、无抖动。
-  const [measuredDims, setMeasuredDims] = useState<{ w: number; h: number } | null>(
-    () => getMeasuredDims(part.url) ?? null,
-  );
+  // 比例盒只取挂载首帧能拿到的尺寸:后端 image_meta 注入的宽高 → 模块缓存 → 中性占位。
+  // 后续 <img> onLoad 或权威重读补齐 meta 都只写缓存,不改变当前已绘制行的 aspect-ratio;
+  // 这样图片不会在上滑/切会话/发送后逐张推高或塌陷列表。下一次挂载再用缓存/后端宽高首帧就位。
+  const [layoutDims] = useState<{ w: number; h: number } | null>(() => {
+    if (part.width && part.height) return { w: part.width, h: part.height };
+    return getMeasuredDims(part.url) ?? null;
+  });
+
   const captureNaturalDims = (img: HTMLImageElement | null) => {
     if (!img || part.width || part.height) return;
     if (img.naturalWidth > 0 && img.naturalHeight > 0) {
       const dims = { w: img.naturalWidth, h: img.naturalHeight };
       rememberMeasuredDims(part.url, dims);
-      setMeasuredDims((prev) => prev ?? dims);
     }
   };
 
@@ -392,29 +541,30 @@ function MessageImage({ part, alt, maxW = 256, maxH = 320 }: MessageImageProps) 
     if (!part.width && !part.height) {
       const dims = { w: img.naturalWidth, h: img.naturalHeight };
       rememberMeasuredDims(part.url, dims);
-      setMeasuredDims((prev) => prev ?? dims);
     }
     if (renderState.phase === "loading") {
       rememberLoadedImageSrc(renderState.visibleSrc);
-      setRenderState({ phase: "loaded", visibleSrc: renderState.visibleSrc });
+      const visibleSrc = renderState.visibleSrc;
+      queueMicrotask(() => {
+        setRenderState((current) =>
+          current.phase === "loading" && current.visibleSrc === visibleSrc
+            ? { phase: "loaded", visibleSrc }
+            : current,
+        );
+      });
     }
-  }, [renderState, part.width, part.height]);
+  }, [renderState, part.url, part.width, part.height]);
 
-  // 比例盒尺寸源优先级：后端 image_meta 注入的原始宽高 → <img> 固有宽高(首次加载即测得) →
-  // 都没有(尚未加载完)才回退中性占位比例。任一真实宽高可用即按真实比例渲染，杜绝白边 letterbox。
-  const dimW = part.width ?? measuredDims?.w;
-  const dimH = part.height ?? measuredDims?.h;
+  const dimW = layoutDims?.w;
+  const dimH = layoutDims?.h;
   const hasDims = !!(dimW && dimH);
-  // 软化「先大后正常」：未知尺寸不再用 192 正方形(与常见宽图差异大、切换时高方块塌成矮条很跳)，
-  // 而是与有 dims 盒共用同一套宽度口径(width:100% + maxWidth/maxHeight)，仅 aspectRatio 不同 —
-  // 占位用中性 4:3(偏常见横图/截图)。这样宽度跨态恒定，只有高度变化，且用 transition 平滑收敛，
-  // 把「猛跳一下」变成「轻微 ease」。首帧已有 dims(后端注入/模块缓存命中)时无前一帧、不触发过渡。
+  // 未知尺寸不再用 192 正方形(与常见宽图差异大、切换时高方块塌成矮条很跳)，
+  // 而是与有 dims 盒共用同一套宽度口径(width:100% + maxWidth/maxHeight)。
   const boxStyle: React.CSSProperties = {
     aspectRatio: hasDims ? `${dimW} / ${dimH}` : NEUTRAL_IMAGE_ASPECT,
     maxWidth: maxW,
     maxHeight: maxH,
     width: "100%",
-    transition: "aspect-ratio 200ms ease",
   };
 
   if (renderState.phase === "error") {
@@ -478,10 +628,8 @@ function MessageImage({ part, alt, maxW = 256, maxH = 320 }: MessageImageProps) 
         decoding={isLocal ? "sync" : "async"}
         onLoad={handleVisibleLoad}
         onError={() => handleImageError(renderState.visibleSrc, "visible")}
-        // transition-opacity:仅"真正网络首加载"(loading→loaded)时 0→1 柔和渐显,软化那一下闪;
-        // 重挂/缓存命中走 loaded 态、初始即满不透明,不触发过渡 → 即时出图、不影响丝滑。
         className={cn(
-          "block h-full w-full object-contain transition-opacity duration-200",
+          "block h-full w-full object-contain",
           renderState.phase === "loading" && "opacity-0",
         )}
       />
@@ -499,7 +647,8 @@ function MessageImage({ part, alt, maxW = 256, maxH = 320 }: MessageImageProps) 
       {renderState.phase === "loading" && (
         <span
           aria-hidden
-          className="pointer-events-none absolute inset-0 animate-pulse bg-workbench-surface-soft"
+          data-testid="image-loading-placeholder"
+          className="pointer-events-none absolute inset-0 bg-workbench-surface-soft"
         />
       )}
     </span>

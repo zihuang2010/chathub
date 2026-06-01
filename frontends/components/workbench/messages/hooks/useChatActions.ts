@@ -37,6 +37,7 @@ export interface SendMessageOptions {
 
 export interface UseChatActionsParams {
   conversation: Conversation;
+  chatStoreKey: string;
   onSendMessage?: (
     text: string,
     clientMsgId: string,
@@ -75,6 +76,8 @@ type SendUnit =
       url: string;
       name: string;
       sizeBytes?: number;
+      width?: number;
+      height?: number;
     };
 
 // 前端附件类型 → 后端 messageType;video 本期按文件(3)发送。
@@ -140,6 +143,8 @@ function buildSendUnits(blocks?: MessageBlock[], attachments?: MessageAttachment
           url: block.url,
           name: block.name ?? "image",
           sizeBytes: block.sizeBytes,
+          width: block.width,
+          height: block.height,
         });
       }
     }
@@ -167,6 +172,7 @@ async function fetchBytes(url: string): Promise<Uint8Array> {
 
 export function useChatActions({
   conversation,
+  chatStoreKey,
   onSendMessage,
   wasAtBottomRef,
   setReplyDraft,
@@ -183,29 +189,28 @@ export function useChatActions({
       clientMsgId: string = messageId,
       options?: SendMessageOptions,
     ) => {
-      // store 按 conversationId 分片,故落在 owningConversationId 切片上即可,无需判当前会话。
-      const owningConversationId = conversation.id;
+      const owningStoreKey = chatStoreKey;
       try {
         const resp = options
           ? await onSendMessage?.(text, clientMsgId, options)
           : await onSendMessage?.(text, clientMsgId);
         if (resp) {
-          useChatStore.getState().markSent(owningConversationId, clientMsgId, resp.localMessageId);
+          useChatStore.getState().markSent(owningStoreKey, clientMsgId, resp.localMessageId);
         }
         return true;
       } catch {
-        useChatStore.getState().markFailed(owningConversationId, clientMsgId);
+        useChatStore.getState().markFailed(owningStoreKey, clientMsgId);
         return false;
       }
     },
-    [conversation.id, onSendMessage],
+    [chatStoreKey, onSendMessage],
   );
 
   // 发送一个附件单元:先 fetch 本地预览取字节 → uploadAttachment 拿 objectName →
   // 回写 objectName 到气泡(供重发复用)→ deliverMessage 发送。任一步抛错即视为失败。
   const deliverAttachmentUnit = useCallback(
     async (clientMsgId: string, unit: Extract<SendUnit, { kind: "attachment" }>) => {
-      const owningConversationId = conversation.id;
+      const owningStoreKey = chatStoreKey;
       try {
         const bytes = await fetchBytes(unit.url);
         const uploaded = await uploadAttachment({
@@ -215,7 +220,7 @@ export function useChatActions({
           contentType: inferContentType(unit.name, unit.url),
         });
         // 回写已上传信息到气泡,便于失败重发复用 objectName、不再重传 OSS。
-        useChatStore.getState().patchMessage(owningConversationId, clientMsgId, {
+        useChatStore.getState().patchMessage(owningStoreKey, clientMsgId, {
           messageType: unit.messageType,
           filePath: uploaded.objectName,
           fileName: uploaded.fileName,
@@ -229,11 +234,11 @@ export function useChatActions({
         });
       } catch {
         // 上传阶段抛错(取字节 / OSS 失败)→ 标失败。发送阶段失败已在 deliverMessage 内标过。
-        useChatStore.getState().markFailed(owningConversationId, clientMsgId);
+        useChatStore.getState().markFailed(owningStoreKey, clientMsgId);
         return false;
       }
     },
-    [conversation.id, deliverMessage],
+    [chatStoreKey, deliverMessage],
   );
 
   const handleSend = useCallback<UseChatActionsResult["handleSend"]>(
@@ -263,6 +268,8 @@ export function useChatActions({
                 url: unit.url,
                 name: unit.name,
                 sizeBytes: unit.sizeBytes,
+                width: unit.width,
+                height: unit.height,
               },
             ];
         const entity: Message & { clientMsgId: string } = {
@@ -282,7 +289,7 @@ export function useChatActions({
           entity.fileName = unit.name;
           entity.fileSize = unit.sizeBytes;
         }
-        useChatStore.getState().enqueueOptimistic(conversation.id, entity);
+        useChatStore.getState().enqueueOptimistic(chatStoreKey, entity);
       });
       wasAtBottomRef.current = true;
       setReplyDraft(null);
@@ -299,21 +306,28 @@ export function useChatActions({
           if (!ok) {
             // 当前条失败,停止后续;把未发的气泡标 failed,供用户逐条重发。
             for (let j = i + 1; j < units.length; j += 1) {
-              useChatStore.getState().markFailed(conversation.id, clientMsgIds[j]);
+              useChatStore.getState().markFailed(chatStoreKey, clientMsgIds[j]);
             }
             break;
           }
         }
       })();
     },
-    [conversation.id, deliverMessage, deliverAttachmentUnit, wasAtBottomRef, setReplyDraft],
+    [
+      conversation.id,
+      chatStoreKey,
+      deliverMessage,
+      deliverAttachmentUnit,
+      wasAtBottomRef,
+      setReplyDraft,
+    ],
   );
 
   const handleAction = useCallback<UseChatActionsResult["handleAction"]>(
     (action, message) => {
       switch (action) {
         case "resend": {
-          const entity = useChatStore.getState().conversations[conversation.id]?.byId[message.id];
+          const entity = useChatStore.getState().conversations[chatStoreKey]?.byId[message.id];
           // 在途守卫:已在发送中则忽略重复点击,避免并发重发把同一条重复投递。
           if (entity?.status === "sending") break;
           // 幂等键:乐观气泡复用已有 clientMsgId;历史来源失败消息(无 clientMsgId)用其 store id
@@ -322,7 +336,7 @@ export function useChatActions({
           const clientMsgId = entity?.clientMsgId ?? message.id;
           useChatStore
             .getState()
-            .patchMessage(conversation.id, message.id, { status: "sending", clientMsgId });
+            .patchMessage(chatStoreKey, message.id, { status: "sending", clientMsgId });
           // 附件消息(有 filePath):已上传过 OSS,复用 objectName 直接重发,无需重传。
           const filePath = entity?.filePath ?? message.filePath;
           if (filePath) {
@@ -344,7 +358,7 @@ export function useChatActions({
           // TODO(接后端):删除应调 delete_message IPC + 失败回滚;当前仅本地 store 移除,
           // 重读权威历史时服务端数据可能补回。
           if (!window.confirm(STRINGS.contextMenu.deleteConfirm)) break;
-          useChatStore.getState().removeMessage(conversation.id, message.id);
+          useChatStore.getState().removeMessage(chatStoreKey, message.id);
           // 若引用预览正指向被删消息,发送时 replyTo 会指向不存在的 id
           // → buildTimelineItems 解析不到 replyTarget 静默丢失。同步清空。
           setReplyDraft((draft) => (draft?.id === message.id ? null : draft));
@@ -353,7 +367,7 @@ export function useChatActions({
         case "recall":
           useChatStore
             .getState()
-            .patchMessage(conversation.id, message.id, { isRecalled: true, status: undefined });
+            .patchMessage(chatStoreKey, message.id, { isRecalled: true, status: undefined });
           // 撤回的消息不再适合作为引用对象,同样清空。
           setReplyDraft((draft) => (draft?.id === message.id ? null : draft));
           // TODO(接后端):撤回应调 recall_message IPC,成功才提示、失败走 recallFailed。
@@ -378,7 +392,7 @@ export function useChatActions({
           break;
       }
     },
-    [deliverMessage, conversation.id, conversation.name, setReplyDraft],
+    [deliverMessage, chatStoreKey, conversation.id, conversation.name, setReplyDraft],
   );
 
   return { handleSend, handleAction };

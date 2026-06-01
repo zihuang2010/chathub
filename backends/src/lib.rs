@@ -1,6 +1,7 @@
 mod image_cache;
 mod image_prefetch;
 mod logging;
+mod media;
 
 use serde::Serialize;
 use std::sync::Arc;
@@ -403,9 +404,9 @@ struct CachedMessagesResp {
 ///      `latest_sort_key_ms`。两者都有且 `cache >= recents > 0` → fresh(零网络);
 ///      否则后台 spawn `reconcile_newest`(reconcile 完成经 ChangeNotice 通知前端重读)。
 ///   5. 立即返回缓存升序 records + `has_more_older`(无 window → false)。
-#[tauri::command]
 // 入参均为 Tauri State 注入 + IPC 透传字段;拆参会破坏 #[tauri::command] 命令签名与前端
 // 调用约定,故按 clippy 推荐豁免(该函数早因图片预取参数由 8→9 参越阈,属既有问题)。
+#[tauri::command]
 #[allow(clippy::too_many_arguments)]
 async fn load_conversation_messages(
     messages_store: State<'_, MessagesStore>,
@@ -1350,6 +1351,9 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_dialog::init())
+        // 媒体附件 HTTP 客户端(下载附件 / 取语音字节)。无需 app handle,builder 直接托管。
+        .manage(media::MediaHttp::new())
         // 远程图片(头像/消息图)缓存协议:前端 <img src="cachedimg://localhost/?w=&u=">
         // → 命中读盘 / 未命中下载并缩略图落盘。CPU 与网络都在 handler 内的 async/blocking 完成。
         .register_asynchronous_uri_scheme_protocol("cachedimg", |ctx, request, responder| {
@@ -1654,6 +1658,7 @@ pub fn run() {
             fetch_message_history,
             load_conversation_messages, load_older_messages, send_message, upload_attachment,
             list_quick_replies, create_quick_reply, update_quick_reply, delete_quick_reply,
+            media::download_attachment, media::fetch_media_bytes,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

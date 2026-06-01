@@ -14,6 +14,7 @@ import {
   useRef,
   useState,
   type MutableRefObject,
+  type WheelEvent,
 } from "react";
 
 import { showToast } from "@/components/ui/toast";
@@ -23,9 +24,9 @@ import type { Conversation, Message } from "../data";
 import { STRINGS } from "../strings";
 import type { ScrollMetrics } from "../WorkbenchScrollArea";
 
-// 距顶 600px 即触发加载更早消息(而非贴顶 80px 才发):用户还在向上滑、上方仍有
-// 缓冲内容时数据已在路上,新内容 prepend 后由 anchor-restore 校正,消除"滑到顶卡一下"。
-const HISTORY_TOP_LOAD_THRESHOLD = 600;
+// 只有真正贴顶才触发上一页。不要提前预加载:历史页 prepend 时当前视口必须保持不动,
+// 等新数据稳定后用户再继续向上滚,这是桌面 IM 更可控的滚轮模型。
+const HISTORY_TOP_LOAD_THRESHOLD = 1;
 
 interface PrependAnchor {
   conversationId: string;
@@ -54,6 +55,7 @@ export interface UseScrollControllerResult {
   setUnreadDividerNode: (node: HTMLDivElement | null) => void;
   handleScrollMetrics: (m: ScrollMetrics) => void;
   handleUserScroll: (m: ScrollMetrics) => void;
+  handleWheelCapture: (event: WheelEvent<HTMLDivElement>) => void;
   scrollToBottom: (behavior?: ScrollBehavior) => void;
   scrollToUnread: () => void;
   atBottom: boolean;
@@ -61,8 +63,6 @@ export interface UseScrollControllerResult {
   unreadAbove: number;
   /** 暴露给发送流程:发出消息后置 true 触发贴底跟随(原 ChatArea handleSend 行为)。 */
   wasAtBottomRef: MutableRefObject<boolean>;
-  /** 滚动 viewport 节点 ref,供虚拟器 getScrollElement 使用。 */
-  scrollElementRef: MutableRefObject<HTMLDivElement | null>;
 }
 
 export function useScrollController({
@@ -135,36 +135,64 @@ export function useScrollController({
     localMessagesLengthRef.current = localMessages.length;
   }, [localMessages.length]);
 
+  const loadOlderHistoryAtBoundary = useCallback(() => {
+    const node = scrollRef.current;
+    if (!node) return false;
+    if (historyLoadInFlightRef.current) return true;
+    if (prependAnchorRef.current?.conversationId === conversation.id) return true;
+    if (!hasMoreHistory || loading || !onLoadMoreHistory) return false;
+    if (pendingInitialScrollToLatestRef.current) return false;
+
+    prependAnchorRef.current = {
+      conversationId: conversation.id,
+      messageCount: localMessagesLengthRef.current,
+      scrollHeight: node.scrollHeight,
+      scrollTop: node.scrollTop,
+    };
+    historyLoadInFlightRef.current = true;
+
+    Promise.resolve(onLoadMoreHistory())
+      .catch(() => {
+        if (prependAnchorRef.current?.conversationId === conversation.id) {
+          prependAnchorRef.current = null;
+        }
+        // A13: 失败时给出 toast 反馈,之前是静默清 ref。
+        showToast(STRINGS.errors.loadFailed, { type: "error" });
+      })
+      .finally(() => {
+        historyLoadInFlightRef.current = false;
+      });
+    return true;
+  }, [conversation.id, hasMoreHistory, loading, onLoadMoreHistory]);
+
   const maybeLoadOlderHistory = useCallback(
     (m: ScrollMetrics) => {
       if (m.scrollTop > HISTORY_TOP_LOAD_THRESHOLD) return;
-      if (!hasMoreHistory || loading || !onLoadMoreHistory) return;
-      if (historyLoadInFlightRef.current) return;
-      if (pendingInitialScrollToLatestRef.current) return;
+      loadOlderHistoryAtBoundary();
+    },
+    [loadOlderHistoryAtBoundary],
+  );
+
+  const handleWheelCapture = useCallback(
+    (event: WheelEvent<HTMLDivElement>) => {
+      if (event.deltaY >= 0) return;
       const node = scrollRef.current;
       if (!node) return;
+      if (node.scrollTop > HISTORY_TOP_LOAD_THRESHOLD) return;
 
-      prependAnchorRef.current = {
-        conversationId: conversation.id,
-        messageCount: localMessagesLengthRef.current,
-        scrollHeight: node.scrollHeight,
-        scrollTop: node.scrollTop,
-      };
-      historyLoadInFlightRef.current = true;
+      if (
+        historyLoadInFlightRef.current ||
+        prependAnchorRef.current?.conversationId === conversation.id
+      ) {
+        event.preventDefault();
+        return;
+      }
 
-      Promise.resolve(onLoadMoreHistory())
-        .catch(() => {
-          if (prependAnchorRef.current?.conversationId === conversation.id) {
-            prependAnchorRef.current = null;
-          }
-          // A13: 失败时给出 toast 反馈,之前是静默清 ref。
-          showToast(STRINGS.errors.loadFailed, { type: "error" });
-        })
-        .finally(() => {
-          historyLoadInFlightRef.current = false;
-        });
+      if (loadOlderHistoryAtBoundary()) {
+        event.preventDefault();
+      }
     },
-    [conversation.id, hasMoreHistory, loading, onLoadMoreHistory],
+    [conversation.id, loadOlderHistoryAtBoundary],
   );
 
   // 仅由 user-initiated scroll event 触发。在这里把 pill 出现/消失的逻辑全部解决:
@@ -282,8 +310,10 @@ export function useScrollController({
 
     const node = scrollRef.current;
     if (!node) return;
-    const nextScrollTop = node.scrollHeight - anchor.scrollHeight + anchor.scrollTop;
-    node.scrollTop = Math.max(0, nextScrollTop);
+    // 唯一恢复路径:scrollHeight 差值,paint 前一次性到位。行高在挂载首帧已冻结
+    // (图片盒 layoutDims + object-contain,加载后不改行高),故插入即终值、单次精确,
+    // 不需要可见行锚点、不需要后置逐帧稳定器(那会在绘制后自主改写 scrollTop,正是抖动源)。
+    node.scrollTop = Math.max(0, node.scrollHeight - anchor.scrollHeight + anchor.scrollTop);
     prependAnchorRef.current = null;
     historyLoadInFlightRef.current = false;
     historyPrependAppliedMessageCountRef.current = localMessages.length;
@@ -334,12 +364,12 @@ export function useScrollController({
     setUnreadDividerNode,
     handleScrollMetrics,
     handleUserScroll,
+    handleWheelCapture,
     scrollToBottom,
     scrollToUnread,
     atBottom,
     unreadBelow,
     unreadAbove,
     wasAtBottomRef,
-    scrollElementRef: scrollRef,
   };
 }

@@ -1,5 +1,5 @@
 import { memo } from "react";
-import { Building2, Mars, MessageCircle, MoreHorizontal, Phone, Venus } from "lucide-react";
+import { AtSign, Building2, Mars, MessageCircle, MoreHorizontal, Venus } from "lucide-react";
 
 import type { Account } from "@/lib/types/account";
 import type { Customer } from "@/lib/types/customer";
@@ -28,13 +28,14 @@ interface CustomerCardProps {
 /**
  * 客户卡片（替代旧的列表行）。布局自上而下：
  *   头像(在线点) + 姓名/性别  ……  右上「更多」
- *   🏢 企业名称（缺省「暂无企业」）
- *   📞 手机号（缺省「暂无手机号」）            会话圆形按钮
+ *   @ 微信（followRemark，缺省「暂无微信」）
+ *   🏢 企业名称（缺省「暂无企业」）            会话圆形按钮
  *   标签 chips(+N)
  *   ── 分隔 ──
  *   负责人 · 最近跟进/添加时间
  *
- * 企业名称 / 手机号 / 负责人 缺失时一律显示灰色默认占位，不留空白。
+ * 微信 / 企业名称 / 负责人 缺失时一律显示灰色默认占位，不留空白。
+ * 手机号后端取不到，列表卡片改用微信(followRemark)；手机号仍保留在详情面板。
  * 左上角：重点客户角标（浏览态）与多选 checkbox（hover / 多选态）互斥显示。
  */
 export const CustomerCard = memo(function CustomerCard({
@@ -50,9 +51,9 @@ export const CustomerCard = memo(function CustomerCard({
   onMore,
 }: CustomerCardProps) {
   const isKey = isKeyCustomer(customer);
-  // 企业名称 / 手机号 / 负责人 统一兜底：空串、"—" 都视为缺失，回退到默认占位。
+  // 微信(followRemark) / 企业名称 / 负责人 统一兜底：空串、"—" 都视为缺失，回退到默认占位。
   const company = cleanValue(customer.company);
-  const phone = cleanValue(customer.phone);
+  const weChat = cleanValue(customer.followRemark);
   const owner = cleanValue(customer.follower);
   const addedAt = formatDateTime(customer.addedAt);
 
@@ -143,21 +144,20 @@ export const CustomerCard = memo(function CustomerCard({
         </RowIconButton>
       </div>
 
-      {/* 信息区：企业名称 + 手机号（缺失统一兜底默认占位） */}
+      {/* 信息区：微信(followRemark) + 企业名称（缺失统一兜底默认占位）。会话按钮贴企业行右侧。 */}
       <div className="mt-1 space-y-0.5">
         <InfoRow
-          icon={<Building2 size={13} className="shrink-0 text-workbench-text-secondary" />}
-          aria={STRINGS.card.companyAria}
-          value={company}
-          fallback={STRINGS.card.companyFallback}
+          icon={<AtSign size={13} className="shrink-0 text-workbench-text-secondary" />}
+          aria={STRINGS.card.weChatAria}
+          value={weChat}
+          fallback={STRINGS.card.weChatFallback}
         />
         <div className="flex items-center gap-1.5">
           <InfoRow
-            icon={<Phone size={13} className="shrink-0 text-workbench-text-secondary" />}
-            aria={STRINGS.card.phoneAria}
-            value={phone}
-            fallback={STRINGS.card.phoneFallback}
-            numeric
+            icon={<Building2 size={13} className="shrink-0 text-workbench-text-secondary" />}
+            aria={STRINGS.card.companyAria}
+            value={company}
+            fallback={STRINGS.card.companyFallback}
           />
           <CardActionButton
             ariaLabel={STRINGS.card.chat}

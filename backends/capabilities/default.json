@@ -20,7 +20,11 @@
     "core:window:allow-outer-position",
     "core:window:allow-outer-size",
     "core:window:allow-scale-factor",
+    "core:window:allow-set-focus",
+    "core:webview:allow-create-webview-window",
+    "core:window:allow-get-all-windows",
     "updater:default",
-    "process:default"
+    "process:default",
+    "dialog:default"
   ]
 }

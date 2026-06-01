@@ -305,6 +305,7 @@ export function MessagesPage({ accounts }: MessagesPageProps) {
     hasMore: hasMoreMessages,
     loadMore: loadMoreMessages,
     retry: retryMessages,
+    storeKey: chatStoreKey,
   } = useChatMessages({
     conversationId: conversation?.id ?? "",
     wecomAccountId: selectedEntry?.wecomAccountId,
@@ -589,6 +590,7 @@ export function MessagesPage({ accounts }: MessagesPageProps) {
           <ErrorBoundary {...ERROR_BOUNDARY_PROPS}>
             <ChatArea
               conversation={conversation}
+              chatStoreKey={chatStoreKey}
               messages={messages}
               accounts={accounts}
               selectedAccountId={selectedAccountId}

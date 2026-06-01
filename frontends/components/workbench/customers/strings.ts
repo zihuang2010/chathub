@@ -62,12 +62,16 @@ export const STRINGS = {
     companyFallback: "暂无企业",
     /** 手机号缺失时的默认占位。 */
     phoneFallback: "暂无手机号",
+    /** 微信(followRemark)缺失时的默认占位。 */
+    weChatFallback: "暂无微信",
     /** 负责人缺失时的默认占位。 */
     followerFallback: "未填写",
     /** 企业名称无障碍标签。 */
     companyAria: "企业名称",
     /** 手机号无障碍标签。 */
     phoneAria: "手机号",
+    /** 微信无障碍标签。 */
+    weChatAria: "微信",
     select: (name: string) => `选择 ${name}`,
   },
   accountChips: {

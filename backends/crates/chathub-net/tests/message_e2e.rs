@@ -9,9 +9,9 @@ use chathub_net::{
     AuthInterceptor, BackoffConfig, ConnectionManager, HubClient, MessageEventApplier, MessageSync,
     TokenStore,
 };
-use chathub_proto::v1::{server_event::Body, PushBatchOut, ServerEvent};
+use chathub_proto::v1::{server_event::Body, ForwardResponse, PushBatchOut, ServerEvent};
 use chathub_state::{LocalTokenStore, MessageWindow, MessagesStore, NotifySeqStore, SqlitePool};
-use common::stub_relay::start_stub_full;
+use common::stub_relay::{start_stub_full, ForwardStubOutcome};
 use common::{push_event, wait_for_state};
 use std::sync::Arc;
 use std::time::Duration;
@@ -29,7 +29,8 @@ fn message_upsert_event(conv: &str) -> serde_json::Value {
             "messageDirection": 2,
             "messageType": 1,
             "sendStatus": 3,
-            // sortKey 格式: {epochMs}:{方向}:{平台序号补零}:{localMessageId}(spec §8.2)
+            // sortKey 格式: {epochMs}:{方向}:{平台序号补零}:{localMessageId};
+            // 2=客户/接收方。
             "sortKey": "1770000000000:2:00000000000000009001:LM_E2E",
             "messageTime": "2026-05-14 10:30:00",
             "contentText": "在吗",
@@ -135,7 +136,7 @@ async fn message_upsert_lands_bubble_via_connection_manager() {
         let rows = messages_store.list_recent("42", "c-e2e", 10).await.unwrap();
         if let Some(r) = rows.iter().find(|r| r.local_message_id == "LM_E2E") {
             assert_eq!(r.content_text, "在吗");
-            assert_eq!(r.message_direction, 1, "spec 2(客户) → 本地 1(in)");
+            assert_eq!(r.message_direction, 1, "2=客户/接收方 → 本地 1(in)");
             assert_eq!(r.sort_key, "1770000000000:2:00000000000000009001:LM_E2E");
             break;
         }
@@ -169,6 +170,125 @@ async fn message_upsert_lands_bubble_via_connection_manager() {
     cm.stop().await;
 
     // Clean up temp file (best-effort; ignore errors on Windows path locks).
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+}
+
+#[tokio::test]
+async fn load_older_returns_frontend_local_directions_not_raw_source_directions() {
+    let (addr, _auth_state, hub_state, _h) = start_stub_full().await;
+
+    let ep = chathub_net::build_endpoint(format!("http://{addr}")).expect("ep");
+    let channel = ep.connect_lazy();
+    let db_path = std::env::temp_dir().join(format!("chathub_older_{}.db", uuid::Uuid::new_v4()));
+    let pool = SqlitePool::open(&db_path).await.unwrap();
+    let local = LocalTokenStore::new(pool.clone());
+    let token_store = Arc::new(TokenStore::new(ep, local, "dev-1".into()));
+    token_store.login("alice", "pwd").await.expect("login");
+
+    let interceptor = AuthInterceptor::new(token_store);
+    let hub = HubClient::new(channel, interceptor);
+    let messages_store = MessagesStore::new(pool.clone());
+    messages_store
+        .upsert_window(MessageWindow {
+            conversation_id: "c-older".into(),
+            employee_id: "42".into(),
+            wecom_account_id: "wa-1".into(),
+            external_user_id: "ext-1".into(),
+            newest_sort_key: "1770000003000:1:00000000000000000003:newest".into(),
+            oldest_sort_key: "1770000003000:1:00000000000000000003:newest".into(),
+            older_cursor: "older-cursor".into(),
+            has_more_older: true,
+            newest_message_time_ms: 1,
+            last_accessed_ms: 0,
+            reconciled_at_ms: 0,
+            updated_at_ms: 0,
+        })
+        .await
+        .unwrap();
+
+    let data = serde_json::json!({
+        "records": [
+            {
+                "localMessageId": "older-in",
+                "messageDirection": 2,
+                "messageType": 1,
+                "contentText": "客户消息",
+                "sendStatus": 3,
+                "messageTime": "2026-05-30 10:00:01",
+                "sortKey": "1770000001000:2:00000000000000000001:older-in",
+                "attachments": [],
+                "gmtModifiedTime": "2026-05-30 10:00:01"
+            },
+            {
+                "localMessageId": "older-out",
+                "messageDirection": 1,
+                "messageType": 1,
+                "contentText": "发送方消息",
+                "sendStatus": 3,
+                "messageTime": "2026-05-30 10:00:02",
+                "sortKey": "1770000002000:1:00000000000000000002:older-out",
+                "attachments": [],
+                "gmtModifiedTime": "2026-05-30 10:00:02"
+            }
+        ],
+        "size": 20,
+        "hasMore": false,
+        "nextCursor": "",
+        "total": "-1",
+        "current": "-1",
+        "pages": "-1"
+    });
+    let envelope = serde_json::json!({
+        "code": 1,
+        "serviceCode": "",
+        "msg": "成功",
+        "data": data
+    });
+    {
+        let mut state = hub_state.lock().unwrap();
+        state.forward_outcome = ForwardStubOutcome::Ok(ForwardResponse {
+            body_json: serde_json::to_vec(&envelope).unwrap().into(),
+            http_status: 200,
+        });
+    }
+
+    let (change_tx, _change_rx) = broadcast::channel::<ChangeNotice>(64);
+    let sync = MessageSync::new(messages_store.clone(), hub, change_tx);
+
+    let result = sync.load_older("c-older", "42", 20).await.unwrap();
+
+    let directions: Vec<_> = result
+        .records
+        .iter()
+        .map(|record| (record.local_message_id.as_str(), record.message_direction))
+        .collect();
+    assert_eq!(
+        directions,
+        vec![("older-in", 1), ("older-out", 2)],
+        "load_older 返回给前端的新增历史页必须已经是本地 1=in/2=out,不能保留 API 1/2/3 源方向"
+    );
+
+    let rows = messages_store
+        .list_recent("42", "c-older", 10)
+        .await
+        .unwrap();
+    assert_eq!(
+        rows.iter()
+            .find(|row| row.local_message_id == "older-in")
+            .unwrap()
+            .message_direction,
+        1
+    );
+    assert_eq!(
+        rows.iter()
+            .find(|row| row.local_message_id == "older-out")
+            .unwrap()
+            .message_direction,
+        2
+    );
+
     let _ = std::fs::remove_file(&db_path);
     let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
     let _ = std::fs::remove_file(db_path.with_extension("db-wal"));

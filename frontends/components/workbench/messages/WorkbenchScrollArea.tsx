@@ -1,4 +1,4 @@
-import { type ReactNode, useCallback, useEffect, useRef } from "react";
+import { type ReactNode, type WheelEventHandler, useCallback, useEffect, useRef } from "react";
 
 import { cn } from "@/lib/utils";
 
@@ -25,6 +25,7 @@ interface WorkbenchScrollAreaProps {
    *  ChatArea 用它来决定是否点亮顶部"↑ N 条未读" pill: 切会话/resize 引起的
    *  emit 不能触发 pill,只有用户主动滚动才可以。 */
   onUserScroll?: (metrics: ScrollMetrics) => void;
+  onWheelCapture?: WheelEventHandler<HTMLDivElement>;
 }
 
 // 早先版本把 scrollbar 当作 viewport 的"兄弟节点"(custom WorkbenchScrollbar 渲染
@@ -43,6 +44,7 @@ export function WorkbenchScrollArea({
   scrollRef,
   onScrollMetrics,
   onUserScroll,
+  onWheelCapture,
 }: WorkbenchScrollAreaProps) {
   // 内部 ref 始终持有真实 DOM,所有 effect/listener 都通过 internalRef.current 读取,
   // 不依赖父传 ref 的引用一致性。父传的 scrollRef 由 setViewportRef 桥接转发。
@@ -143,6 +145,7 @@ export function WorkbenchScrollArea({
     <div className={cn("min-h-0", className)}>
       <div
         ref={setViewportRef}
+        onWheelCapture={onWheelCapture}
         className={cn("h-full overflow-y-auto overflow-x-hidden", viewportClassName)}
       >
         <div className={contentClassName}>{children}</div>
