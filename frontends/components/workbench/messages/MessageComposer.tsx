@@ -74,6 +74,8 @@ interface MessageComposerProps {
    *  and attaches `id` to the next outgoing message via `onSend`'s replyTo arg. */
   replyDraft?: (ReplyTarget & { id: string }) | null;
   onCancelReply?: () => void;
+  /** 点 AI 润色「生成」那一刻取近期对话转录(可为空串),透传给 AiPolishPopover。 */
+  getPolishContext?: () => string;
 }
 
 interface ScreenshotResult {
@@ -121,6 +123,7 @@ export function MessageComposer({
   mentionCandidates,
   replyDraft,
   onCancelReply,
+  getPolishContext,
 }: MessageComposerProps) {
   const [draft, setDraftValue] = useDraft(conversationId);
   const [pendingFileAttachments, setPendingFileAttachments] = useFileAttachments(conversationId);
@@ -701,6 +704,7 @@ export function MessageComposer({
           </Popover.Root>
           <AiPolishPopover
             originalText={textJoined}
+            getContext={getPolishContext}
             disabled={!textJoined.trim()}
             disabledReason={!textJoined.trim() ? STRINGS.composer.aiPolishEmptyHint : undefined}
             onApply={(newText) => {

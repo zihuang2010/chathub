@@ -72,6 +72,8 @@ impl Auth for AuthSvc {
                 avatar_url: resp.avatar_url,
                 role: resp.role,
                 tenant_id: resp.tenant_id,
+                username: resp.username,
+                mobile: resp.mobile,
             }),
             wecom_accounts: resp
                 .wecom_accounts

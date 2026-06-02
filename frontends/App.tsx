@@ -22,6 +22,8 @@ export interface UserProfile {
   avatar_url: string;
   role: string;
   tenant_id: string;
+  username: string;
+  mobile: string;
 }
 
 /** 后端 broadcast 的登出原因(LoggedOutReason),emit 时序列化为 {"reason": "manual" | "token-invalid" | "kicked"}。 */

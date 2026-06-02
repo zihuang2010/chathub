@@ -27,18 +27,20 @@ impl SessionStore {
         let conn = self.pool.pool().get().await?;
         conn.interact(move |c| -> Result<(), StateError> {
             c.execute(
-                "INSERT INTO hub_current_session (id, user_id, display_name, avatar_url, role, tenant_id, logged_in_at_ms) \
-                 VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6) \
+                "INSERT INTO hub_current_session (id, user_id, display_name, avatar_url, role, tenant_id, username, mobile, logged_in_at_ms) \
+                 VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) \
                  ON CONFLICT(id) DO UPDATE SET \
                    user_id = excluded.user_id, \
                    display_name = excluded.display_name, \
                    avatar_url = excluded.avatar_url, \
                    role = excluded.role, \
                    tenant_id = excluded.tenant_id, \
+                   username = excluded.username, \
+                   mobile = excluded.mobile, \
                    logged_in_at_ms = excluded.logged_in_at_ms",
                 rusqlite::params![
                     profile.user_id, profile.display_name, profile.avatar_url,
-                    profile.role, profile.tenant_id, now,
+                    profile.role, profile.tenant_id, profile.username, profile.mobile, now,
                 ],
             )?;
             Ok(())
@@ -51,7 +53,7 @@ impl SessionStore {
         let conn = self.pool.pool().get().await?;
         let profile: Option<UserProfile> = conn.interact(move |c| -> Result<Option<UserProfile>, StateError> {
             c.query_row(
-                "SELECT user_id, display_name, avatar_url, role, tenant_id FROM hub_current_session WHERE id = 1",
+                "SELECT user_id, display_name, avatar_url, role, tenant_id, username, mobile FROM hub_current_session WHERE id = 1",
                 [],
                 |row| {
                     Ok(UserProfile {
@@ -60,6 +62,8 @@ impl SessionStore {
                         avatar_url:   row.get(2)?,
                         role:         row.get(3)?,
                         tenant_id:    row.get(4)?,
+                        username:     row.get(5)?,
+                        mobile:       row.get(6)?,
                     })
                 },
             )
@@ -105,6 +109,8 @@ mod tests {
             avatar_url: "".into(),
             role: "operator".into(),
             tenant_id: "t-42".into(),
+            username: "alice".into(),
+            mobile: "13800000000".into(),
         }
     }
 

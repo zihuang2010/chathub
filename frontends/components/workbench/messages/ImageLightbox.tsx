@@ -159,8 +159,26 @@ export function ImageLightbox({
       }}
     >
       <Dialog.Portal>
-        {/* z-[1000] 与应用 Modal 一致,盖过 TitleBar(z-[100]);毛玻璃暗化但非纯黑、亮暗自适应。 */}
-        <Dialog.Overlay className="fixed inset-0 z-[1000] bg-workbench-surface/70 backdrop-blur-xl data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 motion-reduce:animate-none" />
+        {/* 独立预览窗(fill):用同图放大模糊作毛玻璃铺底,图片浮于其上;复用 displaySrc(已缓存,零额外请求)。
+            应用内灯箱(fill=false)不渲染此层,遮罩直接虚化身后的应用内容,行为不变。z-[999] 压在遮罩之下。 */}
+        {fill && (
+          <div aria-hidden className="fixed inset-0 z-[999] overflow-hidden bg-workbench-surface">
+            <img
+              src={displaySrc}
+              alt=""
+              aria-hidden
+              className="absolute inset-0 h-full w-full scale-110 object-cover opacity-90 blur-[44px]"
+            />
+          </div>
+        )}
+        {/* z-[1000] 与应用 Modal 一致,盖过 TitleBar(z-[100]);毛玻璃暗化但非纯黑、亮暗自适应。
+            fill 时底色降到 /55,让身后模糊铺底透出,叠出"浮在毛玻璃上"的层次。 */}
+        <Dialog.Overlay
+          className={cn(
+            "fixed inset-0 z-[1000] backdrop-blur-xl data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 motion-reduce:animate-none",
+            fill ? "bg-workbench-surface/55" : "bg-workbench-surface/70",
+          )}
+        />
         <Dialog.Content
           // Radix 默认靠焦点陷阱 + 兄弟 aria-hidden 实现模态、不输出 aria-modal;显式补上。
           aria-modal="true"

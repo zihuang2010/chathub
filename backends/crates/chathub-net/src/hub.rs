@@ -84,12 +84,27 @@ pub(crate) fn classify(err: &AuthError) -> Action {
 #[derive(Clone)]
 pub struct HubClient {
     inner: RawHubClient<InterceptedService<Channel, AuthInterceptor>>,
+    /// forward 通道侦测 HTTP 401(token 已失效)时,用它当场失效本地会话
+    /// (清 token + 广播 TokenInvalid)。Option:单测/工具构造可不接;
+    /// 生产在 setup 阶段经 [`HubClient::with_token_store`] 注入一次,所有 clone 共享。
+    token_store: Option<Arc<TokenStore>>,
 }
 
 impl HubClient {
     pub fn new(channel: Channel, interceptor: AuthInterceptor) -> Self {
         let inner = RawHubClient::with_interceptor(channel, interceptor);
-        Self { inner }
+        Self {
+            inner,
+            token_store: None,
+        }
+    }
+
+    /// 注入 TokenStore,使 forward 通道遇 HTTP 401 能失效本地会话。
+    /// 生产 setup 应在 `new` 之后、clone 分发之前调用一次 —— 所有 clone 继承同一 store,
+    /// 与 ConnectionManager 订阅的是同一个 `Arc<TokenStore>`,广播必达 run_loop。
+    pub fn with_token_store(mut self, token_store: Arc<TokenStore>) -> Self {
+        self.token_store = Some(token_store);
+        self
     }
 
     /// 业务 RPC 透传(REST 隧道)。客户端只需要构造 body_json 并指定 method。
@@ -125,6 +140,19 @@ impl HubClient {
             }))
             .await?;
         let mut resp = resp.into_inner();
+        // 业务后台对过期/无效 token 统一回 HTTP 401(serviceCode 100000001「会话已过期」)。
+        // 这是 forward 通道唯一的「token 已失效」权威信号:当场失效本地会话(清 token + 广播
+        // TokenInvalid),驱动连接下线 + 前端回登录页;否则在线指示仍显示在线、用户对死 token
+        // 反复发送却次次失败。其余 4xx(如 403 无权限)保持原样透传,由调用方按 http_status 自决。
+        if resp.http_status == 401 {
+            if let Some(ts) = &self.token_store {
+                // 仅在仍登录时失效一次:state 清空后并发的 401 自然跳过,避免重复广播。
+                if ts.is_logged_in() {
+                    ts.mark_token_invalid().await;
+                }
+            }
+            return Err(AuthError::Unauthenticated);
+        }
         if resp.http_status == 200 && !resp.body_json.is_empty() {
             resp.body_json = unwrap_envelope_bytes(&resp.body_json)?.into();
         }

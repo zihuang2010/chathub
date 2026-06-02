@@ -7,10 +7,12 @@ package chathub.v1;
 
 message UserProfile {
   string user_id      = 1;   // Relay 内部 user id
-  string display_name = 2;
+  string display_name = 2;   // 即业务后台 nickName
   string avatar_url   = 3;
   string role         = 4;   // "operator" | "admin"
   string tenant_id    = 5;
+  string username     = 6;   // 登录用户名(JddTokenVO.username)
+  string mobile       = 7;   // 手机号(JddTokenVO.mobile)
 }
 
 message WecomAccount {

@@ -1,38 +1,108 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import * as Popover from "@radix-ui/react-popover";
 import { Sparkles } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { STRINGS } from "../strings";
+import { streamPolish, type PolishTone } from "./aiPolishClient";
 
-export type PolishTone = keyof typeof STRINGS.composer.polishTones;
+export type { PolishTone };
 
 interface AiPolishPopoverProps {
   originalText: string;
   onApply: (newText: string) => void;
   disabled?: boolean;
   disabledReason?: string;
+  /** 点「生成/重新生成」那一刻取近期对话转录(可为空串),透传给后端拼进提示词。 */
+  getContext?: () => string;
 }
 
 const TONE_KEYS: PolishTone[] = ["formal", "warm", "humor", "concise"];
 
-function mockPolish(text: string, tone: PolishTone): string {
-  const label = STRINGS.composer.polishTones[tone];
-  return `[${label}] ${text}`;
-}
+// 润色流的四态:空闲 / 流式中 / 完成 / 失败。
+type PolishStatus = "idle" | "streaming" | "done" | "error";
+
+type StreamHandle = ReturnType<typeof streamPolish>;
 
 export function AiPolishPopover({
   originalText,
   onApply,
   disabled,
   disabledReason,
+  getContext,
 }: AiPolishPopoverProps) {
   const [open, setOpen] = useState(false);
   const [tone, setTone] = useState<PolishTone>("formal");
-  const preview = originalText ? mockPolish(originalText, tone) : "";
+  const [status, setStatus] = useState<PolishStatus>("idle");
+  const [preview, setPreview] = useState("");
+  const [errorMsg, setErrorMsg] = useState("");
+  // 保存在途流句柄,用于切语气 / 停止 / 关闭 / 卸载时取消。
+  const streamRef = useRef<StreamHandle | null>(null);
+
+  // 取消并清空在途流句柄(幂等)。
+  const cancelStream = () => {
+    streamRef.current?.cancel();
+    streamRef.current = null;
+  };
+
+  // 组件卸载时清理在途流。
+  useEffect(() => {
+    return () => {
+      streamRef.current?.cancel();
+      streamRef.current = null;
+    };
+  }, []);
+
+  // 发起一次润色(生成 / 重新生成)。重置预览与状态后开始流式。
+  const startPolish = () => {
+    if (!originalText) return;
+    cancelStream();
+    setPreview("");
+    setErrorMsg("");
+    setStatus("streaming");
+    // 在点击那一刻取上下文,确保拿到最新消息(而非组件渲染时的旧快照)。
+    const ctx = getContext?.() ?? "";
+    streamRef.current = streamPolish(originalText, tone, ctx, {
+      onDelta: (t) => setPreview((prev) => prev + t),
+      onDone: () => setStatus("done"),
+      onError: (msg) => {
+        setErrorMsg(msg);
+        setStatus("error");
+      },
+    });
+  };
+
+  // 停止:中断在途流,把已累加文本固化为 done 态(可替换或重生成)。
+  const stopPolish = () => {
+    cancelStream();
+    setStatus("done");
+  };
+
+  // 切换语气:若正在流式,先取消并回到 idle、清空预览(保留新选 tone),不自动重发。
+  const selectTone = (next: PolishTone) => {
+    if (next === tone) return;
+    setTone(next);
+    if (status === "streaming") {
+      cancelStream();
+    }
+    setStatus("idle");
+    setPreview("");
+    setErrorMsg("");
+  };
+
+  // 关闭 Popover:取消在途流,保留最近状态供下次打开(原逻辑仅切 open)。
+  const handleOpenChange = (next: boolean) => {
+    if (!next) {
+      cancelStream();
+    }
+    setOpen(next);
+  };
+
+  const canApply = status === "done" && preview.length > 0;
+  const generateDisabled = disabled || !originalText.trim();
 
   return (
-    <Popover.Root open={open} onOpenChange={setOpen}>
+    <Popover.Root open={open} onOpenChange={handleOpenChange}>
       <Popover.Trigger asChild>
         <button
           type="button"
@@ -64,9 +134,9 @@ export function AiPolishPopover({
                   type="button"
                   role="radio"
                   aria-checked={tone === k}
-                  onClick={() => setTone(k)}
+                  onClick={() => selectTone(k)}
                   className={cn(
-                    "focus-ring h-7 rounded-full px-3 text-wb-3xs font-medium transition-colors",
+                    "focus-ring text-wb-3xs h-7 rounded-full px-3 font-medium transition-colors",
                     tone === k
                       ? "bg-workbench-accent text-workbench-surface"
                       : "bg-workbench-surface-subtle text-workbench-text-secondary hover:bg-workbench-surface-active",
@@ -82,21 +152,46 @@ export function AiPolishPopover({
               </p>
             </Section>
             <Section label={STRINGS.composer.polishPreview}>
-              <p className="max-h-32 overflow-y-auto rounded-md bg-workbench-surface-subtle px-2.5 py-2 text-wb-2xs text-workbench-text">
-                {preview || "—"}
+              <p
+                className={cn(
+                  "max-h-32 overflow-y-auto rounded-md bg-workbench-surface-subtle px-2.5 py-2 text-wb-2xs",
+                  status === "error" ? "text-workbench-danger" : "text-workbench-text",
+                )}
+              >
+                {renderPreviewBody({ status, preview, errorMsg })}
               </p>
             </Section>
             <div className="flex justify-end gap-2">
               <button
                 type="button"
-                onClick={() => setOpen(false)}
+                onClick={() => handleOpenChange(false)}
                 className="focus-ring h-8 rounded-md px-3 text-wb-2xs text-workbench-text-secondary hover:bg-workbench-surface-subtle"
               >
                 {STRINGS.composer.polishCancel}
               </button>
+              {status === "streaming" ? (
+                <button
+                  type="button"
+                  onClick={stopPolish}
+                  className="focus-ring h-8 rounded-md bg-workbench-surface-subtle px-3 text-wb-2xs font-medium text-workbench-text-secondary transition-colors hover:bg-workbench-surface-active"
+                >
+                  {STRINGS.composer.polishStop}
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  disabled={generateDisabled}
+                  onClick={startPolish}
+                  className="focus-ring h-8 rounded-md bg-workbench-surface-subtle px-3 text-wb-2xs font-medium text-workbench-text-secondary transition-colors hover:bg-workbench-surface-active disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {status === "idle"
+                    ? STRINGS.composer.polishGenerate
+                    : STRINGS.composer.polishRegenerate}
+                </button>
+              )}
               <button
                 type="button"
-                disabled={!preview}
+                disabled={!canApply}
                 onClick={() => {
                   onApply(preview);
                   setOpen(false);
@@ -111,6 +206,25 @@ export function AiPolishPopover({
       </Popover.Portal>
     </Popover.Root>
   );
+}
+
+// 预览区文案:按状态分支渲染。idle 占位 / streaming 实时累加 / done 完整结果 / error 错误前缀+消息。
+function renderPreviewBody({
+  status,
+  preview,
+  errorMsg,
+}: {
+  status: PolishStatus;
+  preview: string;
+  errorMsg: string;
+}): string {
+  if (status === "error") {
+    return STRINGS.composer.polishErrorPrefix + errorMsg;
+  }
+  if (status === "streaming") {
+    return preview || STRINGS.composer.polishGenerating;
+  }
+  return preview || "—";
 }
 
 function Section({ label, children }: { label: string; children: React.ReactNode }) {

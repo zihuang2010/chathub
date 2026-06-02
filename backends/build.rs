@@ -26,5 +26,24 @@ fn main() {
     println!("cargo:rustc-env=CHATHUB_ATTACHMENT_BASE_URL_RESOLVED={base}");
     println!("cargo:rustc-env=CHATHUB_ATTACHMENT_HOST_RESOLVED={host}");
 
+    // 编译期注入 AI 润色配置(OpenAI 兼容端点),与上方 ATTACHMENT 同构:
+    //   - CHATHUB_AI_BASE_URL_RESOLVED:厂商 OpenAI 兼容基地址(去尾斜杠);缺失回落通义千问端点。
+    //   - CHATHUB_AI_MODEL_RESOLVED:模型名;缺失回落 qwen-flash。
+    //   - CHATHUB_AI_API_KEY_RESOLVED:密钥;缺失回落空串占位(不让构建失败,运行时空串 →「AI 未配置」)。
+    // 三者运行时由 ai_polish.rs 用 env!("..._RESOLVED") 读取。release 缺 key 时告警提示已禁用。
+    println!("cargo:rerun-if-env-changed=CHATHUB_AI_BASE_URL");
+    println!("cargo:rerun-if-env-changed=CHATHUB_AI_MODEL");
+    println!("cargo:rerun-if-env-changed=CHATHUB_AI_API_KEY");
+
+    let ai_base = std::env::var("CHATHUB_AI_BASE_URL")
+        .unwrap_or_else(|_| "https://dashscope.aliyuncs.com/compatible-mode/v1".to_string());
+    let ai_base = ai_base.trim_end_matches('/').to_string();
+    let ai_model = std::env::var("CHATHUB_AI_MODEL").unwrap_or_else(|_| "qwen-flash".to_string());
+    let ai_key = std::env::var("CHATHUB_AI_API_KEY")
+        .unwrap_or_else(|_| "sk-0b5c8dc438014ccc8b1e6aea206362fd".to_string());
+    println!("cargo:rustc-env=CHATHUB_AI_BASE_URL_RESOLVED={ai_base}");
+    println!("cargo:rustc-env=CHATHUB_AI_MODEL_RESOLVED={ai_model}");
+    println!("cargo:rustc-env=CHATHUB_AI_API_KEY_RESOLVED={ai_key}");
+
     tauri_build::build()
 }

@@ -1,6 +1,6 @@
 import { memo, useState, type ReactNode } from "react";
 import * as Popover from "@radix-ui/react-popover";
-import { ChevronLeft, ChevronRight, Menu } from "lucide-react";
+import { ChevronLeft, ChevronRight, LogOut, Menu } from "lucide-react";
 
 import type { UserProfile } from "@/App";
 import { DriftingWave } from "@/components/illustrations";
@@ -11,6 +11,7 @@ import { isWindows } from "@/lib/platform";
 import { FROSTED_GLASS_STYLE, WORKBENCH_BLUE, WORKBENCH_NAV_TEXT } from "@/lib/theme";
 import { cn } from "@/lib/utils";
 
+import { LogoutConfirmDialog } from "./LogoutConfirmDialog";
 import { NAV_ITEMS, type NavItem, type Section } from "./nav";
 import { UserMenu } from "./UserMenu";
 
@@ -266,8 +267,10 @@ function UserBadge({ collapsed }: { collapsed: boolean }) {
 
 // ─── 个人信息卡片 ─────────────────────────────────────────────────────────────
 
-// 点头像在右侧弹出的只读个人信息卡。字段全部取自 UserProfile(user_id/display_name/
-// role),在线状态复用 UserBadge 已派生的 status,不重复取 hub 连接态。
+// 点头像在右侧弹出的只读个人信息卡。字段全部取自 UserProfile(标题=display_name 即
+// nickName;账号/用户名/手机号/角色),在线状态复用 UserBadge 已派生的 status。底部「退出
+// 登录」复用 LogoutConfirmDialog —— 确认弹窗渲染在 Popover 之外,避免点按钮时弹层关闭把
+// 弹窗一起卸载。
 function ProfilePopover({
   profile,
   status,
@@ -278,43 +281,58 @@ function ProfilePopover({
   children: ReactNode;
 }) {
   const name = profile?.display_name ?? "";
+  const [logoutOpen, setLogoutOpen] = useState(false);
 
   return (
-    <Popover.Root>
-      <Popover.Trigger asChild>{children}</Popover.Trigger>
-      <Popover.Portal>
-        <Popover.Content
-          side="right"
-          align="start"
-          sideOffset={10}
-          collisionPadding={12}
-          className="z-[120] w-64 rounded-xl border border-workbench-line bg-workbench-surface p-4 shadow-wb-popover-strong outline-none"
-        >
-          <div className="flex items-center gap-3">
-            <AvatarMark avatarUrl={profile?.avatar_url} displayName={name} />
-            <div className="flex min-w-0 flex-col gap-1">
-              <span className="truncate text-[15px] font-semibold text-workbench-text">
-                {name || "未登录"}
-              </span>
-              <span className="flex items-center gap-1.5">
-                <span
-                  className="size-[7px] shrink-0 rounded-full"
-                  style={{ background: status.dot }}
-                />
-                <span className="text-[11px] font-medium" style={{ color: status.text }}>
-                  {status.label}
+    <>
+      <Popover.Root>
+        <Popover.Trigger asChild>{children}</Popover.Trigger>
+        <Popover.Portal>
+          <Popover.Content
+            side="right"
+            align="start"
+            sideOffset={10}
+            collisionPadding={12}
+            className="z-[120] w-64 rounded-xl border border-workbench-line bg-workbench-surface p-4 shadow-wb-popover-strong outline-none"
+          >
+            <div className="flex items-center gap-3">
+              <AvatarMark avatarUrl={profile?.avatar_url} displayName={name} />
+              <div className="flex min-w-0 flex-col gap-1">
+                <span className="truncate text-[15px] font-semibold text-workbench-text">
+                  {name || "未登录"}
                 </span>
-              </span>
+                <span className="flex items-center gap-1.5">
+                  <span
+                    className="size-[7px] shrink-0 rounded-full"
+                    style={{ background: status.dot }}
+                  />
+                  <span className="text-[11px] font-medium" style={{ color: status.text }}>
+                    {status.label}
+                  </span>
+                </span>
+              </div>
             </div>
-          </div>
-          <div aria-hidden className="my-3 h-px bg-workbench-line" />
-          <dl className="flex flex-col gap-2.5 text-[12.5px]">
-            <ProfileRow label="账号" value={profile?.user_id} />
-            <ProfileRow label="角色" value={profile?.role} />
-          </dl>
-        </Popover.Content>
-      </Popover.Portal>
-    </Popover.Root>
+            <div aria-hidden className="my-3 h-px bg-workbench-line" />
+            <dl className="flex flex-col gap-2.5 text-[12.5px]">
+              <ProfileRow label="账号" value={profile?.user_id} />
+              <ProfileRow label="用户名" value={profile?.username} />
+              <ProfileRow label="手机号" value={profile?.mobile} />
+              <ProfileRow label="角色" value={profile?.role} />
+            </dl>
+            <div aria-hidden className="my-3 h-px bg-workbench-line" />
+            <button
+              type="button"
+              onClick={() => setLogoutOpen(true)}
+              className="focus-ring flex w-full items-center justify-center gap-1.5 rounded-lg border border-workbench-line py-2 text-[13px] font-medium text-workbench-danger transition-colors hover:bg-workbench-danger/10"
+            >
+              <LogOut size={14} />
+              退出登录
+            </button>
+          </Popover.Content>
+        </Popover.Portal>
+      </Popover.Root>
+      <LogoutConfirmDialog open={logoutOpen} onClose={() => setLogoutOpen(false)} />
+    </>
   );
 }
 

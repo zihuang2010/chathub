@@ -7,6 +7,7 @@ import { cn } from "@/lib/utils";
 
 import { ChatEmptyState, ChatErrorState, ChatLoadingState } from "./ChatStates";
 import { ChatHeader } from "./ChatHeader";
+import { buildPolishContext } from "./composer/polishContext";
 import { COMPOSER_DEFAULT_HEIGHT } from "./constants";
 import type { Conversation, Message, QuickReply } from "./data";
 import { useChatActions, type SendMessageOptions } from "./hooks/useChatActions";
@@ -241,6 +242,7 @@ export const ChatArea = memo(function ChatArea({
         mentionCandidates={mentionCandidates}
         replyDraft={activeReplyDraft}
         onCancelReply={() => setReplyDraft(null)}
+        getPolishContext={() => buildPolishContext(localMessages)}
       />
     </div>
   );

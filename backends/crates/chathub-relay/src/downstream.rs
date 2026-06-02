@@ -159,11 +159,15 @@ pub struct LoginResp {
     pub avatar_url: String,
     pub role: String,
     pub tenant_id: String,
+    /// 登录用户名(JddTokenVO.username),供个人信息卡片展示。
+    pub username: String,
+    /// 手机号(JddTokenVO.mobile),供个人信息卡片展示。
+    pub mobile: String,
     pub wecom_accounts: Vec<WecomAccount>,
 }
 
 /// JddTokenVO 反序列化结构(仅摘 relay 需要的字段;
-/// channel/username/mobile/tokenType/issuedAt/expiresAt 被 serde 忽略)。
+/// channel/tokenType/issuedAt/expiresAt 被 serde 忽略)。
 ///
 /// `user_id` 容忍 string / number 两种形态:生产业务后台(jdd51)序列化为字符串
 /// (雪花算法 ID 超 JS 安全整数,后台统一发 string 防客户端精度丢失);早期 mock /
@@ -176,6 +180,10 @@ struct JddTokenVO {
     user_id: String,
     #[serde(default)]
     nick_name: Option<String>,
+    #[serde(default)]
+    username: Option<String>,
+    #[serde(default)]
+    mobile: Option<String>,
 }
 
 /// 兼容 `"123"` / `123` 两种 JSON 形态的整型 ID。
@@ -661,6 +669,8 @@ impl DownstreamClient {
             avatar_url: String::new(),
             role: String::new(),
             tenant_id: String::new(),
+            username: jdd.username.unwrap_or_default(),
+            mobile: jdd.mobile.unwrap_or_default(),
             wecom_accounts: Vec::new(),
         })
     }

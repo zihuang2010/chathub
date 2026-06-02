@@ -1,3 +1,4 @@
+mod ai_polish;
 mod image_cache;
 mod image_prefetch;
 mod logging;
@@ -1356,6 +1357,8 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         // 媒体附件 HTTP 客户端(下载附件 / 取语音字节)。无需 app handle,builder 直接托管。
         .manage(media::MediaHttp::new())
+        // AI 润色全局单条在途流的取消句柄。无需 app handle,builder 直接托管。
+        .manage(ai_polish::PolishState::default())
         // 远程图片(头像/消息图)缓存协议:前端 <img src="cachedimg://localhost/?w=&u=">
         // → 命中读盘 / 未命中下载并缩略图落盘。CPU 与网络都在 handler 内的 async/blocking 完成。
         .register_asynchronous_uri_scheme_protocol("cachedimg", |ctx, request, responder| {
@@ -1423,7 +1426,10 @@ pub fn run() {
                 let channel = endpoint.connect_lazy();
                 let token_store = Arc::new(TokenStore::new(endpoint, local_store, device_id.clone()));
                 let interceptor = AuthInterceptor::new(token_store.clone());
-                let hub_client = HubClient::new(channel, interceptor);
+                // with_token_store:让 forward 通道遇 HTTP 401(会话已过期)能当场失效本地会话
+                // (清 token + 广播 TokenInvalid → 连接下线 + 前端回登录页)。须在下方各 clone
+                // 分发前注入,使所有 clone 与 ConnectionManager 共享同一 Arc<TokenStore>。
+                let hub_client = HubClient::new(channel, interceptor).with_token_store(token_store.clone());
                 // C1+C2 统一变更通知通道 —— 由 setup 阶段创建,在所有 applier 与 ConnectionManager
                 // 之间共享。256 buffer 同 hub.event_tx,够事件风暴使用。
                 let (change_notice_tx, _) = broadcast_channel::<ChangeNotice>(256);
@@ -1661,6 +1667,7 @@ pub fn run() {
             load_conversation_messages, load_older_messages, send_message, upload_attachment,
             list_quick_replies, create_quick_reply, update_quick_reply, delete_quick_reply,
             media::download_attachment, media::fetch_media_bytes,
+            ai_polish::ai_polish, ai_polish::cancel_ai_polish,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

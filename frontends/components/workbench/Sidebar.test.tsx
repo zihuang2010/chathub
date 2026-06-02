@@ -25,6 +25,8 @@ const PROFILE = {
   avatar_url: "",
   role: "operator",
   tenant_id: "t1",
+  username: "tester",
+  mobile: "13800000000",
 };
 
 function syncWith(connectionState: HubConnectionState | null) {

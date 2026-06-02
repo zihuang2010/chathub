@@ -216,6 +216,8 @@ fn default_profile() -> UserProfile {
         avatar_url: "".into(),
         role: "operator".into(),
         tenant_id: "t-stub".into(),
+        username: "stub".into(),
+        mobile: "13800000000".into(),
     }
 }
 

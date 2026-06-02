@@ -42,9 +42,9 @@
 
 沿用现有写法，新增 3 个常量（缺失回落 + release 缺失 `cargo:warning` 告警）：
 
-- `CHATHUB_AI_BASE_URL_RESOLVED` —— 默认占位 `https://api.deepseek.com/v1`
-- `CHATHUB_AI_MODEL_RESOLVED` —— 默认占位 `deepseek-chat`
-- `CHATHUB_AI_API_KEY_RESOLVED` —— **缺失回落空串**（不让构建失败；运行时空串 → 命令返回「AI 未配置」）
+- `CHATHUB_AI_BASE_URL_RESOLVED` —— 默认 `https://dashscope.aliyuncs.com/compatible-mode/v1`（通义千问 OpenAI 兼容端点）
+- `CHATHUB_AI_MODEL_RESOLVED` —— 默认 `qwen-flash`
+- `CHATHUB_AI_API_KEY_RESOLVED` —— **缺失回落空串占位**（不让构建失败；构建期由 CI/脚本注入真实 key；运行时空串 → 命令返回「AI 未配置」）
 
 `rerun-if-env-changed` 同时声明对应 3 个 env。
 
@@ -64,15 +64,14 @@ enum PolishEvent {
 }
 ```
 
-**取消状态**（app 全局单条在途流）：
+**取消状态**（app 全局单条在途流，零新增依赖）：
 
 ```rust
 #[derive(Default)]
-pub struct PolishState(pub std::sync::Mutex<Option<tokio_util::sync::CancellationToken>>);
-// 备选：若不想引入 tokio-util，用 Mutex<Option<tokio::sync::oneshot::Sender<()>>> 或 AbortHandle。
+pub struct PolishState(pub std::sync::Mutex<Option<tokio::task::AbortHandle>>);
 ```
 
-> 备注：`tokio_util::sync::CancellationToken` 需在 workspace 加 `tokio-util` 依赖；若想零新增依赖，可改用 `Arc<AtomicBool>` + 轮询，或 `tokio::task::AbortHandle`。实施阶段二选一，倾向 `AbortHandle`（spawn 流任务并存其 handle）以避免新依赖。
+> 机制：`ai_polish` 把"建连 + 流式读 + 发事件"整段 `tokio::spawn` 成任务，把 `AbortHandle` 存入 `PolishState`；开始新流或 `cancel_ai_polish` 时，取出旧 handle 调 `.abort()` 中断旧任务（reqwest 连接随任务 drop 关闭）。命令本身 `await` 该任务的 `JoinHandle`，被 abort 时安静返回、不发 `Done`。
 
 **命令 1：`ai_polish`**
 
@@ -207,16 +206,17 @@ export function streamPolish(
 | `backends/build.rs`                                                    | 注入 3 个 AI env 常量                                                               |
 | `backends/src/ai_polish.rs`                                            | **新增**：`ai_polish` / `cancel_ai_polish` 命令 + SSE 解析 + 提示词 + `PolishState` |
 | `backends/src/lib.rs`                                                  | `mod ai_polish`、注册 2 命令、`manage` 取消状态                                     |
-| `backends/Cargo.toml` 或 `./Cargo.toml`                                | 若取消机制选 `tokio-util` 才加依赖；倾向 `AbortHandle` 方案零新增                   |
+| （Cargo 无需改动）                                                     | 取消用 `tokio::task::AbortHandle`，零新增依赖                                       |
 | `frontends/.../composer/aiPolishClient.ts`                             | **新增**：流式客户端 + 非 Tauri mock 回落                                           |
 | `frontends/.../composer/AiPolishPopover.tsx`                           | 改造：状态机 + 生成/停止/重生成                                                     |
 | `frontends/.../messages/strings.ts`                                    | 补润色相关字符串                                                                    |
 | `composer/AiPolishPopover.test.tsx`、`composer/aiPolishClient.test.ts` | **新增**单测                                                                        |
 
-## 10. 待定 / 需提供
+## 10. 已定参数
 
-- 默认 `CHATHUB_AI_BASE_URL` 与 `CHATHUB_AI_MODEL` 的真实值（未提供则用占位 `https://api.deepseek.com/v1` + `deepseek-chat`，release 构建缺 key 时告警）。
-- 取消机制最终二选一：`tokio::task::AbortHandle`（零新增依赖，倾向）vs `tokio-util::CancellationToken`（语义更清晰，需加依赖）—— 实施时定。
+- 厂商 / 模型：**通义千问 qwen-flash**，OpenAI 兼容端点 `https://dashscope.aliyuncs.com/compatible-mode/v1`。
+- `CHATHUB_AI_API_KEY`：构建期 env 注入；当前回落空串占位，真实 key 后续在 CI/构建脚本填充。
+- 取消机制：用 `tokio::task::AbortHandle`（零新增依赖）—— spawn 流任务存其 handle，`cancel_ai_polish` / 新流开始时 abort。
 
 ## 11. 非目标（YAGNI）
 

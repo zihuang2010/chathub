@@ -61,6 +61,8 @@ mod tests {
             avatar_url: "".into(),
             role: "operator".into(),
             tenant_id: "t-42".into(),
+            username: "alice".into(),
+            mobile: "13800000000".into(),
         };
         let json = serde_json::to_string(&p).expect("serialize");
         assert!(json.contains("\"user_id\":\"u-1\""));
