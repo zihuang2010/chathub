@@ -2,8 +2,6 @@ import { useState } from "react";
 
 import { cn } from "@/lib/utils";
 
-import { cachedImageSrc } from "@/lib/cachedImageSrc";
-
 /**
  * 列表行 / 详情面板共用的客户头像组件。优先渲染真实远程头像（生产取自 external_avatar），
  * 缺失或加载失败时 fallback 到首字母色块（letter-tile）。
@@ -30,8 +28,9 @@ export function CustomerAvatar({
   photoUrl,
 }: CustomerAvatarProps) {
   const [imgFailed, setImgFailed] = useState(false);
-  // 仅使用真实远程头像(经磁盘缩略图缓存,size*2 适配高分屏);无则走首字母色块。
-  const src = photoUrl ? cachedImageSrc(photoUrl, Math.round(size * 2)) : undefined;
+  // 头像直连原始 https URL(企微头像域不在 cachedimg SSRF 白名单,走代理会被拒)。
+  // 列表已虚拟化,仅可见行解码,不走降采样也不致内存膨胀。无则走首字母色块。
+  const src = photoUrl || undefined;
   const dotSize = Math.max(8, Math.round(size * 0.28));
 
   return (

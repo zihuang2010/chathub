@@ -236,6 +236,81 @@ describe("chatStore reducers", () => {
     expect(next.byId["c-1"].status).toBe("sending");
   });
 
+  it("replaceAuthoritative 竞态:权威出站文本回显抢在 markSent 前落地时,按内容配对收敛(消双行)", () => {
+    // 图+文串行发送,文本最后才发(等图片上传完),其权威重读可能抢在 markSent 钉 serverId 之前
+    // 落地。文本无 objectName 可配,旧实现把权威回显(id=server-1,无 clientMsgId)作新行插入、
+    // 乐观气泡(serverId 未钉)当 in-flight 追加 → 瞬时双行,条数 N→N+1 触发贴底跟随猛挪一下。
+    // 修法:对在途纯文本乐观气泡按「方向 out + 纯文本 + 内容相等」FIFO 配对,同次收敛掉、带 clientMsgId。
+    const opt = optimistic("c-1", { text: "123456", parts: [{ kind: "text", text: "123456" }] });
+    const auth = msg("server-1", {
+      direction: "out",
+      status: "sent",
+      text: "123456",
+      parts: [{ kind: "text", text: "123456" }],
+    });
+    const next = replaceAuthoritative(sliceWith([opt]), [auth]);
+    // 收敛成一行(无瞬时双行),clientMsgId 带到权威条目稳住跨「乐观→权威」行 key。
+    expect(selectTimeline(next).map((e) => e.id)).toEqual(["server-1"]);
+    expect(next.byId["c-1"]).toBeUndefined();
+    expect(next.byId["server-1"].clientMsgId).toBe("c-1");
+  });
+
+  it("replaceAuthoritative 竞态:不同文本的新权威出站消息不误收敛在途乐观文本(保留双方)", () => {
+    // 回归保护:文本配对必须内容等值,不能把无关的权威出站文本吞掉本地在飞文本气泡。
+    const opt = optimistic("c-1", { text: "123456", parts: [{ kind: "text", text: "123456" }] });
+    const other = msg("server-9", {
+      direction: "out",
+      status: "sent",
+      text: "你好",
+      parts: [{ kind: "text", text: "你好" }],
+    });
+    const next = replaceAuthoritative(sliceWith([opt]), [other]);
+    expect(selectTimeline(next).map((e) => e.id)).toEqual(["server-9", "c-1"]);
+    expect(next.byId["c-1"].status).toBe("sending");
+  });
+
+  it("replaceAuthoritative 竞态:已失败的乐观文本不被同内容权威回显内容匹配吞掉", () => {
+    // 回归保护:仅在途(status==="sending")的乐观气泡参与内容配对;失败气泡须保留供重发。
+    const failed = optimistic("c-1", {
+      status: "failed",
+      text: "123456",
+      parts: [{ kind: "text", text: "123456" }],
+    });
+    const auth = msg("server-1", {
+      direction: "out",
+      status: "sent",
+      text: "123456",
+      parts: [{ kind: "text", text: "123456" }],
+    });
+    const next = replaceAuthoritative(sliceWith([failed]), [auth]);
+    expect(selectTimeline(next).map((e) => e.id)).toEqual(["server-1", "c-1"]);
+    expect(next.byId["c-1"].status).toBe("failed");
+  });
+
+  it("replaceAuthoritative:失败气泡按 sentAt 归位,晚于它发送成功的消息排在其下方(不被顶到末尾)", () => {
+    // 先发 c-1(t0)失败,停一会再发的消息成功落库 → 权威重读把成功消息(server-2,t2)带进窗口,
+    // 但不含从未到服务端的 c-1。旧实现把 c-1 一律追加末尾 → 失败气泡被后发的成功消息顶到下面。
+    // 期望按 sentAt:c-1(t0)在 server-2(t2)之上。
+    const failed = optimistic("c-1", {
+      status: "failed",
+      sentAt: "2026-05-19T00:00:00.000Z",
+      text: "先发失败",
+      parts: [{ kind: "text", text: "先发失败" }],
+    });
+    const next = replaceAuthoritative(sliceWith([failed]), [
+      msg("m0", { sentAt: "2026-05-18T23:59:00.000Z" }),
+      msg("server-2", {
+        direction: "out",
+        status: "sent",
+        sentAt: "2026-05-19T00:00:10.000Z",
+        text: "后发成功",
+        parts: [{ kind: "text", text: "后发成功" }],
+      }),
+    ]);
+    expect(selectTimeline(next).map((e) => e.id)).toEqual(["m0", "c-1", "server-2"]);
+    expect(next.byId["c-1"].status).toBe("failed");
+  });
+
   it("prependOlder prepends and dedups by id", () => {
     const slice = replaceAuthoritative(emptySlice(), [msg("m3"), msg("m4")]);
     const next = prependOlder(slice, [msg("m1"), msg("m2"), msg("m3")]);

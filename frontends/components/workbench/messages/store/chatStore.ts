@@ -106,6 +106,44 @@ function authAttachmentMatchesOptimistic(authMsg: Message, optimistic: ChatMessa
   );
 }
 
+// 文本乐观气泡↔权威回显的确定性配对。文本无 objectName 可配,改用「方向 out + 纯文本 + 内容相等」:
+// 图+文串行发送时文本最后才发(等图片上传完),其权威重读可能抢在 markSent 钉 serverId 之前落地 →
+// 权威回显与乐观气泡各成一行 = 瞬时双行,条数瞬时 +1 触发贴底跟随猛挪一下(本次发图「闪」的真根因)。
+// 这里在同一次收敛内按内容把它们配对,消除双行。安全性:① 候选权威回显已由外层
+// !priorIds && !echoLookup 限定为「本次新出现」→ 不会回配历史里的同文本旧消息;② 只配仍在途
+// (status==="sending")的乐观气泡;③ 仅纯文本(无附件 part);④ 两条相同文本同时在途时按 order
+// FIFO 配对,因内容全同、配错亦等价(各自权威回显终会各自收敛),不产生持久双行。附件类(有 filePath)
+// 走 objectName 配对,不进此路。
+function isTextOnly(msg: Message): boolean {
+  return msg.parts.length > 0 && msg.parts.every((p) => p.kind === "text");
+}
+
+function authTextMatchesOptimistic(authMsg: Message, optimistic: ChatMessageEntity): boolean {
+  if (optimistic.status !== "sending" || optimistic.filePath) return false;
+  if (!isTextOnly(authMsg) || !isTextOnly(optimistic)) return false;
+  return authMsg.text.length > 0 && authMsg.text === optimistic.text;
+}
+
+// 把两条均按 sentAt 升序的 id 序列稳定归并成一条:同一时刻权威(a)在前、乐观(b)在后,
+// 使在途(sending)气泡照旧贴底,而锚定在过去时刻的失败气泡按其 sentAt 落回正确位置。
+function mergeByTimeAscending(
+  a: string[],
+  b: string[],
+  byId: Record<string, ChatMessageEntity>,
+): string[] {
+  const at = (id: string) => new Date(byId[id]?.sentAt ?? 0).getTime();
+  const out: string[] = [];
+  let i = 0;
+  let j = 0;
+  while (i < a.length && j < b.length) {
+    if (at(a[i]) <= at(b[j])) out.push(a[i++]);
+    else out.push(b[j++]);
+  }
+  while (i < a.length) out.push(a[i++]);
+  while (j < b.length) out.push(b[j++]);
+  return out;
+}
+
 /**
  * 用服务端权威列表替换 store 内容,但保留尚未被收敛的本地乐观气泡。
  * 一条乐观气泡被认为「已收敛」当且仅当其 serverId 或 id 命中权威列表 → 此时由权威版本取代
@@ -129,17 +167,20 @@ export function replaceAuthoritative(
     );
 
   // 收敛双行竞态根治:权威重读(读本地缓存,极快)可能抢在 markSent 钉 serverId 之前落地,
-  // 此时新出现的权威出站附件回显与乐观气泡无 id/serverId 可对 → 乐观被当 in-flight 追加 = 瞬时双行
-  // (图片行高,整列跳一下尤其扎眼)。这里按 objectName 把「本次新出现、未经 serverId 关联的权威
-  // 出站附件」与「仍待收敛的乐观出站气泡」确定性配对:提前把 clientMsgId 带到权威条目、收敛掉乐观
-  // 副本,使行 key 不变、MessageImage 实例存活,彻底消除与 markSent 谁先谁后的时序竞争。仅作用于
-  // 附件(文字双行不可见且按内容匹配易碰撞,不碰)。
+  // 此时新出现的权威出站回显与乐观气泡无 id/serverId 可对 → 乐观被当 in-flight 追加 = 瞬时双行
+  // (条数瞬时 +1 会触发贴底跟随猛挪一下;图片行高更扎眼,但图+文串行发送时尾随文本同样会双行)。
+  // 这里把「本次新出现、未经 serverId 关联的权威出站回显」与「仍待收敛的乐观出站气泡」确定性配对:
+  // 附件按 objectName(authAttachmentMatchesOptimistic),纯文本按内容(authTextMatchesOptimistic);
+  // 提前把 clientMsgId 带到权威条目、收敛掉乐观副本,使行 key 不变、不产生瞬时双行,彻底消除与
+  // markSent 谁先谁后的时序竞争。
   const matchedEcho = new Map<string, ChatMessageEntity>();
   const convergedByMatch = new Set<ChatMessageEntity>();
   for (const m of messages) {
     if (m.direction !== "out" || priorIds.has(m.id) || echoLookup.has(m.id)) continue;
     const optimistic = pendingOptimistic.find(
-      (cand) => !convergedByMatch.has(cand) && authAttachmentMatchesOptimistic(m, cand),
+      (cand) =>
+        !convergedByMatch.has(cand) &&
+        (authAttachmentMatchesOptimistic(m, cand) || authTextMatchesOptimistic(m, cand)),
     );
     if (optimistic) {
       matchedEcho.set(m.id, optimistic);
@@ -148,7 +189,7 @@ export function replaceAuthoritative(
   }
 
   const byId: Record<string, ChatMessageEntity> = {};
-  const order: string[] = [];
+  const authOrder: string[] = [];
   for (const m of messages) {
     const echo = echoLookup.get(m.id) ?? matchedEcho.get(m.id);
     const merged: ChatMessageEntity = { ...preserveOptimisticImageDimensions(m, echo) };
@@ -158,13 +199,21 @@ export function replaceAuthoritative(
     // 历史消息无乐观来源(echo 无 clientMsgId)→ 不附加,行 key 回退到 id。
     if (echo?.clientMsgId) merged.clientMsgId = echo.clientMsgId;
     byId[m.id] = merged;
-    order.push(m.id);
+    authOrder.push(m.id);
   }
-  for (const e of pendingOptimistic) {
-    if (convergedByMatch.has(e)) continue;
-    byId[e.id] = e;
-    order.push(e.id);
-  }
+  const leftover = pendingOptimistic.filter((e) => !convergedByMatch.has(e));
+  for (const e of leftover) byId[e.id] = e;
+
+  // 未收敛的乐观气泡按 sentAt 归并回权威序列,而非一律追加末尾。失败气泡锚定在它「原始发送
+  // 时刻」:晚于它发出/到达的消息应排其下方。旧实现把所有乐观气泡塞到末尾,会让「先发失败、
+  // 后停一会再发成功」的失败气泡被那条成功消息顶到下面(条数/时序错位)。权威列表本就时间升序、
+  // 乐观气泡也按入队(=时间)升序,二路稳定归并即恢复全局时序;同一时刻权威在前、乐观在后,
+  // 在途(sending)气泡 sentAt 最新 → 仍归并到末尾贴底,既有行为不变。
+  const order = mergeByTimeAscending(
+    authOrder,
+    leftover.map((e) => e.id),
+    byId,
+  );
   return { ...slice, byId, order };
 }
 

@@ -6,7 +6,9 @@ import type { Editor, JSONContent } from "@tiptap/react";
 import {
   Camera,
   FileText,
+  FileUp,
   ImagePlus,
+  Mic,
   PanelRightClose,
   PanelRightOpen,
   Paperclip,
@@ -14,6 +16,8 @@ import {
   X,
 } from "lucide-react";
 
+import { Button } from "@/components/ui/button";
+import { Modal } from "@/components/ui/Modal";
 import { showToast } from "@/components/ui/toast";
 import { useEscKey } from "@/lib/useEscKey";
 import { cn } from "@/lib/utils";
@@ -26,7 +30,7 @@ import {
   RESIZE_KEYBOARD_STEP,
 } from "./constants";
 import type { Conversation, MessageAttachment, MessageBlock, QuickReply } from "./data";
-import { attachmentTypeFromExt } from "./data";
+import { attachmentTypeFromExt, DOC_EXTS, IMAGE_EXTS, VOICE_EXTS } from "./data";
 import { AiPolishPopover } from "./composer/AiPolishPopover";
 import { SendButtonGroup } from "./composer/SendButtonGroup";
 import { blocksToDoc, docToBlocks } from "./composer/docToBlocks";
@@ -85,6 +89,24 @@ function clampComposerHeight(height: number) {
 // visible: 64px file-chip + 12px gap + ~8px slack for the X-button overhang.
 const CHIP_TRAY_FOOTPRINT_PX = 84;
 
+// 把扩展名白名单转成 <input accept> 字符串(如 "jpg" → ".jpg,.png,…")。
+// accept 仅是文件对话框的提示,不可信:用户仍能通过"所有文件"绕过,故 onChange 里必须用
+// keepByExt 二次校验。
+const acceptFor = (exts: readonly string[]) => exts.map((e) => "." + e).join(",");
+const IMAGE_ACCEPT = acceptFor(IMAGE_EXTS);
+const VOICE_ACCEPT = acceptFor(VOICE_EXTS);
+const DOC_ACCEPT = acceptFor(DOC_EXTS);
+
+// 取文件名扩展名(不含点,小写);无扩展名返回空串。
+const extOf = (name: string) => {
+  const dot = name.lastIndexOf(".");
+  return dot >= 0 ? name.slice(dot + 1).toLowerCase() : "";
+};
+
+// 按扩展名白名单过滤文件,丢弃不在白名单内的(对话框 accept 提示的兜底二次校验)。
+const keepByExt = (files: File[], exts: readonly string[]) =>
+  files.filter((f) => (exts as readonly string[]).includes(extOf(f.name)));
+
 export function MessageComposer({
   conversationId,
   height,
@@ -105,9 +127,12 @@ export function MessageComposer({
   const [isResizing, setIsResizing] = useState(false);
   const [quickRepliesOpen, setQuickRepliesOpen] = useState(false);
   const [emojiOpen, setEmojiOpen] = useState(false);
+  // 点语音按钮时若编辑器已有内容,先弹此确认框(避免误清空);确认后才切到语音独占态。
+  const [voiceConfirmOpen, setVoiceConfirmOpen] = useState(false);
   const editorRef = useRef<Editor | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const imageInputRef = useRef<HTMLInputElement | null>(null);
+  const voiceInputRef = useRef<HTMLInputElement | null>(null);
   const resizeStartRef = useRef({ y: 0, height });
   // 防重复提交:连按 Enter 时 draft 清空(异步 setState)尚未生效,submitDraft 可能读到旧
   // draft 在同一拍内重复触发 onSend → 同一条消息发多份。提交后上锁,本帧内的重复提交被吞掉,
@@ -151,6 +176,10 @@ export function MessageComposer({
     (textJoined.trim().length > 0 ||
       blocks.some((b) => b.type === "image") ||
       pendingFileAttachments.length > 0);
+
+  // 语音独占态(派生,不引入独立 state):托盘里有一条 voice 附件时为真。
+  // 真时禁用编辑器与所有内容输入控件,确保语音单独发送。退出独占态只需移除该 voice chip。
+  const voiceMode = pendingFileAttachments.some((a) => a.type === "voice");
 
   // Keep the composer tall enough to show both the chip tray AND the send row
   // by bumping its height when chips appear and restoring it when they're
@@ -245,12 +274,18 @@ export function MessageComposer({
   };
 
   const handleImagePicker = (event: ChangeEvent<HTMLInputElement>) => {
-    insertImageFiles(Array.from(event.target.files ?? []));
+    const raw = Array.from(event.target.files ?? []);
+    const files = keepByExt(raw, IMAGE_EXTS);
+    // 过滤后数量变少 → 用户选中了非法格式,提示并只处理合法文件。
+    if (files.length < raw.length) showToast(STRINGS.toast.imageFormatOnly, { type: "error" });
+    insertImageFiles(files);
     event.target.value = "";
   };
 
   const handleFilePicker = (event: ChangeEvent<HTMLInputElement>) => {
-    const files = Array.from(event.target.files ?? []);
+    const raw = Array.from(event.target.files ?? []);
+    const files = keepByExt(raw, DOC_EXTS);
+    if (files.length < raw.length) showToast(STRINGS.toast.fileFormatOnly, { type: "error" });
     const next: MessageAttachment[] = files.map((file) => {
       // 按文件后缀判定附件类型,使 messageType 正确分流(如 amr→voice→4),与接收侧一致。
       const dot = file.name.lastIndexOf(".");
@@ -263,6 +298,24 @@ export function MessageComposer({
       };
     });
     setPendingFileAttachments([...pendingFileAttachments, ...next]);
+    event.target.value = "";
+  };
+
+  // 语音 picker:单选,取第 1 个合法文件做成 type:"voice" 附件,替换托盘为单条(进入独占态)。
+  const handleVoicePicker = (event: ChangeEvent<HTMLInputElement>) => {
+    const raw = Array.from(event.target.files ?? []);
+    const files = keepByExt(raw, VOICE_EXTS);
+    if (files.length < raw.length) showToast(STRINGS.toast.voiceFormatOnly, { type: "error" });
+    const file = files[0];
+    if (file) {
+      const voiceAtt: MessageAttachment = {
+        type: "voice",
+        url: URL.createObjectURL(file),
+        name: file.name,
+        sizeBytes: file.size,
+      };
+      setPendingFileAttachments([voiceAtt]);
+    }
     event.target.value = "";
   };
 
@@ -328,6 +381,36 @@ export function MessageComposer({
 
   const handleImageButton = useCallback(() => imageInputRef.current?.click(), []);
   const handleFileButton = useCallback(() => fileInputRef.current?.click(), []);
+
+  // 点语音按钮:编辑器已有内容(文本 / 内联图片 / 已有附件)时先弹确认框,避免误清空;
+  // 否则直接打开语音选择器。
+  const handleVoiceButton = useCallback(() => {
+    const composerHasContent =
+      textJoined.trim().length > 0 ||
+      blocks.some((b) => b.type === "image") ||
+      pendingFileAttachments.length > 0;
+    if (composerHasContent) {
+      setVoiceConfirmOpen(true);
+    } else {
+      voiceInputRef.current?.click();
+    }
+  }, [textJoined, blocks, pendingFileAttachments]);
+
+  // 确认"改用语音":清空文本与编辑器、revoke 并清空现有附件,再打开语音选择器。
+  const confirmVoiceSwitch = useCallback(() => {
+    setVoiceConfirmOpen(false);
+    clearDraft(conversationId);
+    editorRef.current
+      ?.chain()
+      .setContent({ type: "doc", content: [{ type: "paragraph" }] })
+      .run();
+    // 清空前先 revoke blob,避免底层 File 随附件丢弃后仍驻留进程内存。
+    for (const a of pendingFileAttachments) {
+      if (a.url.startsWith("blob:")) URL.revokeObjectURL(a.url);
+    }
+    setPendingFileAttachments([]);
+    voiceInputRef.current?.click();
+  }, [conversationId, pendingFileAttachments, setPendingFileAttachments]);
 
   // ─── Resize ───────────────────────────────────────────────────────────────
 
@@ -456,6 +539,7 @@ export function MessageComposer({
         ref={fileInputRef}
         type="file"
         multiple
+        accept={DOC_ACCEPT}
         className="hidden"
         onChange={handleFilePicker}
       />
@@ -463,9 +547,16 @@ export function MessageComposer({
         ref={imageInputRef}
         type="file"
         multiple
-        accept="image/*"
+        accept={IMAGE_ACCEPT}
         className="hidden"
         onChange={handleImagePicker}
+      />
+      <input
+        ref={voiceInputRef}
+        type="file"
+        accept={VOICE_ACCEPT}
+        className="hidden"
+        onChange={handleVoicePicker}
       />
       <div className="flex h-full w-full flex-col gap-1 bg-workbench-surface">
         {replyDraft && <ReplyPreview draft={replyDraft} onCancel={() => onCancelReply?.()} />}
@@ -478,7 +569,10 @@ export function MessageComposer({
                 aria-label={STRINGS.composer.emoji}
                 aria-haspopup="dialog"
                 aria-expanded={emojiOpen}
-                className="focus-ring grid h-9 w-9 place-items-center rounded-lg text-workbench-text-secondary transition-colors hover:bg-workbench-surface-subtle hover:text-workbench-text"
+                // 语音独占态禁用:TipTap 命令 API 仍能往非 editable 编辑器插表情,
+                // 必须靠按钮 disabled 拦住,不能只靠编辑器 editable=false。
+                disabled={voiceMode}
+                className="focus-ring grid h-9 w-9 place-items-center rounded-lg text-workbench-text-secondary transition-colors hover:bg-workbench-surface-subtle hover:text-workbench-text disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
               >
                 <Laugh size={18} strokeWidth={1.6} />
               </button>
@@ -499,14 +593,27 @@ export function MessageComposer({
             icon={Camera}
             label={STRINGS.composer.screenshot}
             onClick={handleScreenshot}
+            disabled={voiceMode}
           />
           <ToolButton
             icon={ImagePlus}
             label={STRINGS.composer.image}
             onClick={handleImageButton}
             withHoverDot
+            disabled={voiceMode}
           />
-          <ToolButton icon={Paperclip} label={STRINGS.composer.file} onClick={handleFileButton} />
+          <ToolButton
+            icon={Paperclip}
+            label={STRINGS.composer.voice}
+            onClick={handleVoiceButton}
+            disabled={voiceMode}
+          />
+          <ToolButton
+            icon={FileUp}
+            label={STRINGS.composer.addAttachment}
+            onClick={handleFileButton}
+            disabled={voiceMode}
+          />
           <button
             type="button"
             title={detailsOpen ? STRINGS.composer.collapseRight : STRINGS.composer.expandRight}
@@ -541,6 +648,9 @@ export function MessageComposer({
         <RichComposer
           initialContent={draft}
           placeholder={STRINGS.composer.placeholder}
+          // 语音独占态禁用文本编辑(置灰);editable=false 仅拦用户输入,
+          // 表情/截图/快捷回复等命令式插入仍靠各自按钮 disabled 兜底。
+          editable={!voiceMode}
           mentionCandidates={mentionCandidates}
           onChange={(doc: JSONContent) => setDraftValue(doc)}
           onSubmit={submitDraft}
@@ -561,8 +671,11 @@ export function MessageComposer({
                 aria-haspopup="dialog"
                 aria-expanded={quickRepliesOpen}
                 // 可管理(传了 onCreate)时即使列表为空也要能打开 popover 去新增第一条;
-                // 纯展示场景(无管理回调)才在无数据时禁用。
-                disabled={(!quickReplies || quickReplies.length === 0) && !onCreateQuickReply}
+                // 纯展示场景(无管理回调)才在无数据时禁用。语音独占态下一并禁用,
+                // 防止快捷回复经 TipTap 命令绕过 editable=false 把文本插进禁用编辑器。
+                disabled={
+                  ((!quickReplies || quickReplies.length === 0) && !onCreateQuickReply) || voiceMode
+                }
                 className="focus-ring inline-flex h-9 items-center gap-1 rounded-md px-2.5 text-wb-2xs font-medium text-workbench-text-secondary transition-colors hover:bg-workbench-surface-subtle hover:text-workbench-text disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent"
               >
                 <span>{STRINGS.composer.quickReplies}</span>
@@ -628,6 +741,29 @@ export function MessageComposer({
           </div>
         </div>
       </div>
+      {/* 改用语音前的二次确认:确认后清空文本与附件并打开语音选择器。 */}
+      <Modal
+        open={voiceConfirmOpen}
+        onClose={() => setVoiceConfirmOpen(false)}
+        ariaLabel={STRINGS.composer.voiceExclusiveTitle}
+      >
+        <div className="flex flex-col gap-3 p-5">
+          <h2 className="text-wb-sm font-semibold text-workbench-text">
+            {STRINGS.composer.voiceExclusiveTitle}
+          </h2>
+          <p className="text-wb-2xs leading-relaxed text-workbench-text-secondary">
+            {STRINGS.composer.voiceExclusiveBody}
+          </p>
+          <div className="mt-1 flex items-center justify-end gap-2">
+            <Button variant="ghost" size="sm" onClick={() => setVoiceConfirmOpen(false)}>
+              {STRINGS.composer.voiceExclusiveCancel}
+            </Button>
+            <Button variant="default" size="sm" onClick={confirmVoiceSwitch}>
+              {STRINGS.composer.voiceExclusiveConfirm}
+            </Button>
+          </div>
+        </div>
+      </Modal>
     </div>
   );
 }
@@ -639,11 +775,13 @@ const ToolButton = memo(function ToolButton({
   label,
   onClick,
   withHoverDot,
+  disabled,
 }: {
   icon: typeof Camera;
   label: string;
   onClick?: () => void;
   withHoverDot?: boolean;
+  disabled?: boolean;
 }) {
   return (
     <button
@@ -651,8 +789,9 @@ const ToolButton = memo(function ToolButton({
       title={label}
       aria-label={label}
       onClick={onClick}
+      disabled={disabled}
       className={cn(
-        "focus-ring grid h-9 w-9 place-items-center rounded-lg text-workbench-text-secondary transition-colors hover:bg-workbench-surface-subtle hover:text-workbench-text",
+        "focus-ring grid h-9 w-9 place-items-center rounded-lg text-workbench-text-secondary transition-colors hover:bg-workbench-surface-subtle hover:text-workbench-text disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent",
         withHoverDot && "group relative",
       )}
     >
@@ -706,14 +845,20 @@ const FileChip = memo(function FileChip({
   attachment: MessageAttachment;
   onRemove: () => void;
 }) {
+  // 语音附件用 Mic 图标 + "语音"缺省名,与普通文件 chip 轻量区分。
+  const isVoice = attachment.type === "voice";
   return (
     <div className="group relative flex h-14 min-w-[160px] max-w-[240px] items-center gap-2.5 rounded-xl border border-workbench-line bg-workbench-surface px-3 shadow-[0_1px_2px_rgba(15,23,42,0.04)] transition-colors hover:bg-workbench-surface-subtle">
       <span className="grid size-9 shrink-0 place-items-center rounded-lg bg-workbench-surface-soft text-workbench-accent">
-        <FileText size={17} strokeWidth={1.55} aria-hidden />
+        {isVoice ? (
+          <Mic size={17} strokeWidth={1.55} aria-hidden />
+        ) : (
+          <FileText size={17} strokeWidth={1.55} aria-hidden />
+        )}
       </span>
       <span className="flex min-w-0 flex-1 flex-col gap-0.5 leading-tight">
         <span className="truncate text-wb-2xs font-medium text-workbench-text">
-          {attachment.name ?? STRINGS.attachment.file}
+          {attachment.name ?? (isVoice ? STRINGS.attachment.voice : STRINGS.attachment.file)}
         </span>
         <span className="wb-num text-wb-3xs text-workbench-text-muted">
           {formatFileSize(attachment.sizeBytes)}

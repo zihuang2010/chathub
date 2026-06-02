@@ -7,7 +7,6 @@ import { DriftingWave } from "@/components/illustrations";
 import { useCurrentProfile } from "@/lib/data/useCurrentProfile";
 import { useHubSyncStatus } from "@/lib/data/useHubSyncStatus";
 import type { HubConnectionState } from "@/lib/data/useResource";
-import { cachedImageSrc } from "@/lib/cachedImageSrc";
 import { isWindows } from "@/lib/platform";
 import { FROSTED_GLASS_STYLE, WORKBENCH_BLUE, WORKBENCH_NAV_TEXT } from "@/lib/theme";
 import { cn } from "@/lib/utils";
@@ -336,7 +335,7 @@ function AvatarMark({ avatarUrl, displayName }: { avatarUrl?: string; displayNam
   if (showImg) {
     return (
       <img
-        src={cachedImageSrc(avatarUrl, 96)}
+        src={avatarUrl}
         alt=""
         onError={() => setFailedUrl(avatarUrl)}
         className="size-11 shrink-0 rounded-lg object-cover shadow-[0_4px_10px_rgba(62,123,214,0.28)]"

@@ -11,6 +11,7 @@ import Image from "@tiptap/extension-image";
 import Placeholder from "@tiptap/extension-placeholder";
 import DOMPurify from "dompurify";
 
+import { cn } from "@/lib/utils";
 import type { Conversation } from "../data";
 import { ImageNodeView } from "./ImageNodeView";
 import { createMentionExtension, type MentionContext } from "./MentionExtension";
@@ -26,6 +27,8 @@ interface RichComposerProps {
   /** Fired once on mount with the editor instance, so the parent can call commands imperatively. */
   onReady?: (editor: Editor) => void;
   className?: string;
+  /** 默认 true;为 false 时禁用编辑并置灰,用于语音独占态。 */
+  editable?: boolean;
 }
 
 export function RichComposer({
@@ -37,6 +40,7 @@ export function RichComposer({
   onPasteFiles,
   onReady,
   className,
+  editable = true,
 }: RichComposerProps) {
   const mentionCtx = useMemo<MentionContext>(
     () => ({ candidates: mentionCandidates ?? [] }),
@@ -151,5 +155,16 @@ export function RichComposer({
     return () => editor?.destroy();
   }, [editor]);
 
-  return <EditorContent editor={editor} className={className} />;
+  // TipTap 命令 API 仍可程序化修改非 editable 的编辑器,故 editable 仅控制用户输入;
+  // 按钮级禁用在 MessageComposer 兜底。
+  useEffect(() => {
+    editor?.setEditable(editable);
+  }, [editor, editable]);
+
+  return (
+    <EditorContent
+      editor={editor}
+      className={editable ? className : cn(className, "pointer-events-none select-none opacity-60")}
+    />
+  );
 }

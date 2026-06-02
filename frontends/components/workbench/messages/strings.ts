@@ -100,6 +100,10 @@ export const STRINGS = {
     // 企微语音仅支持 AMR-NB 且时长 ≤60s / 体积 ≤2MB,超限或转码失败时提示。
     voiceTooLong: "语音超过 60 秒或体积过大，无法作为语音发送",
     voiceTranscodeFailed: "语音转码失败，请换一段或改用文件发送",
+    imageFormatOnly: "仅支持 jpg / jpeg / png / gif / webp 图片格式",
+    voiceFormatOnly: "仅支持 amr / mp3 / wav 语音格式",
+    fileFormatOnly:
+      "仅支持 pdf / doc / docx / xls / xlsx / ppt / pptx / txt / zip / rar 等文件格式",
   },
   errors: {
     pageUnavailable: "消息页暂时不可用",
@@ -162,6 +166,12 @@ export const STRINGS = {
     screenshot: "截图",
     image: "图片",
     file: "文件",
+    voice: "语音",
+    addAttachment: "添加附件",
+    voiceExclusiveTitle: "改用语音发送",
+    voiceExclusiveBody: "切换到语音后将清空当前文本和已添加的附件，且语音需单独发送。是否继续？",
+    voiceExclusiveConfirm: "清空并选择语音",
+    voiceExclusiveCancel: "取消",
     moreTools: "更多",
     removeAttachment: "移除附件",
     resizeHandle: "调整消息编辑区高度",
