@@ -32,15 +32,15 @@ export const COMPOSER_WARN_CHARS = 4500;
 // 只有"上滑翻更旧"这一步用本值,二者解耦(见 useMessageHistory.loadMore)。
 export const OLDER_PAGE_SIZE = 10;
 
-// 停稳门控:到顶后"滚动是否停稳(惯性结束)"的判定。用 requestAnimationFrame 连续帧观察
-// scrollTop —— 连续若干帧不再变化即视为惯性结束、可安全翻页。用帧数而非纯时长,跨刷新率更稳;
-// 再叠一个时长上限兜底,防极端长尾惯性下"永远等不到停稳"而漏触发。
-export const SETTLE_STABLE_FRAMES = 3; // 连续 3 帧 scrollTop 不变即停稳(~50ms@60Hz)
-export const SETTLE_SCROLLTOP_EPSILON = 1; // |Δtop| <= 1px 视为未变(亚像素抖动容差)
-export const SETTLE_MAX_WAIT_MS = 220; // 兜底:最久等 220ms 必触发一次判定
+// 上拉预取提前量(px)。实际阈值取 max(本值, 一个视口高度) ≈ 一屏:距顶 ≤ 该阈值即后台加载更旧页。
+// 提前预取的意义在于 —— 数据在用户滚到顶**之前**就位、prepend 在「远离顶部边界、下方仍有滚动
+// 余量」时落地,锚定补偿不被 scrollTop=0 钳制、也不与边界惯性相争,当前视口内容真正不动(消除
+// 「下一页最后一条挤压当前页」的跳帧),同时大幅提升触发灵敏度。取 max 给极小视口兜底一个下限提前量。
+export const HISTORY_PREFETCH_MIN_PX = 400;
 
 // 有限重断言:prepend 后锚点恢复不再单次设置 scrollTop,改为有界 rAF 重断言,压住残余惯性把
 // scrollTop 扳回锚点。双上限(连续稳定即停 / 帧数硬上限)确保只在 prepend 后 ~100ms 窗口内对抗
 // 惯性,窗口外完全静默 —— 不会退化成此前被删掉的"持续逐帧稳定器"那种常驻抖动源。
+export const SETTLE_SCROLLTOP_EPSILON = 1; // |Δtop| <= 1px 视为已对齐(亚像素抖动容差)
 export const REASSERT_MAX_FRAMES = 6; // 最多重断言 6 帧(~100ms@60Hz)
 export const REASSERT_STABLE_FRAMES = 2; // 连续 2 帧落点稳定即提前停

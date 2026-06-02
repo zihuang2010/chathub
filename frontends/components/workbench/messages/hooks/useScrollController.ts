@@ -21,19 +21,20 @@ import { showToast } from "@/components/ui/toast";
 
 import {
   AT_BOTTOM_THRESHOLD,
+  HISTORY_PREFETCH_MIN_PX,
   REASSERT_MAX_FRAMES,
   REASSERT_STABLE_FRAMES,
-  SETTLE_MAX_WAIT_MS,
   SETTLE_SCROLLTOP_EPSILON,
-  SETTLE_STABLE_FRAMES,
 } from "../constants";
 import type { Conversation, Message } from "../data";
 import { STRINGS } from "../strings";
 import type { ScrollMetrics } from "../WorkbenchScrollArea";
 
-// 只有真正贴顶才触发上一页。不要提前预加载:历史页 prepend 时当前视口必须保持不动,
-// 等新数据稳定后用户再继续向上滚,这是桌面 IM 更可控的滚轮模型。
-const HISTORY_TOP_LOAD_THRESHOLD = 1;
+// 上拉预取阈值:距顶 ≤ max(HISTORY_PREFETCH_MIN_PX, 一个视口高度) ≈ 一屏即后台加载更旧页。
+// 提前预取 → 数据在用户滚到顶之前就位、prepend 在远离顶部边界处落地,锚定补偿不被 scrollTop=0
+// 钳制、也不与边界惯性相争,当前内容不动;同时不必"等惯性停"再触发,灵敏度大幅提升。
+const prefetchThreshold = (clientHeight: number): number =>
+  Math.max(HISTORY_PREFETCH_MIN_PX, clientHeight);
 
 interface PrependAnchor {
   conversationId: string;
@@ -101,12 +102,6 @@ export function useScrollController({
   const prependAnchorRef = useRef<PrependAnchor | null>(null);
   const historyLoadInFlightRef = useRef(false);
   const historyPrependAppliedMessageCountRef = useRef<number | null>(null);
-  // 停稳门控:到顶后用 rAF 连续帧观察 scrollTop,惯性停了才真正触发翻页(见 scheduleBoundaryLoadWhenSettled)。
-  const settleRafRef = useRef<number | null>(null);
-  const settleLastTopRef = useRef(0);
-  const settleStableFramesRef = useRef(0);
-  const settleDeadlineRef = useRef(0);
-  const settlePendingRef = useRef(false);
   // prepend 后有限重断言锚点的 rAF 句柄(见锚点恢复 layout effect)。
   const reassertRafRef = useRef<number | null>(null);
   // 记录当前活动会话,给定时器/异步回调判断"我所属的会话是否还活着"。
@@ -204,79 +199,16 @@ export function useScrollController({
     return true;
   }, [conversation.id, hasMoreHistory, loading, onLoadMoreHistory]);
 
-  const cancelSettleWatch = useCallback(() => {
-    if (settleRafRef.current != null) cancelAnimationFrame(settleRafRef.current);
-    settleRafRef.current = null;
-    settlePendingRef.current = false;
-    settleStableFramesRef.current = 0;
-  }, []);
-
-  // 停稳门控:不在飞滚(惯性)中翻页。到顶后用 rAF 逐帧观察 scrollTop,连续 SETTLE_STABLE_FRAMES
-  // 帧不变(惯性结束)且仍贴顶,才真正调 loadOlderHistoryAtBoundary 记锚点 + 拉数据;否则继续等,
-  // SETTLE_MAX_WAIT_MS 兜底。这样 prepend 落地时已无惯性,单次 scrollTop 锚定即可落定(再配合锚点
-  // 恢复处的有限重断言兜住残余)。返回 true 表示"已接管/在处理"(沿用 loadOlderHistoryAtBoundary
-  // 语义),让 wheel 路径据此 preventDefault、吞掉飞滚不冲破锚点。
-  const scheduleBoundaryLoadWhenSettled = useCallback(() => {
-    const node = scrollRef.current;
-    if (!node) return false;
-    if (historyLoadInFlightRef.current) return true;
-    if (prependAnchorRef.current?.conversationId === conversation.id) return true;
-    if (!hasMoreHistory || loading || !onLoadMoreHistory) return false;
-    if (pendingInitialScrollToLatestRef.current) return false;
-    if (settlePendingRef.current) return true; // 已在监测停稳
-
-    settlePendingRef.current = true;
-    settleLastTopRef.current = node.scrollTop;
-    settleStableFramesRef.current = 0;
-    settleDeadlineRef.current = performance.now() + SETTLE_MAX_WAIT_MS;
-
-    const tick = () => {
-      const n = scrollRef.current;
-      if (!n || activeConversationIdRef.current !== conversation.id) {
-        cancelSettleWatch();
-        return;
-      }
-      // 期间别处已触发加载 / 已有锚点 → 放弃本次监测。
-      if (
-        historyLoadInFlightRef.current ||
-        prependAnchorRef.current?.conversationId === conversation.id
-      ) {
-        cancelSettleWatch();
-        return;
-      }
-      const top = n.scrollTop;
-      const moved = Math.abs(top - settleLastTopRef.current) > SETTLE_SCROLLTOP_EPSILON;
-      settleLastTopRef.current = top;
-      settleStableFramesRef.current = moved ? 0 : settleStableFramesRef.current + 1;
-
-      const settled =
-        settleStableFramesRef.current >= SETTLE_STABLE_FRAMES ||
-        performance.now() >= settleDeadlineRef.current;
-      if (!settled) {
-        settleRafRef.current = requestAnimationFrame(tick);
-        return;
-      }
-      // 停稳了:仍贴顶才加载(惯性可能已把视口带离顶部 → 用户回滚离开,不应再翻页)。
-      cancelSettleWatch();
-      if (top <= HISTORY_TOP_LOAD_THRESHOLD) loadOlderHistoryAtBoundary();
-    };
-    settleRafRef.current = requestAnimationFrame(tick);
-    return true;
-  }, [
-    conversation.id,
-    hasMoreHistory,
-    loading,
-    onLoadMoreHistory,
-    loadOlderHistoryAtBoundary,
-    cancelSettleWatch,
-  ]);
-
+  // 进入预取区(距顶 ≤ 一屏)即直接拉更旧页 —— 不再"等惯性停稳",触发即时。重入由
+  // loadOlderHistoryAtBoundary 内部的 in-flight / 已有锚点 / 仍在首屏 snap 等守卫挡住,
+  // 命中阈值的连续滚动事件只会触发一次加载。prepend 在远离顶部边界处落地,锚定恢复(参照行锚
+  // + 有界重断言)即可让当前视口纹丝不动,无需再靠停稳门控规避边界处的惯性冲突。
   const maybeLoadOlderHistory = useCallback(
     (m: ScrollMetrics) => {
-      if (m.scrollTop > HISTORY_TOP_LOAD_THRESHOLD) return;
-      scheduleBoundaryLoadWhenSettled();
+      if (m.scrollTop > prefetchThreshold(m.clientHeight)) return;
+      loadOlderHistoryAtBoundary();
     },
-    [scheduleBoundaryLoadWhenSettled],
+    [loadOlderHistoryAtBoundary],
   );
 
   const handleWheelCapture = useCallback(
@@ -284,21 +216,12 @@ export function useScrollController({
       if (event.deltaY >= 0) return;
       const node = scrollRef.current;
       if (!node) return;
-      if (node.scrollTop > HISTORY_TOP_LOAD_THRESHOLD) return;
-
-      if (
-        historyLoadInFlightRef.current ||
-        prependAnchorRef.current?.conversationId === conversation.id
-      ) {
-        event.preventDefault();
-        return;
-      }
-
-      if (scheduleBoundaryLoadWhenSettled()) {
-        event.preventDefault();
-      }
+      if (node.scrollTop > prefetchThreshold(node.clientHeight)) return;
+      // 进入预取区即后台加载,但**不** preventDefault —— 提前预取要让原生滚动顺畅继续(用户
+      // 可一路上滚,数据在背后就位)。重复触发由 loadOlderHistoryAtBoundary 的守卫吸收。
+      loadOlderHistoryAtBoundary();
     },
-    [conversation.id, scheduleBoundaryLoadWhenSettled],
+    [loadOlderHistoryAtBoundary],
   );
 
   // 仅由 user-initiated scroll event 触发。在这里把 pill 出现/消失的逻辑全部解决:
@@ -370,8 +293,7 @@ export function useScrollController({
     prependAnchorRef.current = null;
     historyLoadInFlightRef.current = false;
     historyPrependAppliedMessageCountRef.current = null;
-    // 取消上个会话悬挂的停稳监测 / 重断言 rAF,防跨会话野回调改新会话 scrollTop。
-    cancelSettleWatch();
+    // 取消上个会话悬挂的重断言 rAF,防跨会话野回调改新会话 scrollTop。
     if (reassertRafRef.current != null) cancelAnimationFrame(reassertRafRef.current);
     reassertRafRef.current = null;
     wasAtBottomRef.current = true;
@@ -522,14 +444,13 @@ export function useScrollController({
     }
   }, [localMessages]);
 
-  // 卸载时取消悬挂的停稳监测 / 重断言 rAF,防野回调。
+  // 卸载时取消悬挂的重断言 rAF,防野回调。
   useEffect(
     () => () => {
-      cancelSettleWatch();
       if (reassertRafRef.current != null) cancelAnimationFrame(reassertRafRef.current);
       reassertRafRef.current = null;
     },
-    [cancelSettleWatch],
+    [],
   );
 
   return {

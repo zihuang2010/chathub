@@ -339,7 +339,7 @@ describe("ChatArea history scrolling", () => {
     expect(scrollAreaMock.scrollTop).toBe(1200);
   });
 
-  it("does not load older history until the viewport reaches the top", () => {
+  it("prefetches older history once the viewport is within one screen of the top", () => {
     const loadMore = vi.fn().mockResolvedValue(undefined);
     renderChatArea({
       messages: [message("03"), message("04"), message("05")],
@@ -347,16 +347,19 @@ describe("ChatArea history scrolling", () => {
       onLoadMoreHistory: loadMore,
     });
 
-    scrollAreaMock.scrollTop = 60;
+    // clientHeight=300 → 预取阈值 = max(HISTORY_PREFETCH_MIN_PX=400, 300) = 400。
+    // 远离顶部(scrollTop > 阈值):不预取。
+    scrollAreaMock.scrollTop = 500;
     fireEvent.scroll(scrollAreaMock.viewport!);
     expect(loadMore).not.toHaveBeenCalled();
 
-    scrollAreaMock.scrollTop = 0;
+    // 进入预取区(scrollTop ≤ 阈值):尚未贴顶也已开始后台加载(提前预取)。
+    scrollAreaMock.scrollTop = 200;
     fireEvent.scroll(scrollAreaMock.viewport!);
     expect(loadMore).toHaveBeenCalledTimes(1);
   });
 
-  it("triggers history loading from an upward wheel at the real top and consumes only that boundary wheel", async () => {
+  it("prefetches via an upward wheel inside the prefetch zone without preventing native scroll", () => {
     const loadMore = vi.fn().mockResolvedValue(undefined);
     renderChatArea({
       messages: [message("03"), message("04"), message("05")],
@@ -365,25 +368,25 @@ describe("ChatArea history scrolling", () => {
     });
     const viewport = scrollAreaMock.viewport!;
 
-    scrollAreaMock.scrollTop = 4;
-    const aboveTopWheel = fireEvent.wheel(viewport, { deltaY: -40, cancelable: true });
-    expect(aboveTopWheel).toBe(true);
+    // 远离顶部(>阈值 400):上滑不预取,也不吞滚轮。
+    scrollAreaMock.scrollTop = 500;
+    const farWheel = fireEvent.wheel(viewport, { deltaY: -40, cancelable: true });
+    expect(farWheel).toBe(true);
     expect(loadMore).not.toHaveBeenCalled();
 
-    scrollAreaMock.scrollTop = 0;
-    fireEvent.wheel(viewport, { deltaY: -40, cancelable: true });
-    expect(scrollAreaMock.preventedWheels).toBe(1);
+    // 进入预取区(≤400)向上滑:后台加载,但**不** preventDefault —— 原生滚动顺畅继续。
+    scrollAreaMock.scrollTop = 200;
+    const zoneWheel = fireEvent.wheel(viewport, { deltaY: -40, cancelable: true });
+    expect(zoneWheel).toBe(true);
+    expect(scrollAreaMock.preventedWheels).toBe(0);
     expect(loadMore).toHaveBeenCalledTimes(1);
 
+    // 加载在飞:重复上滑被 in-flight 守卫吸收,不二次加载、也不吞滚轮。
     fireEvent.wheel(viewport, { deltaY: -40, cancelable: true });
-    expect(scrollAreaMock.preventedWheels).toBe(2);
     expect(loadMore).toHaveBeenCalledTimes(1);
+    expect(scrollAreaMock.preventedWheels).toBe(0);
 
-    await act(async () => undefined);
-    fireEvent.wheel(viewport, { deltaY: -40, cancelable: true });
-    expect(scrollAreaMock.preventedWheels).toBe(3);
-    expect(loadMore).toHaveBeenCalledTimes(1);
-
+    // 向下滚:任何位置都不触发。
     const downWheel = fireEvent.wheel(viewport, { deltaY: 40, cancelable: true });
     expect(downWheel).toBe(true);
   });
@@ -422,7 +425,7 @@ describe("ChatArea history scrolling", () => {
     expect(scrollAreaMock.scrollTop).toBe(420);
   });
 
-  it("keeps the original page anchor while history is loading", async () => {
+  it("keeps the current page anchored with no double-load while a prefetch is in flight", async () => {
     let resolveLoadMore: (() => void) | undefined;
     const loadMore = vi.fn(
       () =>
@@ -439,14 +442,13 @@ describe("ChatArea history scrolling", () => {
     scrollAreaMock.scrollHeight = 1000;
 
     const viewport = scrollAreaMock.viewport!;
-    // 贴顶滚轮上滑触发加载，锚点捕获于 {scrollHeight:1000, scrollTop:0}。
+    // 进入预取区上滑触发加载，锚点捕获于 {scrollHeight:1000, scrollTop:0}。
     fireEvent.wheel(viewport, { deltaY: -40, cancelable: true });
     expect(loadMore).toHaveBeenCalledTimes(1);
-    expect(scrollAreaMock.preventedWheels).toBe(1);
 
-    // 加载进行中：后续滚轮被冻结（preventDefault），页面不动、不再重复加载。
+    // 加载进行中：后续滚轮不 preventDefault（原生滚动继续），但 in-flight 守卫挡住二次加载、页面不动。
     fireEvent.wheel(viewport, { deltaY: -40, cancelable: true });
-    expect(scrollAreaMock.preventedWheels).toBe(2);
+    expect(scrollAreaMock.preventedWheels).toBe(0);
     expect(loadMore).toHaveBeenCalledTimes(1);
     expect(scrollAreaMock.scrollTop).toBe(0);
 
@@ -500,10 +502,10 @@ describe("ChatArea history scrolling", () => {
     fireEvent.wheel(viewport, { deltaY: -40, cancelable: true });
     expect(loadMore).toHaveBeenCalledTimes(1);
 
-    // 加载中连续滚轮都被冻结，不得重捕锚点、不得二次加载。
+    // 加载中连续滚轮:不 preventDefault,但 in-flight/已有锚点守卫挡住——既不重捕锚点也不二次加载。
     fireEvent.wheel(viewport, { deltaY: -40, cancelable: true });
     fireEvent.wheel(viewport, { deltaY: -40, cancelable: true });
-    expect(scrollAreaMock.preventedWheels).toBe(3);
+    expect(scrollAreaMock.preventedWheels).toBe(0);
     expect(loadMore).toHaveBeenCalledTimes(1);
     expect(scrollAreaMock.scrollTop).toBe(0);
 
@@ -533,46 +535,6 @@ describe("ChatArea history scrolling", () => {
 
     // 锚点未被滚轮重捕，仍用最初的 {1000,0}：T_new = 1420 − 1000 + 0 = 420。
     expect(scrollAreaMock.scrollTop).toBe(420);
-  });
-
-  it("defers the older-history load until scrolling settles at the top (no trigger mid-inertia)", () => {
-    const loadMore = vi.fn().mockResolvedValue(undefined);
-    renderChatArea({
-      messages: [message("03"), message("04"), message("05")],
-      hasMoreHistory: true,
-      onLoadMoreHistory: loadMore,
-    });
-
-    // 挂载已用同步 raf 完成首屏 snap;此处切到手动 raf 队列,逐帧推进以模拟惯性。
-    const rafCbs: FrameRequestCallback[] = [];
-    vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) => {
-      rafCbs.push(cb);
-      return rafCbs.length;
-    });
-    const flushFrame = () => {
-      const pending = rafCbs.splice(0, rafCbs.length);
-      pending.forEach((cb) => cb(0));
-    };
-
-    // 到顶触发停稳监测,但 raf 未推进 → 不再像旧逻辑那样同步立刻加载。
-    scrollAreaMock.scrollTop = 0;
-    fireEvent.scroll(scrollAreaMock.viewport!);
-    expect(loadMore).not.toHaveBeenCalled();
-
-    // 惯性中:scrollTop 持续变化 → 停稳计数不断清零 → 不触发加载。
-    scrollAreaMock.scrollTop = 6;
-    flushFrame();
-    scrollAreaMock.scrollTop = 2;
-    flushFrame();
-    expect(loadMore).not.toHaveBeenCalled();
-
-    // 惯性结束:回到顶部并连续稳定若干帧 → 触发恰好一次加载。
-    scrollAreaMock.scrollTop = 0;
-    flushFrame(); // 2→0 仍判定为移动,稳定计数清零
-    flushFrame(); // 稳定第 1 帧
-    flushFrame(); // 稳定第 2 帧
-    flushFrame(); // 稳定第 3 帧 → 触发
-    expect(loadMore).toHaveBeenCalledTimes(1);
   });
 
   it("restores the scroll offset by scrollHeight delta when image rows are prepended", async () => {
