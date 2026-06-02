@@ -142,6 +142,11 @@ export async function loadOlderMessages(params: {
   );
 }
 
+/** 清除当前登录员工的全部本地聊天记录(后端删消息行 + 水位窗;仅清本地缓存)。 */
+export async function clearChatMessages(): Promise<void> {
+  return invokeWithTimeout<void>("clear_chat_messages", {}, HISTORY_TIMEOUT_MS);
+}
+
 /** `send_message` 命令返回(对齐 Rust `SendMessageResp`)。 */
 export interface SendMessageResp {
   localMessageId: string;

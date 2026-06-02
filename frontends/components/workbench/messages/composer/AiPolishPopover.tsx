@@ -90,9 +90,14 @@ export function AiPolishPopover({
     setErrorMsg("");
   };
 
-  // 关闭 Popover:取消在途流,保留最近状态供下次打开(原逻辑仅切 open)。
+  // 开/关 Popover。打开时回到干净的 idle 态(清空上一次的润色预览/错误),避免残留上条草稿
+  // 的润色结果;关闭时取消在途流。打开时重置可覆盖所有关闭路径(含「替换草稿」直接 setOpen)。
   const handleOpenChange = (next: boolean) => {
-    if (!next) {
+    if (next) {
+      setStatus("idle");
+      setPreview("");
+      setErrorMsg("");
+    } else {
       cancelStream();
     }
     setOpen(next);

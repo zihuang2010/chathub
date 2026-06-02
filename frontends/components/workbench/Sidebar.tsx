@@ -1,6 +1,6 @@
 import { memo, useState, type ReactNode } from "react";
 import * as Popover from "@radix-ui/react-popover";
-import { ChevronLeft, ChevronRight, LogOut, Menu } from "lucide-react";
+import { ChevronLeft, ChevronRight, LogOut, Menu, Trash2 } from "lucide-react";
 
 import type { UserProfile } from "@/App";
 import { DriftingWave } from "@/components/illustrations";
@@ -11,6 +11,7 @@ import { isWindows } from "@/lib/platform";
 import { FROSTED_GLASS_STYLE, WORKBENCH_BLUE, WORKBENCH_NAV_TEXT } from "@/lib/theme";
 import { cn } from "@/lib/utils";
 
+import { ClearHistoryConfirmDialog } from "./ClearHistoryConfirmDialog";
 import { LogoutConfirmDialog } from "./LogoutConfirmDialog";
 import { NAV_ITEMS, type NavItem, type Section } from "./nav";
 import { UserMenu } from "./UserMenu";
@@ -244,7 +245,7 @@ function UserBadge({ collapsed }: { collapsed: boolean }) {
       </ProfilePopover>
       <div
         className={cn(
-          "ml-2.5 flex min-w-0 flex-1 flex-col gap-1 leading-tight transition-opacity duration-150 ease-out",
+          "ml-2.5 flex min-w-0 flex-1 flex-col gap-1.5 leading-tight transition-opacity duration-150 ease-out",
           collapsed ? "opacity-0" : "opacity-100",
         )}
       >
@@ -267,10 +268,10 @@ function UserBadge({ collapsed }: { collapsed: boolean }) {
 
 // ─── 个人信息卡片 ─────────────────────────────────────────────────────────────
 
-// 点头像在右侧弹出的只读个人信息卡。字段全部取自 UserProfile(标题=display_name 即
-// nickName;账号/用户名/手机号/角色),在线状态复用 UserBadge 已派生的 status。底部「退出
-// 登录」复用 LogoutConfirmDialog —— 确认弹窗渲染在 Popover 之外,避免点按钮时弹层关闭把
-// 弹窗一起卸载。
+// 点头像在右侧弹出的个人信息卡。字段取自 UserProfile(标题=display_name 即 nickName;
+// 用户名/手机号/账号),在线状态复用 UserBadge 已派生的 status。底部「清除聊天记录」「退出
+// 登录」分别复用 ClearHistoryConfirmDialog / LogoutConfirmDialog —— 确认弹窗渲染在 Popover
+// 之外,避免点按钮时弹层关闭把弹窗一起卸载。
 function ProfilePopover({
   profile,
   status,
@@ -282,6 +283,7 @@ function ProfilePopover({
 }) {
   const name = profile?.display_name ?? "";
   const [logoutOpen, setLogoutOpen] = useState(false);
+  const [clearOpen, setClearOpen] = useState(false);
 
   return (
     <>
@@ -314,23 +316,33 @@ function ProfilePopover({
             </div>
             <div aria-hidden className="my-3 h-px bg-workbench-line" />
             <dl className="flex flex-col gap-2.5 text-[12.5px]">
-              <ProfileRow label="账号" value={profile?.user_id} />
               <ProfileRow label="用户名" value={profile?.username} />
               <ProfileRow label="手机号" value={profile?.mobile} />
-              <ProfileRow label="角色" value={profile?.role} />
+              <ProfileRow label="账号" value={profile?.user_id} />
             </dl>
             <div aria-hidden className="my-3 h-px bg-workbench-line" />
-            <button
-              type="button"
-              onClick={() => setLogoutOpen(true)}
-              className="focus-ring flex w-full items-center justify-center gap-1.5 rounded-lg border border-workbench-line py-2 text-[13px] font-medium text-workbench-danger transition-colors hover:bg-workbench-danger/10"
-            >
-              <LogOut size={14} />
-              退出登录
-            </button>
+            <div className="flex flex-col gap-2">
+              <button
+                type="button"
+                onClick={() => setClearOpen(true)}
+                className="focus-ring flex w-full items-center justify-center gap-1.5 rounded-lg border border-workbench-line py-2 text-[13px] font-medium text-workbench-text-muted transition-colors hover:bg-workbench-surface-subtle"
+              >
+                <Trash2 size={14} />
+                清除聊天记录
+              </button>
+              <button
+                type="button"
+                onClick={() => setLogoutOpen(true)}
+                className="focus-ring flex w-full items-center justify-center gap-1.5 rounded-lg border border-workbench-line py-2 text-[13px] font-medium text-workbench-danger transition-colors hover:bg-workbench-danger/10"
+              >
+                <LogOut size={14} />
+                退出登录
+              </button>
+            </div>
           </Popover.Content>
         </Popover.Portal>
       </Popover.Root>
+      <ClearHistoryConfirmDialog open={clearOpen} onClose={() => setClearOpen(false)} />
       <LogoutConfirmDialog open={logoutOpen} onClose={() => setLogoutOpen(false)} />
     </>
   );

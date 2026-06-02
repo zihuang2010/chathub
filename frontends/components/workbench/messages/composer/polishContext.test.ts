@@ -1,14 +1,22 @@
-// buildPolishContext 纯函数单测:覆盖方向前缀、附件占位、撤回过滤、最近 10 条截断、
-// 1500 字符上限丢旧、空输入→""。
+// buildPolishContext 纯函数单测:覆盖方向前缀、附件占位、撤回过滤、2 小时时间窗过滤、
+// 最近 10 条截断、1500 字符上限丢旧、空输入→""。
 import { describe, expect, it } from "vitest";
 
 import type { Message, MessagePart } from "../data";
 import { buildPolishContext } from "./polishContext";
 
-// 构造一条消息:只关心转录相关字段,其余取最小合法值。
+// 固定"当前时间"基准,注入 buildPolishContext 以保证纯函数可测(不依赖真实 Date.now)。
+const NOW = Date.parse("2026-05-19T12:00:00.000Z");
+// 默认 sentAt 取 NOW 前 30 分钟,落在 2 小时窗内,使未显式指定时间的旧用例不受时间窗影响。
+const IN_WINDOW = "2026-05-19T11:30:00.000Z";
+
+// 注入固定 NOW 的薄包装,旧用例统一走这里。
+const build = (messages: Message[]) => buildPolishContext(messages, NOW);
+
+// 构造一条消息:只关心转录相关字段,其余取最小合法值。sentAt 可覆盖以测时间窗。
 function msg(
   partial: Pick<Message, "direction"> &
-    Partial<Pick<Message, "text" | "parts" | "isRecalled">> & { id?: string },
+    Partial<Pick<Message, "text" | "parts" | "isRecalled" | "sentAt">> & { id?: string },
 ): Message {
   return {
     id: partial.id ?? "m",
@@ -16,7 +24,7 @@ function msg(
     direction: partial.direction,
     text: partial.text ?? "",
     parts: partial.parts ?? [],
-    sentAt: "2026-05-19T10:00:00.000Z",
+    sentAt: partial.sentAt ?? IN_WINDOW,
     isRecalled: partial.isRecalled,
   };
 }
@@ -29,7 +37,7 @@ const videoPart: MessagePart = { kind: "video", url: "u" };
 
 describe("buildPolishContext", () => {
   it("方向前缀:in→客户、out→客服,旧→新,\\n 连接", () => {
-    const out = buildPolishContext([
+    const out = build([
       msg({ direction: "in", text: "在吗" }),
       msg({ direction: "out", text: "在的" }),
     ]);
@@ -37,14 +45,12 @@ describe("buildPolishContext", () => {
   });
 
   it("文本非空(trim 后)优先用文本", () => {
-    const out = buildPolishContext([
-      msg({ direction: "in", text: "  你好  ", parts: [imagePart] }),
-    ]);
+    const out = build([msg({ direction: "in", text: "  你好  ", parts: [imagePart] })]);
     expect(out).toBe("客户：你好");
   });
 
   it("文本为空时按首个非文本 part 取占位", () => {
-    const out = buildPolishContext([
+    const out = build([
       msg({ direction: "in", text: "", parts: [imagePart] }),
       msg({ direction: "out", text: "   ", parts: [filePart] }),
       msg({ direction: "in", text: "", parts: [voicePart] }),
@@ -54,19 +60,17 @@ describe("buildPolishContext", () => {
   });
 
   it("文本为空且无 parts → [非文本消息]", () => {
-    const out = buildPolishContext([msg({ direction: "in", text: "", parts: [] })]);
+    const out = build([msg({ direction: "in", text: "", parts: [] })]);
     expect(out).toBe("客户：[非文本消息]");
   });
 
   it("首个 part 为文本但 text 为空时,跳过文本 part 取首个非文本", () => {
-    const out = buildPolishContext([
-      msg({ direction: "in", text: "", parts: [textPart(""), filePart] }),
-    ]);
+    const out = build([msg({ direction: "in", text: "", parts: [textPart(""), filePart] })]);
     expect(out).toBe("客户：[文件]");
   });
 
   it("过滤撤回消息(isRecalled)", () => {
-    const out = buildPolishContext([
+    const out = build([
       msg({ direction: "in", text: "保留1" }),
       msg({ direction: "out", text: "已撤回", isRecalled: true }),
       msg({ direction: "in", text: "保留2" }),
@@ -74,11 +78,42 @@ describe("buildPolishContext", () => {
     expect(out).toBe("客户：保留1\n客户：保留2");
   });
 
+  it("时间窗:超过 2 小时的消息被丢弃,只保留窗内", () => {
+    const out = build([
+      // NOW 前 3 小时,超窗。
+      msg({ direction: "in", text: "太旧", sentAt: "2026-05-19T09:00:00.000Z" }),
+      // NOW 前 30 分钟,窗内。
+      msg({ direction: "out", text: "刚刚", sentAt: "2026-05-19T11:30:00.000Z" }),
+    ]);
+    expect(out).toBe("客服：刚刚");
+  });
+
+  it("时间窗:恰好 2 小时(边界)保留", () => {
+    const out = build([msg({ direction: "in", text: "边界", sentAt: "2026-05-19T10:00:00.000Z" })]);
+    expect(out).toBe("客户：边界");
+  });
+
+  it("时间窗:全部超窗 → 空串", () => {
+    const out = build([
+      msg({ direction: "in", text: "旧1", sentAt: "2026-05-19T08:00:00.000Z" }),
+      msg({ direction: "out", text: "旧2", sentAt: "2026-05-18T12:00:00.000Z" }),
+    ]);
+    expect(out).toBe("");
+  });
+
+  it("时间窗:sentAt 不可解析的消息按超窗丢弃", () => {
+    const out = build([
+      msg({ direction: "in", text: "坏时间", sentAt: "not-a-date" }),
+      msg({ direction: "out", text: "好时间", sentAt: "2026-05-19T11:45:00.000Z" }),
+    ]);
+    expect(out).toBe("客服：好时间");
+  });
+
   it("只取最近 10 条(尾部),保持时间顺序", () => {
     const messages = Array.from({ length: 15 }, (_, i) =>
       msg({ direction: "in", text: `T${i + 1}`, id: String(i + 1) }),
     );
-    const out = buildPolishContext(messages);
+    const out = build(messages);
     const lines = out.split("\n");
     expect(lines).toHaveLength(10);
     // 最近 10 条 = T6..T15,旧→新。
@@ -96,7 +131,7 @@ describe("buildPolishContext", () => {
         isRecalled: i === 2 || i === 5,
       }),
     );
-    const out = buildPolishContext(messages);
+    const out = build(messages);
     expect(out.split("\n")).toHaveLength(10);
     expect(out).not.toContain("T3");
     expect(out).not.toContain("T6");
@@ -112,7 +147,7 @@ describe("buildPolishContext", () => {
       msg({ direction: "in", text: "B" + big, id: "3" }),
       msg({ direction: "in", text: "C" + big, id: "4" }),
     ];
-    const out = buildPolishContext(messages);
+    const out = build(messages);
     expect(out.length).toBeLessThanOrEqual(1500);
     // 最旧一行被丢弃。
     expect(out).not.toContain("OLD");
@@ -121,16 +156,16 @@ describe("buildPolishContext", () => {
   });
 
   it("文本内容经脱敏:手机号被遮成占位", () => {
-    const out = buildPolishContext([msg({ direction: "in", text: "我的电话13800138000" })]);
+    const out = build([msg({ direction: "in", text: "我的电话13800138000" })]);
     expect(out).toBe("客户：我的电话[手机号]");
   });
 
   it("空输入 → 空串", () => {
-    expect(buildPolishContext([])).toBe("");
+    expect(build([])).toBe("");
   });
 
   it("全部被撤回 → 空串", () => {
-    const out = buildPolishContext([
+    const out = build([
       msg({ direction: "in", text: "x", isRecalled: true }),
       msg({ direction: "out", text: "y", isRecalled: true }),
     ]);

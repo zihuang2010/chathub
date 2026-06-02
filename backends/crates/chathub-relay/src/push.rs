@@ -80,12 +80,22 @@ pub struct PushBatchIn {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PushBatchAck {
+    /// 是否受理。成功恒为 `true`;鉴权/校验失败走 HTTP 错误码 + `code=0`,不进此结构。
+    pub accepted: bool,
+    /// 回显请求 `batchId`(缺省时为空串)。
+    pub batch_id: String,
     pub notify_seq: u64,
-    /// 实际入库的 events 数(INSERT OR IGNORE 之后)。
-    /// 重投时:全部 IGNORE → 0;首次:= 该 batch 内 Persist 类 events 数。
-    pub inserted: usize,
-    /// Control 类事件数(ControlOnly,不入库)。FORCE_CLOSE 触发 grace timer。
-    pub control_count: usize,
+    /// 回显请求 `clientId`。
+    pub client_id: String,
+    /// 回显请求 `employeeId`。
+    pub employee_id: i64,
+    /// 本批请求携带的事件总数(`events.len()`,与是否重投/是否控制事件无关)。
+    pub accepted_event_count: usize,
+    /// 本批 fan-out 实际投递成功的在线连接数。
+    pub online_connection_count: usize,
+    /// 受理成功恒为空;保留字段对齐业务回执 schema。
+    pub reject_code: String,
+    pub reject_message: String,
 }
 
 /// 业务后台统一响应包络(产出端):`{ code, serviceCode, msg, data }`。
@@ -278,9 +288,15 @@ async fn handle_push(
     );
 
     ok_envelope(PushBatchAck {
+        accepted: true,
+        batch_id: body.batch_id.clone().unwrap_or_default(),
         notify_seq: body.notify_seq,
-        inserted,
-        control_count,
+        client_id: body.client_id.clone(),
+        employee_id: body.employee_id,
+        accepted_event_count: body.events.len(),
+        online_connection_count: fanout.delivered,
+        reject_code: String::new(),
+        reject_message: String::new(),
     })
 }
 
@@ -476,7 +492,8 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(ack["code"], 1);
         assert_eq!(ack["serviceCode"], "260000000");
-        assert_eq!(ack["data"]["inserted"], 1);
+        assert_eq!(ack["data"]["accepted"], true);
+        assert_eq!(ack["data"]["acceptedEventCount"], 1);
         let rows = log.query_since(42, 0, 10).await.unwrap();
         assert_eq!(rows.len(), 1);
         let payload: serde_json::Value = serde_json::from_str(&rows[0].payload_json).unwrap();
@@ -536,9 +553,11 @@ mod tests {
             ]),
         );
         let (_, ack1) = post(app(st.clone()), b.clone(), "ps").await;
-        assert_eq!(ack1["data"]["inserted"], 2);
+        assert_eq!(ack1["data"]["acceptedEventCount"], 2);
         let (_, ack2) = post(app(st), b, "ps").await;
-        assert_eq!(ack2["data"]["inserted"], 0);
+        // 重投响应字段与首投一致(acceptedEventCount 恒为请求事件数);
+        // 幂等性由下方 event log 行数(2,而非 4)保证。
+        assert_eq!(ack2["data"]["acceptedEventCount"], 2);
         let rows = log.query_since(42, 0, 100).await.unwrap();
         assert_eq!(rows.len(), 2);
     }
@@ -560,8 +579,9 @@ mod tests {
         );
         let (status, ack) = post(app(st.clone()), b, "ps").await;
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(ack["data"]["inserted"], 0);
-        assert_eq!(ack["data"]["controlCount"], 1);
+        assert_eq!(ack["data"]["acceptedEventCount"], 1);
+        // 已注册一条连接,FORCE_CLOSE batch 整体 fan-out → 投递 1 路。
+        assert_eq!(ack["data"]["onlineConnectionCount"], 1);
 
         // 客户端立即收到 PushBatchOut(含 FORCE_CLOSE)
         let frame = tokio::time::timeout(std::time::Duration::from_millis(200), rx.recv())
@@ -637,7 +657,8 @@ mod tests {
         );
         let (status, ack) = post(app(st.clone()), b, "ps").await;
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(ack["data"]["inserted"], 1);
+        assert_eq!(ack["data"]["acceptedEventCount"], 1);
+        assert_eq!(ack["data"]["onlineConnectionCount"], 1);
 
         let frame = tokio::time::timeout(std::time::Duration::from_millis(500), rx.recv())
             .await
@@ -718,7 +739,8 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(ack["data"]["inserted"], 1);
+        assert_eq!(ack["data"]["acceptedEventCount"], 1);
+        assert_eq!(ack["data"]["onlineConnectionCount"], 0);
         let rows = log.query_since(42, 0, 10).await.unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].event_type, "FUTURE_EVENT_TYPE");

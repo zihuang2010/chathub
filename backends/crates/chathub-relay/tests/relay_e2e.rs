@@ -214,13 +214,15 @@ async fn push_persists_event_and_returns_ack() {
     let ack: serde_json::Value = resp.json().await.unwrap();
     assert_eq!(ack["code"], 1);
     assert_eq!(ack["serviceCode"], "260000000");
-    assert_eq!(ack["data"]["inserted"], 1);
+    assert_eq!(ack["data"]["accepted"], true);
+    assert_eq!(ack["data"]["acceptedEventCount"], 1);
     assert_eq!(ack["data"]["notifySeq"], 1);
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn push_idempotent_on_retry() {
     let h = spawn_relay().await;
+    mount_verify_token(&h.downstream, "tok-idem", 42, "dev-A").await;
     let body = push_body(
         100,
         42,
@@ -228,18 +230,45 @@ async fn push_idempotent_on_retry() {
             { "eventType": "MESSAGE_UPSERT", "conversationId": "c1" }
         ]),
     );
+
+    // 推两次同一 batch(同 notifySeq):两次都受理成功,relay 持久化层 INSERT OR IGNORE 去重。
     let r1: serde_json::Value = do_push(&h.push_url, &h.push_secret, &body)
         .await
         .json()
         .await
         .unwrap();
-    assert_eq!(r1["data"]["inserted"], 1);
+    assert_eq!(r1["data"]["accepted"], true);
     let r2: serde_json::Value = do_push(&h.push_url, &h.push_secret, &body)
         .await
         .json()
         .await
         .unwrap();
-    assert_eq!(r2["data"]["inserted"], 0);
+    assert_eq!(r2["data"]["accepted"], true);
+
+    // 幂等性在重放层验证:订阅 since=99 只应回放一帧 notifySeq=100,重投不产生重复。
+    let ch = raw_channel(h.grpc_addr).await;
+    let mut hub = hub_client(ch, "tok-idem".into());
+    let mut stream = hub
+        .subscribe(SubscribeRequest {
+            since_notify_seq: 99,
+            device_id: "dev-A".into(),
+            client_version: "1.0.0".into(),
+        })
+        .await
+        .unwrap()
+        .into_inner();
+
+    match stream.next().await.unwrap().unwrap().body {
+        Some(Body::SubscribeAck(_)) => {}
+        other => panic!("expected SubscribeAck, got {other:?}"),
+    }
+    match stream.next().await.unwrap().unwrap().body {
+        Some(Body::PushBatch(pb)) => assert_eq!(pb.notify_seq, 100),
+        other => panic!("expected PushBatch(100), got {other:?}"),
+    }
+    // 不应有第二帧:重投未在 event log 产生重复行。
+    let dup = tokio::time::timeout(std::time::Duration::from_millis(300), stream.next()).await;
+    assert!(dup.is_err(), "retry must not replay a duplicate frame");
 }
 
 #[tokio::test(flavor = "multi_thread")]

@@ -599,6 +599,25 @@ async fn load_older_messages(
     })
 }
 
+/// 清除当前登录员工的全部本地聊天记录(消息行 + 水位窗)。未登录则 no-op。
+/// 仅清本地缓存,不动服务端;重新打开会话会按需重新同步。employee_id 由当前会话注入,
+/// SQL 强制按 employee 过滤,跨员工不可见。
+#[tauri::command]
+async fn clear_chat_messages(
+    messages_store: State<'_, MessagesStore>,
+    auth_api: State<'_, Arc<AuthApi>>,
+) -> Result<(), AuthError> {
+    let employee_id = match auth_api.current_session().await? {
+        Some(p) => p.user_id,
+        None => return Ok(()),
+    };
+    messages_store
+        .clear_for_employee(&employee_id)
+        .await
+        .map_err(messages_err)?;
+    Ok(())
+}
+
 /// 发送一条文本消息(`messageType=1`):网络发送 → 落库(出站气泡)→ 发 ConversationMessages
 /// ChangeNotice。打开着的会话经订阅重读缓存,新气泡随权威列表稳定追加(不再依赖乐观气泡)。
 #[tauri::command]
@@ -1664,7 +1683,8 @@ pub fn run() {
             set_conversation_pinned, set_conversation_draft, set_conversation_removed,
             set_conversation_muted, mark_conversation_read,
             fetch_message_history,
-            load_conversation_messages, load_older_messages, send_message, upload_attachment,
+            load_conversation_messages, load_older_messages, clear_chat_messages,
+            send_message, upload_attachment,
             list_quick_replies, create_quick_reply, update_quick_reply, delete_quick_reply,
             media::download_attachment, media::fetch_media_bytes,
             ai_polish::ai_polish, ai_polish::cancel_ai_polish,

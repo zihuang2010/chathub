@@ -166,6 +166,10 @@ async fn run_polish(
     on_event: tauri::ipc::Channel<PolishEvent>,
 ) {
     let client = match reqwest::Client::builder()
+        // 强制直连:清空并禁用系统代理(HTTP(S)_PROXY / ALL_PROXY 等环境变量)。
+        // dashscope 走公网直连即可,若被系统代理劫持到不稳定/不可达的代理上,
+        // 会在 .send() 阶段报 "error sending request for url"。
+        .no_proxy()
         .connect_timeout(Duration::from_secs(10))
         .timeout(Duration::from_secs(60))
         .build()
@@ -183,6 +187,9 @@ async fn run_polish(
     let body = serde_json::json!({
         "model": model,
         "stream": true,
+        // 上限封顶:润色一般 ≤ 千字,2048 token 足够;防止个别情况下模型长篇发散,
+        // 导致流式响应迟迟不收尾(占满 60s 超时后报 "error sending request")。
+        "max_tokens": 2048,
         "messages": [
             {"role": "system", "content": system_prompt_for(tone)},
             {"role": "user", "content": build_user_content(context, text)},
