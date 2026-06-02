@@ -39,6 +39,8 @@ interface ImageLightboxProps {
   onClose: () => void;
   /** 是否显示右上角关闭按钮。缺省 true;独立预览窗有系统原生关闭(标题栏),传 false 去重。 */
   showClose?: boolean;
+  /** 独立预览窗(整窗看图)传 true,图片近铺满窗口、减少四周留白;缺省 false 保持应用内灯箱浮于暗区的留白。 */
+  fill?: boolean;
 }
 
 /**
@@ -57,6 +59,7 @@ export function ImageLightbox({
   localPath,
   onClose,
   showClose = true,
+  fill = false,
 }: ImageLightboxProps) {
   // 渐进加载:displaySrc 在高清就绪前显示占位(本地 asset 或 512 缓存,几乎瞬时)。
   const placeholderSrc = assetImageSrc(localPath) ?? cachedImageSrc(src, PLACEHOLDER_W);
@@ -209,7 +212,9 @@ export function ImageLightbox({
                 onError={() => setBaseLoaded(true)}
                 // 视口单位封顶:相对舞台/包裹层是 auto,百分比 max 会失效;用 vh/vw 才是确定参照 → 整图等比缩入、绝不裁切。放大时 transform 溢出再由舞台 overflow-hidden 裁。
                 className={cn(
-                  "block max-h-[88vh] max-w-[90vw] select-none rounded-xl object-contain",
+                  "block select-none rounded-xl object-contain",
+                  // 独立预览窗近铺满(95vh/97vw);应用内灯箱保持浮于暗区的留白(88vh/90vw)。
+                  fill ? "max-h-[95vh] max-w-[97vw]" : "max-h-[88vh] max-w-[90vw]",
                   // blur-up:高清就绪前对占位图轻微模糊,切到高清时移除。
                   !hiResReady && "blur-[1.5px]",
                 )}

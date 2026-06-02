@@ -34,7 +34,7 @@ export function VideoPlayer({ src, name }: { src: string; name?: string }) {
           controls
           playsInline
           preload="metadata"
-          className="block max-h-[88vh] max-w-[90vw] rounded-xl"
+          className="block max-h-[95vh] max-w-[97vw] rounded-xl"
         />
       </div>
 

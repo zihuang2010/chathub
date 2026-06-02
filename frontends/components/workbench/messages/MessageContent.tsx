@@ -1,6 +1,17 @@
 import { Fragment, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { Download, FileText, ImageOff, Loader2, Pause, Play } from "lucide-react";
+import {
+  Download,
+  FileText,
+  Image as ImageIcon,
+  ImageOff,
+  Loader2,
+  MicOff,
+  Pause,
+  Play,
+  Video,
+  VideoOff,
+} from "lucide-react";
 
 import { assetImageSrc } from "@/lib/assetImageSrc";
 import { cachedImageSrc } from "@/lib/cachedImageSrc";
@@ -98,25 +109,31 @@ function PartCard({ part, fill }: { part: MessagePart; fill?: boolean }) {
 function ImageAttachment({ part, fill = false }: { part: ImagePart; fill?: boolean }) {
   const [open, setOpen] = useState(false);
   const state = transferState(part.transferStatus);
-  if (state !== "ready") {
-    // 转存中/失败:用与就绪图卡尺寸相近的占位盒(参考 error 卡风格),避免布局跳动。
+  if (state === "pending") {
+    // 转存中:媒体骨架——与就绪图卡同尺寸的柔色块缓慢呼吸(animate-pulse)+ 居中暗淡图片
+    // 图标,不用 spinner/文字(读作"图片在来",而非"空框/出错")。盒子尺寸不变,避免布局跳动;
+    // reduced-motion 下停掉呼吸退化为静态柔色块;文案降级为 aria-label 供读屏。
     return (
       <span
         role="img"
-        aria-label={
-          state === "pending" ? STRINGS.attachment.processing : STRINGS.attachment.unavailable
-        }
+        aria-label={STRINGS.attachment.processing}
+        className="grid aspect-[4/3] w-40 max-w-full animate-pulse place-items-center rounded-xl bg-workbench-surface-soft text-workbench-text-muted ring-1 ring-workbench-line motion-reduce:animate-none"
+      >
+        <ImageIcon size={28} strokeWidth={1.5} aria-hidden />
+      </span>
+    );
+  }
+  if (state === "failed") {
+    // 转存失败:占位盒 + 失败图标/文案(真错误态,保留明确语义,不做骨架)。
+    return (
+      <span
+        role="img"
+        aria-label={STRINGS.attachment.unavailable}
         className="text-wb-3xs grid aspect-[4/3] w-40 max-w-full place-items-center rounded-xl bg-workbench-surface-soft text-workbench-text-muted ring-1 ring-workbench-line"
       >
-        <span className="flex flex-col items-center gap-1.5">
-          {state === "pending" ? (
-            <Loader2 size={20} strokeWidth={1.6} className="animate-spin" aria-hidden />
-          ) : (
-            <ImageOff size={22} strokeWidth={1.5} aria-hidden />
-          )}
-          <span>
-            {state === "pending" ? STRINGS.attachment.processing : STRINGS.attachment.unavailable}
-          </span>
+        <span className="flex flex-col items-center gap-2">
+          <ImageOff size={22} strokeWidth={1.5} aria-hidden />
+          <span>{STRINGS.attachment.unavailable}</span>
         </span>
       </span>
     );
@@ -172,7 +189,12 @@ function FileAttachment({ part }: { part: FilePart }) {
       <div className="flex w-72 max-w-full items-center gap-3 rounded-2xl border border-workbench-line bg-workbench-surface px-3.5 py-3 shadow-wb-bubble">
         <span className="grid size-11 shrink-0 place-items-center rounded-xl bg-workbench-surface-soft text-workbench-text-muted">
           {state === "pending" ? (
-            <Loader2 size={20} strokeWidth={1.6} className="animate-spin" aria-hidden />
+            <Loader2
+              size={20}
+              strokeWidth={1.6}
+              className="animate-spin text-workbench-text-secondary"
+              aria-hidden
+            />
           ) : (
             <FileText size={22} strokeWidth={1.6} aria-hidden />
           )}
@@ -321,9 +343,14 @@ function VoiceAttachment({ part }: { part: VoicePart }) {
         className="text-wb-3xs inline-flex items-center gap-2 rounded-2xl border border-workbench-line bg-workbench-surface px-3 py-2 text-workbench-text-muted shadow-wb-bubble"
       >
         {state === "pending" ? (
-          <Loader2 size={14} strokeWidth={1.6} className="animate-spin" aria-hidden />
+          <Loader2
+            size={14}
+            strokeWidth={1.6}
+            className="animate-spin text-workbench-text-secondary"
+            aria-hidden
+          />
         ) : (
-          <ImageOff size={14} strokeWidth={1.6} aria-hidden />
+          <MicOff size={14} strokeWidth={1.6} aria-hidden />
         )}
         <span>
           {state === "pending" ? STRINGS.attachment.processing : STRINGS.attachment.unavailable}
@@ -383,25 +410,30 @@ function VideoAttachment({ part }: { part: VideoPart }) {
   // 声明(遵守 hooks 规则)。
   const [posterFailed, setPosterFailed] = useState(false);
   const state = transferState(part.transferStatus);
-  if (state !== "ready") {
-    // 转存中/失败:保持 aspect-video w-64 盒子(与就绪封面同尺寸),内容居中,避免布局跳动。
+  if (state === "pending") {
+    // 转存中:媒体骨架——与就绪封面同尺寸(aspect-video w-64)的柔色块缓慢呼吸 + 居中暗淡视频
+    // 图标,不用 spinner/文字。盒子尺寸不变,避免布局跳动;reduced-motion 下停呼吸;文案降为 aria-label。
     return (
       <span
         role="img"
-        aria-label={
-          state === "pending" ? STRINGS.attachment.processing : STRINGS.attachment.unavailable
-        }
-        className="text-wb-3xs grid aspect-video w-64 max-w-full place-items-center rounded-lg bg-workbench-surface-active text-workbench-text-muted"
+        aria-label={STRINGS.attachment.processing}
+        className="grid aspect-video w-64 max-w-full animate-pulse place-items-center rounded-xl bg-workbench-surface-soft text-workbench-text-muted ring-1 ring-workbench-line motion-reduce:animate-none"
       >
-        <span className="flex flex-col items-center gap-1.5">
-          {state === "pending" ? (
-            <Loader2 size={22} strokeWidth={1.6} className="animate-spin" aria-hidden />
-          ) : (
-            <ImageOff size={24} strokeWidth={1.5} aria-hidden />
-          )}
-          <span>
-            {state === "pending" ? STRINGS.attachment.processing : STRINGS.attachment.unavailable}
-          </span>
+        <Video size={28} strokeWidth={1.5} aria-hidden />
+      </span>
+    );
+  }
+  if (state === "failed") {
+    // 转存失败:占位盒 + 失败图标/文案(真错误态,保留明确语义,不做骨架)。
+    return (
+      <span
+        role="img"
+        aria-label={STRINGS.attachment.unavailable}
+        className="text-wb-3xs grid aspect-video w-64 max-w-full place-items-center rounded-xl bg-workbench-surface-soft text-workbench-text-muted ring-1 ring-workbench-line"
+      >
+        <span className="flex flex-col items-center gap-2">
+          <VideoOff size={22} strokeWidth={1.5} aria-hidden />
+          <span>{STRINGS.attachment.unavailable}</span>
         </span>
       </span>
     );

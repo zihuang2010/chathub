@@ -12,6 +12,8 @@
 
 import { create } from "zustand";
 
+import { attachmentPreviewUrl } from "@/lib/api/messageHistory";
+
 import type { Message, MessagePart } from "../data";
 
 export interface ChatMessageEntity extends Message {
@@ -90,6 +92,20 @@ function preserveOptimisticImageDimensions(message: Message, local?: ChatMessage
 
 // ─── 纯收敛 reducer(导出供单测) ─────────────────────────────────────────────
 
+// 乐观附件气泡的 filePath = 上传得到的 objectName(deliverAttachmentUnit 在 send IPC 前 patch 写入);
+// 权威附件条目 part.url = attachmentPreviewUrl(objectName)。据此做乐观↔权威的确定性等值匹配——
+// objectName 是唯一 OSS key,无碰撞,且早于收敛竞态窗口就已就位。
+function authAttachmentMatchesOptimistic(authMsg: Message, optimistic: ChatMessageEntity): boolean {
+  const objectName = optimistic.filePath;
+  if (!objectName) return false;
+  const expectedUrl = attachmentPreviewUrl(objectName);
+  return authMsg.parts.some(
+    (p) =>
+      (p.kind === "image" || p.kind === "file" || p.kind === "voice" || p.kind === "video") &&
+      p.url === expectedUrl,
+  );
+}
+
 /**
  * 用服务端权威列表替换 store 内容,但保留尚未被收敛的本地乐观气泡。
  * 一条乐观气泡被认为「已收敛」当且仅当其 serverId 或 id 命中权威列表 → 此时由权威版本取代
@@ -100,7 +116,9 @@ export function replaceAuthoritative(
   messages: Message[],
 ): ConversationSlice {
   const authIds = new Set(messages.map((m) => m.id));
-  const pendingLocal = slice.order
+  const echoLookup = buildEchoLookup(slice);
+  const priorIds = new Set(slice.order);
+  const pendingOptimistic = slice.order
     .map((id) => slice.byId[id])
     .filter(
       (e): e is ChatMessageEntity =>
@@ -110,11 +128,29 @@ export function replaceAuthoritative(
         !authIds.has(e.id),
     );
 
+  // 收敛双行竞态根治:权威重读(读本地缓存,极快)可能抢在 markSent 钉 serverId 之前落地,
+  // 此时新出现的权威出站附件回显与乐观气泡无 id/serverId 可对 → 乐观被当 in-flight 追加 = 瞬时双行
+  // (图片行高,整列跳一下尤其扎眼)。这里按 objectName 把「本次新出现、未经 serverId 关联的权威
+  // 出站附件」与「仍待收敛的乐观出站气泡」确定性配对:提前把 clientMsgId 带到权威条目、收敛掉乐观
+  // 副本,使行 key 不变、MessageImage 实例存活,彻底消除与 markSent 谁先谁后的时序竞争。仅作用于
+  // 附件(文字双行不可见且按内容匹配易碰撞,不碰)。
+  const matchedEcho = new Map<string, ChatMessageEntity>();
+  const convergedByMatch = new Set<ChatMessageEntity>();
+  for (const m of messages) {
+    if (m.direction !== "out" || priorIds.has(m.id) || echoLookup.has(m.id)) continue;
+    const optimistic = pendingOptimistic.find(
+      (cand) => !convergedByMatch.has(cand) && authAttachmentMatchesOptimistic(m, cand),
+    );
+    if (optimistic) {
+      matchedEcho.set(m.id, optimistic);
+      convergedByMatch.add(optimistic);
+    }
+  }
+
   const byId: Record<string, ChatMessageEntity> = {};
   const order: string[] = [];
-  const echoLookup = buildEchoLookup(slice);
   for (const m of messages) {
-    const echo = echoLookup.get(m.id);
+    const echo = echoLookup.get(m.id) ?? matchedEcho.get(m.id);
     const merged: ChatMessageEntity = { ...preserveOptimisticImageDimensions(m, echo) };
     // 收敛时把乐观气泡的 clientMsgId 带到权威条目:权威条目 id=serverId,若行 key 跟随 id
     // 由 clientMsgId 变 serverId,React 会 remount 整行 → MessageImage 重建、走骨架态闪一下。
@@ -124,7 +160,8 @@ export function replaceAuthoritative(
     byId[m.id] = merged;
     order.push(m.id);
   }
-  for (const e of pendingLocal) {
+  for (const e of pendingOptimistic) {
+    if (convergedByMatch.has(e)) continue;
     byId[e.id] = e;
     order.push(e.id);
   }

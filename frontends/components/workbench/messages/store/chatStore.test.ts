@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 
+import { attachmentPreviewUrl } from "@/lib/api/messageHistory";
+
 import type { Message } from "../data";
 import {
   type ChatMessageEntity,
@@ -189,6 +191,49 @@ describe("chatStore reducers", () => {
     const sent = optimistic("c-1", { status: "sent", serverId: "server-1" });
     const next = replaceAuthoritative(sliceWith([sent]), [msg("m1")]);
     expect(selectTimeline(next).map((e) => e.id)).toEqual(["m1", "c-1"]);
+  });
+
+  it("replaceAuthoritative 竞态:权威出站附件回显抢在 markSent 前落地时,按 objectName 配对收敛(消双行)", () => {
+    // 发图收敛双行根因:权威重读(读本地缓存极快)抢在 markSent 钉 serverId 之前落地,权威图片
+    // 回显(id=server-1,无 clientMsgId)作新行插入、乐观气泡(serverId 未钉)被当 in-flight 追加
+    // → 同一条图片瞬时两行、整列上下跳。修法:用 objectName(乐观 filePath ↔ 权威 part.url)确定性
+    // 配对,提前带 clientMsgId 并收敛掉乐观副本 → 行 key 不变、无双行,且与 markSent 时序无关。
+    const opt = optimistic("c-1", {
+      filePath: "chat/obj-1.jpg",
+      parts: [{ kind: "image", url: "data:image/png;base64,abc", width: 900, height: 1600 }],
+    });
+    const auth = msg("server-1", {
+      direction: "out",
+      status: "sent",
+      parts: [
+        { kind: "image", url: attachmentPreviewUrl("chat/obj-1.jpg"), width: 901, height: 1599 },
+      ],
+    });
+    const next = replaceAuthoritative(sliceWith([opt]), [auth]);
+    // 收敛成一行(无瞬时双行),clientMsgId 带到权威条目稳住跨「乐观→权威」行 key。
+    expect(selectTimeline(next).map((e) => e.id)).toEqual(["server-1"]);
+    expect(next.byId["c-1"]).toBeUndefined();
+    expect(next.byId["server-1"].clientMsgId).toBe("c-1");
+    // 复用 preserveOptimisticImageDimensions:权威条目沿用乐观本地宽高,防尺寸回跳。
+    expect(next.byId["server-1"].parts).toEqual([
+      expect.objectContaining({ kind: "image", width: 900, height: 1600 }),
+    ]);
+  });
+
+  it("replaceAuthoritative 竞态:objectName 不匹配的权威出站附件不误收敛乐观气泡(保留在飞气泡)", () => {
+    // 回归保护:配对必须按 objectName 等值命中,不能把无关的权威出站消息吞掉本地在飞气泡。
+    const opt = optimistic("c-1", {
+      filePath: "chat/obj-1.jpg",
+      parts: [{ kind: "image", url: "data:image/png;base64,abc" }],
+    });
+    const other = msg("server-9", {
+      direction: "out",
+      status: "sent",
+      parts: [{ kind: "image", url: attachmentPreviewUrl("chat/other.jpg") }],
+    });
+    const next = replaceAuthoritative(sliceWith([opt]), [other]);
+    expect(selectTimeline(next).map((e) => e.id)).toEqual(["server-9", "c-1"]);
+    expect(next.byId["c-1"].status).toBe("sending");
   });
 
   it("prependOlder prepends and dedups by id", () => {

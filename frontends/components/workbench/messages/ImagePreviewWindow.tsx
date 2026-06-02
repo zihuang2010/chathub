@@ -74,6 +74,8 @@ export function ImagePreviewWindow() {
         localPath={current.localPath}
         // 独立窗有系统原生关闭(标题栏红绿灯/窗口控件),隐藏灯箱内的 ✕ 去重。
         showClose={false}
+        // 整窗看图:图片近铺满窗口,减少四周留白(应用内灯箱默认保留留白)。
+        fill
         onClose={() => {
           void getCurrentWindow().close();
         }}
