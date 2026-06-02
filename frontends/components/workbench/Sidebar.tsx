@@ -231,7 +231,7 @@ function UserBadge({ collapsed }: { collapsed: boolean }) {
   // 单一布局:头像恒定居左(px-2.5 → 头像中心 32px,与导航图标左槽中心对齐),收/展
   // 两态零位移;名称/状态常驻挂载,仅以 opacity 淡入淡出 —— 收缩时不再整树替换造成跳动。
   return (
-    <div className="flex items-center px-2.5 pb-1 pt-4">
+    <div className="flex items-end px-2.5 pb-1 pt-4">
       {/* 头像即「个人信息」触发器,点击在右侧弹出个人信息卡片。button 仅作触发壳,不改
           AvatarMark 视觉:套同款 rounded-lg + focus-ring,hover 轻微放大提示可点击。收/展两态都可用。 */}
       <ProfilePopover profile={profile} status={status}>
