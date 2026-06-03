@@ -81,6 +81,19 @@ function pickVoiceFile(voiceInput: HTMLInputElement, name: string) {
   fireEvent.change(voiceInput, { target: { files: [fileNamed(name, "audio/amr")] } });
 }
 
+// 发送按钮:默认非静音文案「发送」,静音偏好下为「静默发送」,两者皆兜底。
+function sendButton(): HTMLButtonElement {
+  const el =
+    document.body.querySelector<HTMLButtonElement>(
+      `button[aria-label="${STRINGS.composer.send}"]`,
+    ) ??
+    document.body.querySelector<HTMLButtonElement>(
+      `button[aria-label="${STRINGS.composer.sendSilentMain}"]`,
+    );
+  if (!el) throw new Error("找不到发送按钮");
+  return el;
+}
+
 async function renderComposer() {
   const utils = render(<MessageComposer conversationId={CONV} {...baseProps} />);
   // 等编辑器在 effect 中创建(RichComposer immediatelyRender:false)。
@@ -242,6 +255,70 @@ describe("MessageComposer 附件三入口 + 语音独占态", () => {
     expect(showToastMock).toHaveBeenCalled();
     const messages = showToastMock.mock.calls.map((c) => c[0]);
     expect(messages).toContain(STRINGS.toast.fileFormatOnly);
+  });
+
+  it("发送语音后不 revoke 其 blob URL:气泡需复用该 blob 做应用内播放", async () => {
+    // jsdom 的 createObjectURL 返回真实 blob: URL,但内容不可控;此处 stub 成可预期串,
+    // 便于断言「这条语音的 url 没被 revoke」。
+    const created: string[] = [];
+    const createSpy = vi.spyOn(URL, "createObjectURL").mockImplementation(() => {
+      const u = `blob:voice-${created.length}`;
+      created.push(u);
+      return u;
+    });
+    const revokeSpy = vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => undefined);
+    try {
+      const { container } = await renderComposer();
+      const { voice } = fileInputs(container);
+
+      await act(async () => {
+        pickVoiceFile(voice!, "memo.amr");
+      });
+      await waitFor(() => expect(container.textContent).toContain("memo.amr"));
+      const voiceUrl = created[created.length - 1];
+
+      await act(async () => {
+        fireEvent.click(sendButton());
+      });
+      // onSend 被触发(确认确实走了 submitDraft)。
+      expect(baseProps.onSend).toHaveBeenCalled();
+      // 关键断言:语音 blob 未被 revoke —— 发送后 ownership 转给 MessageBubble,
+      // 点击播放时 VoiceAttachment 仍要 fetch(part.url) 复用它。
+      expect(revokeSpy).not.toHaveBeenCalledWith(voiceUrl);
+    } finally {
+      createSpy.mockRestore();
+      revokeSpy.mockRestore();
+    }
+  });
+
+  it("发送文件附件后照常 revoke 其 blob URL:气泡不复用文件 blob", async () => {
+    const created: string[] = [];
+    const createSpy = vi.spyOn(URL, "createObjectURL").mockImplementation(() => {
+      const u = `blob:file-${created.length}`;
+      created.push(u);
+      return u;
+    });
+    const revokeSpy = vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => undefined);
+    try {
+      const { container } = await renderComposer();
+      const { doc } = fileInputs(container);
+
+      await act(async () => {
+        fireEvent.change(doc!, { target: { files: [fileNamed("report.pdf", "application/pdf")] } });
+      });
+      await waitFor(() => expect(container.textContent).toContain("report.pdf"));
+      const fileUrl = created[created.length - 1];
+
+      await act(async () => {
+        fireEvent.click(sendButton());
+      });
+      expect(baseProps.onSend).toHaveBeenCalled();
+      // 文件附件下载链接被 isSafeUrl(link) 拦死、气泡不复用 blob → 发送即 revoke 释放内存。
+      expect(revokeSpy).toHaveBeenCalledWith(fileUrl);
+    } finally {
+      createSpy.mockRestore();
+      revokeSpy.mockRestore();
+    }
   });
 
   it("编辑器已有文本时点语音按钮 → 弹确认框;点「确定」后文本被清空", async () => {

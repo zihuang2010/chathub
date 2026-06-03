@@ -1,10 +1,33 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 // mock @tauri-apps/api/core 让 assetImageSrc 在测试环境下正常工作
 vi.mock("@tauri-apps/api/core", () => ({
   isTauri: () => true,
   convertFileSrc: (p: string) => `asset://localhost/${encodeURIComponent(p)}`,
+}));
+
+// mock benz-amr-recorder:语音点击播放经动态 import 该库解码;此处用最小桩暴露
+// initWithBlob/play 的 spy,验证本地预览语音确实走进了应用内解码路径。
+const benzMock = vi.hoisted(() => ({
+  initWithBlob: vi.fn(() => Promise.resolve()),
+  play: vi.fn(),
+}));
+vi.mock("benz-amr-recorder", () => ({
+  default: class {
+    initWithBlob = benzMock.initWithBlob;
+    play = benzMock.play;
+    onPlay() {}
+    onStop() {}
+    onEnded() {}
+    getDuration() {
+      return 0;
+    }
+    isPlaying() {
+      return false;
+    }
+    stop() {}
+  },
 }));
 
 import { buildMessageParts } from "./data";
@@ -599,5 +622,31 @@ describe("VoiceAttachment 播放接线", () => {
     expect(container.querySelector("audio")).toBeNull();
     // 仍渲染播放按钮。
     expect(container.querySelector("button")).not.toBeNull();
+  });
+
+  it("本地乐观预览(blob:)语音点击后走 benz 应用内解码(发送后可播放)", async () => {
+    // 发送后乐观气泡的语音 url 是本地 blob:(原始文件,可能是 amr,webview <audio> 解不了),
+    // 旧逻辑 isSafeUrl(...,"link") 判 blob 不安全 → 点击直接 return 不播放。修复后:本地预览
+    // 视为可播,统一走 benz 取本地 Blob 解码播放。
+    const origFetch = global.fetch;
+    global.fetch = vi.fn(() =>
+      Promise.resolve({ blob: () => Promise.resolve(new Blob()) }),
+    ) as unknown as typeof fetch;
+    try {
+      const { container } = renderContent({
+        attachments: [{ type: "voice", url: "blob:tauri://localhost/abc", durationSec: 3 }],
+      });
+      // 本地预览不挂原生 <audio>(blob 可能是 amr),统一走 benz。
+      expect(container.querySelector("audio")).toBeNull();
+      const btn = container.querySelector("button")!;
+      await act(async () => {
+        fireEvent.click(btn);
+      });
+      await waitFor(() => expect(benzMock.initWithBlob).toHaveBeenCalledTimes(1));
+    } finally {
+      global.fetch = origFetch;
+      benzMock.initWithBlob.mockClear();
+      benzMock.play.mockClear();
+    }
   });
 });

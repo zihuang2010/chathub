@@ -485,8 +485,13 @@ export function MessageComposer({
     // 用 isSafeUrl(url, "link") 校验下载链接,blob: 不在 link 白名单 → href 恒为 undefined;
     // 且 setFileAttachments([]) 删 entry 时并不 revoke。不在此 revoke 会让底层 File(常达
     // 几十 MB)随每次发送永久驻留进程内存。
+    // 例外:语音不能在此 revoke。语音乐观气泡未落库前,VoiceAttachment 点击播放走 isLocal
+    // 分支 fetch(part.url) 复用这条 blob 做应用内解码(benz)。提前 revoke → fetch 抛错 →
+    // 回退 openExternal(blob:) 无效 → 本地刚发的语音「点了播不了」。ownership 已转给气泡
+    // (见上方文件附件 blob 生命周期注释),其 blob 随会话 LRU 淘汰 / 页面 unload 回收;语音
+    // 体积小(≤2MB),驻留有界。图片不受此影响是因 <img> 在 revoke 前已即时加载解码。
     for (const a of fileAttachments) {
-      if (a.url.startsWith("blob:")) URL.revokeObjectURL(a.url);
+      if (a.type !== "voice" && a.url.startsWith("blob:")) URL.revokeObjectURL(a.url);
     }
     setPendingFileAttachments([]);
     // Reset draft (sets EMPTY_DOC in the store).

@@ -8,12 +8,15 @@ use crate::event_policy::{self, EventPolicy};
 use crate::hub_service::TokenAuthenticator;
 use crate::router::Router;
 use crate::storage::events::{EventLog, EventRow};
-use axum::extract::{DefaultBodyLimit, State};
+use axum::body::Body;
+use axum::extract::{DefaultBodyLimit, Request, State};
 use axum::http::{HeaderMap, StatusCode};
+use axum::middleware::{self, Next};
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router as AxumRouter};
 use serde::{Deserialize, Serialize};
+use std::io::Write;
 use std::sync::Arc;
 use std::time::Instant;
 use subtle::ConstantTimeEq;
@@ -47,16 +50,56 @@ pub struct PushState {
     pub max_body_bytes: usize,
     /// 与 HubSvc 共享的鉴权缓存 —— FORCE_CLOSE 时失效被踢 employee 的旧 token。
     pub auth: Arc<TokenAuthenticator>,
+    /// 可选:push 原始入站 body 旁路写独立按日轮转文件(上线后 diff/jq 比对)。
+    /// `None` = 关闭(不挂中间件,零开销)。来源 env `RELAY_SOURCE_JSON_LOG`。
+    pub source_json_log: Option<tracing_appender::non_blocking::NonBlocking>,
 }
 
 pub fn app(state: PushState) -> AxumRouter {
     let max_body = state.max_body_bytes;
+    // 仅当开启时给 push 路由(不含 /healthz)挂一层中间件,把原始 body 旁路写文件。
+    // 关闭时不挂任何层,push 热路径零额外开销。
+    let push_route = match state.source_json_log.clone() {
+        Some(writer) => {
+            post(handle_push).layer(middleware::from_fn(move |req: Request, next: Next| {
+                let writer = writer.clone();
+                async move { log_raw_body(writer, max_body, req, next).await }
+            }))
+        }
+        None => post(handle_push),
+    };
     AxumRouter::new()
         .route("/healthz", get(|| async { (StatusCode::OK, "ok") }))
-        .route(NOTIFY_PUSH_PATH, post(handle_push))
+        .route(NOTIFY_PUSH_PATH, push_route)
         // F2 安全:axum 默认 body limit 2MB,我们收紧到 RELAY_PUSH_MAX_BODY_BYTES(默认 1MB)
         .layer(DefaultBodyLimit::max(max_body))
         .with_state(state)
+}
+
+/// push 原始入站 body 旁路落盘中间件:进入 `handle_push` 前把整条 body 原样写一行
+/// (verbatim 字节 + `\n`,单次 `write_all` 保证整行原子、并发不交错),再用缓冲出的
+/// bytes 重建 request 交回原 handler。`handle_push` 及其 tracing 不受影响。
+///
+/// 超大 body(超 `max_body`,本就会被 `DefaultBodyLimit` 拒)时 `to_bytes` 返回 `Err`、
+/// body 已排空,只能转发空 body 让 handler 走原拒绝路径 —— 仅此一条已被拒的边界路径有差异。
+async fn log_raw_body(
+    mut writer: tracing_appender::non_blocking::NonBlocking,
+    max_body: usize,
+    req: Request,
+    next: Next,
+) -> axum::response::Response {
+    let (parts, body) = req.into_parts();
+    match axum::body::to_bytes(body, max_body).await {
+        Ok(bytes) => {
+            let mut line = Vec::with_capacity(bytes.len() + 1);
+            line.extend_from_slice(&bytes);
+            line.push(b'\n');
+            let _ = writer.write_all(&line); // best-effort,不阻塞请求
+            next.run(Request::from_parts(parts, Body::from(bytes)))
+                .await
+        }
+        Err(_) => next.run(Request::from_parts(parts, Body::empty())).await,
+    }
 }
 
 // ─── /rpc/v1/wecomAggregate/notify/push ───────────────────────────────────
@@ -417,6 +460,7 @@ mod tests {
             allowed_client_ids: vec!["rh_wxchat".into()],
             max_body_bytes: 1024 * 1024,
             auth: Arc::new(TokenAuthenticator::new(downstream)),
+            source_json_log: None,
         }
     }
 
@@ -744,5 +788,130 @@ mod tests {
         let rows = log.query_since(42, 0, 10).await.unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].event_type, "FUTURE_EVENT_TYPE");
+    }
+
+    // ─── source_json 旁路落盘 ───────────────────────────────────────────────
+
+    /// 读取 tempdir 里唯一一个 `relay-source-json*` 文件全文。
+    fn read_source_json_file(dir: &std::path::Path) -> String {
+        let mut found = None;
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let p = entry.unwrap().path();
+            if p.file_name()
+                .and_then(|s| s.to_str())
+                .map(|s| s.starts_with("relay-source-json"))
+                .unwrap_or(false)
+            {
+                found = Some(p);
+            }
+        }
+        std::fs::read_to_string(found.expect("source-json 文件应已创建")).unwrap()
+    }
+
+    #[tokio::test]
+    async fn source_json_log_writes_raw_body_as_single_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let (writer, guard) = tracing_appender::non_blocking(tracing_appender::rolling::daily(
+            dir.path(),
+            "relay-source-json",
+        ));
+        let mut st = make_state().await;
+        st.source_json_log = Some(writer);
+
+        let (status, _) = post(
+            app(st),
+            body(
+                1001,
+                42,
+                serde_json::json!([{ "eventType": "MESSAGE_UPSERT", "conversationId": "c1" }]),
+            ),
+            "ps",
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+
+        drop(guard); // flush + join worker
+
+        let content = read_source_json_file(dir.path());
+        let lines: Vec<&str> = content.lines().filter(|l| !l.is_empty()).collect();
+        assert_eq!(lines.len(), 1, "一条 push = 一行");
+        // 原样落盘:解析回来字段与请求一致
+        let v: serde_json::Value = serde_json::from_str(lines[0]).expect("应为完整单行 JSON");
+        assert_eq!(v["notifySeq"], 1001);
+        assert_eq!(v["clientId"], "rh_wxchat");
+        assert_eq!(v["employeeId"], 42);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn source_json_log_concurrent_no_interleave_no_loss() {
+        let dir = tempfile::tempdir().unwrap();
+        let (writer, guard) = tracing_appender::non_blocking(tracing_appender::rolling::daily(
+            dir.path(),
+            "relay-source-json",
+        ));
+        let mut st = make_state().await;
+        st.source_json_log = Some(writer);
+
+        let n: u64 = 20;
+        let mut handles = Vec::new();
+        for seq in 1..=n {
+            let st = st.clone();
+            handles.push(tokio::spawn(async move {
+                let (status, _) = post(
+                    app(st),
+                    body(
+                        seq,
+                        42,
+                        serde_json::json!([{ "eventType": "MESSAGE_UPSERT", "conversationId": "c1" }]),
+                    ),
+                    "ps",
+                )
+                .await;
+                assert_eq!(status, StatusCode::OK);
+            }));
+        }
+        for h in handles {
+            h.await.unwrap();
+        }
+        drop(guard);
+
+        let content = read_source_json_file(dir.path());
+        let mut seen = std::collections::BTreeSet::new();
+        for line in content.lines().filter(|l| !l.is_empty()) {
+            // 每行都能独立解析 = 没有交错
+            let v: serde_json::Value =
+                serde_json::from_str(line).expect("每行应为完整 JSON(不交错)");
+            seen.insert(v["notifySeq"].as_u64().unwrap());
+        }
+        let expected: std::collections::BTreeSet<u64> = (1..=n).collect();
+        assert_eq!(seen, expected, "不交错、不丢行");
+    }
+
+    #[tokio::test]
+    async fn source_json_log_disabled_creates_no_file() {
+        let dir = tempfile::tempdir().unwrap();
+        // make_state 默认 source_json_log = None → 不挂中间件、不写文件
+        let st = make_state().await;
+        assert!(st.source_json_log.is_none());
+        let (status, _) = post(
+            app(st),
+            body(
+                7,
+                42,
+                serde_json::json!([{ "eventType": "MESSAGE_UPSERT" }]),
+            ),
+            "ps",
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        // tempdir 里不应出现 source-json 文件
+        let any = std::fs::read_dir(dir.path()).unwrap().any(|e| {
+            e.unwrap()
+                .file_name()
+                .to_str()
+                .map(|s| s.starts_with("relay-source-json"))
+                .unwrap_or(false)
+        });
+        assert!(!any, "关闭时不应创建 source-json 文件");
     }
 }

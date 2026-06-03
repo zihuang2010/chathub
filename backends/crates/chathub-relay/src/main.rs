@@ -25,6 +25,18 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilte
 async fn main() -> anyhow::Result<()> {
     let cfg = Config::from_env()?;
     let _log_guard = init_tracing(&cfg)?;
+
+    // push 原始入站 body 旁路落盘(env RELAY_SOURCE_JSON_LOG,默认开):独立按日轮转文件,
+    // 每行一条原样 body,供上线初期 diff/jq 比对。复用 cfg.log.dir(init_tracing 已建)。
+    // _source_json_guard 必须活到进程退出,否则丢未刷盘的行。
+    let (source_json_writer, _source_json_guard) = if cfg.log.source_json {
+        let appender = tracing_appender::rolling::daily(&cfg.log.dir, "relay-source-json");
+        let (writer, guard) = tracing_appender::non_blocking(appender);
+        (Some(writer), Some(guard))
+    } else {
+        (None, None)
+    };
+
     tracing::info!(
         target: "chathub_relay::config",
         "effective configuration:\n{}",
@@ -131,6 +143,7 @@ async fn main() -> anyhow::Result<()> {
         allowed_client_ids: cfg.allowed_client_ids.clone(),
         max_body_bytes: cfg.push_max_body_bytes,
         auth: auth.clone(),
+        source_json_log: source_json_writer,
     };
     let push_app = push::app(push_state);
 

@@ -116,6 +116,7 @@ pub async fn spawn_relay_with(pull: PullCfg) -> RelayHarness {
         allowed_client_ids: vec!["rh_wxchat".into()],
         max_body_bytes: 1024 * 1024,
         auth: auth.clone(),
+        source_json_log: None,
     };
     let push_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let push_addr = push_listener.local_addr().unwrap();

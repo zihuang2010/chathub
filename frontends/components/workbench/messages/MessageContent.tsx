@@ -254,11 +254,15 @@ function VoiceAttachment({ part }: { part: VoicePart }) {
   // Wave bar count scales with duration so a 5s voice doesn't visually claim
   // the same width as a 60s one. Cap at 18 bars for layout stability.
   const barCount = Math.min(18, Math.max(6, Math.ceil(seconds / 2)));
-  const safe = isSafeUrl(part.url, "link");
+  // 本地乐观预览(blob:/data:):刚发送、未落库前气泡用本地预览 URL(原始文件,可能是 amr,
+  // webview <audio> 解不了),且 isSafeUrl(...,"link") 不放行 blob/data。此处视为可播,并统一
+  // 走 benz 应用内解码(其 initWithBlob 兼解 amr 与 mp3/wav)。
+  const isLocal = /^(?:blob:|data:)/i.test(part.url);
+  const safe = isLocal || isSafeUrl(part.url, "link");
   const ext = audioExtension(part.url);
   const isAmr = ext === "amr";
-  // amr 走 benz 应用内解码;silk/sil 仍无解码 → 外部打开;其余(mp3/wav 等)用原生 <audio>。
-  const nativePlayable = safe && !WEB_UNPLAYABLE_AUDIO.has(ext) && !isAmr;
+  // amr / 本地预览走 benz 应用内解码;silk/sil 仍无解码 → 外部打开;其余 http(mp3/wav 等)用原生 <audio>。
+  const nativePlayable = safe && !isLocal && !WEB_UNPLAYABLE_AUDIO.has(ext) && !isAmr;
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const amrRef = useRef<BenzAMRInstance | null>(null);
   const [playing, setPlaying] = useState(false);
@@ -272,7 +276,8 @@ function VoiceAttachment({ part }: { part: VoicePart }) {
     };
   }, []);
 
-  const playAmr = async () => {
+  // 应用内解码播放:amr / 本地预览统一走 benz(initWithBlob 兼解 amr 与 mp3/wav)。
+  const playInApp = async () => {
     // 已有实例 → 直接切换播放/停止,无需重新取字节解码。
     const existing = amrRef.current;
     if (existing) {
@@ -285,10 +290,14 @@ function VoiceAttachment({ part }: { part: VoicePart }) {
     try {
       // 默认导出是 BenzAMRRecorder 类(见 node_modules 自带 .d.ts)。
       const { default: BenzAMRRecorder } = await import("benz-amr-recorder");
-      // 经后端命令取字节:JS fetch/WebAudio 直读 OSS 受 CORS 限制取不到,Tauri 命令不受此限。
-      const bytes = await invoke<number[]>("fetch_media_bytes", { url: part.url });
+      // 本地预览(blob:/data:)直接在 webview 取 Blob;远程 OSS 经后端命令取字节绕 CORS。
+      const blob = isLocal
+        ? await (await fetch(part.url)).blob()
+        : new Blob([
+            new Uint8Array(await invoke<number[]>("fetch_media_bytes", { url: part.url })),
+          ]);
       const amr = new BenzAMRRecorder();
-      await amr.initWithBlob(new Blob([new Uint8Array(bytes)]));
+      await amr.initWithBlob(blob);
       amr.onPlay(() => setPlaying(true));
       amr.onStop(() => setPlaying(false));
       amr.onEnded(() => setPlaying(false));
@@ -310,8 +319,9 @@ function VoiceAttachment({ part }: { part: VoicePart }) {
 
   const handleClick = () => {
     if (!safe) return;
-    if (isAmr) {
-      void playAmr();
+    // amr / 本地预览(blob/data,可能是 amr,原生 <audio> 解不了)统一走 benz 应用内解码。
+    if (isAmr || isLocal) {
+      void playInApp();
       return;
     }
     const el = audioRef.current;
