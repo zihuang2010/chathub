@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { Message } from "@/components/workbench/messages/data";
 import { useChatStore } from "@/components/workbench/messages/store/chatStore";
+import { changeBus } from "@/lib/data/changeBus";
 
 import { useMessageHistory } from "./useMessageHistory";
 import {
@@ -143,5 +144,61 @@ describe("useMessageHistory loading 派生(防开场空态闪帧)", () => {
 
     const firstBRender = renders.find((r) => r.account === "acct-b");
     expect(firstBRender).toEqual({ account: "acct-b", loading: true, ids: [] });
+  });
+});
+
+describe("useMessageHistory resync 强制绕水位门 reconcile", () => {
+  // 每个用例独立 fake bus:beforeEach 重置为可捕获回调的实现,afterEach 恢复 no-op。
+  // 避免影响上方「loading 派生」用例(它们假设 subscribe 是 no-op 从不触发 cb)。
+  let convCb: ((n: { source: string }) => void) | undefined;
+
+  beforeEach(() => {
+    convCb = undefined;
+    vi.mocked(changeBus.subscribe).mockImplementation((topic, _scope, cb) => {
+      if (topic === "conversation-messages") {
+        convCb = cb as (n: { source: string }) => void;
+      }
+      return () => undefined;
+    });
+  });
+
+  afterEach(() => {
+    // 恢复默认 no-op 实现,不影响其他 describe。
+    vi.mocked(changeBus.subscribe).mockImplementation(() => () => undefined);
+  });
+
+  it("conversation-messages 的 resync notice → readCache(force=true)", async () => {
+    loadMock.mockResolvedValue({ records: [], hasMoreOlder: false });
+
+    renderHook(() => useMessageHistory({ ...READY, conversationId: "c-resync" }));
+    await flush();
+    loadMock.mockClear();
+
+    // 投递一条 resync notice。
+    await act(async () => {
+      convCb?.({ source: "resync" });
+      await new Promise((r) => setTimeout(r, 0));
+    });
+
+    // 强制绕水位门:loadConversationMessages 必须带 force=true。
+    const lastCall = loadMock.mock.calls[loadMock.mock.calls.length - 1];
+    expect(lastCall?.[0]).toEqual(expect.objectContaining({ force: true }));
+  });
+
+  it("conversation-messages 的普通 server-event notice → readCache(force=false)", async () => {
+    loadMock.mockResolvedValue({ records: [], hasMoreOlder: false });
+
+    renderHook(() => useMessageHistory({ ...READY, conversationId: "c-normal" }));
+    await flush();
+    loadMock.mockClear();
+
+    await act(async () => {
+      convCb?.({ source: "server-event" });
+      await new Promise((r) => setTimeout(r, 0));
+    });
+
+    // 普通重读:force 必须是 false(走常规水位门)。
+    const lastCall = loadMock.mock.calls[loadMock.mock.calls.length - 1];
+    expect(lastCall?.[0]).toEqual(expect.objectContaining({ force: false }));
   });
 });

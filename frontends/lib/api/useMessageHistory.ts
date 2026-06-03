@@ -132,8 +132,9 @@ export function useMessageHistory(opts: UseMessageHistoryOptions): UseMessageHis
 
   // 缓存优先读整窗(首屏 / 重读)。同时踢一次后端会话水位门:落后则后台 reconcile,
   // reconcile 完成后会发 conversation-messages ChangeNotice → 再触发本函数重读。
+  // opts.force=true:安全网 #3/#4(spec §6.4),resync 路径绕水位门一次性强制 reconcile。
   const readCache = useCallback(
-    async (showLoading: boolean) => {
+    async (showLoading: boolean, opts?: { force?: boolean }) => {
       if (!ready) return;
       // 与 loadMore 互斥:翻更旧页 in-flight 时跳过后台重读,
       // 否则重读的「整窗 REPLACE」会覆盖掉 loadMore 刚 prepend 的更旧页。
@@ -147,6 +148,7 @@ export function useMessageHistory(opts: UseMessageHistoryOptions): UseMessageHis
           wecomAccountId,
           externalUserId,
           limit: pageSize,
+          force: opts?.force ?? false,
         });
         if (targetKeyRef.current !== requestKey) return;
         const page = adaptHistoryRecords(resp.records, conversationId);
@@ -181,13 +183,15 @@ export function useMessageHistory(opts: UseMessageHistoryOptions): UseMessageHis
   }, [ready, activeTargetKey, readCache]);
 
   // 订阅 conversation-messages:后台 reconcile 落库 → 重读缓存(不显 loading,stale-while-revalidate)。
+  // 安全网 #3/#4(spec §6.4):resync notice(source==="resync")强制绕水位门一次性同步 reconcile;
+  // 普通 reconcile 落库通知(source!=="resync")走常规重读,后端已对齐,前端只重读本地缓存。
   useEffect(() => {
     if (!ready || !employeeId) return;
     const unsubscribe = changeBus.subscribe(
       "conversation-messages",
       { employeeId, conversationId },
-      () => {
-        void readCache(false);
+      (notice) => {
+        void readCache(false, { force: notice.source === "resync" });
       },
     );
     // 补读一次:employeeId 由 useCurrentEmployeeId 异步解析(初值 null),在它 settle 前本
