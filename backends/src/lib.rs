@@ -125,8 +125,13 @@ async fn login(
             return Err(e);
         }
     };
+    // S1:强制干净重连。直接 start() 有幂等陷阱——run_loop 仍存活时 start() 静默 return,
+    // 重/二次登录变空操作且日志误导。先 stop()(abort 旧 task + 置 Disconnected)再 start()。
+    // stop/start 共用 task mutex 串行,不会产生双 run_loop;abort 可能切断正在 apply 的批,
+    // 靠四个 applier 同 seq 重投幂等兜底(见 spec §4.3 / P1 applier 核验)。
+    cm.stop().await;
     cm.start().await;
-    info!(target: "chathub::cmd", user_id = %profile.user_id, "login command ok, ConnectionManager started");
+    info!(target: "chathub::cmd", user_id = %profile.user_id, "login command ok, ConnectionManager reconnected");
     Ok(profile)
 }
 
