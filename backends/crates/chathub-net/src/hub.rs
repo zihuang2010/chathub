@@ -1134,6 +1134,11 @@ impl Inner {
             self.state_tx.send_replace(ConnectionState::Subscribed);
             backoff.reset();
 
+            // 本次订阅的回放上界:收到 SubscribeAck 后从 ack.replayed_to_seq 取;
+            // 在此之前以 since 兜底(<=since 的都已处理过)。回放帧不进 event_tx 广播,
+            // 避免大回放灌爆 broadcast(256) 触发 Lagged→stop/start 抖动。
+            let mut replay_high: u64 = since;
+
             // ack 合并:每 1s 最多回传一次"最高已落库水位"(apply-then-advance 后持久化的值),
             // 避免每条消息一次 RPC,又让 relay 重放缓冲有界。空闲时水位不前进 → 不发。
             // interval 首 tick 立即就绪,消费掉以让第一次 ack 落在一个完整窗口之后。
@@ -1170,6 +1175,11 @@ impl Inner {
                                     if s.kind == Kind::ServerDrain as i32
                                        || s.kind == Kind::ResyncRequired as i32
                             );
+
+                            // 捕获本次订阅回放上界(所有 ack,不止 resync)。
+                            if let Some(Body::SubscribeAck(ack)) = &event.body {
+                                replay_high = ack.replayed_to_seq;
+                            }
 
                             // resync 信号汇聚:两条路径都触发上层全量重拉
                             //   1) Subscribe 首帧 ack.resync_required=true(超 retention 或积压截断)
@@ -1236,7 +1246,15 @@ impl Inner {
                                 }
                             }
 
-                            let _ = self.event_tx.send(event);
+                            // 回放帧(notify_seq <= 本次回放上界)只落库 + 推进水位,不进 event_tx
+                            // 广播;live 帧(> 上界)正常广播。逐帧判断,抗 live/replay 交错。
+                            let is_replay_frame = matches!(
+                                &event.body,
+                                Some(Body::PushBatch(pb)) if pb.notify_seq <= replay_high
+                            );
+                            if !is_replay_frame {
+                                let _ = self.event_tx.send(event);
+                            }
 
                             if should_terminate {
                                 // SERVER_DRAIN / RESYNC_REQUIRED → 主动断 + 退避重连
