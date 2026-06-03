@@ -5,6 +5,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { ToastViewport, showToast } from "@/components/ui/toast";
 import { WorkbenchPanel } from "@/components/workbench/WorkbenchPanel";
+import type { PendingOpenConversation } from "@/components/workbench/nav";
 import type { Account } from "@/lib/types/account";
 import { adaptFriendDetailToCustomer, type WecomFriend } from "@/lib/api/customers";
 import { useFriendDetail } from "@/lib/api/useFriendDetail";
@@ -156,9 +157,16 @@ interface MessagesPageProps {
   /** 由 Workbench 提供的账号列表(来自 list_accounts)。下拉用 `account.id`(= `wecomAccountId`)
    *  做选项值与筛选状态,直接传给 useRecentFriends;展示名按 id 反查 accounts。 */
   accounts: readonly Account[];
+  /** 客户页点「发起会话」跳来的一次性意图:取/建该客户会话并选中。消费后调 onConsumePendingOpen 清空。 */
+  pendingOpenConversation?: PendingOpenConversation | null;
+  onConsumePendingOpen?: () => void;
 }
 
-export function MessagesPage({ accounts }: MessagesPageProps) {
+export function MessagesPage({
+  accounts,
+  pendingOpenConversation,
+  onConsumePendingOpen,
+}: MessagesPageProps) {
   const [selectedId, setSelectedId] = useState<string>("");
   // 账号筛选状态直接存 `account.id`(= wecomAccountId,唯一);同名账号互不干扰。
   const [selectedAccountId, setSelectedAccountId] = useState<string | null>(null);
@@ -467,17 +475,20 @@ export function MessagesPage({ accounts }: MessagesPageProps) {
   // conversationId 取服务端权威 requestConversationId(客户端不自算)。命令落地后行经 useResource
   // 重读进 recentEntries,可能慢于 await 返回,故挂 pendingOpenId,等行出现再选中(见下方 effect)。
   const pendingOpenIdRef = useRef<string | null>(null);
-  const handleOpenCustomer = useCallback(
-    async (friend: WecomFriend) => {
-      // wecomName/wecomAlias 仅用于"无记录建空白行"时展示归属账号;从 accounts 反查。
-      const accountName = accounts.find((a) => a.id === friend.wecomAccountId)?.name ?? "";
+  // 取/建会话核心:open_friend_conversation 一次性定位/建会话并返回服务端权威 conversationId
+  // (新旧会话同一路径,判断在后端);落地后挂 pendingOpenIdRef,等行重读出现再选中(见下方 effect)。
+  // 搜索框点客户、客户页「发起会话」共用此内核,避免打开编排重复。
+  // wecomName/wecomAlias 仅用于"无记录建空白行"时展示归属账号;从 accounts 反查。
+  const openConversationByIdentity = useCallback(
+    async (identity: PendingOpenConversation) => {
+      const accountName = accounts.find((a) => a.id === identity.wecomAccountId)?.name ?? "";
       try {
         const conversationId = await openFriend({
-          wecomAccountId: friend.wecomAccountId,
-          externalUserId: friend.externalUserId,
-          externalName: friend.externalName,
-          externalAvatar: friend.externalAvatar,
-          externalMobile: friend.externalMobile,
+          wecomAccountId: identity.wecomAccountId,
+          externalUserId: identity.externalUserId,
+          externalName: identity.externalName,
+          externalAvatar: identity.externalAvatar,
+          externalMobile: identity.externalMobile,
           wecomName: accountName,
           wecomAlias: accountName,
         });
@@ -485,11 +496,22 @@ export function MessagesPage({ accounts }: MessagesPageProps) {
       } catch (e) {
         // 暴露后端原始错误,便于区分失败点(未登录 / list_recent_friends 网络异常 /
         // 服务端未返回会话 ID / 本地存储异常),通用 toast 看不出具体原因。
-        console.error("[open_friend_conversation] 打开会话失败", e, { friend });
+        console.error("[open_friend_conversation] 打开会话失败", e, { identity });
         showToast(STRINGS.conversationList.openConversationFailed, { type: "error" });
       }
     },
     [accounts, openFriend],
+  );
+  const handleOpenCustomer = useCallback(
+    (friend: WecomFriend) =>
+      openConversationByIdentity({
+        wecomAccountId: friend.wecomAccountId,
+        externalUserId: friend.externalUserId,
+        externalName: friend.externalName,
+        externalAvatar: friend.externalAvatar,
+        externalMobile: friend.externalMobile,
+      }),
+    [openConversationByIdentity],
   );
 
   // openFriend 落地后,等 recentEntries 重读出该会话行再选中(+ 有未读则标已读)。
@@ -504,6 +526,15 @@ export function MessagesPage({ accounts }: MessagesPageProps) {
     setSelectedId(pid);
     if (entry.hasUnread || entry.unreadCount > 0) void markReadRecent(pid);
   }, [recentEntries, markReadRecent]);
+
+  // 客户页点「发起会话」跳转过来的一次性意图:走与搜索框打开同一条路径
+  // (openConversationByIdentity → pendingOpenIdRef → 上方 effect 选中)。意图非空才跑,
+  // 消费后通知 Workbench 置 null,不会重入。本页常驻挂载,切到消息页前 effect 即已触发。
+  useEffect(() => {
+    if (!pendingOpenConversation) return;
+    void openConversationByIdentity(pendingOpenConversation);
+    onConsumePendingOpen?.();
+  }, [pendingOpenConversation, openConversationByIdentity, onConsumePendingOpen]);
 
   // 搜索框清空:撤销待选中的打开请求(列表本就是默认态,无需额外处理)。
   const handleClearSearch = useCallback(() => {

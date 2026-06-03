@@ -3,7 +3,7 @@ import type { ReactNode } from "react";
 
 import { PlaceholderPage } from "@/components/workbench/PlaceholderPage";
 import { Sidebar } from "@/components/workbench/Sidebar";
-import { type Section } from "@/components/workbench/nav";
+import { type PendingOpenConversation, type Section } from "@/components/workbench/nav";
 import { AccountsPage } from "@/components/workbench/accounts/AccountsPage";
 import { CustomersPage } from "@/components/workbench/customers/CustomersPage";
 import { MessagesPage } from "@/components/workbench/messages/MessagesPage";
@@ -17,6 +17,9 @@ export function Workbench() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   // 跨页跳转用的一次性意图：账号页点卡片 → 客户页消费后清空。
   const [pendingAccountFilter, setPendingAccountFilter] = useState<string | null>(null);
+  // 跨页跳转用的一次性意图：客户页点「发起会话」→ 消息页消费后清空。
+  const [pendingOpenConversation, setPendingOpenConversation] =
+    useState<PendingOpenConversation | null>(null);
 
   // 账号列表 — 整个 workbench 共享一份。账号页 / 客户页都从这里读。
   const accountsState = useAccounts();
@@ -28,6 +31,16 @@ export function Workbench() {
 
   const consumePendingAccountFilter = useCallback(() => {
     setPendingAccountFilter(null);
+  }, []);
+
+  // 客户页点「发起会话」：暂存客户身份 + 切到消息页，由消息页消费意图取/建会话并选中。
+  const openCustomerInMessages = useCallback((intent: PendingOpenConversation) => {
+    setPendingOpenConversation(intent);
+    setSection("messages");
+  }, []);
+
+  const consumePendingOpenConversation = useCallback(() => {
+    setPendingOpenConversation(null);
   }, []);
 
   return (
@@ -56,13 +69,18 @@ export function Workbench() {
           撑到几百 MB。仅当前 section 接收交互(pointer-events),其它 aria-hidden 静默。 */}
       <div className="relative flex min-w-0 flex-1">
         <SectionLayer active={section === "messages"}>
-          <MessagesPage accounts={accountsState.accounts} />
+          <MessagesPage
+            accounts={accountsState.accounts}
+            pendingOpenConversation={pendingOpenConversation}
+            onConsumePendingOpen={consumePendingOpenConversation}
+          />
         </SectionLayer>
         <SectionLayer active={section === "customers"}>
           <CustomersPage
             accounts={accountsState.accounts}
             pendingAccountFilter={pendingAccountFilter}
             onConsumePendingFilter={consumePendingAccountFilter}
+            onOpenInMessages={openCustomerInMessages}
           />
         </SectionLayer>
         <SectionLayer active={section === "accounts"}>

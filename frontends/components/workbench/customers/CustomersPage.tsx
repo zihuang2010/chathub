@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { ToastViewport, showToast } from "@/components/ui/toast";
 import { WorkbenchPanel } from "@/components/workbench/WorkbenchPanel";
+import type { PendingOpenConversation } from "@/components/workbench/nav";
 import { adaptFriendDetailToCustomer, adaptFriendToCustomer } from "@/lib/api/customers";
 import { useFriendDetail } from "@/lib/api/useFriendDetail";
 import { useFriends } from "@/lib/api/useFriends";
@@ -27,6 +28,11 @@ interface CustomersPageProps {
    */
   pendingAccountFilter?: string | null;
   onConsumePendingFilter?: () => void;
+  /**
+   * 点客户「发起会话」→ 通知 Workbench 切到消息页并打开该客户会话。会话的取/建由消息页
+   * 调 open_friend_conversation 完成(新旧会话同一路径,判断交给后端),本页只负责传客户身份。
+   */
+  onOpenInMessages?: (intent: PendingOpenConversation) => void;
 }
 
 const EMPTY_ACCOUNTS_SET: ReadonlySet<string> = new Set();
@@ -54,6 +60,7 @@ export function CustomersPage({
   accounts,
   pendingAccountFilter,
   onConsumePendingFilter,
+  onOpenInMessages,
 }: CustomersPageProps) {
   // 受控的账号筛选 state:同时驱动 API 入参(列表请求)与详情归属解析。
   const [selectedAccountIds, setSelectedAccountIds] =
@@ -269,9 +276,27 @@ export function CustomersPage({
     [activeCustomer, store],
   );
 
-  const handleOpenChat = useCallback((customerId: string) => {
-    showToast(`将打开与该客户的会话(${customerId})`, { type: "info" });
-  }, []);
+  // 发起会话:取该客户的 (账号, 客户标识) 交给 Workbench → 消息页 open_friend_conversation
+  // 取/建会话并选中。新增 / 已存在会话同一路径,判断由后端命令负责,本页不分支。
+  const handleOpenChat = useCallback(
+    (customerId: string) => {
+      const customer = store.customers.find((c) => c.id === customerId);
+      // 取/建会话至少需账号 + 客户标识;adapter 正常会填,缺失属异常数据,显式提示不静默吞。
+      if (!customer?.accountId || !customer.externalUserId) {
+        showToast("无法发起会话:该客户缺少账号或客户标识", { type: "error" });
+        return;
+      }
+      onOpenInMessages?.({
+        wecomAccountId: customer.accountId,
+        externalUserId: customer.externalUserId,
+        externalName: customer.name,
+        externalAvatar: customer.avatarUrl ?? "",
+        // 列表手机号已脱敏;externalMobile 仅在"无记录建空白行"时做展示兜底,与搜索流同等处理。
+        externalMobile: customer.phone ?? "",
+      });
+    },
+    [store.customers, onOpenInMessages],
+  );
 
   const handleCall = useCallback(
     (customerId: string) => {

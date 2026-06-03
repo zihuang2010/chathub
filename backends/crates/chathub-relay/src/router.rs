@@ -43,7 +43,9 @@ pub struct EmployeeRegisterOutcome {
 /// `fanout_employee` 结果:成功送达的连接数 + 需要清理的连接 id 列表。
 pub struct FanoutOutcome {
     pub delivered: usize,
-    /// 队列已满 — 这些 connection 应该被发 RESYNC_REQUIRED 信号 + 清理。
+    /// 队列已满(256 缓冲)— 客户端落后太多。调用方摘除其 router 注册即可:
+    /// 缓冲已满无法再 try_send RESYNC 帧,且摘注册不会立即关流(subscribe spawn 仍持
+    /// tx 至 tx.closed()),客户端靠自身重连超时重订阅 + resync 续点兜底恢复。
     pub backpressure: Vec<String>,
     /// 接收端已关 — 这些 connection 应该被清理。
     pub closed: Vec<String>,

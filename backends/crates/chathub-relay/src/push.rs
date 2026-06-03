@@ -287,7 +287,10 @@ async fn handle_push(
         }
     };
 
-    // 清理 closed/backpressure 的连接 —— 客户端会感知断开并 since_notify_seq 重连
+    // 摘除 closed/backpressure 连接的 router 注册,停止继续向其 fanout:
+    //   - closed:客户端已断(rx 已 drop)→ 摘注册即终态清理。
+    //   - backpressure:缓冲满、客户端落后 → 摘注册后不再投递;流不会立即关
+    //     (subscribe spawn 仍持 tx),客户端靠重连超时重订阅 + resync 续点兜底。
     for conn_id in fanout.closed.iter().chain(fanout.backpressure.iter()) {
         state.router.drop_employee_stream(body.employee_id, conn_id);
     }

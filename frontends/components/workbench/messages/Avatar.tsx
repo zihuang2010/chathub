@@ -1,7 +1,7 @@
 import { Pin } from "lucide-react";
 
 import { STRINGS } from "./strings";
-import { pickAvatarColor, pickCustomerAvatarImage, resolveAvatarImageUrl } from "./utils";
+import { pickAvatarColor, resolveAvatarImageUrl } from "./utils";
 
 // Customers render as illustrated portraits sourced from public/avatars/.
 // We keep the legacy `avatarColor` (or hashed palette token) as the underlying
@@ -36,19 +36,20 @@ export function CustomerAvatar({ name, color, avatarUrl, size }: CustomerAvatarP
 }
 
 export function AgentAvatar({ account }: { account: string }) {
-  // 用与 CustomerAvatar 同一套 illustrated 头像素材,以 account 名 hash 取色与图,
-  // 避免之前文字缩写在出消息气泡边上像一个"账号 chip"而非"员工形象"的别扭感。
-  // 后续接入企微员工真实头像后只需要换数据源,DOM 结构不变。
+  // 归属账号在数据模型里没有真实头像(Account 无头像 URL 字段),故出向气泡头像统一回退到
+  // 首字色块:账号名首字 + 按账号名 hash 的 wb-avatar 配色,与账号下拉(AccountDropdown)、
+  // 客户头像 fallback 同一套 letter-tile 视觉。之前用 pickCustomerAvatarImage 取插画图会
+  // 显示一张与账号无关的人像。后续接入企微员工真实头像后,只需在此叠加 <img> 优先渲染。
+  const initial = account.trim().slice(0, 1) || "?";
   return (
     <div
       role="img"
       aria-label={account}
-      className="size-9 shrink-0 rounded-lg bg-cover bg-center shadow-[inset_0_0_0_1px_rgba(255,255,255,0.48)]"
-      style={{
-        backgroundColor: pickAvatarColor(account),
-        backgroundImage: `url(${pickCustomerAvatarImage(account)})`,
-      }}
-    />
+      className="grid size-9 shrink-0 place-items-center rounded-lg text-[15px] font-medium text-workbench-text shadow-[inset_0_0_0_1px_rgba(255,255,255,0.48)]"
+      style={{ background: pickAvatarColor(account) }}
+    >
+      {initial}
+    </div>
   );
 }
 
