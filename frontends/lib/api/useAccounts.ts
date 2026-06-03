@@ -8,7 +8,7 @@
 // C5 前是自己 listen("accounts_changed") + 自管 loading/error;
 // C5 后这些都由 useResource 集中处理,本 hook 只负责"绑 employeeId + queryFn + 兼容旧 API"。
 
-import { useCallback, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 
 import { useCurrentEmployeeId } from "@/lib/data/useCurrentEmployeeId";
 import { useResource } from "@/lib/data/useResource";
@@ -39,6 +39,20 @@ export function useAccounts(): UseAccountsResult {
     },
     enabled: !!employeeId,
   });
+
+  // 安全网 #2(spec §6.4-2):resync 路径强制拉 listMine 而非读 cache。useResource 的 resync
+  // 分支会 setResyncing(true) 后立即 doFetch();这里在 resyncing false→true 跃迁时置
+  // forceNextRef,使紧随(及后续直到下次成功)的 queryFn 透传 force=true 绕 cache。
+  // 注:effect 跑在 render 之后,故慢一拍——该次 doFetch 仍 force=false,下一次才 force。
+  // 计划已接受该取舍(方案 a 最小改动;严格即时需升级方案 b 改 useResource 公共签名)。
+  const prevResyncingRef = useRef(false);
+  useEffect(() => {
+    const was = prevResyncingRef.current;
+    prevResyncingRef.current = result.resyncing;
+    if (!was && result.resyncing) {
+      forceNextRef.current = true;
+    }
+  }, [result.resyncing]);
 
   // refresh 是 useResource 内部 useCallback,引用稳定。但 result 对象每次 render 新,
   // 所以 useCallback 用 result.refresh 而不是 result 作 dep,避免下游闭包/effect 不稳。
