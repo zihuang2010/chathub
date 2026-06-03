@@ -72,6 +72,7 @@ impl MessagesStore {
     /// 批量 UPSERT 消息行。`ON CONFLICT(local_message_id)` 只刷可变列
     /// (send_status / content_text / attachments_json / gmt_modified_time / updated_at_ms);
     /// 位置列(sort_key / message_time_ms / 方向 / 类型)与 employee/account/conversation 不动。
+    /// send_status 按文档§4 不倒退合并(0/1→任意,2→3/4,4→3,3 终态)、revoked 黏住(一旦为真不可逆)。
     pub async fn upsert_messages(&self, rows: &[MessageRow]) -> Result<(), StateError> {
         if rows.is_empty() {
             return Ok(());
@@ -92,11 +93,21 @@ impl MessagesStore {
                      ON CONFLICT(local_message_id) DO UPDATE SET \
                        message_direction = excluded.message_direction, \
                        content_text      = excluded.content_text, \
-                       send_status       = excluded.send_status, \
+                       send_status = CASE \
+                           WHEN send_status <= 1 THEN excluded.send_status \
+                           WHEN send_status = 2 AND excluded.send_status IN (3, 4) THEN excluded.send_status \
+                           WHEN send_status = 4 AND excluded.send_status = 3 THEN 3 \
+                           ELSE send_status \
+                       END, \
                        attachments_json  = excluded.attachments_json, \
                        gmt_modified_time = excluded.gmt_modified_time, \
-                       revoked           = excluded.revoked, \
-                       fail_reason       = excluded.fail_reason, \
+                       revoked           = revoked OR excluded.revoked, \
+                       fail_reason = CASE \
+                           WHEN send_status <= 1 THEN excluded.fail_reason \
+                           WHEN send_status = 2 AND excluded.send_status IN (3, 4) THEN excluded.fail_reason \
+                           WHEN send_status = 4 AND excluded.send_status = 3 THEN excluded.fail_reason \
+                           ELSE fail_reason \
+                       END, \
                        updated_at_ms     = excluded.updated_at_ms",
                     rusqlite::params![
                         r.local_message_id,
@@ -152,11 +163,21 @@ impl MessagesStore {
                  ON CONFLICT(local_message_id) DO UPDATE SET \
                    message_direction = excluded.message_direction, \
                    content_text      = excluded.content_text, \
-                   send_status       = excluded.send_status, \
+                   send_status = CASE \
+                       WHEN send_status <= 1 THEN excluded.send_status \
+                       WHEN send_status = 2 AND excluded.send_status IN (3, 4) THEN excluded.send_status \
+                       WHEN send_status = 4 AND excluded.send_status = 3 THEN 3 \
+                       ELSE send_status \
+                   END, \
                    attachments_json  = excluded.attachments_json, \
                    gmt_modified_time = excluded.gmt_modified_time, \
-                   revoked           = excluded.revoked, \
-                   fail_reason       = excluded.fail_reason, \
+                   revoked           = revoked OR excluded.revoked, \
+                   fail_reason = CASE \
+                       WHEN send_status <= 1 THEN excluded.fail_reason \
+                       WHEN send_status = 2 AND excluded.send_status IN (3, 4) THEN excluded.fail_reason \
+                       WHEN send_status = 4 AND excluded.send_status = 3 THEN excluded.fail_reason \
+                       ELSE fail_reason \
+                   END, \
                    updated_at_ms     = excluded.updated_at_ms",
                 rusqlite::params![
                     row.local_message_id,
@@ -683,8 +704,11 @@ mod tests {
         store.upsert_messages(&[updated]).await.unwrap();
         let got = store.list_recent("u-1", "c1", 10).await.unwrap();
         assert_eq!(got.len(), 1);
-        assert_eq!(got[0].send_status, 4, "可变列被刷新");
-        assert_eq!(got[0].content_text, "edited");
+        assert_eq!(
+            got[0].send_status, 3,
+            "send_status=3 是终态,§4 忽略后到的 4(不倒退);可变内容刷新见下"
+        );
+        assert_eq!(got[0].content_text, "edited", "可变内容列被刷新");
         assert_eq!(got[0].sort_key, "sort_0001", "位置列 sort_key 不动");
         assert_eq!(got[0].message_time_ms, 100, "位置列 message_time_ms 不动");
     }
@@ -875,6 +899,99 @@ mod tests {
         assert_eq!(w.oldest_sort_key, "sort_0003");
         assert_eq!(w.older_cursor, "");
         assert!(!w.has_more_older);
+    }
+
+    #[tokio::test]
+    async fn upsert_messages_merges_send_status_without_regression() {
+        let pool = SqlitePool::in_memory().await.unwrap();
+        let store = MessagesStore::new(pool);
+        let emp = "42";
+        let conv = "conv-1";
+        let mk = |lmid: &str, status: i32, revoked: bool, fail: &str| MessageRow {
+            local_message_id: lmid.into(),
+            conversation_id: conv.into(),
+            employee_id: emp.into(),
+            wecom_account_id: "acct".into(),
+            sort_key: format!("1780000000000:1:0:{lmid}"),
+            message_time_ms: 1780000000000,
+            message_direction: 2,
+            message_type: 1,
+            content_text: "hi".into(),
+            send_status: status,
+            attachments_json: "[]".into(),
+            gmt_modified_time: "".into(),
+            revoked,
+            fail_reason: fail.into(),
+            request_message_id: "".into(),
+            updated_at_ms: 0,
+        };
+        let read_one = |store: &MessagesStore, lmid: &'static str| {
+            let store = store.clone();
+            async move {
+                store
+                    .list_recent(emp, conv, 50)
+                    .await
+                    .unwrap()
+                    .into_iter()
+                    .find(|r| r.local_message_id == lmid)
+                    .unwrap()
+            }
+        };
+
+        // 1) 3(成功)后到 2(发送中)→ 不倒退,保持 3。
+        store
+            .upsert_messages(&[mk("LM1", 3, false, "")])
+            .await
+            .unwrap();
+        store
+            .upsert_messages(&[mk("LM1", 2, false, "")])
+            .await
+            .unwrap();
+        assert_eq!(
+            read_one(&store, "LM1").await.send_status,
+            3,
+            "3 不应被 2 倒退"
+        );
+
+        // 2) 4(失败)后到 3(成功)→ 接受 3。
+        store
+            .upsert_messages(&[mk("LM2", 4, false, "net")])
+            .await
+            .unwrap();
+        store
+            .upsert_messages(&[mk("LM2", 3, false, "")])
+            .await
+            .unwrap();
+        let lm2 = read_one(&store, "LM2").await;
+        assert_eq!(lm2.send_status, 3, "4→3 应接受");
+        assert_eq!(
+            lm2.fail_reason, "",
+            "4→3 接受时 fail_reason 随状态更新(清空)"
+        );
+
+        // 3) 撤回后到未撤回 → 黏住撤回。
+        store
+            .upsert_messages(&[mk("LM3", 3, true, "")])
+            .await
+            .unwrap();
+        store
+            .upsert_messages(&[mk("LM3", 3, false, "")])
+            .await
+            .unwrap();
+        assert!(read_one(&store, "LM3").await.revoked, "撤回一旦为真应黏住");
+
+        // 4) 3 收到 4 → 忽略(严格,本轮不触发历史校验)。
+        store
+            .upsert_messages(&[mk("LM4", 3, false, "")])
+            .await
+            .unwrap();
+        store
+            .upsert_messages(&[mk("LM4", 4, false, "x")])
+            .await
+            .unwrap();
+        let lm4 = read_one(&store, "LM4").await;
+        assert_eq!(lm4.send_status, 3, "3 收到 4 严格忽略");
+        assert_eq!(lm4.fail_reason, "", "3 终态忽略 4 时 fail_reason 不被污染");
     }
 
     #[tokio::test]
