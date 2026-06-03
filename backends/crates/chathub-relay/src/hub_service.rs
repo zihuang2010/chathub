@@ -570,7 +570,7 @@ impl Hub for HubSvc {
         }
         let replayed_to_seq = rows.last().map(|r| r.notify_seq as u64).unwrap_or(since);
 
-        // ③ 首帧 SubscribeAck
+        // ③ 首帧 SubscribeAck —— 同步发(单帧,256 缓冲不阻塞)。
         let ack_frame = ServerEvent {
             body: Some(chathub_proto::v1::server_event::Body::SubscribeAck(
                 chathub_proto::v1::SubscribeAck {
@@ -585,7 +585,6 @@ impl Hub for HubSvc {
             tracing::debug!("subscribe client gone before ack delivered");
             return Ok(Response::new(ReceiverStream::new(rx)));
         }
-
         tracing::info!(
             replayed_to_seq,
             resync_required,
@@ -593,30 +592,33 @@ impl Hub for HubSvc {
             "subscribe ack sent"
         );
 
-        // ④ 按 notify_seq 分组重放 PushBatchOut(同 seq 多事件视为一个原子 batch)
-        let mut group_start = 0usize;
-        for i in 0..rows.len() {
-            let is_last = i + 1 == rows.len();
-            let boundary = !is_last && rows[i].notify_seq != rows[i + 1].notify_seq;
-            if is_last || boundary {
-                let group = &rows[group_start..=i];
-                send_replay_batch(&tx, group, ctx.employee_id).await;
-                group_start = i + 1;
-            }
-        }
-
-        // ⑤ 注册 employee 路由
+        // ④ 注册 employee 路由 —— **同步**,先于 Response 返回。
+        //    保证客户端可见 ack 时连接已注册:读到 ack 后立即 push 必达实时流,
+        //    且既有 first_connection 测试断言连接数=1 确定成立(register 不在 spawn 内)。
         let reg = self
             .router
             .register_employee(ctx.employee_id, device_id.clone(), tx.clone());
         let connection_id = reg.connection_id;
         tracing::info!(connection_id = %connection_id, "subscribe registered");
 
-        // ⑥ Cleanup task:客户端断开 → 摘除 router 注册
+        // ⑤ 回放 + cleanup 移入 spawn:回放帧数可达 REPLAY_LIMIT(1000)> mpsc(256),
+        //    必须在 Response 返回后与 tonic drain rx 并发发送,否则 send().await 在缓冲满时
+        //    死锁(handler 不返回 → 客户端拿不到响应头 → 永久 Connecting)。
         let router = self.router.clone();
         let emp_id = ctx.employee_id;
         let conn_id_for_drop = connection_id.clone();
         tokio::spawn(async move {
+            // 按 notify_seq 分组重放 PushBatchOut(同 seq 多事件视为一个原子 batch)。
+            let mut group_start = 0usize;
+            for i in 0..rows.len() {
+                let is_last = i + 1 == rows.len();
+                let boundary = !is_last && rows[i].notify_seq != rows[i + 1].notify_seq;
+                if is_last || boundary {
+                    send_replay_batch(&tx, &rows[group_start..=i], emp_id).await;
+                    group_start = i + 1;
+                }
+            }
+            // 客户端断开(rx 被 drop)→ 摘除 router 注册。
             tx.closed().await;
             router.drop_employee_stream(emp_id, &conn_id_for_drop);
             tracing::debug!(
@@ -1066,6 +1068,52 @@ mod tests {
             Some(Body::PushBatch(pb)) => assert_eq!(pb.notify_seq, 101),
             other => panic!("expected PushBatch 101, got {other:?}"),
         }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn subscribe_with_large_replay_does_not_deadlock() {
+        let mock = MockServer::start().await;
+        mount_verify_token(&mock, "tok-A", 42, "dev-A").await;
+        let svc = build_svc(&mock).await;
+
+        // 300 个 distinct notify_seq → 300 回放帧 + 1 ack = 301 > mpsc(256)。
+        let rows: Vec<EventRow> = (1..=300_i64)
+            .map(|seq| make_event_row(42, seq, 0))
+            .collect();
+        svc.events_log.insert_batch(rows).await.unwrap();
+
+        // 当前代码:handler 在第 257 次 send().await 阻塞、subscribe() 永不返回 → 超时(FAIL)。
+        // 修好后:subscribe() 立即返回 Response。
+        let resp = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            svc.subscribe(sub_request("dev-A", 0)),
+        )
+        .await
+        .expect("subscribe 必须立即返回响应头,不能死锁")
+        .expect("subscribe 应成功");
+
+        // drain 整条流:1 ack + 300 PushBatch 全部收到。
+        let mut stream = resp.into_inner();
+        let first = StreamExt::next(&mut stream).await.unwrap().unwrap();
+        assert!(
+            matches!(first.body, Some(Body::SubscribeAck(_))),
+            "首帧必须是 SubscribeAck"
+        );
+        let mut push_frames = 0;
+        while let Ok(Some(Ok(ev))) = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            StreamExt::next(&mut stream),
+        )
+        .await
+        {
+            if matches!(ev.body, Some(Body::PushBatch(_))) {
+                push_frames += 1;
+            }
+            if push_frames == 300 {
+                break;
+            }
+        }
+        assert_eq!(push_frames, 300, "应收齐全部 300 个回放帧");
     }
 
     #[tokio::test(flavor = "multi_thread")]
