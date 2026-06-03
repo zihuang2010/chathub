@@ -568,7 +568,24 @@ impl Hub for HubSvc {
                 "subscribe replay truncated; resync_required=true"
             );
         }
-        let replayed_to_seq = rows.last().map(|r| r.notify_seq as u64).unwrap_or(since);
+        // B2(spec §6.2):resync_required 时 ack 直接报 head(MAX(notify_seq)),并跳过逐帧重放,
+        // 让客户端(P3-B1)把游标跳到 head + 走 REST 全量对齐,消除"截断→since不前进→反复重放"循环。
+        // 空表 / 日志全损 → latest_for=None → 回退 since(游标不倒退)。
+        let replayed_to_seq = if resync_required {
+            let head = self
+                .events_log
+                .latest_for(ctx.employee_id)
+                .await
+                .map_err(|e| Status::from(RelayError::from(e)))?
+                .map(|s| s as u64)
+                .unwrap_or(since);
+            // 跳重放:清空待发回放集,P1 spawn 内的回放循环对空 rows 零迭代。
+            rows.clear();
+            head
+        } else {
+            // 正常小回放路径不变:replayed_to_seq = 窗口内最后一条(此时即 head)。
+            rows.last().map(|r| r.notify_seq as u64).unwrap_or(since)
+        };
 
         // ③ 首帧 SubscribeAck —— 同步发(单帧,256 缓冲不阻塞)。
         let ack_frame = ServerEvent {
@@ -1030,6 +1047,9 @@ mod tests {
         assert_eq!(router.employee_connection_count(42), 1);
     }
 
+    /// B2 改写:since=50、earliest=100>since+1 → needs_pull → backfill 失败 → resync_required。
+    /// B2 后 replayed_to_seq=head=MAX(100,101)=101(与改前巧合相同),但**不发任何回放帧**。
+    /// 原测试断言 PushBatch(100)/(101) 在 B2 后不再成立,改为断言 ack 字段 + 无后续帧。
     #[tokio::test(flavor = "multi_thread")]
     async fn subscribe_with_since_replays_events_grouped_by_notify_seq() {
         let mock = MockServer::start().await;
@@ -1045,28 +1065,32 @@ mod tests {
             .unwrap();
         let stream_resp = svc.subscribe(sub_request("dev-A", 50)).await.unwrap();
         let mut stream = stream_resp.into_inner();
+        // ack:resync_required=true(缺口)、replayed_to_seq=head=101(B2:latest_for MAX)。
         let first = StreamExt::next(&mut stream).await.unwrap().unwrap();
         match first.body {
             Some(Body::SubscribeAck(ack)) => {
                 assert_eq!(ack.resumed_from_seq, 50);
-                assert_eq!(ack.replayed_to_seq, 101);
-                assert!(ack.resync_required); // min=100 > since+1
+                assert_eq!(
+                    ack.replayed_to_seq, 101,
+                    "B2:resync 路径 replayed_to_seq=head=101"
+                );
+                assert!(
+                    ack.resync_required,
+                    "min=100 > since+1=51 → needs_pull 失败 → resync"
+                );
             }
             other => panic!("expected SubscribeAck, got {other:?}"),
         }
-        let f2 = StreamExt::next(&mut stream).await.unwrap().unwrap();
-        match f2.body {
-            Some(Body::PushBatch(pb)) => {
-                assert_eq!(pb.notify_seq, 100);
-                let arr: serde_json::Value = serde_json::from_slice(&pb.events_json).unwrap();
-                assert_eq!(arr.as_array().unwrap().len(), 2);
-            }
-            other => panic!("expected PushBatch 100, got {other:?}"),
-        }
-        let f3 = StreamExt::next(&mut stream).await.unwrap().unwrap();
-        match f3.body {
-            Some(Body::PushBatch(pb)) => assert_eq!(pb.notify_seq, 101),
-            other => panic!("expected PushBatch 101, got {other:?}"),
+        // B2:resync 路径跳重放——不应有任何 PushBatch 帧。
+        let next = tokio::time::timeout(
+            std::time::Duration::from_millis(500),
+            StreamExt::next(&mut stream),
+        )
+        .await;
+        match next {
+            Err(_) => {} // 超时 = 无更多帧,正确。
+            Ok(Some(Ok(ev))) => panic!("resync 路径不应发回放帧,却收到 {:?}", ev.body),
+            Ok(other) => panic!("意外的流终止:{other:?}"),
         }
     }
 
@@ -1114,6 +1138,142 @@ mod tests {
             }
         }
         assert_eq!(push_frames, 300, "应收齐全部 300 个回放帧");
+    }
+
+    // ── B2 resync 跳重放单测 ───────────────────────────────────────────────
+
+    /// notify/pull 503 → backfill 失败(用于 subscribe_resync_empty_log_falls_back_to_since)。
+    async fn mount_notify_pull_503(mock: &MockServer) {
+        Mock::given(method("POST"))
+            .and(path(
+                "/wechat-business-app/rpc/v1/wecomAggregate/notify/pull",
+            ))
+            .respond_with(ResponseTemplate::new(503))
+            .mount(mock)
+            .await;
+    }
+
+    /// B2:resync_required(由截断触发,>REPLAY_LIMIT 行)→ ack.replayed_to_seq 跳到
+    /// head(latest_for=MAX),且**不发任何回放帧**(回放循环短路)。
+    #[tokio::test(flavor = "multi_thread")]
+    async fn subscribe_resync_skips_replay_and_acks_head() {
+        let mock = MockServer::start().await;
+        mount_verify_token(&mock, "tok-A", 42, "dev-A").await;
+        let svc = build_svc(&mock).await;
+
+        // 1001 个 distinct notify_seq(>REPLAY_LIMIT=1000)→ 截断 → resync_required。
+        // head = MAX(notify_seq) = 1001(而非截断窗口内的 last=1000)。
+        let rows: Vec<EventRow> = (1..=1001_i64)
+            .map(|seq| make_event_row(42, seq, 0))
+            .collect();
+        svc.events_log.insert_batch(rows).await.unwrap();
+
+        let resp = svc.subscribe(sub_request("dev-A", 0)).await.unwrap();
+        let mut stream = resp.into_inner();
+
+        // 首帧:ack.resync_required=true 且 replayed_to_seq=1001(head),不是 1000。
+        let first = StreamExt::next(&mut stream).await.unwrap().unwrap();
+        match first.body {
+            Some(Body::SubscribeAck(ack)) => {
+                assert!(ack.resync_required, "1001>1000 → 截断 → resync");
+                assert_eq!(
+                    ack.replayed_to_seq, 1001,
+                    "replayed_to_seq 应=head(MAX),非截断 last"
+                );
+            }
+            other => panic!("expected SubscribeAck, got {other:?}"),
+        }
+
+        // 后续不应有任何 PushBatch 帧:resync 跳重放。给短 timeout,超时即"无帧"(符合预期)。
+        let next = tokio::time::timeout(
+            std::time::Duration::from_millis(500),
+            StreamExt::next(&mut stream),
+        )
+        .await;
+        match next {
+            Err(_) => {} // 超时 = 无更多帧,正确。
+            Ok(Some(Ok(ev))) => panic!("resync 路径不应发回放帧,却收到 {:?}", ev.body),
+            Ok(other) => panic!("意外的流终止:{other:?}"),
+        }
+    }
+
+    /// B2 空表回退(spec §6.2 / MAJOR D):日志空 + since>0 + notify_pull 失败 → resync_required,
+    /// latest_for=None → replayed_to_seq 回退为 since,且不发回放帧。
+    #[tokio::test(flavor = "multi_thread")]
+    async fn subscribe_resync_empty_log_falls_back_to_since() {
+        let mock = MockServer::start().await;
+        mount_verify_token(&mock, "tok-A", 42, "dev-A").await;
+        // notify_pull 503 → 补偿失败 → resync 兜底(needs_pull 路径)。
+        mount_notify_pull_503(&mock).await;
+        let svc = build_svc(&mock).await;
+        // 不插任何 hub_events → 日志空 → latest_for=None。
+
+        // since=10 > 0 且日志空 → needs_pull;补偿失败 → resync_required。
+        let resp = svc.subscribe(sub_request("dev-A", 10)).await.unwrap();
+        let mut stream = resp.into_inner();
+
+        let first = StreamExt::next(&mut stream).await.unwrap().unwrap();
+        match first.body {
+            Some(Body::SubscribeAck(ack)) => {
+                assert!(ack.resync_required, "空日志+since>0+pull失败 → resync");
+                assert_eq!(
+                    ack.replayed_to_seq, 10,
+                    "空表 latest_for=None → 回退 since=10"
+                );
+            }
+            other => panic!("expected SubscribeAck, got {other:?}"),
+        }
+
+        // 无回放帧。
+        let next = tokio::time::timeout(
+            std::time::Duration::from_millis(500),
+            StreamExt::next(&mut stream),
+        )
+        .await;
+        assert!(matches!(next, Err(_)), "resync 空表路径不应发回放帧");
+    }
+
+    /// B2 不影响正常小回放:resync_required=false → 照发重放帧、replayed_to_seq=rows.last()。
+    /// (回归保护,确保 B2 分叉没把非 resync 路径带歪。)
+    #[tokio::test(flavor = "multi_thread")]
+    async fn subscribe_non_resync_still_replays_frames() {
+        let mock = MockServer::start().await;
+        mount_verify_token(&mock, "tok-A", 42, "dev-A").await;
+        let svc = build_svc(&mock).await;
+        // since=100,日志含 101/102 → earliest=101=since+1 → 无缺口 → 不截断 → resync_required=false。
+        svc.events_log
+            .insert_batch(vec![make_event_row(42, 101, 0), make_event_row(42, 102, 0)])
+            .await
+            .unwrap();
+
+        let resp = svc.subscribe(sub_request("dev-A", 100)).await.unwrap();
+        let mut stream = resp.into_inner();
+
+        let first = StreamExt::next(&mut stream).await.unwrap().unwrap();
+        match first.body {
+            Some(Body::SubscribeAck(ack)) => {
+                assert!(
+                    !ack.resync_required,
+                    "earliest=since+1 → 无缺口 → 不 resync"
+                );
+                assert_eq!(
+                    ack.replayed_to_seq, 102,
+                    "非 resync:replayed_to_seq=rows.last()"
+                );
+            }
+            other => panic!("expected SubscribeAck, got {other:?}"),
+        }
+        // 照发 2 个回放帧 101、102。
+        let f2 = StreamExt::next(&mut stream).await.unwrap().unwrap();
+        match f2.body {
+            Some(Body::PushBatch(pb)) => assert_eq!(pb.notify_seq, 101),
+            other => panic!("expected PushBatch 101, got {other:?}"),
+        }
+        let f3 = StreamExt::next(&mut stream).await.unwrap().unwrap();
+        match f3.body {
+            Some(Body::PushBatch(pb)) => assert_eq!(pb.notify_seq, 102),
+            other => panic!("expected PushBatch 102, got {other:?}"),
+        }
     }
 
     #[tokio::test(flavor = "multi_thread")]
