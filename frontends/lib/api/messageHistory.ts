@@ -237,24 +237,43 @@ export async function uploadAttachment(params: {
 // 防御性排序,避免冷启动/翻页遇到上游新→旧页时首帧顺序反转。
 
 export function adaptHistoryRecords(records: HistoryMessage[], conversationId: string): Message[] {
-  return [...records].sort(compareHistoryRecords).map((r) => historyToMessage(r, conversationId));
+  // 时间解析缓存:排序比较器与 historyToMessage 都要把 messageTime 解析成 ISO。
+  // 排序是 N·logN 次比较,每次比较原本要解析两条记录的时间 → 同一条记录被重复解析。
+  // 这里对每条记录的 messageTime 预解析一次进 Map<原始字符串,ISO> 缓存,排序与映射复用,
+  // 仅去重计算、不改语义(同一字符串得到同一 ISO,排序结果与逐次解析逐字节一致)。
+  const isoCache = new Map<string, string>();
+  const isoOf = (messageTime: string): string => {
+    const cached = isoCache.get(messageTime);
+    if (cached !== undefined) return cached;
+    const iso = parseServerTimeToIso(messageTime);
+    isoCache.set(messageTime, iso);
+    return iso;
+  };
+  return [...records]
+    .sort((a, b) => compareHistoryRecords(a, b, isoOf))
+    .map((r) => historyToMessage(r, conversationId, isoOf));
 }
 
-function historyToMessage(h: HistoryMessage, conversationId: string): Message {
+function historyToMessage(
+  h: HistoryMessage,
+  conversationId: string,
+  isoOf: (messageTime: string) => string,
+): Message {
   // messageType=2(图片)的 contentText 是服务端给"不支持富文本的客户端"的占位
   // "[图片]"。本前端能直接渲染 image attachment,留这段文本会在气泡上方多一行
   // 冗余"[图片]" + 下面再叠图,体验冗余。把占位剥掉,只让附件出图。
   const text = h.messageType === 2 ? "" : h.contentText;
   const attachments =
     h.attachments.length > 0 ? h.attachments.map(historyAttachmentToMessage) : undefined;
-  const direction = normalizeLocalDirection(h.messageDirection);
+  // 方向:后端 messageDirection===2 为出站,其它一律入站(直接产出 "in"/"out",无中间数值层)。
+  const direction = h.messageDirection === 2 ? "out" : "in";
   return {
     id: h.localMessageId,
     conversationId,
-    direction: direction === 2 ? "out" : "in",
+    direction,
     text,
-    sentAt: parseServerTimeToIso(h.messageTime),
-    status: direction === 2 ? mapSendStatus(h.sendStatus) : undefined,
+    sentAt: isoOf(h.messageTime),
+    status: direction === "out" ? mapSendStatus(h.sendStatus) : undefined,
     parts: buildMessageParts(text, undefined, attachments),
     // 撤回标记:服务端 revoked=true → 折叠为"已撤回"系统行(MessageBubble 已有渲染)。
     // false/缺省一律收敛为 undefined,与其余可选字段保持"不存在=未撤回"语义。
@@ -266,16 +285,14 @@ function historyToMessage(h: HistoryMessage, conversationId: string): Message {
   };
 }
 
-function normalizeLocalDirection(messageDirection: number): number {
-  return messageDirection === 2 ? 2 : 1;
-}
-
-function compareHistoryRecords(a: HistoryMessage, b: HistoryMessage): number {
+function compareHistoryRecords(
+  a: HistoryMessage,
+  b: HistoryMessage,
+  isoOf: (messageTime: string) => string,
+): number {
   const bySortKey = a.sortKey.localeCompare(b.sortKey);
   if (bySortKey !== 0) return bySortKey;
-  const byTime = parseServerTimeToIso(a.messageTime).localeCompare(
-    parseServerTimeToIso(b.messageTime),
-  );
+  const byTime = isoOf(a.messageTime).localeCompare(isoOf(b.messageTime));
   if (byTime !== 0) return byTime;
   return a.localMessageId.localeCompare(b.localMessageId);
 }

@@ -281,12 +281,18 @@ const AVATAR_PALETTE = [
   "hsl(var(--wb-avatar-8))",
 ];
 
-export function pickAvatarColor(seed: string): string {
+// seed 字符串哈希:逐字符 hash = (hash*31 + charCode) >>> 0(无符号 32 位)。
+// pickAvatarColor / pickCustomerAvatarImage 共用,保证同一 seed 选色/选图稳定。
+function hashSeed(seed: string): number {
   let hash = 0;
   for (let i = 0; i < seed.length; i++) {
     hash = (hash * 31 + seed.charCodeAt(i)) >>> 0;
   }
-  return AVATAR_PALETTE[hash % AVATAR_PALETTE.length];
+  return hash;
+}
+
+export function pickAvatarColor(seed: string): string {
+  return AVATAR_PALETTE[hashSeed(seed) % AVATAR_PALETTE.length];
 }
 
 // Customer avatars use illustrated portraits served from public/avatars/.
@@ -295,11 +301,7 @@ export function pickAvatarColor(seed: string): string {
 const CUSTOMER_AVATAR_IMAGE_COUNT = 5;
 
 export function pickCustomerAvatarImage(seed: string): string {
-  let hash = 0;
-  for (let i = 0; i < seed.length; i++) {
-    hash = (hash * 31 + seed.charCodeAt(i)) >>> 0;
-  }
-  const index = (hash % CUSTOMER_AVATAR_IMAGE_COUNT) + 1;
+  const index = (hashSeed(seed) % CUSTOMER_AVATAR_IMAGE_COUNT) + 1;
   return `/avatars/a${String(index).padStart(2, "0")}.png`;
 }
 
