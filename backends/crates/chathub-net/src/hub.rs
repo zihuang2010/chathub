@@ -1066,6 +1066,24 @@ impl ConnectionManager {
     }
 }
 
+/// B1(spec §6.1):订阅首帧 `SubscribeAck` 后,该不该从 ack 提前推进 notify_seq 游标?
+///
+/// - `resync_required == true`:返回 `Some(replayed_to_seq)` —— 跳到 head/水位。该路径
+///   B2 不发重放帧、且已广播 ResyncSignal 让上层走 REST 全量兜底,提前推进安全。
+/// - `resync_required == false`:返回 `None` —— **不**从 ack 推,维持 apply-then-advance
+///   (只靠 PushBatch 经 applier 落库后 `upsert_if_greater(pb.notify_seq)`)。在 false 小回放
+///   路径从 ack 提前推 = 落库前推进 → 崩溃重启跳过该批且无兜底 → 永久丢(hub.rs apply-then-advance
+///   注释要防的不变量)。
+///
+/// 纯函数无副作用,便于单测(run_loop 无假流夹具)。
+fn cursor_after_subscribe_ack(resync_required: bool, replayed_to_seq: u64) -> Option<u64> {
+    if resync_required {
+        Some(replayed_to_seq)
+    } else {
+        None
+    }
+}
+
 impl Inner {
     /// Resync 路径触发 — 给所有已知 topic 各发一条 BulkInvalidate ChangeNotice。
     /// employee_id 取 token_store 当前会话的 user_id;若未登录(异常路径),不发。
@@ -1220,6 +1238,30 @@ impl Inner {
                                         reason: ack.resync_reason.clone(),
                                     });
                                     self.broadcast_resync_to_all_topics();
+                                    // B1(spec §6.1):仅 resync 路径从 ack 推进游标到 head/水位。
+                                    // 该路径 B2 不发重放帧、已广播 ResyncSignal 走 REST 全量兜底,
+                                    // 提前推进安全。false 路径不进此分支,游标仍靠 PushBatch
+                                    // 落库后推进(apply-then-advance,见下方 upsert_if_greater)。
+                                    if let Some(advance) =
+                                        cursor_after_subscribe_ack(true, ack.replayed_to_seq)
+                                    {
+                                        if let Err(e) =
+                                            self.notify_seq_store.upsert_if_greater(advance).await
+                                        {
+                                            tracing::warn!(
+                                                target: "chathub_net::hub",
+                                                ?e,
+                                                advance,
+                                                "resync ack cursor advance upsert failed, ignored"
+                                            );
+                                        } else {
+                                            tracing::info!(
+                                                target: "chathub_net::hub",
+                                                advance,
+                                                "resync ack: notify_seq cursor advanced to head"
+                                            );
+                                        }
+                                    }
                                 }
                                 Some(Body::System(s)) if s.kind == Kind::ResyncRequired as i32 => {
                                     tracing::info!(
@@ -1548,5 +1590,15 @@ mod tests {
             }),
             Action::Terminate
         );
+    }
+
+    #[test]
+    fn ack_cursor_advances_only_when_resync_required() {
+        // resync_required=true:游标跳到 ack.replayed_to_seq(head/水位),提前推进安全。
+        assert_eq!(cursor_after_subscribe_ack(true, 948), Some(948));
+        // resync_required=false:不从 ack 推(维持 apply-then-advance,靠 PushBatch 落库后推进)。
+        assert_eq!(cursor_after_subscribe_ack(false, 152), None);
+        // resync_required=true 但 head=0(空表回退 since=0 的换机场景):推进到 0 无害(单调存储不回退)。
+        assert_eq!(cursor_after_subscribe_ack(true, 0), Some(0));
     }
 }
