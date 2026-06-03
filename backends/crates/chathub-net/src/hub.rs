@@ -751,6 +751,15 @@ pub struct HistoryMessage {
     pub attachments: Vec<HistoryAttachment>,
     /// 记录最后修改时间 `yyyy-MM-dd HH:mm:ss`(状态/内容变更时刷新;客户端暂不消费)。
     pub gmt_modified_time: String,
+    /// 是否已撤回(MESSAGE_REVOKED 事件置真);前端据此渲染"已撤回"系统行。
+    #[serde(default)]
+    pub revoked: bool,
+    /// 发送失败原因(SEND_FAILED 事件的 `failReason`);非失败为空串。
+    #[serde(default)]
+    pub fail_reason: String,
+    /// 服务端去重用的客户端请求键(=`requestMessageId`/`client_msg_id`);乐观气泡确定性配对兜底。
+    #[serde(default)]
+    pub request_message_id: String,
 }
 
 /// 兼容数字与字符串两种 `fileSize`(上游历史/推送可能给字符串如 "176098");

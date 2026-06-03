@@ -16,6 +16,7 @@ import {
   replaceAuthoritative,
   selectTimeline,
   useChatStore,
+  valueEqual,
 } from "./chatStore";
 
 function msg(id: string, overrides: Partial<Message> = {}): Message {
@@ -287,6 +288,48 @@ describe("chatStore reducers", () => {
     expect(next.byId["c-1"].status).toBe("failed");
   });
 
+  it("replaceAuthoritative 确定性配对:权威出站行带 requestMessageId 命中乐观 clientMsgId → 收敛成一行(不双行)", () => {
+    // send 改造后权威行经 push 稍后到达,serverId(markSent)尚未钉上时,靠服务端把发送时的
+    // clientMsgId 经 request_message_id 落库带回的 requestMessageId 做确定性配对:权威条目
+    // requestMessageId == 乐观气泡 clientMsgId 即唯一命中,收敛成一行、clientMsgId 带到权威条目。
+    const opt = optimistic("local-uuid-1", {
+      text: "你好",
+      parts: [{ kind: "text", text: "你好" }],
+    });
+    const auth = msg("server-1", {
+      direction: "out",
+      status: "sent",
+      text: "你好",
+      parts: [{ kind: "text", text: "你好" }],
+      requestMessageId: "local-uuid-1",
+    });
+    const next = replaceAuthoritative(sliceWith([opt]), [auth]);
+    expect(selectTimeline(next).map((e) => e.id)).toEqual(["server-1"]);
+    expect(next.byId["local-uuid-1"]).toBeUndefined();
+    expect(next.byId["server-1"].clientMsgId).toBe("local-uuid-1");
+  });
+
+  it("replaceAuthoritative 确定性配对优先于启发式:requestMessageId 错配时不被同文本误吞,正确配对各自命中", () => {
+    // 两条同文本乐观气泡在途,权威各带不同 requestMessageId → 必须按 requestMessageId 精确各归各位,
+    // 不能退化为启发式 FIFO 把顺序配错。验证确定性路径先于文本启发式生效。
+    const a = optimistic("local-A", { text: "同文本", parts: [{ kind: "text", text: "同文本" }] });
+    const b = optimistic("local-B", { text: "同文本", parts: [{ kind: "text", text: "同文本" }] });
+    const authForB = msg("server-B", {
+      direction: "out",
+      status: "sent",
+      text: "同文本",
+      parts: [{ kind: "text", text: "同文本" }],
+      requestMessageId: "local-B",
+    });
+    // 权威列表只回来 B 的回显(A 还在途)。确定性配对必须命中 local-B 而非 FIFO 误配 local-A。
+    const next = replaceAuthoritative(sliceWith([a, b]), [authForB]);
+    expect(next.byId["server-B"].clientMsgId).toBe("local-B");
+    // local-B 被收敛删除;local-A 仍在途保留(未被错配吞掉)。
+    expect(next.byId["local-B"]).toBeUndefined();
+    expect(next.byId["local-A"]?.status).toBe("sending");
+    expect(selectTimeline(next).map((e) => e.id)).toEqual(["server-B", "local-A"]);
+  });
+
   it("replaceAuthoritative:失败气泡按 sentAt 归位,晚于它发送成功的消息排在其下方(不被顶到末尾)", () => {
     // 先发 c-1(t0)失败,停一会再发的消息成功落库 → 权威重读把成功消息(server-2,t2)带进窗口,
     // 但不含从未到服务端的 c-1。旧实现把 c-1 一律追加末尾 → 失败气泡被后发的成功消息顶到下面。
@@ -333,6 +376,110 @@ describe("chatStore reducers", () => {
 
   it("selectTimeline returns [] for undefined slice", () => {
     expect(selectTimeline(undefined)).toEqual([]);
+  });
+
+  it("replaceAuthoritative:已显示之后到达的迟到入站消息追加到底部,不按服务端时间插进中间(单调插入)", () => {
+    // m1,m2,s-out 已显示;随后对方一条迟到入站 m-late 落库,其服务端 sort_key 排在 s-out 之前。
+    // 旧实现照搬服务端数组顺序 → m-late 插到 s-out 上方,像凭空插进历史中间、易漏看。
+    // 单调插入:已显示的保位,本批第一次出现的 m-late 追加到底部。
+    const slice = sliceWith([msg("m1"), msg("m2"), msg("s-out", { direction: "out" })]);
+    const next = replaceAuthoritative(slice, [
+      msg("m1"),
+      msg("m2"),
+      msg("m-late", { direction: "in" }),
+      msg("s-out", { direction: "out" }),
+    ]);
+    expect(selectTimeline(next).map((e) => e.id)).toEqual(["m1", "m2", "s-out", "m-late"]);
+  });
+
+  it("replaceAuthoritative:权威把刚发的出站消息排到已显示消息之前时,本端保位不跳(收敛仍贴底)", () => {
+    // a(in) 已显示;本端发 c-1(乐观,贴底)。权威回读把出站 s-1(经 requestMessageId 收敛 c-1)
+    // 按服务端时间排到 a 之前。旧实现 → [s-1, a],自己刚发的气泡跳到 a 上方;期望保位 → [a, s-1]。
+    const slice = sliceWith([msg("a", { direction: "in" }), optimistic("c-1")]);
+    const next = replaceAuthoritative(slice, [
+      msg("s-1", { direction: "out", status: "sent", requestMessageId: "c-1" }),
+      msg("a", { direction: "in" }),
+    ]);
+    expect(selectTimeline(next).map((e) => e.id)).toEqual(["a", "s-1"]);
+    expect(next.byId["s-1"].clientMsgId).toBe("c-1");
+    expect(next.byId["c-1"]).toBeUndefined();
+  });
+
+  it("replaceAuthoritative:同一时刻两条消息的相对顺序稳定,不被权威翻序重排", () => {
+    // x,y 已显示(同 sentAt)。权威回读把二者翻序返回 [y,x](同毫秒 tiebreak 不稳)。
+    // 旧实现照搬 → [y,x] 抖动;期望保位 → 维持 [x,y]。
+    const slice = sliceWith([msg("x"), msg("y")]);
+    const next = replaceAuthoritative(slice, [msg("y"), msg("x")]);
+    expect(selectTimeline(next).map((e) => e.id)).toEqual(["x", "y"]);
+  });
+
+  // ── 内容等价短路:消除「重读到完全相同数据」触发的整窗 re-render ──────────────
+  it("replaceAuthoritative:内容等价的重读复用原 slice 引用(无变化 → 渲染端零 re-render)", () => {
+    const slice = replaceAuthoritative(emptySlice(), [msg("m1"), msg("m2")]);
+    // 同样的权威输入再读一次:byId/order 一字未变 → 必须返回同一引用,Zustand selector 才跳过。
+    expect(replaceAuthoritative(slice, [msg("m1"), msg("m2")])).toBe(slice);
+  });
+
+  it("replaceAuthoritative:status 变化(sending→sent)返回新引用(防过度短路)", () => {
+    const slice = replaceAuthoritative(emptySlice(), [
+      msg("s1", { direction: "out", status: "sending" }),
+    ]);
+    const next = replaceAuthoritative(slice, [msg("s1", { direction: "out", status: "sent" })]);
+    expect(next).not.toBe(slice);
+    expect(next.byId["s1"].status).toBe("sent");
+  });
+
+  it("replaceAuthoritative:text 变化返回新引用(防过度短路)", () => {
+    const slice = replaceAuthoritative(emptySlice(), [msg("m1", { text: "旧" })]);
+    expect(replaceAuthoritative(slice, [msg("m1", { text: "新" })])).not.toBe(slice);
+  });
+
+  it("replaceAuthoritative:isRecalled 变化返回新引用(防过度短路)", () => {
+    const slice = replaceAuthoritative(emptySlice(), [msg("m1")]);
+    expect(replaceAuthoritative(slice, [msg("m1", { isRecalled: true })])).not.toBe(slice);
+  });
+
+  it("replaceAuthoritative:order 增减一条返回新引用(防过度短路)", () => {
+    const slice = replaceAuthoritative(emptySlice(), [msg("m1")]);
+    expect(replaceAuthoritative(slice, [msg("m1"), msg("m2")])).not.toBe(slice);
+  });
+});
+
+describe("valueEqual(内容等价深比)", () => {
+  it("标量:Object.is 语义", () => {
+    expect(valueEqual(1, 1)).toBe(true);
+    expect(valueEqual("a", "a")).toBe(true);
+    expect(valueEqual(undefined, undefined)).toBe(true);
+    expect(valueEqual(1, 2)).toBe(false);
+    expect(valueEqual(null, undefined)).toBe(false);
+  });
+
+  it("数组:逐元素且顺序敏感", () => {
+    expect(valueEqual([1, 2, 3], [1, 2, 3])).toBe(true);
+    expect(valueEqual([1, 2], [2, 1])).toBe(false);
+    expect(valueEqual([1], [1, 2])).toBe(false);
+  });
+
+  it("对象:按键并集递归,键集不一致即不等(保守)", () => {
+    expect(valueEqual({ a: 1, b: 2 }, { a: 1, b: 2 })).toBe(true);
+    expect(valueEqual({ a: 1 }, { a: 1, b: 2 })).toBe(false);
+    // 显式 undefined 键 vs 缺键 → 不等(宁可多渲染一次,不可漏)。
+    expect(valueEqual({ a: undefined }, {})).toBe(false);
+  });
+
+  it("嵌套 parts 数组逐 part 比较", () => {
+    expect(
+      valueEqual(
+        { parts: [{ kind: "text", text: "x" }] },
+        { parts: [{ kind: "text", text: "x" }] },
+      ),
+    ).toBe(true);
+    expect(
+      valueEqual(
+        { parts: [{ kind: "text", text: "x" }] },
+        { parts: [{ kind: "text", text: "y" }] },
+      ),
+    ).toBe(false);
   });
 });
 

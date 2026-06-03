@@ -67,6 +67,9 @@ impl SqlitePool {
                     "../migrations/V20__normalize_message_direction.sql"
                 )),
                 M::up(include_str!("../migrations/V21__session_user_fields.sql")),
+                M::up(include_str!(
+                    "../migrations/V22__messages_revoked_fail_reason.sql"
+                )),
             ]);
             migrations
                 .to_latest(c)

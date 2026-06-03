@@ -124,6 +124,18 @@ function authTextMatchesOptimistic(authMsg: Message, optimistic: ChatMessageEnti
   return authMsg.text.length > 0 && authMsg.text === optimistic.text;
 }
 
+// 乐观气泡↔权威回显的「确定性」配对:服务端把发送时的 clientMsgId 经 request_message_id 落库,
+// 权威条目读回后带 requestMessageId。两者非空且相等即唯一命中,优于 objectName / 文本启发式
+// (无内容碰撞、不挑消息类型)。send 改造后权威行经 push 稍后到达,这是收敛双行的根治路径;
+// 启发式仅作 requestMessageId 缺失时的兜底。
+function authRequestIdMatchesOptimistic(authMsg: Message, optimistic: ChatMessageEntity): boolean {
+  return (
+    !!authMsg.requestMessageId &&
+    !!optimistic.clientMsgId &&
+    authMsg.requestMessageId === optimistic.clientMsgId
+  );
+}
+
 // 把两条均按 sentAt 升序的 id 序列稳定归并成一条:同一时刻权威(a)在前、乐观(b)在后,
 // 使在途(sending)气泡照旧贴底,而锚定在过去时刻的失败气泡按其 sentAt 落回正确位置。
 function mergeByTimeAscending(
@@ -142,6 +154,50 @@ function mergeByTimeAscending(
   while (i < a.length) out.push(a[i++]);
   while (j < b.length) out.push(b[j++]);
   return out;
+}
+
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+// 限定结构的深相等:标量走 Object.is;数组逐元素(顺序敏感);普通对象按「键并集」递归。
+// 用于 entity 内容比较 —— ChatMessageEntity 形状 = 标量 + parts/mentions 数组(元素为仅含标量的
+// 浅对象),无嵌套对象 / 无环。用「键并集」而非手写字段清单:新增字段自动纳入,杜绝「漏比某字段 →
+// 该刷新却没刷新」的退化;键集不一致(显式 undefined 键 vs 缺键)判不等,偏保守(宁可多渲染一次,
+// 不可漏渲染)。导出供单测。
+export function valueEqual(a: unknown, b: unknown): boolean {
+  if (Object.is(a, b)) return true;
+  if (Array.isArray(a) && Array.isArray(b)) {
+    if (a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) {
+      if (!valueEqual(a[i], b[i])) return false;
+    }
+    return true;
+  }
+  if (isPlainObject(a) && isPlainObject(b)) {
+    const ka = Object.keys(a);
+    const kb = Object.keys(b);
+    if (ka.length !== kb.length) return false;
+    for (const k of ka) {
+      if (!Object.prototype.hasOwnProperty.call(b, k)) return false;
+      if (!valueEqual(a[k], b[k])) return false;
+    }
+    return true;
+  }
+  return false;
+}
+
+// 比较两切片「纯函数会改写的部分」是否等价:仅 order 序列 + byId 内容(hasMore/loading/error
+// 由 `{ ...slice }` 原样透传,不在此比;meta 短路在 action 层另判)。等价 → 调用方复用原引用。
+function sliceContentEqual(prev: ConversationSlice, next: ConversationSlice): boolean {
+  if (prev.order.length !== next.order.length) return false;
+  for (let i = 0; i < prev.order.length; i++) {
+    if (prev.order[i] !== next.order[i]) return false;
+  }
+  for (const id of next.order) {
+    if (!valueEqual(prev.byId[id], next.byId[id])) return false;
+  }
+  return true;
 }
 
 /**
@@ -175,8 +231,25 @@ export function replaceAuthoritative(
   // markSent 谁先谁后的时序竞争。
   const matchedEcho = new Map<string, ChatMessageEntity>();
   const convergedByMatch = new Set<ChatMessageEntity>();
+  // 第一轮:requestMessageId==clientMsgId 的「确定性」配对(优先于启发式)。服务端把发送时的
+  // clientMsgId 经 request_message_id 落库,权威行读回后带 requestMessageId,等值即唯一命中——
+  // 无内容碰撞、不挑消息类型,是 send 改造后(权威行经 push 延后到达)收敛双行的根治路径。
+  // 先于启发式跑,确保命中的乐观气泡经 convergedByMatch 自动从启发式候选中排除。
   for (const m of messages) {
     if (m.direction !== "out" || priorIds.has(m.id) || echoLookup.has(m.id)) continue;
+    if (!m.requestMessageId) continue;
+    const optimistic = pendingOptimistic.find(
+      (cand) => !convergedByMatch.has(cand) && authRequestIdMatchesOptimistic(m, cand),
+    );
+    if (optimistic) {
+      matchedEcho.set(m.id, optimistic);
+      convergedByMatch.add(optimistic);
+    }
+  }
+  // 第二轮:objectName / 文本启发式兜底(requestMessageId 缺失时;已被第一轮命中的不再参与)。
+  for (const m of messages) {
+    if (m.direction !== "out" || priorIds.has(m.id) || echoLookup.has(m.id)) continue;
+    if (matchedEcho.has(m.id)) continue;
     const optimistic = pendingOptimistic.find(
       (cand) =>
         !convergedByMatch.has(cand) &&
@@ -189,7 +262,6 @@ export function replaceAuthoritative(
   }
 
   const byId: Record<string, ChatMessageEntity> = {};
-  const authOrder: string[] = [];
   for (const m of messages) {
     const echo = echoLookup.get(m.id) ?? matchedEcho.get(m.id);
     const merged: ChatMessageEntity = { ...preserveOptimisticImageDimensions(m, echo) };
@@ -199,22 +271,45 @@ export function replaceAuthoritative(
     // 历史消息无乐观来源(echo 无 clientMsgId)→ 不附加,行 key 回退到 id。
     if (echo?.clientMsgId) merged.clientMsgId = echo.clientMsgId;
     byId[m.id] = merged;
-    authOrder.push(m.id);
   }
   const leftover = pendingOptimistic.filter((e) => !convergedByMatch.has(e));
   for (const e of leftover) byId[e.id] = e;
 
-  // 未收敛的乐观气泡按 sentAt 归并回权威序列,而非一律追加末尾。失败气泡锚定在它「原始发送
-  // 时刻」:晚于它发出/到达的消息应排其下方。旧实现把所有乐观气泡塞到末尾,会让「先发失败、
-  // 后停一会再发成功」的失败气泡被那条成功消息顶到下面(条数/时序错位)。权威列表本就时间升序、
-  // 乐观气泡也按入队(=时间)升序,二路稳定归并即恢复全局时序;同一时刻权威在前、乐观在后,
-  // 在途(sending)气泡 sentAt 最新 → 仍归并到末尾贴底,既有行为不变。
-  const order = mergeByTimeAscending(
-    authOrder,
-    leftover.map((e) => e.id),
-    byId,
-  );
-  return { ...slice, byId, order };
+  // ── 排序:单调插入(已显示保位 + 新消息进底部) ──────────────────────────────
+  // 不再照搬服务端数组顺序重排已显示的消息。屏幕上「已显示过」的权威消息按其先前相对顺序
+  // 冻结为前缀,杜绝三类抖动:① 自己刚发的被服务端时间顶到上方;② 对方迟到消息按服务端
+  // 时间插进历史中间(易漏看,且让 useScrollController 的 slice(-arrived) 取错条目而不贴底);
+  // ③ 同毫秒消息因 sort_key 的 direction 段 tiebreak 翻序。一条权威消息算「已显示」当且仅当
+  // 它本身先前已在序列(m.id 在先前 order),或它收敛了一个先前已显示的乐观气泡(echo.id 在);
+  // 取该先前实体的位置为锚点排序。本批第一次出现的权威消息按服务端序追加到底部。
+  //
+  // leftover(失败/在途乐观气泡)必来自 slice.order,与这些「新权威」按 sentAt 归并接在已显示
+  // 前缀之后:既保住失败气泡按发送时刻归位(见单测「失败气泡按 sentAt 归位」)、在途气泡 sentAt
+  // 最新仍贴底,又不再重排已显示前缀。冷加载时先前 order 为空 → 前缀空 → 整体退化为旧的服务端
+  // 序归并,即「切走重开回到规范时序」(已与产品确认接受此取舍)。
+  const priorIndex = new Map<string, number>();
+  slice.order.forEach((id, i) => priorIndex.set(id, i));
+  const knownAuth: { id: string; idx: number }[] = [];
+  const newAuthIds: string[] = [];
+  for (const m of messages) {
+    const echo = echoLookup.get(m.id) ?? matchedEcho.get(m.id);
+    let idx = priorIndex.get(m.id);
+    if (idx === undefined && echo) idx = priorIndex.get(echo.id);
+    if (idx === undefined) newAuthIds.push(m.id);
+    else knownAuth.push({ id: m.id, idx });
+  }
+  knownAuth.sort((a, b) => a.idx - b.idx);
+  const order = [
+    ...knownAuth.map((k) => k.id),
+    ...mergeByTimeAscending(
+      newAuthIds,
+      leftover.map((e) => e.id),
+      byId,
+    ),
+  ];
+  const next = { ...slice, byId, order };
+  // 内容等价(踢水位门 / 补读 / 多订阅者重读到一字未变的数据)→ 复用原引用,渲染端零 re-render。
+  return sliceContentEqual(slice, next) ? slice : next;
 }
 
 /** 往头部 prepend 更旧一页(按 id 去重,已存在的不重复插入)。 */
@@ -367,11 +462,11 @@ export const useChatStore = create<ChatStoreState>((set) => {
     replaceAuthoritative: (conversationId, messages, meta) =>
       update(conversationId, (slice) => {
         const next = replaceAuthoritative(slice, messages);
-        return {
-          ...next,
-          hasMore: meta?.hasMore ?? next.hasMore,
-          error: meta?.error ?? null,
-        };
+        const hasMore = meta?.hasMore ?? next.hasMore;
+        const error = meta?.error ?? null;
+        // 纯函数判定内容无变化(next === slice)且 meta 未变 → 复用原引用,渲染端零 re-render。
+        if (next === slice && slice.hasMore === hasMore && slice.error === error) return slice;
+        return { ...next, hasMore, error };
       }),
     prependOlder: (conversationId, older, hasMore) =>
       update(conversationId, (slice) => {

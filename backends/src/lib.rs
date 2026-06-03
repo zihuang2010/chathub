@@ -599,13 +599,16 @@ async fn load_older_messages(
     })
 }
 
-/// 清除当前登录员工的全部本地聊天记录(消息行 + 水位窗)。未登录则 no-op。
-/// 仅清本地缓存,不动服务端;重新打开会话会按需重新同步。employee_id 由当前会话注入,
-/// SQL 强制按 employee 过滤,跨员工不可见。
+/// 清除当前登录员工的全部本地聊天记录:删消息行 + 折叠水位窗(保留 newest 水位防旧史被水位门
+/// 回拉、清空翻页能力堵上滑回拉,详见 `MessagesStore::clear_for_employee`)。未登录则 no-op。
+/// 仅清本地缓存,不动服务端。employee_id 由当前会话注入,SQL 强制按 employee 过滤,跨员工不可见。
+/// 清完广播一条 ConversationMessages ChangeNotice,让打开着的会话立即重读 → 水位门判 fresh 零网络
+/// 返回空 → 落空态(而非停在加载骨架)。
 #[tauri::command]
 async fn clear_chat_messages(
     messages_store: State<'_, MessagesStore>,
     auth_api: State<'_, Arc<AuthApi>>,
+    change_tx: State<'_, tokio_broadcast::Sender<ChangeNotice>>,
 ) -> Result<(), AuthError> {
     let employee_id = match auth_api.current_session().await? {
         Some(p) => p.user_id,
@@ -615,6 +618,14 @@ async fn clear_chat_messages(
         .clear_for_employee(&employee_id)
         .await
         .map_err(messages_err)?;
+    // scope 不带 conversation_id → 广义命中所有打开会话的 conversation-messages 订阅,使其重读落空态。
+    let _ = change_tx.send(ChangeNotice::command_upsert(
+        ChangeTopic::ConversationMessages,
+        ChangeScope {
+            employee_id,
+            ..Default::default()
+        },
+    ));
     Ok(())
 }
 

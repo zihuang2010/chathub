@@ -7,6 +7,7 @@ import { Splash } from "@/components/Splash";
 import { TitleBar } from "@/components/TitleBar";
 import { WindowResizeEdges } from "@/components/WindowResizeEdges";
 import { Workbench } from "@/components/Workbench";
+import { UpdateDialogViewport } from "@/components/ui/UpdateDialog";
 import { useMessagesReady } from "@/lib/data/appReady";
 import { changeBus } from "@/lib/data/changeBus";
 import { checkForAppUpdates } from "@/lib/updater";
@@ -174,6 +175,8 @@ function App() {
       {/* 视口边缘的不可见 resize 命中区 — 与 #app-shell 同级，避免被它的
           overflow:hidden 裁掉。仅 macOS 注入；详见组件内注释。 */}
       <WindowResizeEdges />
+      {/* 应用更新弹窗 —— 挂在 App 根,登录前后均覆盖(启动自查 + UserMenu 手动检查共用)。 */}
+      <UpdateDialogViewport />
     </>
   );
 }

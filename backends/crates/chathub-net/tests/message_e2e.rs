@@ -21,13 +21,14 @@ fn message_upsert_event(conv: &str) -> serde_json::Value {
     serde_json::json!({
         "eventType": "MESSAGE_UPSERT",
         "eventReason": "CUSTOMER_MESSAGE_RECEIVED",
-        "conversationId": conv,
-        "wecomAccountId": "wa-1",
-        "externalUserId": "ext-1",
+        // 真实 payload:conversationId/wecomAccountId/externalUserId 都在 message{} 内部。
         "message": {
+            "conversationId": conv,
+            "wecomAccountId": "wa-1",
+            "externalUserId": "ext-1",
             "localMessageId": "LM_E2E",
             "messageDirection": 2,
-            "messageType": 1,
+            "chatMessageType": 1,
             "sendStatus": 3,
             // sortKey 格式: {epochMs}:{方向}:{平台序号补零}:{localMessageId};
             // 2=客户/接收方。

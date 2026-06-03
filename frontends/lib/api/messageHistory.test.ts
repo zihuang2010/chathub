@@ -53,3 +53,33 @@ describe("adaptHistoryRecords direction contract", () => {
     expect(messages.map((m) => m.id)).toEqual(["oldest", "middle", "newest"]);
   });
 });
+
+describe("adaptHistoryRecords 细分语义透传(revoked / failReason / requestMessageId)", () => {
+  it("revoked=true → Message.isRecalled=true;缺省/false → undefined(不存在=未撤回)", () => {
+    // adaptHistoryRecords 会按 sortKey 重排,故按 id 取而非按入参顺序解构。
+    const revoked = { ...record(2), localMessageId: "rv", revoked: true };
+    const notRevoked = { ...record(2), localMessageId: "nr", revoked: false };
+    const absent = { ...record(2), localMessageId: "ab" };
+
+    const byId = new Map(
+      adaptHistoryRecords([revoked, notRevoked, absent], "c1").map((m) => [m.id, m]),
+    );
+    expect(byId.get("rv")?.isRecalled).toBe(true);
+    expect(byId.get("nr")?.isRecalled).toBeUndefined();
+    expect(byId.get("ab")?.isRecalled).toBeUndefined();
+  });
+
+  it("requestMessageId / failReason 原样透传到 Message(供乐观配对 / 失败原因展示)", () => {
+    const r = {
+      ...record(2),
+      localMessageId: "m",
+      sendStatus: 4,
+      requestMessageId: "local-uuid-1",
+      failReason: "对方已不是好友",
+    };
+    const [m] = adaptHistoryRecords([r], "c1");
+    expect(m.requestMessageId).toBe("local-uuid-1");
+    expect(m.failReason).toBe("对方已不是好友");
+    expect(m.status).toBe("failed");
+  });
+});

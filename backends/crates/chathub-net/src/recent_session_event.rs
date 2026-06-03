@@ -90,16 +90,40 @@ impl RecentSessionEventApplier {
             if event_type != "SESSION_SUMMARY_UPSERT" {
                 continue;
             }
-            if let Some(acct) = ev.get("wecomAccountId").and_then(|v| v.as_str()) {
-                accounts_in_batch.insert(acct.to_string());
+            // 真实 payload:业务体(conversationId/wecomAccountId 等)全在 sessionSummary{} 内部。
+            // $ref 事件(UNREAD_CHANGED 第3条)无 sessionSummary 实体 → 跳过(get 返 None)。
+            let ss = match ev.get("sessionSummary") {
+                Some(v) => v,
+                None => continue,
+            };
+            let acct_for_scope = json_id(ss, "wecomAccountId");
+            if !acct_for_scope.is_empty() {
+                accounts_in_batch.insert(acct_for_scope);
             }
 
-            // 必备:conversationId(顶层定位)+ 可解的 sessionSummary。任一缺失 = 瘦 payload,
+            // 必备:conversationId(sessionSummary 内定位,可能是数字)非空。缺失 = 瘦 payload/$ref,
             // 无法入库 → skip(事件路径不回拉,交给 resync/刷新)。
-            let conv_id = match ev.get("conversationId").and_then(|v| v.as_str()) {
-                Some(s) if !s.is_empty() => s,
-                _ => continue,
-            };
+            let conv_id_owned = json_id(ss, "conversationId");
+            if conv_id_owned.is_empty() {
+                continue;
+            }
+            let conv_id = conv_id_owned.as_str();
+
+            // MARK_READ 特判:已读上报后未读清零。MARK_READ 的 lastMessageSortKey 与上条消息同值,
+            // 仅靠 gmtModifiedTime 决胜,实测有"同 sortKey 且 gmt 不前进 → 版本门拒绝 → 未读清不掉"
+            // 的真实风险。故绕过 decode_summary/apply_summary 版本门,直接 clear_unread 保证清零;
+            // 未读清零与消息位置正交,不走 insert。仍计入 applied 以触发末尾统一 ChangeNotice。
+            if ev.get("eventReason").and_then(|v| v.as_str()) == Some("MARK_READ") {
+                match self.store.clear_unread(&employee_id_str, conv_id).await {
+                    Ok(()) => applied += 1,
+                    Err(e) => warn!(
+                        target: "chathub_net::recent_session_event",
+                        ?e, conv_id, "clear_unread(MARK_READ) failed"
+                    ),
+                }
+                continue;
+            }
+
             let summary = match decode_summary(ev, &employee_id_str) {
                 Some(s) => s,
                 None => continue,
@@ -140,10 +164,9 @@ impl RecentSessionEventApplier {
                             .unwrap_or_default(),
                     );
                 }
-                let acct_id = ev
-                    .get("wecomAccountId")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
+                // 真实 payload:身份字段在 sessionSummary{} 内部。
+                let acct_id = json_id(ss, "wecomAccountId");
+                let acct_id = acct_id.as_str();
                 let (wecom_name, wecom_account, cache_alias) = accounts_cache
                     .as_ref()
                     .and_then(|v| v.iter().find(|a| a.wecom_account_id == acct_id))
@@ -167,11 +190,7 @@ impl RecentSessionEventApplier {
                     } else {
                         summary.wecom_alias.clone()
                     },
-                    external_user_id: ev
-                        .get("externalUserId")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string(),
+                    external_user_id: str_or_empty(ss, "externalUserId"),
                     external_name: summary.external_name.clone(),
                     external_avatar: summary.external_avatar.clone(),
                     // 事件不带手机号 → 留空,后续 FRIEND_UPSERT/刷新补。
@@ -253,28 +272,42 @@ pub fn record_to_remote(r: RecentFriendRecord, employee_id: &str) -> RecentSessi
 
 /// 把 `SESSION_SUMMARY_UPSERT` 事件解码为 [`RecentSessionSummary`](规范 §9.2)。
 ///
-/// 会话定位(`conversationId`)在事件**顶层**;摘要字段在 `sessionSummary{}` 内,排序键叫
-/// `lastSortKey`(注意:不是 `recentFriends.records.lastMessageSortKey`)。
-/// 必备:`conversationId` 与 `sessionSummary.lastSortKey` 非空 → 缺失返 `None`(调用者按瘦 payload 跳过)。
+/// 真实 payload:`conversationId`/`gmtModifiedTime` 等业务体字段全在 `sessionSummary{}` **内部**
+/// (旧规范误从事件顶层读)。`conversationId` 多为**数字**(MARK_READ 又是字符串),用 `json_id`
+/// 统一成字符串。排序键多数叫 `lastSortKey`,**MARK_READ 里叫 `lastMessageSortKey`**,双键兜底。
+/// UNREAD_CHANGED 第3事件是 `{"$ref":"$.events[1].sessionSummary"}`(serde 不解引用)→ 跳过,
+/// 数据由同 batch 的 `LAST_MESSAGE_CHANGED` 兄弟事件承载。
+/// 必备:`sessionSummary.conversationId` 与排序键非空 → 缺失返 `None`(调用者按瘦 payload 跳过)。
 /// `employee_id` 来自事件批 `PushBatchOut.employee_id`,不在 payload 里。
 fn decode_summary(ev: &serde_json::Value, employee_id: &str) -> Option<RecentSessionSummary> {
-    let conv_id = ev.get("conversationId")?.as_str()?;
+    let ss = ev.get("sessionSummary")?;
+    // `$ref` 事件(UNREAD_CHANGED 第3条)不携带真实数据,serde 也不解引用 → 跳过。
+    if ss.get("$ref").is_some() {
+        return None;
+    }
+    // 会话定位在 sessionSummary 内部,可能是数字 → json_id 统一成字符串;空则瘦 payload。
+    let conv_id = json_id(ss, "conversationId");
     if conv_id.is_empty() {
         return None;
     }
-    let ss = ev.get("sessionSummary")?;
-    let last_sort_key = ss.get("lastSortKey").and_then(|v| v.as_str()).unwrap_or("");
+    // 排序键:多数 `lastSortKey`,MARK_READ 是 `lastMessageSortKey`;双键兜底,空则瘦 payload。
+    let last_sort_key = ss
+        .get("lastSortKey")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .or_else(|| ss.get("lastMessageSortKey").and_then(|v| v.as_str()))
+        .unwrap_or("");
     if last_sort_key.is_empty() {
         return None;
     }
-    // sortKey 首段即该消息 epoch-ms;再 max 服务端时间串(空格格式 "yyyy-MM-dd HH:mm:ss")防 sortKey 异常。
+    // sortKey 首段即该消息 epoch-ms;再 max 服务端时间串防 sortKey 异常。
     let sort_ms = split_sort_key_ms(last_sort_key);
     let time_ms = sort_ms.max(parse_server_time_to_ms(&str_or_empty(
         ss,
         "lastMessageTime",
     )));
     Some(RecentSessionSummary {
-        conversation_id: conv_id.to_string(),
+        conversation_id: conv_id,
         employee_id: employee_id.to_string(),
         last_local_message_id: str_or_empty(ss, "lastLocalMessageId"),
         last_message_type: int_or_zero(ss, "lastMessageType"),
@@ -288,8 +321,8 @@ fn decode_summary(ev: &serde_json::Value, employee_id: &str) -> Option<RecentSes
             .and_then(|v| v.as_bool())
             .unwrap_or(false),
         last_message_sort_key_ms: sort_ms.max(time_ms),
-        // gmt 次版本:摘要事件一般不带,缺省空串(版本门主键用 sort_key_ms,gmt 仅同值时 tiebreak)。
-        gmt_modified_time: str_or_empty(ev, "gmtModifiedTime"),
+        // gmt 次版本:真实 payload 在 sessionSummary 内部读;缺省空串(版本门主键用 sort_key_ms,gmt 仅同值时 tiebreak)。
+        gmt_modified_time: str_or_empty(ss, "gmtModifiedTime"),
         // 可选资料字段:仅"资料变化时"返回,非空才覆盖本地(apply_summary 负责保留逻辑)。
         external_name: str_or_empty(ss, "externalName"),
         external_avatar: str_or_empty(ss, "externalAvatar"),
@@ -308,14 +341,30 @@ fn int_or_zero(ev: &serde_json::Value, key: &str) -> i32 {
     ev.get(key).and_then(|v| v.as_i64()).unwrap_or(0) as i32
 }
 
-/// 解析 `lastMessageSortKey` 首段(`:` 前)为 epoch-ms;缺省 / 非法返 0。
-/// 形如 `"1715836200000:xxxx"`,首段为该会话单调 epoch-ms;LWW 主版本。
+/// 解析排序键首段为 epoch-ms;缺省 / 非法返 0。
+/// 真实 payload 排序键用 `_` 分隔(如 `"1780390520611_000..._206..."`),历史 recentFriends
+/// 路径用 `:` 分隔(如 `"1715836200000:xxxx"`),纯数字串亦兼容。统一取**前导连续数字串**再 parse,
+/// 既适配两种分隔符也不依赖具体分隔符。首段为该会话单调 epoch-ms;LWW 主版本。
 pub fn split_sort_key_ms(s: &str) -> i64 {
-    s.split(':')
-        .next()
-        .unwrap_or("")
+    s.bytes()
+        .take_while(|b| b.is_ascii_digit())
+        .map(|b| b as char)
+        .collect::<String>()
         .parse::<i64>()
         .unwrap_or(0)
+}
+
+/// 读取 number-or-string 形态的 id 字段为字符串。
+/// 真实 payload 里 `conversationId` 多为**数字**(MARK_READ 又是字符串),需统一成字符串
+/// 以与本地预建行(`open_friend_conversation` 写入的字符串 id)逐字一致。
+/// 字符串优先;数字用 `as_i64`/`as_u64`(**禁 `as_f64`**:防大整数精度丢失);其余返空串。
+fn json_id(v: &serde_json::Value, key: &str) -> String {
+    match v.get(key) {
+        Some(serde_json::Value::String(s)) => s.clone(),
+        Some(n) if n.is_i64() => n.as_i64().map(|x| x.to_string()).unwrap_or_default(),
+        Some(n) if n.is_u64() => n.as_u64().map(|x| x.to_string()).unwrap_or_default(),
+        _ => String::new(),
+    }
 }
 
 /// 极简 RFC3339(`YYYY-MM-DDTHH:MM:SSZ`)解析:成功返 epoch ms,失败返 0。
@@ -407,24 +456,24 @@ mod tests {
         assert_eq!(b - a, 3_600_000);
     }
 
-    /// 规范 §9 形态:摘要字段嵌套在 `sessionSummary{}` 内,排序键叫 `lastSortKey`。
+    /// 真实 payload 形态:身份字段(conversationId/wecomAccountId/externalUserId)与摘要字段
+    /// 全部嵌在 `sessionSummary{}` 内;排序键叫 `lastSortKey`,用 `_` 分隔。
     /// sortKey 前缀取 1_900_000_000_000(大于 lastMessageTime 解析值),便于断言 lastSortKey 被解析。
     fn full_session_summary_event(conv: &str, acct: &str) -> serde_json::Value {
         serde_json::json!({
             "eventType": "SESSION_SUMMARY_UPSERT",
             "eventReason": "LAST_MESSAGE_CHANGED",
-            "conversationId": conv,
-            "wecomAccountId": acct,
-            "externalUserId": format!("ext_{conv}"),
-            "eventTime": "2026-05-14 10:30:00",
             "sessionSummary": {
+                "conversationId": conv,
+                "wecomAccountId": acct,
+                "externalUserId": format!("ext_{conv}"),
                 "lastLocalMessageId": "LM_A",
                 "lastMessageType": 1,
                 "lastMessageDirection": 2,
                 "lastSendStatus": 0,
                 "lastMessageSummary": "你好",
                 "lastMessageTime": "2026-05-14 10:30:00",
-                "lastSortKey": "1900000000000:2:00000000000000002001:LM_A",
+                "lastSortKey": "1900000000000_00000000000000002001_LM_A",
                 "unreadCount": 2,
                 "hasUnread": true
             }
@@ -435,7 +484,7 @@ mod tests {
     fn decode_summary_reads_nested_session_summary() {
         let ev = full_session_summary_event("cv-1", "wa-1");
         let s = decode_summary(&ev, "u-test").expect("full payload should decode");
-        // 会话定位来自事件顶层。
+        // 会话定位来自 sessionSummary{} 内部(真实 payload)。
         assert_eq!(s.conversation_id, "cv-1");
         assert_eq!(
             s.employee_id, "u-test",
@@ -474,21 +523,24 @@ mod tests {
 
     #[test]
     fn decode_summary_missing_required_returns_none() {
-        // 缺 conversationId
+        // 缺 sessionSummary.conversationId
         let mut ev = full_session_summary_event("cv-1", "wa-1");
-        ev.as_object_mut().unwrap().remove("conversationId");
+        ev["sessionSummary"]
+            .as_object_mut()
+            .unwrap()
+            .remove("conversationId");
         assert!(decode_summary(&ev, "u-test").is_none(), "缺 conversationId");
         // 缺整个 sessionSummary
         let mut ev = full_session_summary_event("cv-1", "wa-1");
         ev.as_object_mut().unwrap().remove("sessionSummary");
         assert!(decode_summary(&ev, "u-test").is_none(), "缺 sessionSummary");
-        // 缺 sessionSummary.lastSortKey
+        // 缺 sessionSummary 的两个排序键(lastSortKey + lastMessageSortKey 兜底均无)
         let mut ev = full_session_summary_event("cv-1", "wa-1");
         ev["sessionSummary"]
             .as_object_mut()
             .unwrap()
             .remove("lastSortKey");
-        assert!(decode_summary(&ev, "u-test").is_none(), "缺 lastSortKey");
+        assert!(decode_summary(&ev, "u-test").is_none(), "缺排序键");
     }
 
     #[test]
@@ -642,7 +694,11 @@ mod tests {
     async fn thin_payload_without_conversation_id_is_skipped() {
         let (applier, store, _accounts, mut rx) = applier_with_stores().await;
         let mut ev = full_session_summary_event("cv-x", "wa-1");
-        ev.as_object_mut().unwrap().remove("conversationId");
+        // 真实 payload:conversationId 在 sessionSummary 内部;移除即瘦 payload。
+        ev["sessionSummary"]
+            .as_object_mut()
+            .unwrap()
+            .remove("conversationId");
 
         applier
             .apply_push_batch(&batch(serde_json::json!([ev])))
@@ -651,5 +707,122 @@ mod tests {
         assert!(rx.try_recv().is_err(), "瘦 payload 不应发 ChangeNotice");
         let rows = store.list_top(EMP, None, 50).await.unwrap();
         assert!(rows.is_empty(), "瘦 payload 不应入库");
+    }
+
+    #[test]
+    fn split_sort_key_ms_handles_underscore_colon_and_plain() {
+        // 真实 payload 用 `_` 分隔。
+        assert_eq!(
+            split_sort_key_ms("1780390520611_00000000000000000000_2061733392617046016"),
+            1_780_390_520_611
+        );
+        // 历史 recentFriends 路径用 `:` 分隔(回归保护)。
+        assert_eq!(split_sort_key_ms("1715836200000:xxxx"), 1_715_836_200_000);
+        // 纯数字串。
+        assert_eq!(split_sort_key_ms("1900000000000"), 1_900_000_000_000);
+        // 无前导数字 / 空串 → 0。
+        assert_eq!(split_sort_key_ms(""), 0);
+        assert_eq!(split_sort_key_ms("_123"), 0);
+        assert_eq!(split_sort_key_ms("abc"), 0);
+    }
+
+    #[test]
+    fn decode_summary_parses_numeric_conversation_id() {
+        // 真实 payload:conversationId 为数字;decode 用 as_i64/as_u64 转字符串,
+        // 必须与本地预建行(open_friend_conversation 写入的字符串 id)逐字一致。
+        let ev = serde_json::json!({
+            "eventType": "SESSION_SUMMARY_UPSERT",
+            "eventReason": "SUMMARY_CREATED",
+            "sessionSummary": {
+                "conversationId": 2061726528261062656i64,
+                "wecomAccountId": "GuoHeZuZi",
+                "externalUserId": "ext_x",
+                "lastMessageSummary": "你好",
+                "lastMessageTime": "2026-06-02T16:28:28.348",
+                "lastSortKey": "1900000000000_0000_LM_A",
+                "unreadCount": 0,
+                "hasUnread": false
+            }
+        });
+        let s = decode_summary(&ev, "u-test").expect("numeric conversationId should decode");
+        assert_eq!(
+            s.conversation_id, "2061726528261062656",
+            "数字 conversationId 应转成无小数点的字符串"
+        );
+    }
+
+    #[test]
+    fn decode_summary_ref_event_is_skipped() {
+        // UNREAD_CHANGED 第3事件:sessionSummary 是 {"$ref":...},serde 不解引用 → decode 返 None。
+        let ev = serde_json::json!({
+            "eventType": "SESSION_SUMMARY_UPSERT",
+            "eventReason": "UNREAD_CHANGED",
+            "sessionSummary": { "$ref": "$.events[1].sessionSummary" }
+        });
+        assert!(
+            decode_summary(&ev, "u-test").is_none(),
+            "$ref 事件应被跳过(数据由兄弟事件承载)"
+        );
+    }
+
+    #[test]
+    fn decode_summary_falls_back_to_last_message_sort_key() {
+        // MARK_READ 形态:无 lastSortKey,排序键叫 lastMessageSortKey → 双键兜底仍可解析。
+        let mut ev = full_session_summary_event("cv-1", "wa-1");
+        let ss = ev["sessionSummary"].as_object_mut().unwrap();
+        ss.remove("lastSortKey");
+        ss.insert(
+            "lastMessageSortKey".into(),
+            serde_json::json!("1780389010559_00000001780389010559_206"),
+        );
+        let s = decode_summary(&ev, "u-test").expect("lastMessageSortKey 兜底应可解码");
+        assert_eq!(s.last_message_sort_key_ms, 1_780_389_010_559);
+    }
+
+    #[tokio::test]
+    async fn mark_read_clears_unread_via_clear_unread() {
+        let (applier, store, _accounts, mut rx) = applier_with_stores().await;
+        // 预置一行 unread=3(模拟入站后未读)。
+        let mut seeded = seed_remote("cv-1", "wa-1", 1_000_000_000_000);
+        seeded.unread_count = 3;
+        seeded.has_unread = true;
+        store.upsert_remote_one(seeded).await.unwrap();
+        let rows = store.list_top(EMP, None, 50).await.unwrap();
+        assert_eq!(
+            rows.iter()
+                .find(|r| r.conversation_id == "cv-1")
+                .unwrap()
+                .unread_count,
+            3,
+            "预置未读应为 3"
+        );
+
+        // MARK_READ 事件(conversationId 在真实 payload 里是字符串,排序键叫 lastMessageSortKey)。
+        let ev = serde_json::json!({
+            "eventType": "SESSION_SUMMARY_UPSERT",
+            "eventReason": "MARK_READ",
+            "sessionSummary": {
+                "conversationId": "cv-1",
+                "wecomAccountId": "wa-1",
+                "externalUserId": "ext_cv-1",
+                "gmtModifiedTime": "2026-06-02 16:30:10",
+                "hasUnread": false,
+                "lastMessageSortKey": "1000000000000_0000_LM_OLD",
+                "lastMessageSummary": "旧摘要",
+                "lastMessageTime": "2026-06-02 16:30:11",
+                "unreadCount": 0
+            }
+        });
+        applier
+            .apply_push_batch(&batch(serde_json::json!([ev])))
+            .await;
+
+        let rows = store.list_top(EMP, None, 50).await.unwrap();
+        let row = rows.iter().find(|r| r.conversation_id == "cv-1").unwrap();
+        assert_eq!(row.unread_count, 0, "MARK_READ 应清零未读(绕过版本门)");
+        assert!(!row.has_unread, "has_unread 应被清零");
+
+        let notice = rx.try_recv().expect("MARK_READ 仍应发 ChangeNotice");
+        assert_eq!(notice.topic, ChangeTopic::RecentSessions);
     }
 }

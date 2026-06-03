@@ -226,6 +226,14 @@ export interface Message {
    *  bubble into a centered system line ("你撤回了一条消息" / "对方撤回了一条消息"). */
   isRecalled?: boolean;
   /**
+   * 权威出站条目携带的 requestMessageId(= 前端发送时生成的 clientMsgId,local-<uuid>)。
+   * 服务端 push 写库后经历史/缓存读回原样透传;replaceAuthoritative 据此对乐观↔权威做
+   * 确定性配对(serverId 兜底之外的精确路径)。入站消息无此字段。
+   */
+  requestMessageId?: string;
+  /** 发送失败原因(status==="failed" 时由服务端下发);供失败气泡展示具体原因。 */
+  failReason?: string;
+  /**
    * 出站附件气泡专用字段:消息类型(1=文本/2=图片/3=文件/4=语音)与已上传的 OSS objectName。
    * 失败重发时复用 filePath 直接重发,无需重传 OSS。纯文本/入站消息不写。
    */

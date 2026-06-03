@@ -58,6 +58,12 @@ export interface HistoryMessage {
   attachments: HistoryAttachment[];
   /** 记录最后修改时间 "yyyy-MM-dd HH:mm:ss";客户端暂不消费。 */
   gmtModifiedTime: string;
+  /** 服务端撤回标记;true=该消息已被撤回,渲染折叠为"已撤回"系统行。 */
+  revoked?: boolean;
+  /** 发送失败原因(sendStatus=4 时由服务端下发);可空。 */
+  failReason?: string;
+  /** 等于前端发送时生成的 clientMsgId(local-<uuid>);用于乐观↔权威确定性配对。 */
+  requestMessageId?: string;
 }
 
 export interface HistoryAttachment {
@@ -247,6 +253,13 @@ function historyToMessage(h: HistoryMessage, conversationId: string): Message {
     sentAt: parseServerTimeToIso(h.messageTime),
     status: direction === 2 ? mapSendStatus(h.sendStatus) : undefined,
     parts: buildMessageParts(text, undefined, attachments),
+    // 撤回标记:服务端 revoked=true → 折叠为"已撤回"系统行(MessageBubble 已有渲染)。
+    // false/缺省一律收敛为 undefined,与其余可选字段保持"不存在=未撤回"语义。
+    isRecalled: h.revoked || undefined,
+    // requestMessageId(=发送时 clientMsgId)带到权威条目,供 replaceAuthoritative 确定性配对。
+    requestMessageId: h.requestMessageId,
+    // 失败原因(sendStatus=4 时);供失败气泡展示具体原因。
+    failReason: h.failReason,
   };
 }
 

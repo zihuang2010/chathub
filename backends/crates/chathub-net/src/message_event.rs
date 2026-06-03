@@ -36,6 +36,26 @@ fn str_or_empty(v: &serde_json::Value, key: &str) -> String {
         .to_string()
 }
 
+/// 读取一个"可能是字符串、也可能是数字"的 id 字段为字符串。
+/// 真实 payload 里 conversationId 多为数字(大整数,如 2060260503288029184),
+/// 必须用 `as_i64`/`as_u64` 整型转换,**禁止 `as_f64`**(浮点会丢大整数精度,
+/// 导致与预建会话行的字符串 id 逐字不一致)。非字符串非整数 → 空串。
+fn json_id(v: &serde_json::Value, key: &str) -> String {
+    match v.get(key) {
+        Some(x) if x.is_string() => x.as_str().unwrap_or("").to_string(),
+        Some(x) => {
+            if let Some(i) = x.as_i64() {
+                i.to_string()
+            } else if let Some(u) = x.as_u64() {
+                u.to_string()
+            } else {
+                String::new()
+            }
+        }
+        None => String::new(),
+    }
+}
+
 /// 附件是否仍在转存中(任一附件 transferStatus==1)。转存中 → 走兜底,等转存完成后权威字段齐。
 fn attachments_transferring(msg: &serde_json::Value) -> bool {
     msg.get("attachments")
@@ -48,14 +68,18 @@ fn attachments_transferring(msg: &serde_json::Value) -> bool {
 }
 
 /// 把一个 `MESSAGE_UPSERT` 事件 Value 解码为 `MessageRow`(含方向收敛)。
-/// 必填:`message.localMessageId` / `message.sortKey` / 事件级 `conversationId` 非空。
-/// 缺失 → None(调用者走兜底)。`employee_id` 来自 batch,不在 payload。
+/// 真实 payload 把业务体放在 `message{}` 内部:`conversationId`/`wecomAccountId`/
+/// `externalUserId` 都在 message 里,且 `conversationId` 多为数字;消息类型字段是
+/// `chatMessageType`(部分入站事件仍用 `messageType`);时间 `messageTime` 是 ISO-T+毫秒,
+/// 还可能带数字型 `messageTimeMillis`(epoch-ms)。
+/// 必填:`message{}` 存在、`message.conversationId` 非空、`message.localMessageId` 非空、
+/// `message.sortKey` 非空。缺失 → None(调用者走兜底)。`employee_id` 来自 batch,不在 payload。
 fn decode_message_row(ev: &serde_json::Value, employee_id: &str) -> Option<MessageRow> {
-    let conversation_id = ev.get("conversationId").and_then(|v| v.as_str())?;
+    let msg = ev.get("message")?;
+    let conversation_id = json_id(msg, "conversationId");
     if conversation_id.is_empty() {
         return None;
     }
-    let msg = ev.get("message")?;
     let local_message_id = msg.get("localMessageId").and_then(|v| v.as_str())?;
     if local_message_id.is_empty() {
         return None;
@@ -65,6 +89,10 @@ fn decode_message_row(ev: &serde_json::Value, employee_id: &str) -> Option<Messa
         return None;
     }
     let message_time = str_or_empty(msg, "messageTime");
+    let millis = msg
+        .get("messageTimeMillis")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
     // 缺省按客户/接收方处理,避免缺方向时误画成我方发送。
     let direction = msg
         .get("messageDirection")
@@ -74,20 +102,32 @@ fn decode_message_row(ev: &serde_json::Value, employee_id: &str) -> Option<Messa
         .get("attachments")
         .map(|a| a.to_string())
         .unwrap_or_else(|| "[]".to_string());
-    let freshness = split_sort_key_ms(sort_key).max(parse_server_time_to_ms(&message_time));
+    // 类型:chatMessageType 优先,messageType 兜底(入站事件偶用后者);缺省 1(文本)。
+    let message_type = msg
+        .get("chatMessageType")
+        .or_else(|| msg.get("messageType"))
+        .and_then(|v| v.as_i64())
+        .unwrap_or(1) as i32;
+    // 新鲜度取三源最大:sortKey 前导 ms、messageTime(ISO-T)、messageTimeMillis。
+    let freshness = split_sort_key_ms(sort_key)
+        .max(parse_server_time_to_ms(&message_time))
+        .max(millis);
     Some(MessageRow {
         local_message_id: local_message_id.to_string(),
-        conversation_id: conversation_id.to_string(),
+        conversation_id,
         employee_id: employee_id.to_string(),
-        wecom_account_id: str_or_empty(ev, "wecomAccountId"),
+        wecom_account_id: json_id(msg, "wecomAccountId"),
         sort_key: sort_key.to_string(),
         message_time_ms: freshness,
         message_direction: to_local_direction(direction),
-        message_type: msg.get("messageType").and_then(|v| v.as_i64()).unwrap_or(1) as i32,
+        message_type,
         content_text: str_or_empty(msg, "contentText"),
         send_status: msg.get("sendStatus").and_then(|v| v.as_i64()).unwrap_or(0) as i32,
         attachments_json,
         gmt_modified_time: str_or_empty(msg, "gmtModifiedTime"),
+        revoked: ev.get("eventReason").and_then(|v| v.as_str()) == Some("MESSAGE_REVOKED"),
+        fail_reason: str_or_empty(msg, "failReason"),
+        request_message_id: str_or_empty(msg, "requestMessageId"),
         updated_at_ms: 0,
     })
 }
@@ -148,9 +188,16 @@ impl MessageEventApplier {
             }
             seen_message_event = true;
 
-            let conv_id = match ev.get("conversationId").and_then(|v| v.as_str()) {
-                Some(s) if !s.is_empty() => s.to_string(),
-                _ => continue, // 无会话定位,无法落气泡
+            // 真实 payload:conversationId 在 message{} 内、且多为数字。
+            let conv_id = match ev.get("message") {
+                Some(msg) => {
+                    let id = json_id(msg, "conversationId");
+                    if id.is_empty() {
+                        continue; // 无会话定位,无法落气泡
+                    }
+                    id
+                }
+                None => continue, // 无 message 快照
             };
 
             // 热会话门控:无窗口 → 冷会话,跳过(recents + 打开时 reconcile 负责)。
@@ -258,14 +305,14 @@ impl MessageEventApplier {
 }
 
 /// 收集兜底会话定位,按 conv_id 去重(同一 batch 内同会话只兜底一次)。
+/// 真实 payload:wecomAccountId/externalUserId 在 `message{}` 内部。
 fn push_fallback(acc: &mut Vec<(String, String, String)>, ev: &serde_json::Value, conv_id: &str) {
-    let acct = ev
-        .get("wecomAccountId")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-    let ext = ev
-        .get("externalUserId")
+    let msg = ev.get("message");
+    let acct = msg
+        .map(|m| json_id(m, "wecomAccountId"))
+        .unwrap_or_default();
+    let ext = msg
+        .and_then(|m| m.get("externalUserId"))
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
@@ -278,50 +325,78 @@ fn push_fallback(acc: &mut Vec<(String, String, String)>, ev: &serde_json::Value
 mod tests {
     use super::*;
 
+    /// 真实形态的 MESSAGE_UPSERT 事件:业务体全在 `message{}` 内,conversationId 为数字,
+    /// 类型字段 `chatMessageType`,sortKey 用 `_` 分隔,messageTime 用 ISO-T+毫秒,
+    /// 并带数字型 `messageTimeMillis` 作为跨格式新鲜度兜底(真实入站样例形态)。
+    /// `conv` 形参是会话 id 的数字字符串(如 "2060260503288029184")。
     fn full_event(conv: &str, direction: i64) -> serde_json::Value {
+        let conv_num: i64 = conv.parse().expect("conv 必须是数字字符串");
         serde_json::json!({
             "eventType": "MESSAGE_UPSERT",
             "eventReason": "CUSTOMER_MESSAGE_RECEIVED",
-            "conversationId": conv,
-            "wecomAccountId": "wa-1",
-            "externalUserId": "ext-1",
             "message": {
+                "conversationId": conv_num,
+                "wecomAccountId": "GuoHeZuZi",
+                "externalUserId": "wmITqmBgAAZg4SntYu9tFAcrFp1GZrKg",
                 "localMessageId": "LM_A",
                 "messageDirection": direction,
-                "messageType": 1,
+                "chatMessageType": 1,
                 "sendStatus": 3,
-                "sortKey": format!("1770000000000:{direction}:00000000000000002001:LM_A"),
-                "messageTime": "2026-05-14 10:30:00",
+                "sortKey": "1780390520611_00000000000000000000_2061733392617046016",
+                "messageTime": "2026-06-02T16:55:20.611",
+                "messageTimeMillis": 1780390520611i64,
                 "contentText": "你好",
-                "contentSummary": "你好",
                 "attachments": []
             }
         })
     }
 
     #[test]
+    fn json_id_reads_number_and_string() {
+        // 大整数 conversationId(超 f64 安全整数)必须逐字保真。
+        let big = serde_json::json!({ "conversationId": 2060260503288029184i64 });
+        assert_eq!(json_id(&big, "conversationId"), "2060260503288029184");
+        // MARK_READ 那类 string id 直接取字符串。
+        let s = serde_json::json!({ "conversationId": "2061726528261062656" });
+        assert_eq!(json_id(&s, "conversationId"), "2061726528261062656");
+        // 缺失 / 非标量 → 空串。
+        assert_eq!(json_id(&serde_json::json!({}), "conversationId"), "");
+        let arr = serde_json::json!({ "conversationId": [1, 2] });
+        assert_eq!(json_id(&arr, "conversationId"), "");
+    }
+
+    #[test]
     fn decode_full_payload_translates_customer_direction_to_in() {
-        let ev = full_event("c1", 2); // 2 = 客户/接收方
+        let ev = full_event("2060260503288029184", 2); // 2 = 客户/接收方
         let r = decode_message_row(&ev, "42").expect("full payload decodes");
         assert_eq!(r.local_message_id, "LM_A");
-        assert_eq!(r.conversation_id, "c1");
+        assert_eq!(
+            r.conversation_id, "2060260503288029184",
+            "数字 conversationId 转字符串、逐字保真"
+        );
+        assert_eq!(
+            r.wecom_account_id, "GuoHeZuZi",
+            "wecomAccountId 来自 message{{}}"
+        );
         assert_eq!(r.employee_id, "42", "employee_id 来自 batch,不在 payload");
         assert_eq!(r.message_direction, 1, "2=客户/接收方 → 本地 1(in)");
         assert_eq!(r.content_text, "你好");
-        assert!(r.message_time_ms > 0);
+        assert_eq!(r.message_type, 1, "chatMessageType 优先");
+        assert!(r.message_time_ms > 0, "messageTimeMillis 兜底新鲜度");
+        assert!(!r.revoked, "非撤回事件 revoked=false");
     }
 
     #[test]
     fn decode_translates_sender_and_sync_to_out() {
         assert_eq!(
-            decode_message_row(&full_event("c1", 1), "42")
+            decode_message_row(&full_event("2060260503288029184", 1), "42")
                 .unwrap()
                 .message_direction,
             2,
             "1=发送方 → 本地 2(out)"
         );
         assert_eq!(
-            decode_message_row(&full_event("c1", 3), "42")
+            decode_message_row(&full_event("2060260503288029184", 3), "42")
                 .unwrap()
                 .message_direction,
             2,
@@ -330,25 +405,68 @@ mod tests {
     }
 
     #[test]
+    fn decode_prefers_chat_message_type_then_falls_back_to_message_type() {
+        // 仅 messageType(无 chatMessageType)→ 取 messageType。
+        let mut ev = full_event("2060260503288029184", 2);
+        ev["message"]
+            .as_object_mut()
+            .unwrap()
+            .remove("chatMessageType");
+        ev["message"]["messageType"] = serde_json::json!(4);
+        assert_eq!(
+            decode_message_row(&ev, "42").unwrap().message_type,
+            4,
+            "缺 chatMessageType 时回退 messageType"
+        );
+    }
+
+    #[test]
     fn decode_missing_required_returns_none() {
-        let mut ev = full_event("c1", 2);
+        let mut ev = full_event("2060260503288029184", 2);
         ev["message"]
             .as_object_mut()
             .unwrap()
             .remove("localMessageId");
         assert!(decode_message_row(&ev, "42").is_none(), "缺 localMessageId");
 
-        let mut ev = full_event("c1", 2);
+        let mut ev = full_event("2060260503288029184", 2);
         ev["message"].as_object_mut().unwrap().remove("sortKey");
         assert!(decode_message_row(&ev, "42").is_none(), "缺 sortKey");
 
-        let mut ev = full_event("c1", 2);
-        ev.as_object_mut().unwrap().remove("conversationId");
-        assert!(decode_message_row(&ev, "42").is_none(), "缺 conversationId");
+        let mut ev = full_event("2060260503288029184", 2);
+        ev["message"]
+            .as_object_mut()
+            .unwrap()
+            .remove("conversationId");
+        assert!(
+            decode_message_row(&ev, "42").is_none(),
+            "缺 message.conversationId"
+        );
 
-        let mut ev = full_event("c1", 2);
+        let mut ev = full_event("2060260503288029184", 2);
         ev.as_object_mut().unwrap().remove("message");
         assert!(decode_message_row(&ev, "42").is_none(), "缺 message 快照");
+    }
+
+    #[test]
+    fn decode_message_revoked_sets_revoked_flag() {
+        let mut ev = full_event("2060260503288029184", 2);
+        ev["eventReason"] = serde_json::json!("MESSAGE_REVOKED");
+        let r = decode_message_row(&ev, "42").expect("撤回事件可解码");
+        assert!(r.revoked, "MESSAGE_REVOKED → revoked=true");
+    }
+
+    #[test]
+    fn decode_send_failed_carries_fail_reason_and_status() {
+        let mut ev = full_event("2060260503288029184", 1);
+        ev["eventReason"] = serde_json::json!("SEND_FAILED");
+        ev["message"]["sendStatus"] = serde_json::json!(4);
+        ev["message"]["failReason"] =
+            serde_json::json!("MAPPING_NOT_FOUND:2:wmITqmBgAAZg4SntYu9tFAcrFp1GZrKg");
+        let r = decode_message_row(&ev, "42").expect("失败事件可解码");
+        assert_eq!(r.send_status, 4, "send_status=4 失败");
+        assert!(!r.fail_reason.is_empty(), "fail_reason 非空");
+        assert!(!r.revoked, "失败不等于撤回");
     }
 
     #[test]
@@ -406,14 +524,17 @@ mod tests {
         }
     }
 
+    /// 真实形态数字会话 id(字符串)。与 `full_event` 内的数字 conversationId 对齐。
+    const CONV: &str = "2060260503288029184";
+
     fn seed_window(conv: &str, employee_id: &str, newest_sort_key: &str) -> MessageWindow {
         MessageWindow {
             conversation_id: conv.into(),
             employee_id: employee_id.into(),
-            wecom_account_id: "wa-1".into(),
-            external_user_id: "ext-1".into(),
+            wecom_account_id: "GuoHeZuZi".into(),
+            external_user_id: "wmITqmBgAAZg4SntYu9tFAcrFp1GZrKg".into(),
             newest_sort_key: newest_sort_key.into(),
-            oldest_sort_key: "0000000000000:1:a".into(),
+            oldest_sort_key: "0000000000000_0_0".into(),
             older_cursor: "cur".into(),
             has_more_older: true,
             newest_message_time_ms: 1,
@@ -427,29 +548,30 @@ mod tests {
     async fn hot_conversation_inserts_bubble_and_emits_notice() {
         let (applier, store, mut rx) = applier_with_store().await;
         store
-            .upsert_window(seed_window("c1", "42", "0000000000000:1:a"))
+            .upsert_window(seed_window(CONV, "42", "0000000000000_0_0"))
             .await
             .unwrap();
 
         applier
-            .apply_push_batch(&batch(serde_json::json!([full_event("c1", 2)]), 42, 10))
+            .apply_push_batch(&batch(serde_json::json!([full_event(CONV, 2)]), 42, 10))
             .await;
 
-        let rows = store.list_recent("42", "c1", 10).await.unwrap();
+        let rows = store.list_recent("42", CONV, 10).await.unwrap();
         assert_eq!(rows.len(), 1, "气泡已落库");
         assert_eq!(rows[0].local_message_id, "LM_A");
+        assert_eq!(rows[0].conversation_id, CONV, "数字会话 id 转字符串落库");
         assert_eq!(rows[0].message_direction, 1, "客户消息 → in");
         assert_eq!(rows[0].content_text, "你好");
 
-        let w = store.get_window("42", "c1").await.unwrap().unwrap();
+        let w = store.get_window("42", CONV).await.unwrap().unwrap();
         assert_eq!(
-            w.newest_sort_key, "1770000000000:2:00000000000000002001:LM_A",
-            "窗口 newest 扩界"
+            w.newest_sort_key, "1780390520611_00000000000000000000_2061733392617046016",
+            "窗口 newest 扩界为真实 sortKey"
         );
 
         let notice = rx.try_recv().expect("ConversationMessages 通知");
         assert_eq!(notice.topic, ChangeTopic::ConversationMessages);
-        assert_eq!(notice.scope.conversation_id.as_deref(), Some("c1"));
+        assert_eq!(notice.scope.conversation_id.as_deref(), Some(CONV));
         assert_eq!(notice.scope.employee_id, "42");
     }
 
@@ -458,14 +580,14 @@ mod tests {
         let (applier, store, mut rx) = applier_with_store().await;
         // 不预置窗口 → 冷会话
         applier
-            .apply_push_batch(&batch(serde_json::json!([full_event("c1", 2)]), 42, 10))
+            .apply_push_batch(&batch(serde_json::json!([full_event(CONV, 2)]), 42, 10))
             .await;
         assert!(
-            store.list_recent("42", "c1", 10).await.unwrap().is_empty(),
+            store.list_recent("42", CONV, 10).await.unwrap().is_empty(),
             "不落气泡"
         );
         assert!(
-            store.get_window("42", "c1").await.unwrap().is_none(),
+            store.get_window("42", CONV).await.unwrap().is_none(),
             "不建孤儿窗口"
         );
         assert!(rx.try_recv().is_err(), "无通知");
@@ -475,25 +597,25 @@ mod tests {
     async fn send_confirmed_updates_same_bubble_not_duplicate() {
         let (applier, store, _rx) = applier_with_store().await;
         store
-            .upsert_window(seed_window("c1", "42", "0000000000000:1:a"))
+            .upsert_window(seed_window(CONV, "42", "0000000000000_0_0"))
             .await
             .unwrap();
         // 先来一条 sendStatus=2(发送中)
-        let mut ev = full_event("c1", 1);
+        let mut ev = full_event(CONV, 1);
         ev["eventReason"] = serde_json::json!("SEND_PENDING_CREATED");
         ev["message"]["sendStatus"] = serde_json::json!(2);
         applier
             .apply_push_batch(&batch(serde_json::json!([ev]), 42, 10))
             .await;
         // 再来 SEND_CONFIRMED 同 localMessageId,sendStatus=3
-        let mut ev2 = full_event("c1", 1);
+        let mut ev2 = full_event(CONV, 1);
         ev2["eventReason"] = serde_json::json!("SEND_CONFIRMED");
         ev2["message"]["sendStatus"] = serde_json::json!(3);
         applier
             .apply_push_batch(&batch(serde_json::json!([ev2]), 42, 11))
             .await;
 
-        let rows = store.list_recent("42", "c1", 10).await.unwrap();
+        let rows = store.list_recent("42", CONV, 10).await.unwrap();
         assert_eq!(rows.len(), 1, "同 localMessageId 不新增第二条");
         assert_eq!(rows[0].send_status, 3, "send_status 被刷新");
     }
@@ -502,7 +624,7 @@ mod tests {
     async fn non_message_event_is_noop() {
         let (applier, store, mut rx) = applier_with_store().await;
         store
-            .upsert_window(seed_window("c1", "42", "0000000000000:1:a"))
+            .upsert_window(seed_window(CONV, "42", "0000000000000_0_0"))
             .await
             .unwrap();
         applier
@@ -512,7 +634,7 @@ mod tests {
                 10,
             ))
             .await;
-        assert!(store.list_recent("42", "c1", 10).await.unwrap().is_empty());
+        assert!(store.list_recent("42", CONV, 10).await.unwrap().is_empty());
         assert!(rx.try_recv().is_err());
     }
 }

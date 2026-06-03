@@ -1,10 +1,11 @@
 import { useEffect, useState, type ReactNode } from "react";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { getVersion } from "@tauri-apps/api/app";
-import { Info } from "lucide-react";
+import { Info, RefreshCw } from "lucide-react";
 
 import { BubbleBlue } from "@/components/illustrations";
 import { Modal } from "@/components/ui/Modal";
+import { checkForAppUpdates } from "@/lib/updater";
 
 /**
  * 左下角「更多」菜单:点「更多」弹出「关于」。
@@ -31,6 +32,13 @@ export function UserMenu({ children }: { children: ReactNode }) {
             >
               <Info size={14} />
               关于
+            </DropdownMenu.Item>
+            <DropdownMenu.Item
+              onSelect={() => void checkForAppUpdates({ silent: false })}
+              className="flex cursor-default items-center gap-2 rounded px-2 py-1.5 text-wb-2xs text-workbench-text outline-none transition-colors data-[highlighted]:bg-workbench-surface-subtle"
+            >
+              <RefreshCw size={14} />
+              检查更新
             </DropdownMenu.Item>
           </DropdownMenu.Content>
         </DropdownMenu.Portal>

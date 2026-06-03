@@ -41,16 +41,22 @@ impl FriendEventApplier {
             }
         };
 
-        // 只关心 FRIEND_* 事件涉及的账号集合;具体 reason 不再分支(纯 refetch 语义)。
+        // 只关心 FRIEND_UPSERT 事件涉及的账号集合;具体 reason 不再分支(纯 refetch 语义)。
+        // 真实 payload:{eventReason, eventType:"FRIEND_UPSERT", friend:{wecomAccountId, ...}},
+        // wecomAccountId 在 friend{} 内部,用于 scope 聚合。
         let mut accounts_in_batch: HashSet<String> = HashSet::new();
         let mut friend_event_seen = false;
         for ev in &events {
             let event_type = ev.get("eventType").and_then(|v| v.as_str()).unwrap_or("");
-            if event_type != "FRIEND_BINDING_CHANGE" && event_type != "FRIEND_STATUS_CHANGE" {
+            if event_type != "FRIEND_UPSERT" {
                 continue;
             }
             friend_event_seen = true;
-            if let Some(acct) = ev.get("wecomAccountId").and_then(|v| v.as_str()) {
+            if let Some(acct) = ev
+                .get("friend")
+                .and_then(|f| f.get("wecomAccountId"))
+                .and_then(|v| v.as_str())
+            {
                 accounts_in_batch.insert(acct.to_string());
             }
         }
@@ -103,10 +109,12 @@ mod tests {
         let (applier, mut rx) = applier();
         let b = batch(
             serde_json::json!([{
-                "eventType": "FRIEND_BINDING_CHANGE",
-                "eventReason": "FRIEND_ADDED",
-                "wecomAccountId": "wa-1",
-                "externalUserId": "wo-1"
+                "eventType": "FRIEND_UPSERT",
+                "eventReason": "FRIEND_CREATED",
+                "friend": {
+                    "wecomAccountId": "wa-1",
+                    "externalUserId": "wo-1"
+                }
             }]),
             10,
         );
@@ -122,8 +130,8 @@ mod tests {
         let (applier, mut rx) = applier();
         let b = batch(
             serde_json::json!([
-                {"eventType": "FRIEND_BINDING_CHANGE", "eventReason": "FRIEND_ADDED", "wecomAccountId": "wa-1", "externalUserId": "wo-1"},
-                {"eventType": "FRIEND_BINDING_CHANGE", "eventReason": "FRIEND_REMOVED", "wecomAccountId": "wa-2", "externalUserId": "wo-2"}
+                {"eventType": "FRIEND_UPSERT", "eventReason": "FRIEND_CREATED", "friend": {"wecomAccountId": "wa-1", "externalUserId": "wo-1"}},
+                {"eventType": "FRIEND_UPSERT", "eventReason": "FRIEND_DELETED", "friend": {"wecomAccountId": "wa-2", "externalUserId": "wo-2"}}
             ]),
             11,
         );
