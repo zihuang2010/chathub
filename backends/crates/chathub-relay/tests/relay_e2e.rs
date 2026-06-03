@@ -735,14 +735,21 @@ async fn forward_list_accounts_dispatches_get() {
     assert_eq!(arr[0]["wecomAccountId"], "wa-1");
 }
 
-// ─── 大积压不死锁(P1 回归)────────────────────────────────────────────────
+// ─── 截断不 loop(B2 语义):resync 跳重放 + ack 报 head + since=head 续点不再 loop ──
 
+/// P1 e2e 原来断言"收齐 1000 回放帧";B2 上线后 resync 路径跳重放,原断言失效。
+/// 本测试改写为 B2 语义:
+///   1. 不死锁守护:timeout 包 subscribe,断言立即返回响应头。
+///   2. 首帧 SubscribeAck:resync_required==true,replayed_to_seq==1001(head=MAX)。
+///   3. ack 之后无 PushBatch 帧(短 timeout 断言超时 = 无帧)。
+///   4. 第二次 subscribe(since=head=1001):resync_required==false、无积压帧 —— loop 已消除。
 #[tokio::test(flavor = "multi_thread")]
-async fn subscribe_with_huge_backlog_does_not_deadlock() {
+async fn subscribe_resync_truncation_skips_replay_and_acks_head() {
     let h = spawn_relay().await;
     mount_verify_token(&h.downstream, "tok-big", 88, "dev-A").await;
 
-    // 预置 1001 个 distinct notify_seq(超 REPLAY_LIMIT=1000 → 截断 + resync_required)。
+    // 预置 1001 个 distinct notify_seq(>REPLAY_LIMIT=1000 → 截断 + resync_required)。
+    // head = MAX = 1001。
     let rows: Vec<chathub_relay::storage::events::EventRow> = (1..=1001_i64)
         .map(|seq| chathub_relay::storage::events::EventRow {
             employee_id: 88,
@@ -766,8 +773,9 @@ async fn subscribe_with_huge_backlog_does_not_deadlock() {
     let ch = raw_channel(h.grpc_addr).await;
     let mut hub = hub_client(ch, "tok-big".into());
 
+    // 第一次订阅 since=0:死锁守护 + B2 ack 语义。
     // 死锁时 subscribe() 拿不到响应头 → 挂起;timeout 把死锁变成可断言的失败。
-    let stream = tokio::time::timeout(
+    let mut stream = tokio::time::timeout(
         std::time::Duration::from_secs(8),
         hub.subscribe(SubscribeRequest {
             since_notify_seq: 0,
@@ -777,25 +785,54 @@ async fn subscribe_with_huge_backlog_does_not_deadlock() {
     )
     .await
     .expect("subscribe 必须立即返回响应头,不能死锁")
-    .unwrap();
-    let mut stream = stream.into_inner();
+    .unwrap()
+    .into_inner();
 
-    // 收齐 ack + 1000 回放帧(截断到 REPLAY_LIMIT)。
+    // 首帧:ack.resync_required=true 且 replayed_to_seq=1001(head=MAX),不是截断 last=1000。
     let first = stream.next().await.unwrap().unwrap();
     match first.body {
-        Some(Body::SubscribeAck(ack)) => assert!(ack.resync_required, "1001>1000 应截断 resync"),
+        Some(Body::SubscribeAck(ack)) => {
+            assert!(ack.resync_required, "1001>1000 → 截断 → resync");
+            assert_eq!(
+                ack.replayed_to_seq, 1001,
+                "ack 报 head(MAX=1001),非截断 last(1000)"
+            );
+        }
         other => panic!("expected SubscribeAck, got {other:?}"),
     }
-    let mut frames = 0;
-    while let Ok(Some(Ok(ev))) =
-        tokio::time::timeout(std::time::Duration::from_secs(8), stream.next()).await
-    {
-        if matches!(ev.body, Some(Body::PushBatch(_))) {
-            frames += 1;
+
+    // 不应有任何回放帧:resync 跳重放。短 timeout 内无帧 = 正确。
+    let next = tokio::time::timeout(std::time::Duration::from_millis(500), stream.next()).await;
+    assert!(next.is_err(), "resync 截断路径不应发回放帧,却收到了一帧");
+    drop(stream); // 断开第一条流,释放注册。
+
+    // 第二次订阅 since=head(=1001):无新事件 → 无截断 → resync_required=false、零回放帧。
+    // 这就是 B2 消除 loop 的体现:客户端把游标推到 head 后不再被反复重放轰炸。
+    let ch2 = raw_channel(h.grpc_addr).await;
+    let mut hub2 = hub_client(ch2, "tok-big".into());
+    let mut stream2 = hub2
+        .subscribe(SubscribeRequest {
+            since_notify_seq: 1001,
+            device_id: "dev-A".into(),
+            client_version: "1.0.0".into(),
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    let ack2 = stream2.next().await.unwrap().unwrap();
+    match ack2.body {
+        Some(Body::SubscribeAck(ack)) => {
+            assert!(
+                !ack.resync_required,
+                "since=head 无积压 → 不再 resync(loop 消除)"
+            );
+            assert_eq!(
+                ack.replayed_to_seq, 1001,
+                "since=head 续点 replayed_to_seq=since"
+            );
         }
-        if frames == 1000 {
-            break;
-        }
+        other => panic!("expected SubscribeAck, got {other:?}"),
     }
-    assert_eq!(frames, 1000, "应收齐 1000 个回放帧,无死锁");
+    let none = tokio::time::timeout(std::time::Duration::from_millis(500), stream2.next()).await;
+    assert!(none.is_err(), "since=head 续点不应有任何回放帧");
 }
