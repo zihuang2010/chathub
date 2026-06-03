@@ -254,10 +254,14 @@ export function useChatActions({
     [chatStoreKey, onSendMessage],
   );
 
-  // 发送一个附件单元:先 fetch 本地预览取字节 → uploadAttachment 拿 objectName →
-  // 回写 objectName 到气泡(供重发复用)→ deliverMessage 发送。任一步抛错即视为失败。
-  const deliverAttachmentUnit = useCallback(
-    async (clientMsgId: string, unit: Extract<SendUnit, { kind: "attachment" }>) => {
+  // 上传一个附件单元(不发送):fetch 本地预览取字节 →(语音转码)→ uploadAttachment 拿
+  // objectName → 回写 objectName 到气泡(供重发复用)。返回发送所需的 options;任一步抛错
+  // 即标失败并返回 null。把「上传」从「发送」中拆出,使多附件可并行上传、再按序发送。
+  const uploadAttachmentUnit = useCallback(
+    async (
+      clientMsgId: string,
+      unit: Extract<SendUnit, { kind: "attachment" }>,
+    ): Promise<SendMessageOptions | null> => {
       const owningStoreKey = chatStoreKey;
       try {
         let bytes = await fetchBytes(unit.url);
@@ -271,7 +275,7 @@ export function useChatActions({
           if (!voice.ok) {
             showToast(voice.reason, { type: "error" });
             useChatStore.getState().markFailed(owningStoreKey, clientMsgId);
-            return false;
+            return null;
           }
           bytes = voice.bytes;
           durationSeconds = voice.durationSec;
@@ -287,28 +291,23 @@ export function useChatActions({
           fileSuf,
           contentType,
         });
+        const options: SendMessageOptions = {
+          messageType: unit.messageType,
+          filePath: uploaded.objectName,
+          fileName: uploaded.fileName,
+          fileSize: uploaded.fileSize,
+          durationSeconds,
+        };
         // 回写已上传信息到气泡,便于失败重发复用 objectName、不再重传 OSS;语音一并存时长供重发携带。
-        useChatStore.getState().patchMessage(owningStoreKey, clientMsgId, {
-          messageType: unit.messageType,
-          filePath: uploaded.objectName,
-          fileName: uploaded.fileName,
-          fileSize: uploaded.fileSize,
-          durationSeconds,
-        });
-        return await deliverMessage(clientMsgId, "", clientMsgId, {
-          messageType: unit.messageType,
-          filePath: uploaded.objectName,
-          fileName: uploaded.fileName,
-          fileSize: uploaded.fileSize,
-          durationSeconds,
-        });
+        useChatStore.getState().patchMessage(owningStoreKey, clientMsgId, options);
+        return options;
       } catch {
-        // 上传阶段抛错(取字节 / OSS 失败)→ 标失败。发送阶段失败已在 deliverMessage 内标过。
+        // 上传阶段抛错(取字节 / OSS 失败)→ 标失败。
         useChatStore.getState().markFailed(owningStoreKey, clientMsgId);
-        return false;
+        return null;
       }
     },
-    [chatStoreKey, deliverMessage],
+    [chatStoreKey],
   );
 
   const handleSend = useCallback<UseChatActionsResult["handleSend"]>(
@@ -364,15 +363,27 @@ export function useChatActions({
       wasAtBottomRef.current = true;
       setReplyDraft(null);
 
-      // 串行编排:await 上一条成功再发下一条;遇错即停,剩余未发气泡标 failed(可重发)。
+      // 编排:附件**上传**无顺序依赖 → 一次性并行启动(墙钟从 Σ(传+发) 降到 max(传)+Σ(发),
+      // 多图收益最大);**发送**仍按编辑器顺序串行(企微对端按发送序展示)。遇错即停,剩余气泡
+      // 标 failed(可重发)。并行度由实际单元数兜底(聊天单次附件数很小);如需限流后续再加。
       void (async () => {
+        // 阶段一:并行启动所有附件单元的上传(与 units 同序;文本单元占位 null)。
+        const uploads = units.map((unit, i) =>
+          unit.kind === "attachment" ? uploadAttachmentUnit(clientMsgIds[i], unit) : null,
+        );
+
+        // 阶段二:按编辑器顺序串行发送;附件只等自己那条上传完成(已在并行进行中)。
         for (let i = 0; i < units.length; i += 1) {
           const unit = units[i];
           const clientMsgId = clientMsgIds[i];
-          const ok =
-            unit.kind === "text"
-              ? await deliverMessage(clientMsgId, unit.text)
-              : await deliverAttachmentUnit(clientMsgId, unit);
+          let ok: boolean;
+          if (unit.kind === "text") {
+            ok = await deliverMessage(clientMsgId, unit.text);
+          } else {
+            const options = await uploads[i];
+            // 上传失败(已在 uploadAttachmentUnit 内 markFailed)→ 触发 fail-stop。
+            ok = options ? await deliverMessage(clientMsgId, "", clientMsgId, options) : false;
+          }
           if (!ok) {
             // 当前条失败,停止后续;把未发的气泡标 failed,供用户逐条重发。
             for (let j = i + 1; j < units.length; j += 1) {
@@ -387,7 +398,7 @@ export function useChatActions({
       conversation.id,
       chatStoreKey,
       deliverMessage,
-      deliverAttachmentUnit,
+      uploadAttachmentUnit,
       wasAtBottomRef,
       setReplyDraft,
     ],

@@ -13,6 +13,7 @@ import {
   PanelRightOpen,
   Paperclip,
   Laugh,
+  WifiOff,
   X,
 } from "lucide-react";
 
@@ -76,6 +77,8 @@ interface MessageComposerProps {
   onCancelReply?: () => void;
   /** 点 AI 润色「生成」那一刻取近期对话转录(可为空串),透传给 AiPolishPopover。 */
   getPolishContext?: () => string;
+  /** hub 连接断开:置真时顶部显示离线横幅并禁用发送(用户仍可继续编辑草稿)。 */
+  offline?: boolean;
 }
 
 interface ScreenshotResult {
@@ -124,6 +127,7 @@ export function MessageComposer({
   replyDraft,
   onCancelReply,
   getPolishContext,
+  offline = false,
 }: MessageComposerProps) {
   const [draft, setDraftValue] = useDraft(conversationId);
   const [pendingFileAttachments, setPendingFileAttachments] = useFileAttachments(conversationId);
@@ -471,7 +475,7 @@ export function MessageComposer({
   // ─── Submit ───────────────────────────────────────────────────────────────
 
   const submitDraft = () => {
-    if (!canSend || submitLockRef.current) return;
+    if (!canSend || offline || submitLockRef.current) return;
     submitLockRef.current = true;
     const finalBlocks = blocks.filter((b) => !(b.type === "text" && b.value.trim().length === 0));
     const fileAttachments = pendingFileAttachments;
@@ -567,6 +571,16 @@ export function MessageComposer({
         onChange={handleVoicePicker}
       />
       <div className="flex h-full w-full flex-col gap-1 bg-workbench-surface">
+        {offline && (
+          <div
+            role="status"
+            aria-live="polite"
+            className="text-wb-3xs flex shrink-0 items-center gap-1.5 rounded-md bg-workbench-surface-soft px-2.5 py-1 font-medium text-workbench-danger"
+          >
+            <WifiOff size={12} strokeWidth={1.8} aria-hidden />
+            <span>{STRINGS.composer.offlineBanner}</span>
+          </div>
+        )}
         {replyDraft && <ReplyPreview draft={replyDraft} onCancel={() => onCancelReply?.()} />}
         <div className="flex items-center gap-0.5 text-workbench-text-secondary">
           <Popover.Root open={emojiOpen} onOpenChange={setEmojiOpen}>
@@ -746,7 +760,7 @@ export function MessageComposer({
             </span>
           </span>
           <div className="ml-auto">
-            <SendButtonGroup canSend={canSend} onSend={submitDraft} />
+            <SendButtonGroup canSend={canSend && !offline} onSend={submitDraft} />
           </div>
         </div>
       </div>

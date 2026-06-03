@@ -165,6 +165,7 @@ export const STRINGS = {
     charLimitNear: "接近字数上限",
     charLimitOver: "已超过字数上限，无法发送",
     enterToSend: "Enter 发送 · Shift+Enter 换行",
+    offlineBanner: "网络已断开，消息暂时无法发送",
     expandRight: "展开右栏",
     collapseRight: "收起右栏",
     emoji: "表情",

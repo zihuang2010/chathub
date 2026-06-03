@@ -13,6 +13,16 @@ import {
 } from "./virtualListSizing";
 import type { ScrollMetrics } from "./WorkbenchScrollArea";
 
+// Tauri 边界 mock:ChatArea 经 useHubSyncStatus 监听 hub:connection / 调 hub_state;
+// jsdom 无原生 Tauri,不 mock 会让 listen/invoke 真跑而抛错。
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: vi.fn(() => Promise.resolve()),
+  isTauri: () => false,
+}));
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: vi.fn(() => Promise.resolve(() => {})),
+}));
+
 const scrollAreaMock = vi.hoisted(() => ({
   viewport: null as HTMLDivElement | null,
   scrollTop: 0,

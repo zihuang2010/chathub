@@ -2,6 +2,7 @@ import { memo, useMemo, useState } from "react";
 import { ArrowDown, ArrowUp } from "lucide-react";
 
 import type { SendMessageResp } from "@/lib/api/messageHistory";
+import { useHubSyncStatus } from "@/lib/data/useHubSyncStatus";
 import type { Account } from "@/lib/types/account";
 import { cn } from "@/lib/utils";
 
@@ -154,6 +155,11 @@ export const ChatArea = memo(function ChatArea({
     setReplyDraft,
   });
 
+  // hub 连接断开时禁用发送并在 composer 顶部提示离线(E①)。连接态由 useHubSyncStatus 经
+  // hub:connection 事件派生,与 Sidebar 在线圆点同源;disconnected 即离线。
+  const { connectionState } = useHubSyncStatus();
+  const offline = connectionState?.state === "disconnected";
+
   // 切会话即时切换(无 crossfade):标题与消息区随 conversation 直接重渲,同步硬切,
   // 无淡入淡出延迟、无双倍 DOM —— 跟手丝滑(IM 桌面端标准)。
   return (
@@ -243,6 +249,7 @@ export const ChatArea = memo(function ChatArea({
         replyDraft={activeReplyDraft}
         onCancelReply={() => setReplyDraft(null)}
         getPolishContext={() => buildPolishContext(localMessages)}
+        offline={offline}
       />
     </div>
   );

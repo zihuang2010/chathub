@@ -360,3 +360,29 @@ describe("MessageComposer 附件三入口 + 语音独占态", () => {
     });
   });
 });
+
+// E①:hub 断线时 composer 顶部出现离线横幅、发送按钮置灰(即便有内容)。
+describe("MessageComposer 离线态(E①)", () => {
+  const TEXT_DOC = {
+    type: "doc",
+    content: [{ type: "paragraph", content: [{ type: "text", text: "在吗" }] }],
+  };
+
+  it("offline 时显示离线横幅,且有内容也禁用发送", async () => {
+    setDraft(CONV, TEXT_DOC);
+    const utils = render(<MessageComposer conversationId={CONV} {...baseProps} offline />);
+    await act(async () => undefined);
+
+    expect(utils.getByText(STRINGS.composer.offlineBanner)).toBeTruthy();
+    expect(sendButton().disabled).toBe(true);
+  });
+
+  it("在线(默认)时无横幅,有内容发送按钮可用", async () => {
+    setDraft(CONV, TEXT_DOC);
+    const utils = render(<MessageComposer conversationId={CONV} {...baseProps} />);
+    await act(async () => undefined);
+
+    expect(utils.queryByText(STRINGS.composer.offlineBanner)).toBeNull();
+    expect(sendButton().disabled).toBe(false);
+  });
+});

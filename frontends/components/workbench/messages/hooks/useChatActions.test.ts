@@ -1,16 +1,20 @@
 import { act, renderHook } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { uploadAttachment } from "@/lib/api/messageHistory";
+
 import type { Conversation, Message } from "../data";
 import { selectTimeline, useChatStore } from "../store/chatStore";
 import {
   toAmrFileName,
   useChatActions,
   voiceExceedsLimit,
+  type SendMessageOptions,
   type UseChatActionsParams,
 } from "./useChatActions";
 
 vi.mock("@/components/ui/toast", () => ({ showToast: vi.fn() }));
+vi.mock("@/lib/api/messageHistory", () => ({ uploadAttachment: vi.fn() }));
 
 const conversation = { id: "c1", name: "张三" } as Conversation;
 
@@ -54,6 +58,7 @@ function outMsg(id: string): Message {
 afterEach(() => {
   useChatStore.getState().reset();
   vi.clearAllMocks();
+  vi.unstubAllGlobals();
 });
 
 describe("useChatActions", () => {
@@ -121,6 +126,48 @@ describe("useChatActions", () => {
         height: 1600,
       }),
     ]);
+  });
+
+  it("多附件:上传并行、发送按编辑器顺序串行", async () => {
+    // fetchBytes 走 global.fetch:返回任意字节即可。
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({ arrayBuffer: async () => new ArrayBuffer(2) })),
+    );
+
+    // 闸门卡住第一条附件的上传:串行实现下第二条上传不会在第一条发送前发生 →
+    // 并行实现下两条上传在任何发送完成前都已发起(核心并行断言)。
+    const uploadCalls: string[] = [];
+    let releaseFirst!: () => void;
+    const firstGate = new Promise<void>((r) => (releaseFirst = r));
+    vi.mocked(uploadAttachment).mockImplementation(async ({ fileName }) => {
+      uploadCalls.push(fileName);
+      if (fileName === "a.bin") await firstGate;
+      return { objectName: `obj/${fileName}`, fileName, fileSize: 1 };
+    });
+
+    const sendFilePaths: Array<string | undefined> = [];
+    const onSendMessage: UseChatActionsParams["onSendMessage"] = vi.fn(
+      async (_text: string, _id: string, opts?: SendMessageOptions) => {
+        sendFilePaths.push(opts?.filePath);
+        return { localMessageId: "s", sendStatus: 1, messageTime: "" };
+      },
+    );
+    const { result } = setup(onSendMessage);
+
+    await act(async () => {
+      result.current.handleSend("", undefined, [
+        { type: "file", url: "blob:a", name: "a.bin" },
+        { type: "file", url: "blob:b", name: "b.bin" },
+      ]);
+      // 第一条上传被闸门卡住时,第二条上传应已并行发起。
+      await vi.waitFor(() => expect(uploadCalls).toContain("b.bin"));
+      // 此刻第一条仍卡在上传 → 不应有任何消息已发送。
+      expect(sendFilePaths).toHaveLength(0);
+      releaseFirst();
+      // 放行后:发送严格按编辑器顺序 a → b。
+      await vi.waitFor(() => expect(sendFilePaths).toEqual(["obj/a.bin", "obj/b.bin"]));
+    });
   });
 
   it('handleAction "delete" 确认后从 store 移除该条', () => {
