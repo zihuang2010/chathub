@@ -855,6 +855,7 @@ async fn prefill_recent_friends(
     auth_api: State<'_, Arc<AuthApi>>,
     change_tx: State<'_, tokio_broadcast::Sender<ChangeNotice>>,
     account_filter: Option<String>,
+    force: Option<bool>,
 ) -> Result<PrefillResult, AuthError> {
     let employee_id = match auth_api.current_session().await? {
         Some(p) => p.user_id,
@@ -868,7 +869,21 @@ async fn prefill_recent_friends(
         }
     };
     let filter = account_filter.filter(|s| !s.is_empty());
-    prefill_to_watermark(&hub, &store, &change_tx, &employee_id, filter).await
+    prefill_to_watermark(
+        &hub,
+        &store,
+        &change_tx,
+        &employee_id,
+        filter,
+        force.unwrap_or(false),
+    )
+    .await
+}
+
+/// 水位预填短路判定(安全网 #1,spec §6.4-1):非 force 且本地已达目标水位 → 跳过远端拉取。
+/// `force=true`(resync / 手动刷新)时恒不短路,强制一次首页 LWW 重拉。
+fn prefill_short_circuit(force: bool, local_count: usize, target: usize) -> bool {
+    !force && local_count >= target
 }
 
 /// `prefill_recent_friends` 的循环主体(抽出便于保持命令简短、聚焦)。
@@ -878,12 +893,13 @@ async fn prefill_to_watermark(
     change_tx: &tokio_broadcast::Sender<ChangeNotice>,
     employee_id: &str,
     filter: Option<String>,
+    force: bool,
 ) -> Result<PrefillResult, AuthError> {
     let mut local_count = store
         .count(employee_id, filter.clone())
         .await
         .map_err(|e| recents_internal_error("count", e))?;
-    if local_count >= RECENT_FRIENDS_WATERMARK_TARGET {
+    if prefill_short_circuit(force, local_count, RECENT_FRIENDS_WATERMARK_TARGET) {
         return Ok(PrefillResult {
             filled: false,
             local_count,
@@ -899,9 +915,17 @@ async fn prefill_to_watermark(
         if iters >= RECENT_FRIENDS_PREFILL_MAX_ITERS {
             break;
         }
-        // 自适应单页:只请求"补到目标还差的量",钳到预填单页上限 → 常态一页拉满目标。
+        // force 路径(resync 首页重拉):本地已≥TARGET 时 need=0 会让 size=0 空转,
+        // 固定用 RECENT_FRIENDS_REMOTE_MAX_SIZE 做首页大小,拉满首页即退出(只对齐首页,
+        // 不续深;更早整窗缺口靠用户翻页/惰性补,与 spec §6.4-5 有界风险一致)。
+        // 非 force 路径维持原自适应单页逻辑。
         let need = RECENT_FRIENDS_WATERMARK_TARGET.saturating_sub(local_count);
-        let size = need.min(RECENT_FRIENDS_PREFILL_PAGE_MAX) as u32;
+        let effective_size = if force && need == 0 {
+            RECENT_FRIENDS_REMOTE_MAX_SIZE as usize
+        } else {
+            need
+        };
+        let size = effective_size.min(RECENT_FRIENDS_PREFILL_PAGE_MAX) as u32;
         let resp = hub
             .list_recent_friends(ListRecentFriendsRequest {
                 size,
@@ -935,6 +959,10 @@ async fn prefill_to_watermark(
             .map_err(|e| recents_internal_error("count", e))?;
         if !resp.has_more || resp.next_cursor.is_empty() {
             exhausted = true;
+            break;
+        }
+        // force 路径拉满首页即退出(只对齐首页,不续深)。
+        if force && need == 0 {
             break;
         }
         if local_count >= RECENT_FRIENDS_WATERMARK_TARGET {
@@ -1710,3 +1738,44 @@ pub fn run() {
 }
 
 // 编译期烟雾测试在 Plan 2 起被实际通信代码替代,删除占位。
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn prefill_watermark_skips_short_circuit_when_forced() {
+        // 非 force + 本地达水位 → 短路(零远端)。
+        assert!(prefill_short_circuit(
+            false,
+            200,
+            RECENT_FRIENDS_WATERMARK_TARGET
+        ));
+        // force=true + 本地达水位 → 不短路(resync 首页 LWW 重拉)。
+        assert!(!prefill_short_circuit(
+            true,
+            200,
+            RECENT_FRIENDS_WATERMARK_TARGET
+        ));
+        // 非 force + 本地未达水位 → 不短路(常态冷启动续拉)。
+        assert!(!prefill_short_circuit(
+            false,
+            50,
+            RECENT_FRIENDS_WATERMARK_TARGET
+        ));
+        // force=true + 本地未达水位 → 也不短路。
+        assert!(!prefill_short_circuit(
+            true,
+            50,
+            RECENT_FRIENDS_WATERMARK_TARGET
+        ));
+        // 非 force + 本地恰好在水位边界 → 短路。
+        assert!(prefill_short_circuit(false, 200, 200));
+        // 非 force + 本地超过水位 → 短路。
+        assert!(prefill_short_circuit(
+            false,
+            250,
+            RECENT_FRIENDS_WATERMARK_TARGET
+        ));
+    }
+}

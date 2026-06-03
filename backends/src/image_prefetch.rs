@@ -109,6 +109,9 @@ mod tests {
                 duration_seconds: None,
             }],
             gmt_modified_time: "".into(),
+            revoked: false,
+            fail_reason: "".into(),
+            request_message_id: "".into(),
         }
     }
 
