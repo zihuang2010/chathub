@@ -22,7 +22,8 @@
 
 use crate::change_notice::{ChangeNotice, ChangeScope, ChangeTopic};
 use crate::hub::RecentFriendRecord;
-use crate::message_sync::parse_server_time_to_ms;
+// D3:复用 message_sync 的 pub(crate) 公历日数助手,去掉本模块重复 days_from_civil 副本。
+use crate::message_sync::{days_from_civil, parse_server_time_to_ms};
 use chathub_proto::v1::PushBatchOut;
 use chathub_state::{
     AccountCacheStore, RecentSessionRemote, RecentSessionSummary, RecentSessionsStore,
@@ -407,16 +408,6 @@ fn parse_iso_to_ms(s: &str) -> i64 {
         + h * 3_600_000
         + mi * 60_000
         + se * 1_000
-}
-
-/// Howard Hinnant 公历日数算法:返回 epoch(1970-01-01)起的天数,可为负。
-fn days_from_civil(y: i32, m: i32, d: i32) -> i64 {
-    let y = if m <= 2 { y - 1 } else { y };
-    let era = if y >= 0 { y } else { y - 399 } / 400;
-    let yoe = (y - era * 400) as i64;
-    let doy = (153 * (m as i64 + if m > 2 { -3 } else { 9 }) + 2) / 5 + d as i64 - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    era as i64 * 146097 + doe - 719468
 }
 
 #[cfg(test)]

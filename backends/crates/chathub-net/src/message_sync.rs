@@ -162,13 +162,6 @@ fn sort_history_records_ascending(records: &mut [HistoryMessage]) {
     });
 }
 
-// send_message 改造后不再本地合成出站 sort_key(消息行由 push applier 写)。保留供历史
-// 出站路径与单测引用;当前仅测试用到,标 dead_code 防非测试构建告警。
-#[allow(dead_code)]
-fn outgoing_sort_key(freshness_ms: i64, now_ms: i64) -> String {
-    format!("{freshness_ms:013}:1:{now_ms:020}")
-}
-
 /// load_older 结果:本次新增的更老消息(升序)+ 翻完后是否还有更老。
 #[derive(Debug, Clone)]
 pub struct LoadOlderResult {
@@ -523,7 +516,8 @@ fn state_err(e: chathub_state::StateError) -> AuthError {
     }
 }
 
-fn now_ms() -> i64 {
+/// epoch ms(UTC)。crate 内唯一 wall-clock 助手,message_event 等模块复用(D3 收敛重复副本)。
+pub(crate) fn now_ms() -> i64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -606,7 +600,8 @@ fn ms_to_server_time(ms: i64) -> String {
 }
 
 /// Howard Hinnant 公历日数(epoch 起天数,可为负)。
-fn days_from_civil(y: i32, m: i32, d: i32) -> i64 {
+/// crate 内唯一公历日数助手,recent_session_event 等模块复用(D3 收敛重复副本)。
+pub(crate) fn days_from_civil(y: i32, m: i32, d: i32) -> i64 {
     let y = if m <= 2 { y - 1 } else { y };
     let era = if y >= 0 { y } else { y - 399 } / 400;
     let yoe = (y - era * 400) as i64;
@@ -921,15 +916,6 @@ mod tests {
             row_to_history(&row).message_direction,
             2,
             "不可解析 sort_key 时保留本地 out,不能再按源方向把 2 翻成 in"
-        );
-    }
-
-    #[test]
-    fn outgoing_sort_key_uses_sender_direction_segment() {
-        assert_eq!(
-            outgoing_sort_key(1_780_000_000_000, 1_780_000_000_123),
-            "1780000000000:1:00000001780000000123",
-            "本端发送的合成 sort_key 必须用 1=发送方,不能用 2=接收方"
         );
     }
 

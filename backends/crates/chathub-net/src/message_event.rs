@@ -5,7 +5,8 @@
 //! → `MessageSync.reconcile_newest` 兜底(全局 1s 节流)。冷会话(无窗口)跳过,绝不建孤儿气泡。
 
 use crate::change_notice::{ChangeNotice, ChangeScope, ChangeTopic};
-use crate::message_sync::{parse_server_time_to_ms, MessageSync};
+// D3:复用 message_sync 的 pub(crate) 时间助手(now_ms),去掉本模块重复 now_unix_ms 副本。
+use crate::message_sync::{now_ms, parse_server_time_to_ms, MessageSync};
 use crate::recent_session_event::split_sort_key_ms;
 use chathub_proto::v1::PushBatchOut;
 use chathub_state::{MessageRow, MessagesStore};
@@ -130,14 +131,6 @@ fn decode_message_row(ev: &serde_json::Value, employee_id: &str) -> Option<Messa
         request_message_id: str_or_empty(msg, "requestMessageId"),
         updated_at_ms: 0,
     })
-}
-
-fn now_unix_ms() -> i64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
 }
 
 #[derive(Clone)]
@@ -279,7 +272,7 @@ impl MessageEventApplier {
             return Ok(());
         }
         if let Some(mut w) = self.store.get_window(employee_id, conversation_id).await? {
-            let now = now_unix_ms();
+            let now = now_ms();
             if sort_key > w.newest_sort_key.as_str() {
                 w.newest_sort_key = sort_key.to_string();
             }
@@ -293,7 +286,7 @@ impl MessageEventApplier {
 
     /// 节流:同一窗口(1s)内多次兜底合并为一次。
     fn should_run_fallback(&self) -> bool {
-        let now = now_unix_ms();
+        let now = now_ms();
         let last = self.last_fallback_ms.load(Ordering::Relaxed);
         if now.saturating_sub(last) < FALLBACK_THROTTLE_MS {
             return false;
