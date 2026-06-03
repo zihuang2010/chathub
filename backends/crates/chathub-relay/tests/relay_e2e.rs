@@ -734,3 +734,68 @@ async fn forward_list_accounts_dispatches_get() {
     let arr: serde_json::Value = serde_json::from_slice(&resp.body_json).unwrap();
     assert_eq!(arr[0]["wecomAccountId"], "wa-1");
 }
+
+// ─── 大积压不死锁(P1 回归)────────────────────────────────────────────────
+
+#[tokio::test(flavor = "multi_thread")]
+async fn subscribe_with_huge_backlog_does_not_deadlock() {
+    let h = spawn_relay().await;
+    mount_verify_token(&h.downstream, "tok-big", 88, "dev-A").await;
+
+    // 预置 1001 个 distinct notify_seq(超 REPLAY_LIMIT=1000 → 截断 + resync_required)。
+    let rows: Vec<chathub_relay::storage::events::EventRow> = (1..=1001_i64)
+        .map(|seq| chathub_relay::storage::events::EventRow {
+            employee_id: 88,
+            notify_seq: seq,
+            event_index: 0,
+            event_type: "MESSAGE_UPSERT".into(),
+            event_reason: Some("CUSTOMER_MESSAGE_RECEIVED".into()),
+            conversation_id: Some("conv-1".into()),
+            customer_user_id: Some("u-c".into()),
+            external_user_id: Some("ext-1".into()),
+            client_id: "rh_wxchat".into(),
+            batch_id: Some(format!("rh_wxchat:88:{seq}")),
+            batch_time: Some("2026-05-14 10:30:00".into()),
+            event_time: Some("2026-05-14 10:30:00".into()),
+            payload_json: r#"{"eventType":"MESSAGE_UPSERT"}"#.into(),
+            created_at_ms: seq * 1000,
+        })
+        .collect();
+    h.events_log.insert_batch(rows).await.unwrap();
+
+    let ch = raw_channel(h.grpc_addr).await;
+    let mut hub = hub_client(ch, "tok-big".into());
+
+    // 死锁时 subscribe() 拿不到响应头 → 挂起;timeout 把死锁变成可断言的失败。
+    let stream = tokio::time::timeout(
+        std::time::Duration::from_secs(8),
+        hub.subscribe(SubscribeRequest {
+            since_notify_seq: 0,
+            device_id: "dev-A".into(),
+            client_version: "1.0.0".into(),
+        }),
+    )
+    .await
+    .expect("subscribe 必须立即返回响应头,不能死锁")
+    .unwrap();
+    let mut stream = stream.into_inner();
+
+    // 收齐 ack + 1000 回放帧(截断到 REPLAY_LIMIT)。
+    let first = stream.next().await.unwrap().unwrap();
+    match first.body {
+        Some(Body::SubscribeAck(ack)) => assert!(ack.resync_required, "1001>1000 应截断 resync"),
+        other => panic!("expected SubscribeAck, got {other:?}"),
+    }
+    let mut frames = 0;
+    while let Ok(Some(Ok(ev))) =
+        tokio::time::timeout(std::time::Duration::from_secs(8), stream.next()).await
+    {
+        if matches!(ev.body, Some(Body::PushBatch(_))) {
+            frames += 1;
+        }
+        if frames == 1000 {
+            break;
+        }
+    }
+    assert_eq!(frames, 1000, "应收齐 1000 个回放帧,无死锁");
+}
