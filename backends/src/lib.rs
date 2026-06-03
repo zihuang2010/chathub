@@ -26,7 +26,7 @@ use chathub_state::{
     SessionStore, SqlitePool, WecomAccountRow, MESSAGE_HOT_CONVERSATIONS_LIMIT,
     RECENT_SESSIONS_GLOBAL_LIMIT, RECENT_SESSIONS_PER_ACCOUNT_LIMIT,
 };
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tokio::sync::broadcast as tokio_broadcast;
 use tokio::sync::broadcast::channel as broadcast_channel;
 
@@ -1654,38 +1654,9 @@ pub fn run() {
                 }
             });
 
-            // ---- Plan 3:hub:event 桥接(broadcast<ServerEvent> → app.emit) ----
-            let cm_for_event = Arc::clone(&conn_manager);
-            let auth_for_kicked = Arc::clone(&auth_api);
-            let app_for_hub_event = app_handle.clone();
-            tauri::async_runtime::spawn(async move {
-                let mut rx = cm_for_event.event_subscribe();
-                let mut last_lag_reconnect: Option<Instant> = None;
-                loop {
-                    match rx.recv().await {
-                        Ok(event) => {
-                            // Plan 7 — KICKED 已删,业务后台用 CONNECTION_FORCE_CLOSE event 通知。
-                            // SubscribeAck / PushBatchOut / SystemSignal 都直接 emit 给前端,
-                            // 前端按 body 解构(force_close 事件在 PushBatchOut.events_json 里)。
-                            let _ = app_for_hub_event.emit("hub:event", &event);
-                            // 也保留对 logout 的钩子(LoggedOutReason via TokenStore broadcast)
-                            let _ = &auth_for_kicked; // silence unused
-                        }
-                        Err(tokio_broadcast::error::RecvError::Lagged(n)) => {
-                            let now = Instant::now();
-                            if last_lag_reconnect.map_or(true, |t| now.duration_since(t) > Duration::from_secs(5)) {
-                                tracing::warn!(target: "chathub::hub", skipped = n, "hub event lag, requesting reconnect");
-                                cm_for_event.stop().await;
-                                cm_for_event.start().await;
-                                last_lag_reconnect = Some(now);
-                            } else {
-                                tracing::warn!(target: "chathub::hub", skipped = n, "hub event lag throttled");
-                            }
-                        }
-                        Err(tokio_broadcast::error::RecvError::Closed) => break,
-                    }
-                }
-            });
+            // (hub:event 桥已退役 2026-06-03:前端零监听该通道,实时帧应用全部在后端 4 个 applier 内
+            // 完成;连带移除原 Lagged→stop/start 的抖动重连。被踢下线走 auth:logged_out,连接态由下方
+            // hub:connection 桥上报。)
 
             // ---- Plan 3:hub:connection 桥接(watch<ConnectionState> → app.emit) ----
             let cm_for_state = Arc::clone(&conn_manager);

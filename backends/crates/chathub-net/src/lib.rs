@@ -21,6 +21,7 @@ pub mod message_event;
 pub mod message_sync;
 pub mod oss;
 pub mod recent_session_event;
+pub mod sync;
 pub mod token;
 
 pub use account_event::AccountEventApplier;

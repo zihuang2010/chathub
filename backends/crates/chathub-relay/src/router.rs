@@ -168,6 +168,11 @@ impl Router {
 
     /// Graceful shutdown:向所有 employee 连接广播 `SystemSignal::SERVER_DRAIN`。
     /// 返回被通知的连接总数。
+    ///
+    /// 【契约约束】这是 relay 唯一通过实时流主动下发的 `SystemSignal`。**不得**在实时流下发
+    /// `KIND_RESYNC_REQUIRED`(resync 走 Subscribe 首帧 ack.resync_required):客户端已"完全单向
+    /// 隔离",实时 RESYNC_REQUIRED 不再断连、会丢失水位重锚点。详见 proto event.proto 的
+    /// KIND_RESYNC_REQUIRED 注释与解耦设计 D3。
     pub fn broadcast_server_drain(&self, detail: &str) -> usize {
         use chathub_proto::v1::server_event::Body;
         use chathub_proto::v1::system_signal::Kind;

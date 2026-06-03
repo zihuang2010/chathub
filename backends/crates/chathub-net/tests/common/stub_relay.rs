@@ -8,7 +8,8 @@ use chathub_proto::v1::auth_server::{Auth, AuthServer};
 use chathub_proto::v1::hub_server::{Hub, HubServer};
 use chathub_proto::v1::{
     AckRequest, AckResponse, ForwardRequest, ForwardResponse, LoginRequest, LoginResponse,
-    LogoutRequest, LogoutResponse, ServerEvent, SubscribeRequest, UserProfile, WecomAccount,
+    LogoutRequest, LogoutResponse, ServerEvent, SubscribeAck, SubscribeRequest, UserProfile,
+    WecomAccount,
 };
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
@@ -124,19 +125,43 @@ impl Hub for StubHub {
         req: Request<SubscribeRequest>,
     ) -> Result<Response<Self::SubscribeStream>, Status> {
         let (tx, rx) = mpsc::channel(16);
-        let mut s = self.state.lock().unwrap();
         let inner = req.into_inner();
-        s.subscribes
-            .push((inner.since_notify_seq, inner.device_id.clone()));
-        match s.subscribe_outcome.clone() {
+        // 所有对 state 的同步操作收进块内,块结束即释放 MutexGuard —— 不跨 await(否则 future 非 Send)。
+        let outcome = {
+            let mut s = self.state.lock().unwrap();
+            s.subscribes
+                .push((inner.since_notify_seq, inner.device_id.clone()));
+            match s.subscribe_outcome.clone() {
+                SubscribeOutcome::Stream => {
+                    s.event_tx = Some(tx.clone());
+                    SubscribeOutcome::Stream
+                }
+                SubscribeOutcome::RejectOnce(st) => {
+                    s.subscribe_outcome = SubscribeOutcome::Stream;
+                    SubscribeOutcome::RejectOnce(st)
+                }
+                SubscribeOutcome::RejectAlways(st) => SubscribeOutcome::RejectAlways(st),
+            }
+        };
+        match outcome {
             SubscribeOutcome::Stream => {
-                s.event_tx = Some(tx);
+                // 真实 relay 契约:订阅首帧必发 SubscribeAck(见 relay hub_service.rs:590-604)。stub
+                // 照做,否则客户端"收到首帧 ack 才置 Subscribed(在线)"会永远停在 Connecting。
+                // 空回放:replayed_to_seq = since,resync_required=false。buffer(16) 发单帧不阻塞。
+                let ack = ServerEvent {
+                    body: Some(chathub_proto::v1::server_event::Body::SubscribeAck(
+                        SubscribeAck {
+                            resumed_from_seq: inner.since_notify_seq,
+                            replayed_to_seq: inner.since_notify_seq,
+                            resync_required: false,
+                            resync_reason: String::new(),
+                        },
+                    )),
+                };
+                let _ = tx.send(Ok(ack)).await;
                 Ok(Response::new(ReceiverStream::new(rx)))
             }
-            SubscribeOutcome::RejectOnce(st) => {
-                s.subscribe_outcome = SubscribeOutcome::Stream;
-                Err(st)
-            }
+            SubscribeOutcome::RejectOnce(st) => Err(st),
             SubscribeOutcome::RejectAlways(st) => Err(st),
         }
     }

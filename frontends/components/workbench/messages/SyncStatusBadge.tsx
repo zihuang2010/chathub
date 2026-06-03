@@ -11,6 +11,7 @@
 
 import { useEffect, useState } from "react";
 
+import type { HubConnectionState } from "@/lib/data/useResource";
 import { cn } from "@/lib/utils";
 
 const THRESHOLD_FRESH_MS = 30_000;
@@ -19,11 +20,9 @@ const THRESHOLD_STALE_MS = 5 * 60_000;
 const SECOND = 1_000;
 const MINUTE = 60_000;
 
-/** 跟 Rust ConnectionState (serde tagged) 对齐。`null` = 还没拿到任何 hub:connection。 */
-export type ConnectionStatePayload =
-  | { state: "connecting" }
-  | { state: "subscribed" }
-  | { state: "disconnected"; lastError?: unknown };
+/** 跟 Rust ConnectionState (serde tagged) 对齐。复用 useResource 的单一来源,避免类型副本漂移
+ *  (含 rejected 终态)。`null` = 还没拿到任何 hub:connection。 */
+export type ConnectionStatePayload = HubConnectionState;
 
 export interface SyncStatusBadgeProps {
   /** 最近一次收到 recent_friends_changed 的本地 ms;null = 还没收到过。 */
@@ -82,7 +81,16 @@ function deriveStatus(props: SyncStatusBadgeProps, now: number): Derived {
         clickable: false,
       };
     }
-    // disconnected
+    if (connectionState.state === "rejected") {
+      // 鉴权被拒终态(verifyToken allowed=false / 会话失效):重试无意义 → 不可点;透传后台 reject 文案。
+      return {
+        tone: "offline",
+        label: "未登录",
+        tooltip: connectionState.message || "登录状态已失效,请重新登录",
+        clickable: false,
+      };
+    }
+    // disconnected:网络暂断,自动重连(点此立即刷新)
     return {
       tone: "offline",
       label: "离线",

@@ -39,8 +39,17 @@ message SubscribeAck {
 message SystemSignal {
   enum Kind {
     KIND_UNSPECIFIED      = 0;
-    KIND_SERVER_DRAIN     = 1;   // graceful shutdown 时广播,客户端主动断 + 重连
-    KIND_RESYNC_REQUIRED  = 2;   // 事件日志窗口或反压问题,客户端走兜底 API
+    KIND_SERVER_DRAIN     = 1;   // graceful shutdown 时广播,客户端主动断 + 重连(纯连接层事件)
+    // 事件日志窗口或反压问题,客户端走兜底 REST API 全量重拉(数据同步层事件)。
+    //
+    // 【契约约束 2026-06-03 — 连接/同步解耦】客户端已改为"完全单向隔离":收到实时
+    // RESYNC_REQUIRED 只触发 REST 软重拉,**不再断连重订阅**。因此 relay 侧:
+    //   1) 当前**不得**通过实时流主动下发 KIND_RESYNC_REQUIRED(实时控制信号仅 SERVER_DRAIN);
+    //      resync 语义请继续通过 Subscribe 首帧 SubscribeAck.resync_required 表达;
+    //   2) 若未来确需实时下发,必须保证下发后**在同一连接上继续推送 head 之后的实时帧**
+    //      (不得要求客户端重连重锚水位)——否则不断连的客户端会丢失 notify_seq 水位重锚点,
+    //      未打开会话/温缓存的 head−old 残余缺口将失去收敛点(见解耦设计 D3)。
+    KIND_RESYNC_REQUIRED  = 2;
   }
   Kind   kind   = 1;
   string detail = 2;

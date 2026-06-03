@@ -156,9 +156,11 @@ export const ChatArea = memo(function ChatArea({
   });
 
   // hub 连接断开时禁用发送并在 composer 顶部提示离线(E①)。连接态由 useHubSyncStatus 经
-  // hub:connection 事件派生,与 Sidebar 在线圆点同源;disconnected 即离线。
+  // hub:connection 事件派生,与 Sidebar 在线圆点同源;disconnected(网络暂断) 与 rejected(鉴权被拒
+  // 终态) 都视为离线、禁发。
   const { connectionState } = useHubSyncStatus();
-  const offline = connectionState?.state === "disconnected";
+  const offline =
+    connectionState?.state === "disconnected" || connectionState?.state === "rejected";
 
   // 切会话即时切换(无 crossfade):标题与消息区随 conversation 直接重渲,同步硬切,
   // 无淡入淡出延迟、无双倍 DOM —— 跟手丝滑(IM 桌面端标准)。

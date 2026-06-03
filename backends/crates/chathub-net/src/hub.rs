@@ -9,12 +9,13 @@
 //!   - `ConnectionState`:Connecting / Subscribed / Disconnected{last_error}
 
 use crate::account_event::AccountEventApplier;
-use crate::change_notice::{ChangeNotice, ChangeScope, ChangeTopic};
+use crate::change_notice::ChangeNotice;
 use crate::error::AuthError;
 use crate::friend_event::FriendEventApplier;
 use crate::interceptor::AuthInterceptor;
 use crate::message_event::MessageEventApplier;
 use crate::recent_session_event::RecentSessionEventApplier;
+use crate::sync::SyncEngine;
 use crate::token::TokenStore;
 use chathub_proto::v1::hub_client::HubClient as RawHubClient;
 use chathub_proto::v1::{
@@ -49,12 +50,18 @@ impl Default for BackoffConfig {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "kebab-case")]
 pub enum ConnectionState {
+    /// 已发起 subscribe,尚未收到首帧 SubscribeAck。
     Connecting,
+    /// 已收到首帧 SubscribeAck = 真正在线(收紧自"流一建立就 Subscribed",防"流开了 ack 没回"的假在线)。
     Subscribed,
+    /// 网络/服务端暂断,会自动退避重连(语义即"离线·重试中")。携带最后一次错误供 UI 参考。
     Disconnected {
         #[serde(skip_serializing_if = "Option::is_none")]
         last_error: Option<AuthError>,
     },
+    /// 鉴权被拒(verifyToken allowed=false / 会话失效 / 协议或账号问题)= **终态**:run_loop 不再
+    /// 重试,需用户介入(重登)。code/message 透传自后台 reject 文案,供 UI 展示。
+    Rejected { code: String, message: String },
 }
 
 #[derive(Debug, PartialEq)]
@@ -78,6 +85,17 @@ pub(crate) fn classify(err: &AuthError) -> Action {
         // (过期 / 账号变更),保守地走 Logout 让用户重新登录;forward 通道的 Business
         // 不经过 classify,直接 propagate 到 UI 弹 msg。
         AuthError::Business { .. } => Action::Logout,
+    }
+}
+
+/// 从触发"终态"(Logout/Terminate)的 AuthError 提取给 UI 展示的 (code, message)。
+/// Business 错(含 verifyToken allowed=false 的 reject)透传 service_code + msg;Unauthenticated
+/// 给统一文案;其余(UpgradeRequired/ProtocolMismatch/…)code 留空、message 取 Display。
+fn reject_fields(err: &AuthError) -> (String, String) {
+    match err {
+        AuthError::Business { service_code, msg } => (service_code.clone(), msg.clone()),
+        AuthError::Unauthenticated => (String::new(), "登录状态已失效,请重新登录".to_string()),
+        other => (String::new(), other.to_string()),
     }
 }
 
@@ -946,30 +964,15 @@ pub struct ResyncSignal {
 
 struct Inner {
     hub: HubClient,
+    /// 连接层鉴权用:classify→Logout 时 mark_token_invalid。与 SyncEngine 共享同一 Arc。
     token_store: Arc<TokenStore>,
-    notify_seq_store: NotifySeqStore,
     device_id: String,
     client_version: String,
     backoff: BackoffConfig,
     state_tx: watch::Sender<ConnectionState>,
-    event_tx: broadcast::Sender<ServerEvent>,
-    /// SubscribeAck.resync_required / SystemSignal::ResyncRequired 触发,上层桥接 → app.emit
-    resync_tx: broadcast::Sender<ResyncSignal>,
-    /// 统一变更通知通道 — applier / 用户命令 / resync 都往这里发,上层桥接 → app.emit("hub:change")。
-    /// 由 setup 阶段创建并同时注入到 ConnectionManager 与各 applier(共享 broadcast channel)。
-    change_notice_tx: broadcast::Sender<ChangeNotice>,
-    /// 2026-05-17:Subscribe 流里 ACCOUNT_* 事件 → 本地账号缓存 + 广播给 Tauri 层。
-    /// Optional 是为了让 chathub-net 单测可以构造 ConnectionManager 而不必带 AccountCacheStore。
-    account_event_applier: Option<Arc<AccountEventApplier>>,
-    /// 阶段 2:Subscribe 流里 FRIEND_* 事件 → 本地好友行存 + 广播给 Tauri 层。
-    /// 与 account_event_applier 并列;PushBatchOut 来时两个 applier 都调一次,各自按 eventType 筛分支。
-    friend_event_applier: Option<Arc<FriendEventApplier>>,
-    /// 阶段 3:Subscribe 流里 MESSAGE_UPSERT / SESSION_SUMMARY_UPSERT 事件 → 本地最近会话行存 + 广播。
-    /// 与上两个 applier 并列;PushBatchOut 来时三者都调一次,各自按 eventType 筛分支。
-    recent_session_event_applier: Option<Arc<RecentSessionEventApplier>>,
-    /// 阶段 4:Subscribe 流里 MESSAGE_UPSERT → 本地消息气泡行存 + broadcast。
-    /// 与前三个 applier 并列;PushBatchOut 来时四者都调一次,各自按 eventType 筛分支。
-    message_event_applier: Option<Arc<MessageEventApplier>>,
+    /// 数据同步层:帧落库 / apply-then-advance 水位 / resync 编排,与连接层完全单向隔离(见 sync.rs)。
+    /// run_loop 只调 sync.handle_frame(喂帧)与 sync.durable_seq(读水位发 ack),sync 绝不反向触连接。
+    sync: SyncEngine,
     task: tokio::sync::Mutex<Option<JoinHandle<()>>>,
 }
 
@@ -995,24 +998,25 @@ impl ConnectionManager {
         change_notice_tx: broadcast::Sender<ChangeNotice>,
     ) -> Self {
         let (state_tx, _) = watch::channel(ConnectionState::Disconnected { last_error: None });
-        let (event_tx, _) = broadcast::channel(256);
-        let (resync_tx, _) = broadcast::channel(16);
+        // 数据同步相关依赖(水位/applier/resync 通道)全部交给 SyncEngine 持有;token_store 用 Arc 共享。
+        let sync = SyncEngine::new(
+            notify_seq_store,
+            Arc::clone(&token_store),
+            change_notice_tx,
+            account_event_applier,
+            friend_event_applier,
+            recent_session_event_applier,
+            message_event_applier,
+        );
         Self {
             inner: Arc::new(Inner {
                 hub,
                 token_store,
-                notify_seq_store,
                 device_id,
                 client_version,
                 backoff,
                 state_tx,
-                event_tx,
-                resync_tx,
-                change_notice_tx,
-                account_event_applier,
-                friend_event_applier,
-                recent_session_event_applier,
-                message_event_applier,
+                sync,
                 task: tokio::sync::Mutex::new(None),
             }),
         }
@@ -1022,20 +1026,16 @@ impl ConnectionManager {
         self.inner.state_tx.subscribe()
     }
 
-    pub fn event_subscribe(&self) -> broadcast::Receiver<ServerEvent> {
-        self.inner.event_tx.subscribe()
-    }
-
     /// 订阅"请全量重拉"信号。两条触发路径(SubscribeAck.resync_required /
     /// SystemSignal::ResyncRequired)都汇聚到这里。上层调一次 list_recent_friends_remote_page
     /// 首页对齐即可。
     pub fn resync_subscribe(&self) -> broadcast::Receiver<ResyncSignal> {
-        self.inner.resync_tx.subscribe()
+        self.inner.sync.resync_subscribe()
     }
 
     /// 订阅统一变更通知。setup 阶段桥接到 app.emit("hub:change")。
     pub fn change_notice_subscribe(&self) -> broadcast::Receiver<ChangeNotice> {
-        self.inner.change_notice_tx.subscribe()
+        self.inner.sync.change_notice_subscribe()
     }
 
     // C6 拆双发后:applier 不再各自暴露 subscribe;所有变更通过 change_notice_subscribe()
@@ -1066,51 +1066,6 @@ impl ConnectionManager {
     }
 }
 
-/// B1(spec §6.1):订阅首帧 `SubscribeAck` 后,该不该从 ack 提前推进 notify_seq 游标?
-///
-/// - `resync_required == true`:返回 `Some(replayed_to_seq)` —— 跳到 head/水位。该路径
-///   B2 不发重放帧、且已广播 ResyncSignal 让上层走 REST 全量兜底,提前推进安全。
-/// - `resync_required == false`:返回 `None` —— **不**从 ack 推,维持 apply-then-advance
-///   (只靠 PushBatch 经 applier 落库后 `upsert_if_greater(pb.notify_seq)`)。在 false 小回放
-///   路径从 ack 提前推 = 落库前推进 → 崩溃重启跳过该批且无兜底 → 永久丢(hub.rs apply-then-advance
-///   注释要防的不变量)。
-///
-/// 纯函数无副作用,便于单测(run_loop 无假流夹具)。
-fn cursor_after_subscribe_ack(resync_required: bool, replayed_to_seq: u64) -> Option<u64> {
-    if resync_required {
-        Some(replayed_to_seq)
-    } else {
-        None
-    }
-}
-
-/// resync 全量对齐时需广播 BulkInvalidate 的 topic 集合(安全网 §6.4)。
-/// 含 ConversationMessages:B2 跳重放后,打开会话气泡的 reconcile 触发恰依赖被跳的
-/// MESSAGE_UPSERT push,故 resync 必须显式覆盖此 topic 让前端主动 reconcile。
-const RESYNC_BROADCAST_TOPICS: [ChangeTopic; 4] = [
-    ChangeTopic::Accounts,
-    ChangeTopic::Friends,
-    ChangeTopic::RecentSessions,
-    ChangeTopic::ConversationMessages,
-];
-
-impl Inner {
-    /// Resync 路径触发 — 给所有已知 topic 各发一条 BulkInvalidate ChangeNotice。
-    /// employee_id 取 token_store 当前会话的 user_id;若未登录(异常路径),不发。
-    fn broadcast_resync_to_all_topics(&self) {
-        let employee_id = match self.token_store.current_user_id() {
-            Some(uid) if !uid.is_empty() => uid,
-            _ => return,
-        };
-        let scope = ChangeScope::employee(employee_id);
-        for topic in RESYNC_BROADCAST_TOPICS {
-            let _ = self
-                .change_notice_tx
-                .send(ChangeNotice::resync(topic, scope.clone()));
-        }
-    }
-}
-
 impl Inner {
     async fn run_loop(
         self: Arc<Inner>,
@@ -1124,7 +1079,7 @@ impl Inner {
         'reconnect: loop {
             self.state_tx.send_replace(ConnectionState::Connecting);
 
-            let since = self.notify_seq_store.read().await.unwrap_or(0);
+            let since = self.sync.durable_seq().await;
             tracing::info!(
                 target: "chathub_net::hub",
                 since,
@@ -1148,14 +1103,15 @@ impl Inner {
                     match action {
                         Action::Logout => {
                             self.token_store.mark_token_invalid().await;
+                            let (code, message) = reject_fields(&err);
                             self.state_tx
-                                .send_replace(ConnectionState::Disconnected { last_error: None });
+                                .send_replace(ConnectionState::Rejected { code, message });
                             return;
                         }
                         Action::Terminate => {
-                            self.state_tx.send_replace(ConnectionState::Disconnected {
-                                last_error: Some(err),
-                            });
+                            let (code, message) = reject_fields(&err);
+                            self.state_tx
+                                .send_replace(ConnectionState::Rejected { code, message });
                             return;
                         }
                         Action::Backoff => {
@@ -1175,14 +1131,14 @@ impl Inner {
                 }
             };
 
-            self.state_tx.send_replace(ConnectionState::Subscribed);
+            // 流已建立(subscribe RPC 成功),但**不立即**置 Subscribed:在线态收紧到"收到首帧
+            // SubscribeAck"才置(见下方 outcome.is_subscribe_ack),防"流开了 ack 没回"的假在线。
+            // backoff 在流建立即可 reset(RPC 已成功,无需等 ack)。
             backoff.reset();
-            tracing::info!(target: "chathub_net::hub", since, "subscribed; streaming");
+            tracing::info!(target: "chathub_net::hub", since, "stream established; awaiting first SubscribeAck");
 
-            // 本次订阅的回放上界:收到 SubscribeAck 后从 ack.replayed_to_seq 取;
-            // 在此之前以 since 兜底(<=since 的都已处理过)。回放帧不进 event_tx 广播,
-            // 避免大回放灌爆 broadcast(256) 触发 Lagged→stop/start 抖动。
-            let mut replay_high: u64 = since;
+            // 本次订阅是否已宣布 Subscribed(在线):收到首帧 SubscribeAck 时置一次,避免每帧重置。
+            let mut subscribed_announced = false;
 
             // ack 合并:每 1s 最多回传一次"最高已落库水位"(apply-then-advance 后持久化的值),
             // 避免每条消息一次 RPC,又让 relay 重放缓冲有界。空闲时水位不前进 → 不发。
@@ -1199,8 +1155,9 @@ impl Inner {
                         return;
                     }
                     _ = ack_interval.tick() => {
-                        // 读持久化水位(= 已 apply-then-advance 的最高 seq);advanced 才 ack。
-                        let durable = self.notify_seq_store.read().await.unwrap_or(0);
+                        // 读已落库水位(= 已 apply-then-advance 的最高 seq);advanced 才 ack。
+                        // D4:durable_seq 直读 SQLite,永远 ≤ 已落库,故不会提前 ack 超前 seq。
+                        let durable = self.sync.durable_seq().await;
                         if durable > last_acked {
                             match self.hub.ack(durable).await {
                                 Ok(()) => last_acked = durable,
@@ -1211,122 +1168,33 @@ impl Inner {
                     }
                     msg = stream.message() => match msg {
                         Ok(Some(event)) => {
-                            // 处理 v2 三件套
+                            // 处理 v2 三件套。
                             use chathub_proto::v1::server_event::Body;
                             use chathub_proto::v1::system_signal::Kind;
+                            // 完全单向隔离:只有 SERVER_DRAIN(服务端要求断开)才断重连;RESYNC_REQUIRED
+                            // 不再断连 —— 它是数据同步事件,由 SyncEngine 广播 ResyncSignal 走 REST 全量
+                            // 软重拉恢复(见 sync.rs),连接照常存活。详见 proto KIND_RESYNC_REQUIRED 契约。
                             let should_terminate = matches!(
                                 &event.body,
-                                Some(Body::System(s))
-                                    if s.kind == Kind::ServerDrain as i32
-                                       || s.kind == Kind::ResyncRequired as i32
+                                Some(Body::System(s)) if s.kind == Kind::ServerDrain as i32
                             );
 
-                            // 捕获本次订阅回放上界(所有 ack,不止 resync)。
-                            if let Some(Body::SubscribeAck(ack)) = &event.body {
-                                replay_high = ack.replayed_to_seq;
-                            }
-
-                            // resync 信号汇聚:两条路径都触发上层全量重拉
-                            //   1) Subscribe 首帧 ack.resync_required=true(超 retention 或积压截断)
-                            //   2) 实时流 SystemSignal::ResyncRequired(服务端主动 + should_terminate 断重连)
-                            // 注意 SystemSignal 触发后会断重连,下次首帧 ack 可能再次广播 ResyncSignal,
-                            // 这是预期的(两次都该让上层 refreshFirstPage 一次,幂等)。
-                            match &event.body {
-                                Some(Body::SubscribeAck(ack)) if ack.resync_required => {
-                                    tracing::info!(
-                                        target: "chathub_net::hub",
-                                        reason = %ack.resync_reason,
-                                        resumed_from_seq = ack.resumed_from_seq,
-                                        replayed_to_seq = ack.replayed_to_seq,
-                                        "SubscribeAck.resync_required=true; broadcasting ResyncSignal"
-                                    );
-                                    let _ = self.resync_tx.send(ResyncSignal {
-                                        reason: ack.resync_reason.clone(),
-                                    });
-                                    self.broadcast_resync_to_all_topics();
-                                    // B1(spec §6.1):仅 resync 路径从 ack 推进游标到 head/水位。
-                                    // 该路径 B2 不发重放帧、已广播 ResyncSignal 走 REST 全量兜底,
-                                    // 提前推进安全。false 路径不进此分支,游标仍靠 PushBatch
-                                    // 落库后推进(apply-then-advance,见下方 upsert_if_greater)。
-                                    if let Some(advance) =
-                                        cursor_after_subscribe_ack(true, ack.replayed_to_seq)
-                                    {
-                                        if let Err(e) =
-                                            self.notify_seq_store.upsert_if_greater(advance).await
-                                        {
-                                            tracing::warn!(
-                                                target: "chathub_net::hub",
-                                                ?e,
-                                                advance,
-                                                "resync ack cursor advance upsert failed, ignored"
-                                            );
-                                        } else {
-                                            tracing::info!(
-                                                target: "chathub_net::hub",
-                                                advance,
-                                                "resync ack: notify_seq cursor advanced to head"
-                                            );
-                                        }
-                                    }
-                                }
-                                Some(Body::System(s)) if s.kind == Kind::ResyncRequired as i32 => {
-                                    tracing::info!(
-                                        target: "chathub_net::hub",
-                                        detail = %s.detail,
-                                        "SystemSignal::ResyncRequired received; broadcasting ResyncSignal"
-                                    );
-                                    let _ = self.resync_tx.send(ResyncSignal {
-                                        reason: s.detail.clone(),
-                                    });
-                                    self.broadcast_resync_to_all_topics();
-                                }
-                                _ => {}
-                            }
-
-                            // PushBatchOut → 账号事件应用 → **应用后**推进水位(apply-then-advance)。
-                            // 水位必须在 appliers 提交 SQLite 之后才前进:否则崩溃重启会用
-                            // 一个超前的 since 重订阅,跳过尚未落库的批次(数据丢失到下次 resync)。
-                            if let Some(Body::PushBatch(pb)) = &event.body {
-                                // 2026-05-17:账号事件 → 本地 cache + broadcast。
-                                // 内部按 eventType 过滤,非 ACCOUNT_* 直接返回。
-                                if let Some(applier) = &self.account_event_applier {
-                                    applier.apply_push_batch(pb).await;
-                                }
-                                // 阶段 2:好友事件 → 本地行存 + broadcast。
-                                // 内部按 eventType 过滤,非 FRIEND_* 直接返回。两个 applier 并存。
-                                if let Some(applier) = &self.friend_event_applier {
-                                    applier.apply_push_batch(pb).await;
-                                }
-                                // 阶段 3:消息会话事件(MESSAGE_UPSERT / SESSION_SUMMARY_UPSERT)
-                                // → 本地最近会话行存 + broadcast。内部按 eventType 过滤,非命中直接返回。
-                                if let Some(applier) = &self.recent_session_event_applier {
-                                    applier.apply_push_batch(pb).await;
-                                }
-                                // 阶段 4:消息气泡(MESSAGE_UPSERT)→ 本地 hub_conversation_messages。
-                                // 内部按 eventType 过滤,非命中直接返回。
-                                if let Some(applier) = &self.message_event_applier {
-                                    applier.apply_push_batch(pb).await;
-                                }
-                                // 四个 applier 都已 best-effort 应用(失败内部 log + 安排 fallback),
-                                // 现在才推进全局水位。下次(重)订阅以此为 since。
-                                if let Err(e) = self.notify_seq_store
-                                    .upsert_if_greater(pb.notify_seq).await {
-                                    tracing::warn!(?e, "notify_seq_store upsert failed, ignored");
-                                }
-                            }
-
-                            // 回放帧(notify_seq <= 本次回放上界)只落库 + 推进水位,不进 event_tx
-                            // 广播;live 帧(> 上界)正常广播。逐帧判断,抗 live/replay 交错。
-                            let is_replay_frame = matches!(
-                                &event.body,
-                                Some(Body::PushBatch(pb)) if pb.notify_seq <= replay_high
-                            );
-                            if !is_replay_frame {
-                                let _ = self.event_tx.send(event);
+                            // 数据层:applier 落库 + apply-then-advance 水位 + resync 编排,全部内化到
+                            // SyncEngine(完全单向隔离 — 不碰连接态、不触发重连)。连接层只取回
+                            // FrameOutcome 判断"是否首帧 ack"。
+                            let outcome = self.sync.handle_frame(&event).await;
+                            // 在线触发点:收到本次订阅首帧 SubscribeAck 才置 Subscribed(防假在线)。
+                            if outcome.is_subscribe_ack && !subscribed_announced {
+                                self.state_tx.send_replace(ConnectionState::Subscribed);
+                                subscribed_announced = true;
+                                tracing::info!(
+                                    target: "chathub_net::hub",
+                                    "first SubscribeAck received; now Subscribed (online)"
+                                );
                             }
 
                             if should_terminate {
-                                // SERVER_DRAIN / RESYNC_REQUIRED → 主动断 + 退避重连
+                                // SERVER_DRAIN → 主动断 + 退避重连(纯连接层动作,不广播 resync)。
                                 self.state_tx.send_replace(
                                     ConnectionState::Disconnected { last_error: None },
                                 );
@@ -1357,15 +1225,15 @@ impl Inner {
                             match action {
                                 Action::Logout => {
                                     self.token_store.mark_token_invalid().await;
-                                    self.state_tx.send_replace(
-                                        ConnectionState::Disconnected { last_error: None },
-                                    );
+                                    let (code, message) = reject_fields(&err);
+                                    self.state_tx
+                                        .send_replace(ConnectionState::Rejected { code, message });
                                     return;
                                 }
                                 Action::Terminate => {
-                                    self.state_tx.send_replace(ConnectionState::Disconnected {
-                                        last_error: Some(err),
-                                    });
+                                    let (code, message) = reject_fields(&err);
+                                    self.state_tx
+                                        .send_replace(ConnectionState::Rejected { code, message });
                                     return;
                                 }
                                 Action::Backoff => {
@@ -1453,6 +1321,21 @@ mod tests {
         let s = ConnectionState::Disconnected { last_error: None };
         let json = serde_json::to_string(&s).unwrap();
         assert_eq!(json, r#"{"state":"disconnected"}"#);
+    }
+
+    #[test]
+    fn connection_state_rejected_serializes_code_and_message() {
+        // 鉴权被拒终态:前端契约 {state:"rejected", code, message}。code/message 为单词,
+        // 不受 enum kebab-case rename 影响,前端按 .code/.message 直读。
+        let s = ConnectionState::Rejected {
+            code: "100000001".into(),
+            message: "会话已过期".into(),
+        };
+        let json = serde_json::to_string(&s).unwrap();
+        assert_eq!(
+            json,
+            r#"{"state":"rejected","code":"100000001","message":"会话已过期"}"#
+        );
     }
 
     #[test]
@@ -1596,25 +1479,5 @@ mod tests {
             }),
             Action::Terminate
         );
-    }
-
-    #[test]
-    fn ack_cursor_advances_only_when_resync_required() {
-        // resync_required=true:游标跳到 ack.replayed_to_seq(head/水位),提前推进安全。
-        assert_eq!(cursor_after_subscribe_ack(true, 948), Some(948));
-        // resync_required=false:不从 ack 推(维持 apply-then-advance,靠 PushBatch 落库后推进)。
-        assert_eq!(cursor_after_subscribe_ack(false, 152), None);
-        // resync_required=true 但 head=0(空表回退 since=0 的换机场景):推进到 0 无害(单调存储不回退)。
-        assert_eq!(cursor_after_subscribe_ack(true, 0), Some(0));
-    }
-
-    #[test]
-    fn resync_broadcast_covers_conversation_messages() {
-        // 安全网 #4(spec §6.4-4):resync 必须覆盖 ConversationMessages,否则 B2 跳重放后
-        // 打开会话气泡不触发 reconcile。
-        assert!(RESYNC_BROADCAST_TOPICS.contains(&ChangeTopic::ConversationMessages));
-        assert!(RESYNC_BROADCAST_TOPICS.contains(&ChangeTopic::Accounts));
-        assert!(RESYNC_BROADCAST_TOPICS.contains(&ChangeTopic::Friends));
-        assert!(RESYNC_BROADCAST_TOPICS.contains(&ChangeTopic::RecentSessions));
     }
 }

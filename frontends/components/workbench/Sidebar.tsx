@@ -50,11 +50,19 @@ function onlineStatus(conn: HubConnectionState | null): {
   switch (conn?.state) {
     case "subscribed":
       return { label: "在线", dot: "#10B981", text: "#0E9F6E" };
+    case "rejected":
+      // 鉴权被拒终态(verifyToken allowed=false / 会话失效):红点。回登录页由 TokenInvalid 链路驱动,
+      // 此 badge 仅过渡展示;详细 reject 文案在接待列表 SyncStatusBadge 的 tooltip。
+      return { label: "未登录", dot: "#EF4444", text: "#DC2626" };
     case "disconnected":
       return { label: "离线", dot: "#9CA3AF", text: "#6B7280" };
-    default:
-      // connecting 或 null(还没拿到首条 hub:connection)
+    case "connecting":
       return { label: "连接中", dot: "#F59E0B", text: "#B45309" };
+    default:
+      // null(还没拿到首条 hub:connection)→ 连接中;未知态(后端 drift)→ 当离线兜底(不误显在线/连接中)。
+      return conn == null
+        ? { label: "连接中", dot: "#F59E0B", text: "#B45309" }
+        : { label: "离线", dot: "#9CA3AF", text: "#6B7280" };
   }
 }
 

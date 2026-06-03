@@ -25,7 +25,9 @@ import type { ChangeNotice, ChangeScope, ChangeTopic } from "./types";
 export type HubConnectionState =
   | { state: "connecting" }
   | { state: "subscribed" }
-  | { state: "disconnected"; lastError?: unknown };
+  | { state: "disconnected"; lastError?: unknown }
+  // 鉴权被拒终态(verifyToken allowed=false / 会话失效):后端不再重试,code/message 透传后台 reject 文案。
+  | { state: "rejected"; code: string; message: string };
 
 export interface UseResourceOptions<T> {
   topic: ChangeTopic;

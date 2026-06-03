@@ -115,11 +115,27 @@ describe("Sidebar 顶部员工区", () => {
     expect(screen.getByText("离线")).toBeTruthy();
   });
 
+  it("connectionState=connecting 显示『连接中』", () => {
+    mockUseCurrentProfile.mockReturnValue(PROFILE);
+    mockUseHubSyncStatus.mockReturnValue(syncWith({ state: "connecting" }));
+    renderSidebar({ collapsed: false });
+    expect(screen.getByText("连接中")).toBeTruthy();
+  });
+
   it("connectionState=null 显示『连接中』", () => {
     mockUseCurrentProfile.mockReturnValue(PROFILE);
     mockUseHubSyncStatus.mockReturnValue(syncWith(null));
     renderSidebar({ collapsed: false });
     expect(screen.getByText("连接中")).toBeTruthy();
+  });
+
+  it("connectionState=rejected(鉴权被拒终态)显示『未登录』而非『连接中』", () => {
+    mockUseCurrentProfile.mockReturnValue(PROFILE);
+    mockUseHubSyncStatus.mockReturnValue(
+      syncWith({ state: "rejected", code: "100000001", message: "会话已过期" }),
+    );
+    renderSidebar({ collapsed: false });
+    expect(screen.getByText("未登录")).toBeTruthy();
   });
 
   it("折叠态:头像首字符常显,姓名/在线状态以 opacity-0 淡出隐藏(常驻挂载保证收展丝滑)", () => {
