@@ -264,6 +264,12 @@ impl RecentSessionsStore {
     /// 版本门同 [`upsert_remote_in_tx`]:仅当 incoming 复合版本 `(sort_key_ms, gmt_modified)` ≥ stored
     /// 才覆盖,stale 事件 → 0 行受影响。`removed` 在新消息时间晚于移除时间时自动恢复。
     /// 返回是否真正改动了一行(`false` = 行不存在 / 跨员工 / 被版本门拒绝的 stale 事件)。
+    ///
+    /// `last_send_status` 按文档 §4 不倒退合并:
+    /// - current ≤ 1(无状态/待发送) → 接受任意 incoming
+    /// - current = 2(发送中) → 仅接受 3/4(忽略 incoming=1)
+    /// - current = 4(失败) → 仅接受 3;忽略 1/2
+    /// - current = 3(成功,终态) → 忽略 1/2/4,只接受 3(幂等)
     pub async fn apply_summary(&self, s: RecentSessionSummary) -> Result<bool, StateError> {
         let now = now_unix_ms();
         let conn = self.pool.pool().get().await?;
@@ -274,7 +280,12 @@ impl RecentSessionsStore {
                        last_local_message_id    = ?1, \
                        last_message_type        = ?2, \
                        last_message_direction   = ?3, \
-                       last_send_status         = ?4, \
+                       last_send_status = CASE \
+                           WHEN last_send_status <= 1 THEN ?4 \
+                           WHEN last_send_status = 2 AND ?4 IN (3, 4) THEN ?4 \
+                           WHEN last_send_status = 4 AND ?4 = 3 THEN 3 \
+                           ELSE last_send_status \
+                       END, \
                        last_message_summary     = ?5, \
                        last_message_time_ms     = ?6, \
                        unread_count             = ?7, \
@@ -1777,5 +1788,89 @@ mod tests {
         // 软移除后 list_top 隐藏,但水位仍可读(供重开会话水位门)
         assert!(store.list_top(E, None, 10).await.unwrap().is_empty());
         assert_eq!(store.latest_sort_key_ms(E, "c1").await.unwrap(), Some(777));
+    }
+
+    // ─── §4 发送状态不倒退 ──────────────────────────────────────────────────
+
+    /// apply_summary 的 last_send_status 必须遵守 §4 状态机:已是终/中间态时不被 stale 事件倒退。
+    ///
+    /// 场景一:行当前 last_send_status=3(成功,终态) → apply_summary 送来 2(发送中) → 应保持 3。
+    /// 场景二:行当前 last_send_status=4(失败) → apply_summary 送来 3(成功) → 应变 3(4→3 被允许)。
+    ///
+    /// 版本门放行策略:incoming sort_key_ms 与种子相等 + gmt="" → 版本门在相等 sortKey 下放行,
+    /// 把判定权交给 §4 CASE 表达式。
+    #[tokio::test]
+    async fn apply_summary_send_status_does_not_regress() {
+        // ── 场景一:3(成功) 收到 2(发送中) → 应保持 3 ─────────────────────────
+        let pool = SqlitePool::in_memory().await.unwrap();
+        let store = RecentSessionsStore::new(pool);
+
+        // 种子行:conv=cv-1,last_send_status=3,sort_key_ms=K=1000。
+        // sample_remote 默认 last_send_status=3,sort_key_ms=ts_ms。
+        store
+            .upsert_remote_many(&[sample_remote("cv-1", "wa-1", 1000, 0)])
+            .await
+            .unwrap();
+        // 确认种子 send_status=3。
+        let seed = store.list_top(E, None, 10).await.unwrap();
+        assert_eq!(seed[0].last_send_status, 3, "种子 last_send_status 应为 3");
+
+        // apply_summary:相同 sort_key_ms=1000,gmt="" → 版本门放行;incoming last_send_status=2。
+        let mut s = sample_summary("cv-1", 1000, 0);
+        s.last_send_status = 2; // §4: 3 收到 2 → 应保持 3
+        s.gmt_modified_time = String::new(); // 让版本门在相等 sortKey 下放行
+        let changed = store.apply_summary(s).await.unwrap();
+        assert!(changed, "版本门应放行同 sortKey + gmt='' 的摘要");
+
+        let got = store.list_top(E, None, 10).await.unwrap();
+        assert_eq!(
+            got[0].last_send_status, 3,
+            "§4: status=3(终态)收到 2(发送中)应保持 3,不得倒退"
+        );
+
+        // ── 场景二:4(失败) 收到 3(成功) → 应变 3 ──────────────────────────────
+        let pool2 = SqlitePool::in_memory().await.unwrap();
+        let store2 = RecentSessionsStore::new(pool2);
+
+        // 种子行:last_send_status=4(失败),sort_key_ms=2000。
+        let mut seed2 = sample_remote("cv-2", "wa-1", 2000, 0);
+        seed2.last_send_status = 4;
+        store2.upsert_remote_many(&[seed2]).await.unwrap();
+        let seed_row = store2.list_top(E, None, 10).await.unwrap();
+        assert_eq!(
+            seed_row[0].last_send_status, 4,
+            "种子 last_send_status 应为 4"
+        );
+
+        // apply_summary:同 sort_key_ms=2000,gmt="",incoming last_send_status=3。
+        let mut s2 = sample_summary("cv-2", 2000, 0);
+        s2.last_send_status = 3; // §4: 4 收到 3 → 应变 3
+        s2.gmt_modified_time = String::new();
+        let changed2 = store2.apply_summary(s2).await.unwrap();
+        assert!(changed2, "版本门应放行同 sortKey + gmt='' 的摘要");
+
+        let got2 = store2.list_top(E, None, 10).await.unwrap();
+        assert_eq!(
+            got2[0].last_send_status, 3,
+            "§4: status=4(失败)收到 3(成功)应变 3"
+        );
+
+        // ── 场景三:3(成功) 收到 4(失败) → 应保持 3(终态不接受失败) ────────────
+        let pool3 = SqlitePool::in_memory().await.unwrap();
+        let store3 = RecentSessionsStore::new(pool3);
+
+        let seed3 = sample_remote("cv-3", "wa-1", 3000, 0); // last_send_status=3
+        store3.upsert_remote_many(&[seed3]).await.unwrap();
+
+        let mut s3 = sample_summary("cv-3", 3000, 0);
+        s3.last_send_status = 4; // §4: 3 收到 4 → 应保持 3
+        s3.gmt_modified_time = String::new();
+        store3.apply_summary(s3).await.unwrap();
+
+        let got3 = store3.list_top(E, None, 10).await.unwrap();
+        assert_eq!(
+            got3[0].last_send_status, 3,
+            "§4: status=3(终态)收到 4(失败)应保持 3"
+        );
     }
 }
