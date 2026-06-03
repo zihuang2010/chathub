@@ -1101,6 +1101,11 @@ impl Inner {
             self.state_tx.send_replace(ConnectionState::Connecting);
 
             let since = self.notify_seq_store.read().await.unwrap_or(0);
+            tracing::info!(
+                target: "chathub_net::hub",
+                since,
+                "run_loop connecting; subscribing"
+            );
 
             let mut stream = match self
                 .hub
@@ -1108,31 +1113,47 @@ impl Inner {
                 .await
             {
                 Ok(s) => s,
-                Err(err) => match classify(&err) {
-                    Action::Logout => {
-                        self.token_store.mark_token_invalid().await;
-                        self.state_tx
-                            .send_replace(ConnectionState::Disconnected { last_error: None });
-                        return;
+                Err(err) => {
+                    let action = classify(&err);
+                    tracing::warn!(
+                        target: "chathub_net::hub",
+                        ?action,
+                        error = %err,
+                        "subscribe request failed"
+                    );
+                    match action {
+                        Action::Logout => {
+                            self.token_store.mark_token_invalid().await;
+                            self.state_tx
+                                .send_replace(ConnectionState::Disconnected { last_error: None });
+                            return;
+                        }
+                        Action::Terminate => {
+                            self.state_tx.send_replace(ConnectionState::Disconnected {
+                                last_error: Some(err),
+                            });
+                            return;
+                        }
+                        Action::Backoff => {
+                            self.state_tx.send_replace(ConnectionState::Disconnected {
+                                last_error: Some(err),
+                            });
+                            let dur = backoff.next();
+                            tracing::warn!(
+                                target: "chathub_net::hub",
+                                backoff_ms = dur.as_millis() as u64,
+                                "subscribe backoff sleep before reconnect"
+                            );
+                            tokio::time::sleep(dur).await;
+                            continue 'reconnect;
+                        }
                     }
-                    Action::Terminate => {
-                        self.state_tx.send_replace(ConnectionState::Disconnected {
-                            last_error: Some(err),
-                        });
-                        return;
-                    }
-                    Action::Backoff => {
-                        self.state_tx.send_replace(ConnectionState::Disconnected {
-                            last_error: Some(err),
-                        });
-                        tokio::time::sleep(backoff.next()).await;
-                        continue 'reconnect;
-                    }
-                },
+                }
             };
 
             self.state_tx.send_replace(ConnectionState::Subscribed);
             backoff.reset();
+            tracing::info!(target: "chathub_net::hub", since, "subscribed; streaming");
 
             // 本次订阅的回放上界:收到 SubscribeAck 后从 ack.replayed_to_seq 取;
             // 在此之前以 since 兜底(<=since 的都已处理过)。回放帧不进 event_tx 广播,
@@ -1267,12 +1288,25 @@ impl Inner {
                         }
                         Ok(None) => {
                             self.state_tx.send_replace(ConnectionState::Disconnected { last_error: None });
-                            tokio::time::sleep(backoff.next()).await;
+                            let dur = backoff.next();
+                            tracing::warn!(
+                                target: "chathub_net::hub",
+                                backoff_ms = dur.as_millis() as u64,
+                                "stream closed by server (Ok(None)); backoff before reconnect"
+                            );
+                            tokio::time::sleep(dur).await;
                             continue 'reconnect;
                         }
                         Err(status) => {
                             let err: AuthError = status.into();
-                            match classify(&err) {
+                            let action = classify(&err);
+                            tracing::warn!(
+                                target: "chathub_net::hub",
+                                ?action,
+                                error = %err,
+                                "stream error"
+                            );
+                            match action {
                                 Action::Logout => {
                                     self.token_store.mark_token_invalid().await;
                                     self.state_tx.send_replace(
@@ -1290,7 +1324,13 @@ impl Inner {
                                     self.state_tx.send_replace(ConnectionState::Disconnected {
                                         last_error: Some(err),
                                     });
-                                    tokio::time::sleep(backoff.next()).await;
+                                    let dur = backoff.next();
+                                    tracing::warn!(
+                                        target: "chathub_net::hub",
+                                        backoff_ms = dur.as_millis() as u64,
+                                        "stream backoff sleep before reconnect"
+                                    );
+                                    tokio::time::sleep(dur).await;
                                     continue 'reconnect;
                                 }
                             }
