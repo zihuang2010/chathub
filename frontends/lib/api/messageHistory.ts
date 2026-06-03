@@ -120,6 +120,8 @@ export async function loadConversationMessages(params: {
   wecomAccountId: string;
   externalUserId: string;
   limit?: number;
+  /** 安全网 #3/#4:resync 对当前打开会话强制绕水位门同步 reconcile;默认 false 走常规水位门。 */
+  force?: boolean;
 }): Promise<CachedMessagesResp> {
   return invokeWithTimeout<CachedMessagesResp>(
     "load_conversation_messages",
@@ -128,6 +130,7 @@ export async function loadConversationMessages(params: {
       wecomAccountId: params.wecomAccountId,
       externalUserId: params.externalUserId,
       limit: params.limit,
+      force: params.force ?? false,
     },
     HISTORY_TIMEOUT_MS,
   );

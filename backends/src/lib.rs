@@ -402,6 +402,13 @@ struct CachedMessagesResp {
 /// 缓存优先读一条会话首屏 + 会话水位门(决定是否后台重对齐)。
 ///
 /// 流程:
+/// 会话历史是否需要 reconcile(安全网 #3,spec §6.4-3)。
+/// `force=true`(resync 对当前打开会话)无视水位门 fresh 恒返 true(强制同步绕门对齐);
+/// 否则维持原水位门语义(fresh → 不 reconcile,否则需 reconcile,冷/温由调用方另行分流)。
+fn should_reconcile_conv_messages(force: bool, fresh: bool, _is_cold: bool) -> bool {
+    force || !fresh
+}
+
 ///   1. 解 employee_id(未登录返空,仿 `list_recent_friends`)。
 ///   2. `touch_accessed` 标热 + `trim_conversations` 整会话 LRU(warn 忽略错)。
 ///   3. `list_conversation_asc` 取整窗(升序);`get_window` 读水位。整窗返回保证显示尾恒等于
@@ -409,6 +416,7 @@ struct CachedMessagesResp {
 ///   4. **会话水位门**:`cache_newest_ms`(window.newest_message_time_ms)对比 recents 行
 ///      `latest_sort_key_ms`。两者都有且 `cache >= recents > 0` → fresh(零网络);
 ///      否则后台 spawn `reconcile_newest`(reconcile 完成经 ChangeNotice 通知前端重读)。
+///      `force=true`(resync 路径)绕过 fresh 门,强制一次同步 reconcile。
 ///   5. 立即返回缓存升序 records + `has_more_older`(无 window → false)。
 // 入参均为 Tauri State 注入 + IPC 透传字段;拆参会破坏 #[tauri::command] 命令签名与前端
 // 调用约定,故按 clippy 推荐豁免(该函数早因图片预取参数由 8→9 参越阈,属既有问题)。
@@ -424,6 +432,7 @@ async fn load_conversation_messages(
     wecom_account_id: String,
     external_user_id: String,
     limit: Option<u32>,
+    force: Option<bool>,
 ) -> Result<CachedMessagesResp, AuthError> {
     let employee_id = match auth_api.current_session().await? {
         Some(p) => p.user_id,
@@ -435,6 +444,7 @@ async fn load_conversation_messages(
         }
     };
     let limit = limit.unwrap_or(20).clamp(1, 200);
+    let force = force.unwrap_or(false);
 
     // 标热 + 整会话 LRU。冷开(无 window)时 touch 是 no-op,reconcile 会建窗。
     if let Err(e) = messages_store
@@ -478,7 +488,9 @@ async fn load_conversation_messages(
     // 异步解析竞态影响可能丢通知,表现为切会话空、需切走再切回/发送才出历史)。
     // 温缓存(已有行)保持秒开 + 后台对齐(stale-while-revalidate),零延迟回归。
     let is_cold = records.is_empty() || window.is_none();
-    let gate_decision = if fresh {
+    let gate_decision = if force {
+        "force:resync 绕水位门→同步reconcile"
+    } else if fresh {
         "fresh:零网络命中"
     } else if is_cold {
         "not-fresh:冷会话→同步reconcile"
@@ -487,6 +499,7 @@ async fn load_conversation_messages(
     };
     // 会话水位门判定全过程日志:c=缓存窗最新(cache_newest_ms),r=recents 行最新(recents_latest_ms);
     // fresh ⇔ 两者都有值 且 r>0 且 c>=r。fresh 走零网络,否则按冷/温分流到同步/后台 reconcile。
+    // force=true(resync 路径)绕过 fresh 门,强制一次同步 reconcile(安全网 #3)。
     tracing::debug!(
         target: "chathub::messages",
         conversation_id = %conversation_id,
@@ -496,10 +509,14 @@ async fn load_conversation_messages(
         cached_rows = records.len(),
         fresh,
         is_cold,
+        force,
         decision = gate_decision,
         "会话水位门判定(fresh ⇔ r>0 且 c>=r)",
     );
-    if !fresh && is_cold {
+    let need_reconcile = should_reconcile_conv_messages(force, fresh, is_cold);
+    // force(resync)或冷会话:同步等一次 reconcile 再返回(force 强制绕水位门一次性对齐打开会话)。
+    // 温缓存(非 force 且非冷且 not-fresh):后台 spawn(stale-while-revalidate)。
+    if need_reconcile && (force || is_cold) {
         // gRPC forward 隧道无 per-call deadline,必须超时包裹,避免远端慢/挂时卡死命令。
         let outcome = tokio::time::timeout(
             std::time::Duration::from_secs(10),
@@ -515,10 +532,10 @@ async fn load_conversation_messages(
         match outcome {
             Ok(Ok(())) => {}
             Ok(Err(e)) => {
-                tracing::warn!(target: "chathub::messages", error = %e, "reconcile_newest failed (cold await)");
+                tracing::warn!(target: "chathub::messages", error = %e, "reconcile_newest failed (sync await)");
             }
             Err(_) => {
-                tracing::warn!(target: "chathub::messages", "reconcile_newest timed out (cold await)");
+                tracing::warn!(target: "chathub::messages", "reconcile_newest timed out (sync await)");
             }
         }
         // 无论成功/失败/超时,都重读本地缓存:成功 → 带回历史;失败 → 退回原(可能仍空)缓存,
@@ -539,9 +556,10 @@ async fn load_conversation_messages(
             conversation_id = %conversation_id,
             rows_after = records.len(),
             has_more_older,
-            "冷会话同步 reconcile 完成,已重读本地缓存返回首屏",
+            force,
+            "同步 reconcile 完成(force 或冷会话),已重读本地缓存返回首屏",
         );
-    } else if !fresh {
+    } else if need_reconcile {
         tracing::debug!(
             target: "chathub::messages",
             conversation_id = %conversation_id,
@@ -1742,6 +1760,19 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn conv_messages_force_bypasses_fresh_gate() {
+        // 安全网 #3(spec §6.4-3):force=true 无视 fresh,恒需(同步)reconcile。
+        assert!(should_reconcile_conv_messages(
+            true, /*fresh=*/ true, /*is_cold=*/ false
+        ));
+        // 非 force + fresh → 零网络命中,不 reconcile。
+        assert!(!should_reconcile_conv_messages(false, true, false));
+        // 非 force + 非 fresh → 需 reconcile(冷/温分流另判,本函数只答"要不要")。
+        assert!(should_reconcile_conv_messages(false, false, true));
+        assert!(should_reconcile_conv_messages(false, false, false));
+    }
 
     #[test]
     fn prefill_watermark_skips_short_circuit_when_forced() {

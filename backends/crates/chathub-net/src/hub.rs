@@ -1084,6 +1084,16 @@ fn cursor_after_subscribe_ack(resync_required: bool, replayed_to_seq: u64) -> Op
     }
 }
 
+/// resync 全量对齐时需广播 BulkInvalidate 的 topic 集合(安全网 §6.4)。
+/// 含 ConversationMessages:B2 跳重放后,打开会话气泡的 reconcile 触发恰依赖被跳的
+/// MESSAGE_UPSERT push,故 resync 必须显式覆盖此 topic 让前端主动 reconcile。
+const RESYNC_BROADCAST_TOPICS: [ChangeTopic; 4] = [
+    ChangeTopic::Accounts,
+    ChangeTopic::Friends,
+    ChangeTopic::RecentSessions,
+    ChangeTopic::ConversationMessages,
+];
+
 impl Inner {
     /// Resync 路径触发 — 给所有已知 topic 各发一条 BulkInvalidate ChangeNotice。
     /// employee_id 取 token_store 当前会话的 user_id;若未登录(异常路径),不发。
@@ -1093,11 +1103,7 @@ impl Inner {
             _ => return,
         };
         let scope = ChangeScope::employee(employee_id);
-        for topic in [
-            ChangeTopic::Accounts,
-            ChangeTopic::Friends,
-            ChangeTopic::RecentSessions,
-        ] {
+        for topic in RESYNC_BROADCAST_TOPICS {
             let _ = self
                 .change_notice_tx
                 .send(ChangeNotice::resync(topic, scope.clone()));
@@ -1600,5 +1606,15 @@ mod tests {
         assert_eq!(cursor_after_subscribe_ack(false, 152), None);
         // resync_required=true 但 head=0(空表回退 since=0 的换机场景):推进到 0 无害(单调存储不回退)。
         assert_eq!(cursor_after_subscribe_ack(true, 0), Some(0));
+    }
+
+    #[test]
+    fn resync_broadcast_covers_conversation_messages() {
+        // 安全网 #4(spec §6.4-4):resync 必须覆盖 ConversationMessages,否则 B2 跳重放后
+        // 打开会话气泡不触发 reconcile。
+        assert!(RESYNC_BROADCAST_TOPICS.contains(&ChangeTopic::ConversationMessages));
+        assert!(RESYNC_BROADCAST_TOPICS.contains(&ChangeTopic::Accounts));
+        assert!(RESYNC_BROADCAST_TOPICS.contains(&ChangeTopic::Friends));
+        assert!(RESYNC_BROADCAST_TOPICS.contains(&ChangeTopic::RecentSessions));
     }
 }
