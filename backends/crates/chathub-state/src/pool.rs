@@ -70,6 +70,9 @@ impl SqlitePool {
                 M::up(include_str!(
                     "../migrations/V22__messages_revoked_fail_reason.sql"
                 )),
+                M::up(include_str!(
+                    "../migrations/V23__recents_local_last_sent.sql"
+                )),
             ]);
             migrations
                 .to_latest(c)

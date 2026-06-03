@@ -18,6 +18,8 @@
 //! - **watermark**:沿用 V6 模板"取大不取小",应对 relay redelivery。
 
 use crate::error::StateError;
+// D3:复用 messages 模块的 pub(crate) 时间助手,去掉本模块重复副本(同 crate 内收敛)。
+use crate::messages::now_unix_ms;
 use crate::pool::SqlitePool;
 use serde::{Deserialize, Serialize};
 
@@ -83,6 +85,9 @@ pub struct RecentSessionRow {
     /// V17:用户主动"打开会话"的时间戳。进 list_top/trim 的 MAX(...) 排序(把该行提到
     /// 非置顶区顶部),但不进时间显示。客户端独占列,远端 UPSERT 永不触碰。
     pub opened_at_ms: i64,
+    /// V23:本次发送置顶信号。发送一条消息时乐观置 now,把该行提到非置顶区顶部。
+    /// 客户端独占列,仅进 list_top/trim 的 MAX(...) 排序,远端 UPSERT 永不触碰。
+    pub local_last_sent_at_ms: i64,
 }
 
 /// 远端拉取 / 事件 applier 携带的远端列数据(无本地列)。
@@ -176,14 +181,15 @@ impl RecentSessionsStore {
                       unread_count, has_unread, updated_at_ms, \
                       pinned, pinned_at_ms, local_draft_at_ms, local_draft_text, \
                       removed, removed_at_ms, muted, muted_at_ms, \
-                      last_message_sort_key_ms, gmt_modified_time, opened_at_ms \
+                      last_message_sort_key_ms, gmt_modified_time, opened_at_ms, \
+                      local_last_sent_at_ms \
                     FROM hub_conversation_recents \
                     WHERE employee_id = ?1 AND removed = 0 \
                       AND (?2 IS NULL OR wecom_account_id = ?2) \
                     ORDER BY \
                       pinned DESC, \
                       pinned_at_ms DESC, \
-                      MAX(last_message_time_ms, local_draft_at_ms, opened_at_ms) DESC, \
+                      MAX(last_message_time_ms, local_draft_at_ms, opened_at_ms, local_last_sent_at_ms) DESC, \
                       last_message_time_ms DESC \
                     LIMIT ?3";
                 let mut stmt = c.prepare(sql)?;
@@ -265,6 +271,13 @@ impl RecentSessionsStore {
     /// 才覆盖,stale 事件 → 0 行受影响。`removed` 在新消息时间晚于移除时间时自动恢复。
     /// 返回是否真正改动了一行(`false` = 行不存在 / 跨员工 / 被版本门拒绝的 stale 事件)。
     ///
+    /// **同消息守卫**:出站消息的 CONFIRMED 摘要 sortKey 可能比 PENDING 小(CONFIRMED 用真实平台
+    /// 发送时间、早于本地 pending 创建时间)。版本门 OR 链尾追加
+    /// `?1 <> '' AND ?1 = last_local_message_id`:同一条消息(同 lastLocalMessageId)的后续状态恒可
+    /// 进入,由既有 `last_send_status` 不倒退 CASE 定终值,修掉发送状态卡"发送中"。不同消息的过期
+    /// 小 sortKey 仍被拒(守卫只对同 id 生效)。`time_ms`/`sort_key_ms` 取 MAX 防同消息小 sortKey
+    /// 拉低展示时间/版本键(正常 `?>stored` 时 MAX 即 `?`,无行为变化)。
+    ///
     /// `last_send_status` 按文档 §4 不倒退合并:
     /// - current ≤ 1(无状态/待发送) → 接受任意 incoming
     /// - current = 2(发送中) → 仅接受 3/4(忽略 incoming=1)
@@ -287,10 +300,10 @@ impl RecentSessionsStore {
                            ELSE last_send_status \
                        END, \
                        last_message_summary     = ?5, \
-                       last_message_time_ms     = ?6, \
+                       last_message_time_ms     = MAX(last_message_time_ms, ?6), \
                        unread_count             = ?7, \
                        has_unread               = ?8, \
-                       last_message_sort_key_ms = ?9, \
+                       last_message_sort_key_ms = MAX(last_message_sort_key_ms, ?9), \
                        gmt_modified_time        = ?10, \
                        updated_at_ms            = ?11, \
                        external_name   = CASE WHEN ?12 <> '' THEN ?12 ELSE external_name   END, \
@@ -301,7 +314,8 @@ impl RecentSessionsStore {
                      WHERE employee_id = ?15 AND conversation_id = ?16 \
                        AND ( ?9 > last_message_sort_key_ms \
                              OR (?9 = last_message_sort_key_ms \
-                                 AND (?10 = '' OR ?10 >= gmt_modified_time)) )",
+                                 AND (?10 = '' OR ?10 >= gmt_modified_time)) \
+                             OR (?1 <> '' AND ?1 = last_local_message_id) )",
                     rusqlite::params![
                         s.last_local_message_id,
                         s.last_message_type as i64,
@@ -534,6 +548,51 @@ impl RecentSessionsStore {
             .await
     }
 
+    /// 发送时乐观本地写:预览文案 + 类型/方向 + 本地置顶信号。只更本地可见列,
+    /// **不动 last_message_sort_key_ms(版本键)与 last_send_status** —— 由随后的 SESSION_SUMMARY
+    /// push(版本门)权威对齐。返回是否命中一行(会话不在 recents 则 no-op)。
+    ///
+    /// `last_message_summary` 是乐观覆盖远端列;因不动 `last_message_sort_key_ms`,随后 PENDING 摘要
+    /// (sortKey_ms 更大)必过版本门并以权威值覆盖(同文案→无闪),符合"本地动预览、不抬版本键"原则。
+    /// `last_message_direction` 取 push 原始出站值(出站=1,不经 to_local_direction 转换),
+    /// 避免与权威摘要到达后方向前缀闪变。SQL 校验 employee_id,跨员工 no-op。
+    pub async fn mark_local_sent(
+        &self,
+        employee_id: &str,
+        conversation_id: &str,
+        last_message_summary: &str,
+        last_message_type: i32,
+        last_message_direction: i32,
+        now_ms: i64,
+    ) -> Result<bool, StateError> {
+        let employee_id = employee_id.to_string();
+        let id = conversation_id.to_string();
+        let summary = last_message_summary.to_string();
+        let conn = self.pool.pool().get().await?;
+        let changed = conn
+            .interact(move |c| -> Result<bool, StateError> {
+                let n = c.execute(
+                    "UPDATE hub_conversation_recents SET \
+                       last_message_summary   = ?1, \
+                       last_message_type      = ?2, \
+                       last_message_direction = ?3, \
+                       local_last_sent_at_ms  = ?4 \
+                     WHERE employee_id = ?5 AND conversation_id = ?6",
+                    rusqlite::params![
+                        summary,
+                        last_message_type as i64,
+                        last_message_direction as i64,
+                        now_ms,
+                        employee_id,
+                        id,
+                    ],
+                )?;
+                Ok(n > 0)
+            })
+            .await??;
+        Ok(changed)
+    }
+
     /// 读单会话远端权威"最新位置"(LWW 主版本 epoch-ms)。不过滤 `removed`,行不存在返 None。
     ///
     /// 供消息页会话水位门用:与消息缓存窗口 `newest_message_time_ms` 比较,够新就跳过 reconcile。
@@ -591,7 +650,7 @@ impl RecentSessionsStore {
                      SELECT conversation_id, \
                             ROW_NUMBER() OVER ( \
                               PARTITION BY wecom_account_id \
-                              ORDER BY MAX(last_message_time_ms, local_draft_at_ms, opened_at_ms) DESC \
+                              ORDER BY MAX(last_message_time_ms, local_draft_at_ms, opened_at_ms, local_last_sent_at_ms) DESC \
                             ) AS rn \
                      FROM hub_conversation_recents \
                      WHERE employee_id = ?1 AND pinned = 0 \
@@ -613,7 +672,7 @@ impl RecentSessionsStore {
                  WHERE conversation_id IN ( \
                    SELECT conversation_id FROM hub_conversation_recents \
                    WHERE employee_id = ?1 AND pinned = 0 \
-                   ORDER BY MAX(last_message_time_ms, local_draft_at_ms, opened_at_ms) DESC \
+                   ORDER BY MAX(last_message_time_ms, local_draft_at_ms, opened_at_ms, local_last_sent_at_ms) DESC \
                    LIMIT -1 OFFSET ?2 \
                  )",
                 rusqlite::params![employee_id, non_pinned_keep],
@@ -682,6 +741,7 @@ fn map_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RecentSessionRow> {
         last_message_sort_key_ms: row.get(27)?,
         gmt_modified_time: row.get(28)?,
         opened_at_ms: row.get(29)?,
+        local_last_sent_at_ms: row.get(30)?,
     })
 }
 
@@ -758,14 +818,6 @@ fn upsert_remote_in_tx(
             r.gmt_modified_time,
         ],
     )
-}
-
-fn now_unix_ms() -> i64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
 }
 
 #[cfg(test)]
@@ -1872,5 +1924,166 @@ mod tests {
             got3[0].last_send_status, 3,
             "§4: status=3(终态)收到 4(失败)应保持 3"
         );
+    }
+
+    // ─── B: 同消息守卫(CONFIRMED sortKey < PENDING)放行 + MAX 防回退 ─────────
+
+    /// 同一条消息(同 lastLocalMessageId):先 PENDING(status2, sortKey=A=大),
+    /// 再 CONFIRMED(status3, sortKey=B<A) → 终态 status=3,且 time/sort_key 未被拉低(取 MAX)。
+    /// 实证根因:出站 CONFIRMED 用真实平台时间,前导 ms 比本地 PENDING 创建时间小。
+    #[tokio::test]
+    async fn apply_summary_same_message_confirmed_smaller_sortkey_advances() {
+        let pool = SqlitePool::in_memory().await.unwrap();
+        let store = RecentSessionsStore::new(pool);
+        // 种子行(status<=1,让 PENDING 能进)。
+        let mut seed = sample_remote("cv-1", "wa-1", 100, 0);
+        seed.last_send_status = 0;
+        seed.last_local_message_id = "L".into();
+        seed.last_message_sort_key_ms = 100;
+        store.upsert_remote_many(&[seed]).await.unwrap();
+
+        // PENDING:status=2,sortKey=A=1780390520611(大),同消息 "L"。
+        let mut pending = sample_summary("cv-1", 1_780_390_520_611, 0);
+        pending.last_local_message_id = "L".into();
+        pending.last_send_status = 2;
+        let c1 = store.apply_summary(pending).await.unwrap();
+        assert!(c1, "PENDING 应被接受(sortKey 大于种子)");
+        let got = store.list_top(E, None, 10).await.unwrap();
+        assert_eq!(got[0].last_send_status, 2, "PENDING 后应为发送中");
+        assert_eq!(got[0].last_message_sort_key_ms, 1_780_390_520_611);
+
+        // CONFIRMED:status=3,sortKey=B=1780390519000(< A),同消息 "L"。
+        let mut confirmed = sample_summary("cv-1", 1_780_390_519_000, 0);
+        confirmed.last_local_message_id = "L".into();
+        confirmed.last_send_status = 3;
+        let c2 = store.apply_summary(confirmed).await.unwrap();
+        assert!(c2, "同消息 CONFIRMED(小 sortKey)应被同消息守卫放行");
+
+        let got = store.list_top(E, None, 10).await.unwrap();
+        assert_eq!(
+            got[0].last_send_status, 3,
+            "同消息 CONFIRMED 应把发送状态推进到成功"
+        );
+        // time / sort_key 未被小 sortKey 拉低(取 MAX)。
+        assert_eq!(
+            got[0].last_message_sort_key_ms, 1_780_390_520_611,
+            "sort_key 不得被同消息小 sortKey 拉低"
+        );
+        assert_eq!(
+            got[0].last_message_time_ms, 1_780_390_520_611,
+            "time 不得被同消息小 sortKey 拉低"
+        );
+    }
+
+    /// 回归:不同 lastLocalMessageId 的更小 sortKey 摘要仍被拒(同消息守卫只对同 id 生效)。
+    #[tokio::test]
+    async fn apply_summary_different_message_smaller_sortkey_rejected() {
+        let pool = SqlitePool::in_memory().await.unwrap();
+        let store = RecentSessionsStore::new(pool);
+        let mut seed = sample_remote("cv-1", "wa-1", 500, 3);
+        seed.last_local_message_id = "L_seed".into();
+        store.upsert_remote_many(&[seed]).await.unwrap();
+
+        // 不同消息("L_other"),更小 sortKey=200 → 应被拒。
+        let mut other = sample_summary("cv-1", 200, 9);
+        other.last_local_message_id = "L_other".into();
+        other.last_send_status = 3;
+        let changed = store.apply_summary(other).await.unwrap();
+        assert!(!changed, "不同消息的过期小 sortKey 摘要应被版本门拒绝");
+        let got = store.list_top(E, None, 10).await.unwrap();
+        assert_eq!(got[0].last_message_time_ms, 500, "stale 不得覆盖");
+        assert_eq!(got[0].unread_count, 3, "stale 不得覆盖未读");
+        assert_eq!(got[0].last_message_sort_key_ms, 500, "版本键不得被拉低");
+    }
+
+    /// 同消息 SEND_FAILED(status4)放行 → last_send_status=4。
+    #[tokio::test]
+    async fn apply_summary_same_message_send_failed_applies() {
+        let pool = SqlitePool::in_memory().await.unwrap();
+        let store = RecentSessionsStore::new(pool);
+        let mut seed = sample_remote("cv-1", "wa-1", 100, 0);
+        seed.last_send_status = 2; // 发送中
+        seed.last_local_message_id = "L".into();
+        seed.last_message_sort_key_ms = 1_780_390_520_611;
+        store.upsert_remote_many(&[seed]).await.unwrap();
+
+        // 同消息 CONFIRMED-FAILED:status=4,sortKey 更小,同 "L"。
+        let mut failed = sample_summary("cv-1", 1_780_390_519_000, 0);
+        failed.last_local_message_id = "L".into();
+        failed.last_send_status = 4;
+        let changed = store.apply_summary(failed).await.unwrap();
+        assert!(changed, "同消息 SEND_FAILED 应被守卫放行");
+        let got = store.list_top(E, None, 10).await.unwrap();
+        assert_eq!(got[0].last_send_status, 4, "发送中收到失败应变 4");
+    }
+
+    // ─── A: mark_local_sent 乐观本地写 ─────────────────────────────────────
+
+    /// 发送乐观写:更新 summary/type/direction/local_last_sent_at_ms,
+    /// **不动** last_message_sort_key_ms 与 last_send_status。
+    #[tokio::test]
+    async fn mark_local_sent_updates_local_cols_only() {
+        let pool = SqlitePool::in_memory().await.unwrap();
+        let store = RecentSessionsStore::new(pool);
+        // 种子:type=1,direction=1,status=3,sort_key=500。
+        store
+            .upsert_remote_many(&[sample_remote("c1", "wa-1", 500, 0)])
+            .await
+            .unwrap();
+        let before = store.list_top(E, None, 10).await.unwrap();
+        assert_eq!(before[0].last_send_status, 3);
+        assert_eq!(before[0].last_message_sort_key_ms, 500);
+
+        let hit = store
+            .mark_local_sent(E, "c1", "我发的新消息", 2, 1, 9999)
+            .await
+            .unwrap();
+        assert!(hit, "会话存在应命中一行");
+
+        let got = store.list_top(E, None, 10).await.unwrap();
+        // 本地可见列被更新。
+        assert_eq!(got[0].last_message_summary, "我发的新消息");
+        assert_eq!(got[0].last_message_type, 2);
+        assert_eq!(got[0].last_message_direction, 1);
+        assert_eq!(got[0].local_last_sent_at_ms, 9999);
+        // 版本键与发送状态绝不被动。
+        assert_eq!(
+            got[0].last_message_sort_key_ms, 500,
+            "mark_local_sent 不得动版本键"
+        );
+        assert_eq!(got[0].last_send_status, 3, "mark_local_sent 不得动发送状态");
+    }
+
+    /// 会话不在 recents → mark_local_sent 返回 false(no-op,回退到事件补全)。
+    #[tokio::test]
+    async fn mark_local_sent_missing_returns_false() {
+        let pool = SqlitePool::in_memory().await.unwrap();
+        let store = RecentSessionsStore::new(pool);
+        let hit = store
+            .mark_local_sent(E, "nope", "x", 1, 1, 1)
+            .await
+            .unwrap();
+        assert!(!hit);
+    }
+
+    /// mark_local_sent 写 local_last_sent_at_ms → 把会话顶到前(其它排序信号为 0 时)。
+    #[tokio::test]
+    async fn mark_local_sent_lifts_row_above_newer() {
+        let pool = SqlitePool::in_memory().await.unwrap();
+        let store = RecentSessionsStore::new(pool);
+        store
+            .upsert_remote_many(&[
+                sample_remote("c1", "wa-1", 100, 0), // 旧
+                sample_remote("c2", "wa-1", 999, 0), // 新
+            ])
+            .await
+            .unwrap();
+        // 给旧的 c1 发一条(local_last_sent_at = now,必然 > 999)→ 顶到前。
+        store
+            .mark_local_sent(E, "c1", "刚发出", 1, 1, now_unix_ms())
+            .await
+            .unwrap();
+        let got = store.list_top(E, None, 10).await.unwrap();
+        assert_eq!(got[0].conversation_id, "c1", "发送行应顶到非置顶区顶部");
     }
 }

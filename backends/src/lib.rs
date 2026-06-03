@@ -654,10 +654,16 @@ async fn clear_chat_messages(
 
 /// 发送一条文本消息(`messageType=1`):网络发送 → 落库(出站气泡)→ 发 ConversationMessages
 /// ChangeNotice。打开着的会话经订阅重读缓存,新气泡随权威列表稳定追加(不再依赖乐观气泡)。
+///
+/// 发送成功后还对接待列表(recents)做一次**乐观本地写**(`mark_local_sent`):立即把预览文案/
+/// 置顶信号写入本地列(不动版本键与发送状态),并广播 `RecentSessions` ChangeNotice 让接待列表
+/// 即时刷新(不等 ~400ms 的 SESSION_SUMMARY push);随后的权威摘要 push 经版本门对齐。
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 async fn send_message(
     message_sync: State<'_, MessageSync>,
+    recents_store: State<'_, RecentSessionsStore>,
+    change_tx: State<'_, tokio_broadcast::Sender<ChangeNotice>>,
     auth_api: State<'_, Arc<AuthApi>>,
     conversation_id: String,
     wecom_account_id: String,
@@ -675,7 +681,7 @@ async fn send_message(
         .await?
         .ok_or(AuthError::Unauthenticated)?
         .user_id;
-    message_sync
+    let resp = message_sync
         .send_message(
             &conversation_id,
             &wecom_account_id,
@@ -689,7 +695,49 @@ async fn send_message(
             duration_seconds,
             &client_msg_id,
         )
+        .await?;
+    // 接待列表乐观本地写:预览先行 + 置顶信号。方向取 push 原始出站值=1(不经 to_local_direction
+    // 转换,与 recent_session_event 读 lastMessageDirection 原始值一致),避免方向前缀闪变。
+    // 失败仅 warn 不阻塞返回(送达不因本地列写失败而判失败);会话不在 recents 时 no-op(回退到事件补全)。
+    let summary = summary_preview(message_type, &content_text, file_name.as_deref());
+    if let Err(e) = recents_store
+        .mark_local_sent(
+            &employee_id,
+            &conversation_id,
+            &summary,
+            message_type,
+            1,
+            now_unix_ms(),
+        )
         .await
+    {
+        tracing::warn!(error = %e, "mark_local_sent 失败(不阻塞发送返回)");
+    }
+    let _ = change_tx.send(ChangeNotice::command_upsert(
+        ChangeTopic::RecentSessions,
+        ChangeScope {
+            employee_id: employee_id.clone(),
+            conversation_id: Some(conversation_id.clone()),
+            ..Default::default()
+        },
+    ));
+    Ok(resp)
+}
+
+/// 派生接待列表预览文案(`lastMessageSummary`):非文本类按内容类型回退占位标签。
+/// 标签须与前端 utils.ts 的占位约定及 push `lastMessageSummary` 对齐
+/// (图片`[图片]`/文件`[文件]`/语音`[语音]`/视频`[视频]`),避免乐观预览与权威标签不一致。
+fn summary_preview(message_type: i32, content_text: &str, file_name: Option<&str>) -> String {
+    match message_type {
+        2 => "[图片]".to_string(),
+        3 => file_name
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "[文件]".to_string()),
+        4 => "[语音]".to_string(),
+        6 => "[视频]".to_string(),
+        _ => content_text.to_string(), // 1=文本及其它
+    }
 }
 
 /// 上传一个聊天附件到 OSS:取 STS 凭证 → 取 objectName → 直传。返回 objectName 等元数据,
