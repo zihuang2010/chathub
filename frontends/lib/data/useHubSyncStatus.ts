@@ -38,9 +38,31 @@ export function useHubSyncStatus(): UseHubSyncStatusResult {
   const [resyncing, setResyncing] = useState(false);
 
   // hub:connection
+  // S1:login 改 stop→start 后会多发一次 disconnected → Sidebar 瞬时闪"离线"。
+  // 对 disconnected 做 <300ms 去抖:延迟 set,期间来 subscribed/connecting 则取消;
+  // 真离线 250ms 后照常显示。subscribed/connecting 立即生效(非抖动源)。
   useEffect(() => {
     let unlisten: (() => void) | undefined;
     let cancelled = false;
+    let pendingDisconnect: ReturnType<typeof setTimeout> | undefined;
+    const clearPending = () => {
+      if (pendingDisconnect !== undefined) {
+        clearTimeout(pendingDisconnect);
+        pendingDisconnect = undefined;
+      }
+    };
+    const applyState = (next: HubConnectionState) => {
+      if (next.state === "disconnected") {
+        clearPending();
+        pendingDisconnect = setTimeout(() => {
+          if (!cancelled) setConnectionState(next);
+        }, 250);
+      } else {
+        // subscribed / connecting:取消挂起的 disconnected,立即生效。
+        clearPending();
+        setConnectionState(next);
+      }
+    };
     void (async () => {
       try {
         const init = await invoke<HubConnectionState>("hub_state");
@@ -49,7 +71,7 @@ export function useHubSyncStatus(): UseHubSyncStatusResult {
         // hub_state 命令未就绪时静默
       }
       const un = await listen<HubConnectionState>("hub:connection", (event) => {
-        if (!cancelled) setConnectionState(event.payload);
+        if (!cancelled) applyState(event.payload);
       });
       // await 期间组件可能已卸载:cleanup 早于此处赋值会空跑,导致监听器悬挂永不取消。
       if (cancelled) {
@@ -60,6 +82,7 @@ export function useHubSyncStatus(): UseHubSyncStatusResult {
     })();
     return () => {
       cancelled = true;
+      clearPending();
       unlisten?.();
     };
   }, []);
