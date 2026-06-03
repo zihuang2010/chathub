@@ -158,6 +158,26 @@ impl EventLog {
         Ok(row)
     }
 
+    /// 返回该 employee 当前事件日志中最大的 notify_seq(head 水位)。
+    /// 用于 resync 路径:`replayed_to_seq` 直接跳到 head,跳过逐帧重放。
+    /// 空表 / 该 employee 无任何行时 `SELECT MAX(...)` 返回 NULL → `None`
+    /// (调用方据此回退为 `since`,覆盖换机 / 日志全损场景)。
+    pub async fn latest_for(&self, employee_id: i64) -> Result<Option<i64>, StorageError> {
+        let conn = self.storage.conn().await?;
+        let row = conn
+            .interact(move |c| -> Result<Option<i64>, rusqlite::Error> {
+                let mut stmt =
+                    c.prepare("SELECT MAX(notify_seq) FROM hub_events WHERE employee_id = ?1")?;
+                // MAX 在空集上返回一行 NULL → Option<i64> 列读取得 None。
+                let max: Option<i64> =
+                    stmt.query_row(rusqlite::params![employee_id], |r| r.get(0))?;
+                Ok(max)
+            })
+            .await
+            .map_err(|e| StorageError::Interact(e.to_string()))??;
+        Ok(row)
+    }
+
     /// TTL 清理:删除 created_at_ms < cutoff 的记录,单次最多 batch_limit 行。
     /// 主循环按固定间隔重复调用,直到返回 0(无更多可删)。
     pub async fn cleanup_older_than(
@@ -309,6 +329,44 @@ mod tests {
         assert_eq!(seq, 100);
         assert_eq!(ts, 100_000); // row() 内部 created_at_ms = notify_seq * 1000
         assert!(log.earliest_for(999).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn event_log_latest_for_returns_max_notify_seq() {
+        let log = make_log().await;
+        log.insert_batch(vec![
+            row(1, 200, 0, "MESSAGE_UPSERT"),
+            row(1, 100, 0, "MESSAGE_UPSERT"),
+            row(1, 150, 0, "MESSAGE_UPSERT"),
+        ])
+        .await
+        .unwrap();
+        // 同一 notify_seq 多 event_index 不应改变 MAX。
+        log.insert_batch(vec![row(1, 200, 1, "SESSION_SUMMARY_UPSERT")])
+            .await
+            .unwrap();
+        assert_eq!(log.latest_for(1).await.unwrap(), Some(200));
+    }
+
+    #[tokio::test]
+    async fn event_log_latest_for_empty_returns_none() {
+        let log = make_log().await;
+        // 空表 / 该 employee 无任何行:MAX(notify_seq) 返回 NULL → None。
+        assert_eq!(log.latest_for(999).await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn event_log_latest_for_isolates_per_employee() {
+        let log = make_log().await;
+        log.insert_batch(vec![row(1, 100, 0, "MESSAGE_UPSERT")])
+            .await
+            .unwrap();
+        log.insert_batch(vec![row(2, 500, 0, "MESSAGE_UPSERT")])
+            .await
+            .unwrap();
+        // employee 2 的 head 不污染 employee 1。
+        assert_eq!(log.latest_for(1).await.unwrap(), Some(100));
+        assert_eq!(log.latest_for(2).await.unwrap(), Some(500));
     }
 
     #[tokio::test]
