@@ -130,7 +130,7 @@ describe("useRecentFriends 本地单源深读 + 水位预填", () => {
     await act(async () => {});
 
     expect(prefillMock).toHaveBeenCalledTimes(1);
-    expect(prefillMock).toHaveBeenCalledWith("acc-cold");
+    expect(prefillMock).toHaveBeenCalledWith("acc-cold", false);
     expect(pageMock).not.toHaveBeenCalled(); // 默认列表不再走远端 recentFriends 整页翻页
   });
 
@@ -181,7 +181,7 @@ describe("useRecentFriends 本地单源深读 + 水位预填", () => {
     expect(result.current.defaultHasMore).toBe(false);
   });
 
-  it("resync 跃迁(false→true):触发 force 水位预填(绕过已填标记)", async () => {
+  it("resync 跃迁(false→true):触发 force 水位预填(透传 force=true 跳后端短路)", async () => {
     useResourceMock.mockReturnValue(resourceResult(mkEntries(TRIGGER + 50), { resyncing: false }));
     prefillMock.mockResolvedValue(okPrefill);
 
@@ -195,6 +195,8 @@ describe("useRecentFriends 本地单源深读 + 水位预填", () => {
     });
 
     expect(prefillMock).toHaveBeenCalledTimes(1);
+    // 安全网 #1:resync 必须透传 force=true,后端据此跳过 local_count>=200 短路重拉首页。
+    expect(prefillMock).toHaveBeenCalledWith("acc-resync", true);
   });
 
   it("搜索走临时态:size=20 且 persist=false(不写库不污染默认列表)", async () => {
@@ -236,7 +238,7 @@ describe("useRecentFriends 本地单源深读 + 水位预填", () => {
     });
     await act(async () => {});
 
-    expect(prefillMock).toHaveBeenCalledWith("acc-sw2");
+    expect(prefillMock).toHaveBeenCalledWith("acc-sw2", false);
   });
 
   it("mkResp helper 自洽(仅搜索路径构造远端响应用)", () => {

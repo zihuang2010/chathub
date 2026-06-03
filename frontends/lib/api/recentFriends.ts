@@ -223,8 +223,12 @@ export interface PrefillResult {
  * 并 emit ChangeNotice 触发列表重读。`accountFilter` 跟随当前视图(空 / undefined = 全部账号)。
  * 由 useRecentFriends 在冷启动 / 低于触发线 / resync 时调用,日常翻页与保鲜不走它。
  */
-export async function prefillRecentFriends(accountFilter?: string | null): Promise<PrefillResult> {
+export async function prefillRecentFriends(
+  accountFilter?: string | null,
+  force = false,
+): Promise<PrefillResult> {
   return invoke<PrefillResult>("prefill_recent_friends", {
     accountFilter: accountFilter || null,
+    force,
   });
 }

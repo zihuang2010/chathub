@@ -303,7 +303,7 @@ export function useRecentFriends(opts: UseRecentFriendsOptions): UseRecentFriend
       setDefaultLoading(true);
       setLocalError(null);
       try {
-        await prefillRecentFriends(accountFilter);
+        await prefillRecentFriends(accountFilter, force);
         if (seq !== fillSeqRef.current) return; // 已被更新请求(如切账号)接力,丢弃
         // 后端写库后会 emit ChangeNotice;这里仍显式重读一次,保证即使 ChangeNotice
         // 延迟/丢失也能立刻按当前 limit 读出预填结果。
