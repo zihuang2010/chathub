@@ -52,6 +52,14 @@ describe("adaptHistoryRecords direction contract", () => {
 
     expect(messages.map((m) => m.id)).toEqual(["oldest", "middle", "newest"]);
   });
+
+  it("未终态 sendStatus(1 待发送 / 2 发送中)映射为 sending,不当成功(避免重读路径假已发送)", () => {
+    const pending = { ...record(2), localMessageId: "p", sendStatus: 1 };
+    const inflight = { ...record(2), localMessageId: "f", sendStatus: 2 };
+    const byId = new Map(adaptHistoryRecords([pending, inflight], "c1").map((m) => [m.id, m]));
+    expect(byId.get("p")?.status).toBe("sending");
+    expect(byId.get("f")?.status).toBe("sending");
+  });
 });
 
 describe("adaptHistoryRecords 细分语义透传(revoked / failReason / requestMessageId)", () => {

@@ -14,7 +14,12 @@ import {
 } from "./useChatActions";
 
 vi.mock("@/components/ui/toast", () => ({ showToast: vi.fn() }));
-vi.mock("@/lib/api/messageHistory", () => ({ uploadAttachment: vi.fn() }));
+// 只 stub uploadAttachment(避免真发 Tauri invoke),其余导出(含 SEND_STATUS)保留真实值,
+// 否则整模块替换会让 useChatActions 里 import 的 SEND_STATUS 变 undefined。
+vi.mock("@/lib/api/messageHistory", async (importActual) => ({
+  ...(await importActual<typeof import("@/lib/api/messageHistory")>()),
+  uploadAttachment: vi.fn(),
+}));
 
 const conversation = { id: "c1", name: "张三" } as Conversation;
 
@@ -65,7 +70,7 @@ describe("useChatActions", () => {
   it("handleSend 入队乐观气泡 + 调 onSendMessage(text, clientMsgId) + 贴底 + 清引用", async () => {
     const onSendMessage = vi
       .fn()
-      .mockResolvedValue({ localMessageId: "srv-1", sendStatus: 1, messageTime: "" });
+      .mockResolvedValue({ localMessageId: "srv-1", sendStatus: 3, messageTime: "" });
     const { result, wasAtBottomRef, setReplyDraft } = setup(onSendMessage);
 
     await act(async () => {
@@ -100,6 +105,42 @@ describe("useChatActions", () => {
     const t = timeline();
     expect(t).toHaveLength(1);
     expect(t[0].status).toBe("failed");
+  });
+
+  it("handleSend 同步返回 sendStatus=4(失败)→ 立即 markFailed,不当成功(不钉 serverId)", async () => {
+    // 同步接口已知失败:不能等回调。否则回调不来时会假「已发送」(本次根因)。
+    const onSendMessage = vi
+      .fn()
+      .mockResolvedValue({ localMessageId: "srv-x", sendStatus: 4, messageTime: "" });
+    const { result } = setup(onSendMessage);
+
+    await act(async () => {
+      result.current.handleSend("会失败");
+    });
+    await flush();
+
+    const t = timeline();
+    expect(t).toHaveLength(1);
+    expect(t[0].status).toBe("failed");
+    expect(t[0].serverId).toBeUndefined();
+  });
+
+  it("handleSend 同步返回 sendStatus=2(发送中)→ 保持发送中,不假成功也不钉 serverId", async () => {
+    // 未终态:留给回调(权威重读按 requestMessageId)收敛终态。
+    const onSendMessage = vi
+      .fn()
+      .mockResolvedValue({ localMessageId: "srv-y", sendStatus: 2, messageTime: "" });
+    const { result } = setup(onSendMessage);
+
+    await act(async () => {
+      result.current.handleSend("在途");
+    });
+    await flush();
+
+    const t = timeline();
+    expect(t).toHaveLength(1);
+    expect(t[0].status).toBe("sending");
+    expect(t[0].serverId).toBeUndefined();
   });
 
   it("handleSend 图片块乐观气泡保留本地宽高，避免发送后权威回读时变尺寸", () => {
@@ -150,7 +191,7 @@ describe("useChatActions", () => {
     const onSendMessage: UseChatActionsParams["onSendMessage"] = vi.fn(
       async (_text: string, _id: string, opts?: SendMessageOptions) => {
         sendFilePaths.push(opts?.filePath);
-        return { localMessageId: "s", sendStatus: 1, messageTime: "" };
+        return { localMessageId: "s", sendStatus: 3, messageTime: "" };
       },
     );
     const { result } = setup(onSendMessage);
@@ -227,7 +268,7 @@ describe("useChatActions", () => {
   it('handleAction "resend" 置 sending 并重发', async () => {
     const onSendMessage = vi
       .fn()
-      .mockResolvedValue({ localMessageId: "srv-9", sendStatus: 1, messageTime: "" });
+      .mockResolvedValue({ localMessageId: "srv-9", sendStatus: 3, messageTime: "" });
     const { result } = setup(onSendMessage);
     act(() => {
       useChatStore.getState().enqueueOptimistic("c1", { ...outMsg("m1"), clientMsgId: "m1" });

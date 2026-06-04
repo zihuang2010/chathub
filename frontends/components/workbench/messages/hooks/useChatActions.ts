@@ -10,7 +10,7 @@
 import { useCallback, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
 
 import { showToast } from "@/components/ui/toast";
-import { uploadAttachment, type SendMessageResp } from "@/lib/api/messageHistory";
+import { SEND_STATUS, uploadAttachment, type SendMessageResp } from "@/lib/api/messageHistory";
 
 import {
   buildMessageParts,
@@ -242,8 +242,18 @@ export function useChatActions({
         const resp = options
           ? await onSendMessage?.(text, clientMsgId, options)
           : await onSendMessage?.(text, clientMsgId);
+        // 同步返回即携带 send_status:不能无脑 markSent。仅 3=成功 才钉 serverId、置 sent;
+        // 4=失败 立即 markFailed 并 return false 触发后续 fail-stop(与抛异常路径同构);
+        // 1 待发送 / 2 发送中 是未终态 → 保持乐观「发送中」,等回调(权威重读按 requestMessageId)
+        // 收敛终态,绝不在此假「已发送」——回调不来时也不会假成功。
         if (resp) {
-          useChatStore.getState().markSent(owningStoreKey, clientMsgId, resp.localMessageId);
+          if (resp.sendStatus === SEND_STATUS.failed) {
+            useChatStore.getState().markFailed(owningStoreKey, clientMsgId);
+            return false;
+          }
+          if (resp.sendStatus === SEND_STATUS.success) {
+            useChatStore.getState().markSent(owningStoreKey, clientMsgId, resp.localMessageId);
+          }
         }
         return true;
       } catch {

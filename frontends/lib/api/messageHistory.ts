@@ -50,7 +50,7 @@ export interface HistoryMessage {
   /** 1=文本 / 2=图片 */
   messageType: number;
   contentText: string;
-  /** 1=已发送 / 2=已送达 / 3=已读 / 4=失败 */
+  /** send_status,见 SEND_STATUS:1=待发送 / 2=发送中 / 3=成功 / 4=失败 */
   sendStatus: number;
   /** "yyyy-MM-dd HH:mm:ss",服务端本地时区 */
   messageTime: string;
@@ -156,10 +156,23 @@ export async function clearChatMessages(): Promise<void> {
   return invokeWithTimeout<void>("clear_chat_messages", {}, HISTORY_TIMEOUT_MS);
 }
 
+/**
+ * send_status 枚举(后端权威契约,send_message 同步返回与历史记录 HistoryMessage 共用):
+ * 1=待发送 / 2=发送中 / 3=成功 / 4=失败。
+ * 仅 3 为成功终态、4 为失败终态;1/2 为未终态(在途),不可当成功——发送/重读两条路径
+ * 都据此映射,避免「同步已失败 / 仍在途却显示已发送」的假成功。
+ */
+export const SEND_STATUS = {
+  pending: 1,
+  sending: 2,
+  success: 3,
+  failed: 4,
+} as const;
+
 /** `send_message` 命令返回(对齐 Rust `SendMessageResp`)。 */
 export interface SendMessageResp {
   localMessageId: string;
-  /** 1=已发送 / 2=已送达 / 3=已读 / 4=失败 */
+  /** send_status,见 SEND_STATUS:1=待发送 / 2=发送中 / 3=成功 / 4=失败 */
   sendStatus: number;
   /** "yyyy-MM-dd HH:mm:ss",服务端本地时区 */
   messageTime: string;
@@ -317,9 +330,11 @@ function historyAttachmentToMessage(a: HistoryAttachment): MessageAttachment {
 }
 
 function mapSendStatus(s: number): Message["status"] {
-  if (s === 4) return "failed";
-  // 1/2/3 都视为 sent;细分(送达/已读)留下次扩展 Message.status enum
-  return "sent";
+  if (s === SEND_STATUS.failed) return "failed";
+  if (s === SEND_STATUS.success) return "sent";
+  // 1 待发送 / 2 发送中(及未知值):未终态 → 显示发送中,等后端推进到 3/4 终态。
+  // 不再把 1/2 当 sent,杜绝权威重读路径上「仍在途却显示已发送」的瞬时假成功。
+  return "sending";
 }
 
 // 企业微信服务端统一以北京时间(UTC+8)输出 "yyyy-MM-dd HH:mm:ss",字符串本身不带
