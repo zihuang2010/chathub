@@ -1,10 +1,12 @@
 import { act, renderHook } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { uploadAttachment } from "@/lib/api/messageHistory";
+import { clearOutboxRow, persistOutboxFailure, uploadAttachment } from "@/lib/api/messageHistory";
+import { showToast } from "@/components/ui/toast";
 
 import type { Conversation, Message } from "../data";
 import { selectTimeline, useChatStore } from "../store/chatStore";
+import { STRINGS } from "../strings";
 import {
   toAmrFileName,
   useChatActions,
@@ -19,6 +21,8 @@ vi.mock("@/components/ui/toast", () => ({ showToast: vi.fn() }));
 vi.mock("@/lib/api/messageHistory", async (importActual) => ({
   ...(await importActual<typeof import("@/lib/api/messageHistory")>()),
   uploadAttachment: vi.fn(),
+  persistOutboxFailure: vi.fn().mockResolvedValue(undefined),
+  clearOutboxRow: vi.fn().mockResolvedValue(undefined),
 }));
 
 const conversation = { id: "c1", name: "张三" } as Conversation;
@@ -303,6 +307,155 @@ describe("useChatActions", () => {
     expect(timeline()).toHaveLength(1);
     expect(timeline()[0].status).toBe("failed");
     expect(timeline()[0].clientMsgId).toBe("m1");
+  });
+});
+
+// ─── failBubble / outbox 相关用例 ──────────────────────────────────────────
+//
+// 这 4 个用例覆盖 Plan B 落地的 3 条路径:
+//   1. handleSend 失败 → persistOutboxFailure 被调(有身份)
+//   2. 无会话身份降级 → persistOutboxFailure 不调,气泡仍 markFailed
+//   3. never-uploaded 重发拦截 → showToast(outboxReselectFile),不触发 onSendMessage
+//   4. 有 filePath 的失败气泡重发 → clearOutboxRow 被调
+
+/** 带 wecomAccountId/externalUserId 身份的 renderHook 快捷方式。*/
+function setupWithIdentity(
+  onSendMessage?: UseChatActionsParams["onSendMessage"],
+  extra?: Partial<UseChatActionsParams>,
+) {
+  const wasAtBottomRef = { current: false };
+  const setReplyDraft = vi.fn();
+  const { result } = renderHook(() =>
+    useChatActions({
+      conversation,
+      chatStoreKey: "c1",
+      onSendMessage,
+      wasAtBottomRef,
+      setReplyDraft,
+      wecomAccountId: "wa-001",
+      externalUserId: "ext-001",
+      ...extra,
+    }),
+  );
+  return { result, wasAtBottomRef, setReplyDraft };
+}
+
+describe("failBubble / outbox 持久化", () => {
+  it("handleSend 失败 → persistOutboxFailure 被调(含 clientMsgId/messageType/failReason)", async () => {
+    const onSendMessage = vi.fn().mockRejectedValue(new Error("network error"));
+    const { result } = setupWithIdentity(onSendMessage);
+
+    await act(async () => {
+      result.current.handleSend("hi");
+    });
+    await flush();
+
+    // 气泡保留且状态 failed
+    const t = timeline();
+    expect(t).toHaveLength(1);
+    expect(t[0].status).toBe("failed");
+
+    // persistOutboxFailure 必须被调用一次,参数含关键字段
+    expect(vi.mocked(persistOutboxFailure)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(persistOutboxFailure)).toHaveBeenCalledWith(
+      expect.objectContaining({
+        clientMsgId: expect.stringMatching(/^local-/),
+        messageType: 1,
+        contentText: "hi",
+        attachmentsJson: "[]",
+        wecomAccountId: "wa-001",
+        externalUserId: "ext-001",
+        failReason: expect.any(String),
+      }),
+    );
+    // failReason 不应为空字符串
+    const callArg = vi.mocked(persistOutboxFailure).mock.calls[0][0];
+    expect(callArg.failReason.length).toBeGreaterThan(0);
+  });
+
+  it("缺会话身份 → persistOutboxFailure 不调,气泡仍 markFailed(降级到纯内存)", async () => {
+    const onSendMessage = vi.fn().mockRejectedValue(new Error("network error"));
+    // 显式不传 wecomAccountId/externalUserId(使用普通 setup)
+    const { result } = setup(onSendMessage);
+
+    await act(async () => {
+      result.current.handleSend("hi");
+    });
+    await flush();
+
+    // 气泡 markFailed(内存降级)
+    const t = timeline();
+    expect(t).toHaveLength(1);
+    expect(t[0].status).toBe("failed");
+
+    // 没有身份 → IPC 不应被调
+    expect(vi.mocked(persistOutboxFailure)).toHaveBeenCalledTimes(0);
+  });
+
+  it("never-uploaded 重发拦截:showToast(outboxReselectFile),onSendMessage 不被触发", async () => {
+    const onSendMessage = vi
+      .fn()
+      .mockResolvedValue({ localMessageId: "srv-1", sendStatus: 3, messageTime: "" });
+    const { result } = setupWithIdentity(onSendMessage);
+
+    // 塞一条图片(messageType=2)且无 filePath 的失败气泡
+    act(() => {
+      useChatStore.getState().enqueueOptimistic("c1", {
+        ...outMsg("m1"),
+        clientMsgId: "m1",
+        status: "failed",
+        messageType: 2,
+        // 故意不设 filePath → never-uploaded
+      });
+    });
+
+    await act(async () => {
+      result.current.handleAction("resend", { ...outMsg("m1"), messageType: 2 });
+    });
+    await flush();
+
+    // 弹 outboxReselectFile 提示
+    expect(vi.mocked(showToast)).toHaveBeenCalledWith(
+      STRINGS.toast.outboxReselectFile,
+      expect.objectContaining({ type: "error" }),
+    );
+    // onSendMessage 不应被调(拦截成功)
+    expect(onSendMessage).toHaveBeenCalledTimes(0);
+  });
+
+  it("有 filePath 的失败气泡重发 → clearOutboxRow 被调(含 clientMsgId)", async () => {
+    const onSendMessage = vi
+      .fn()
+      .mockResolvedValue({ localMessageId: "srv-2", sendStatus: 3, messageTime: "" });
+    const { result } = setupWithIdentity(onSendMessage);
+
+    // 塞一条文件(messageType=3)且有 filePath 的失败气泡
+    act(() => {
+      useChatStore.getState().enqueueOptimistic("c1", {
+        ...outMsg("m2"),
+        clientMsgId: "m2",
+        status: "failed",
+        messageType: 3,
+        filePath: "oss-obj-1",
+        fileName: "doc.pdf",
+        fileSize: 1024,
+      });
+    });
+
+    await act(async () => {
+      result.current.handleAction("resend", {
+        ...outMsg("m2"),
+        messageType: 3,
+        filePath: "oss-obj-1",
+      });
+    });
+    await flush();
+
+    // clearOutboxRow 必须被调用,参数含 clientMsgId
+    expect(vi.mocked(clearOutboxRow)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(clearOutboxRow)).toHaveBeenCalledWith(
+      expect.objectContaining({ clientMsgId: "m2" }),
+    );
   });
 });
 
