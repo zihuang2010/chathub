@@ -89,6 +89,7 @@ export const STRINGS = {
     copyFailed: "复制失败",
     /** 撤回当前仅改本地视图、未接后端,故用中性「本地」措辞,不承诺服务端已生效。
      *  接后端后改回成功/失败二态(recallFailed)。 */
+    outboxReselectFile: "该附件未上传成功，请重新选择文件后发送",
     recallLocalOnly: "已在本地撤回",
     recallFailed: "撤回失败,请稍后再试",
     actionDismiss: "关闭",
