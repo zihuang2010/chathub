@@ -1,36 +1,88 @@
+import { useState, type ReactNode } from "react";
 import { Pin } from "lucide-react";
 
-import { STRINGS } from "./strings";
-import { pickAvatarColor, resolveAvatarImageUrl } from "./utils";
+import { cn } from "@/lib/utils";
 
-// Customers render as illustrated portraits sourced from public/avatars/.
-// We keep the legacy `avatarColor` (or hashed palette token) as the underlying
-// background fill so a missing or slow-loading image degrades to a soft tint
-// rather than a blank white square.
+import { STRINGS } from "./strings";
+import { cssUrlSafe, pickAvatarColor } from "./utils";
+
+// letter-tile 底色:显式 `color` 优先,否则按 name hash 取稳定底色。
 function resolveAvatarColor(seed: string, color?: string): string {
   return color && color.length > 0 ? color : pickAvatarColor(seed);
+}
+
+// 名字首字(按码点切分,兼容中文/emoji);空名兜底「?」。
+function firstChar(name: string): string {
+  return Array.from(name.trim())[0] ?? "?";
+}
+
+// 全局统一头像规则:有真实头像 URL(企微 externalAvatar)就显示图片,缺失/非法/加载失败
+// 时回退到「名字首字 + 底色」letter-tile。`size` 为像素直径,字号按 0.42 比例缩放;
+// overlay(在线点 / pin 角标)由 children 叠加。CustomerAvatar / ConversationAvatar /
+// CustomerDetails.ProfileHeader 共用,把规则收在一处。
+export function AvatarTile({
+  name,
+  color,
+  avatarUrl,
+  size,
+  children,
+}: {
+  name: string;
+  color?: string;
+  avatarUrl?: string;
+  size: number;
+  children?: ReactNode;
+}) {
+  const [failed, setFailed] = useState(false);
+  const safe = !failed ? cssUrlSafe(avatarUrl, "image") : null;
+  const boxClass = "rounded-lg shadow-[inset_0_0_0_1px_rgba(255,255,255,0.48)]";
+  return (
+    <div className="relative shrink-0" style={{ width: size, height: size }}>
+      {safe ? (
+        <img
+          src={safe}
+          alt={name}
+          loading="lazy"
+          onError={() => setFailed(true)}
+          className={cn(boxClass, "block size-full bg-center object-cover")}
+        />
+      ) : (
+        <div
+          role="img"
+          aria-label={name}
+          className={cn(
+            boxClass,
+            "grid size-full place-items-center font-medium text-workbench-text",
+          )}
+          style={{
+            backgroundColor: resolveAvatarColor(name, color),
+            fontSize: Math.round(size * 0.42),
+          }}
+        >
+          {firstChar(name)}
+        </div>
+      )}
+      {children}
+    </div>
+  );
 }
 
 interface CustomerAvatarProps {
   name: string;
   color?: string;
-  /** 真实头像 URL(企微外部联系人)。空/非法时回退到按 name hash 的占位插画图。 */
+  /** 真实头像 URL(企微 externalAvatar);空/非法/加载失败时回退名字首字色块。 */
   avatarUrl?: string;
   size: "header" | "sm";
 }
 
 export function CustomerAvatar({ name, color, avatarUrl, size }: CustomerAvatarProps) {
   // 气泡内(sm)头像收小到 36px,让每条消息更紧凑;聊天头部(header)保持 44px 不变。
-  const sizeClass = size === "header" ? "size-11" : "size-9";
   return (
-    <div
-      role="img"
-      aria-label={name}
-      className={`${sizeClass} shrink-0 rounded-lg bg-cover bg-center shadow-[inset_0_0_0_1px_rgba(255,255,255,0.48)]`}
-      style={{
-        backgroundColor: resolveAvatarColor(name, color),
-        backgroundImage: `url("${resolveAvatarImageUrl(name, avatarUrl)}")`,
-      }}
+    <AvatarTile
+      name={name}
+      color={color}
+      avatarUrl={avatarUrl}
+      size={size === "header" ? 44 : 36}
     />
   );
 }
@@ -38,8 +90,8 @@ export function CustomerAvatar({ name, color, avatarUrl, size }: CustomerAvatarP
 export function AgentAvatar({ account }: { account: string }) {
   // 归属账号在数据模型里没有真实头像(Account 无头像 URL 字段),故出向气泡头像统一回退到
   // 首字色块:账号名首字 + 按账号名 hash 的 wb-avatar 配色,与账号下拉(AccountDropdown)、
-  // 客户头像 fallback 同一套 letter-tile 视觉。之前用 pickCustomerAvatarImage 取插画图会
-  // 显示一张与账号无关的人像。后续接入企微员工真实头像后,只需在此叠加 <img> 优先渲染。
+  // 客户头像 fallback(AvatarTile)同一套 letter-tile 视觉。后续接入企微员工真实头像后,
+  // 改用 AvatarTile 传 avatarUrl 即可。
   const initial = account.trim().slice(0, 1) || "?";
   return (
     <div
@@ -71,16 +123,7 @@ export function ConversationAvatar({
   pinned,
 }: ConversationAvatarProps) {
   return (
-    <div className="relative shrink-0">
-      <div
-        role="img"
-        aria-label={name}
-        className="size-11 rounded-lg bg-cover bg-center shadow-[inset_0_0_0_1px_rgba(255,255,255,0.45)]"
-        style={{
-          backgroundColor: resolveAvatarColor(name, color),
-          backgroundImage: `url("${resolveAvatarImageUrl(name, avatarUrl)}")`,
-        }}
-      />
+    <AvatarTile name={name} color={color} avatarUrl={avatarUrl} size={44}>
       {pinned && (
         <span
           aria-label={STRINGS.conversationList.contextUnpin}
@@ -95,6 +138,6 @@ export function ConversationAvatar({
           className="absolute bottom-0 right-0 size-2.5 rounded-full border-2 border-workbench-line-strong bg-workbench-online"
         />
       )}
-    </div>
+    </AvatarTile>
   );
 }

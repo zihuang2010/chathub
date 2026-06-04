@@ -33,7 +33,7 @@ set -a; source "${ENV_FILE}"; set +a
 # 2026-05-16:RELAY_DOWNSTREAM_SECRET 已下线(改走客户端 token 透传)
 export RELAY_ALLOW_HTTP=true
 export RELAY_DOWNSTREAM_URL="${RELAY_DOWNSTREAM_URL:-https://proxy-dev.jdd51.com}"
-export RELAY_PUSH_SECRET="${RELAY_PUSH_SECRET:-push-secret}"
+export RELAY_PUSH_SECRET="${RELAY_PUSH_SECRET:-a8d4f9c7e2b16a3d5f8c9e1b7a4d2c6f9e3a5b7c1d8e2f4a}"
 # OAuth2 Basic client auth(default 都是 rh_wxchat,生产部署可 override)
 export RELAY_OAUTH_CLIENT_ID="${RELAY_OAUTH_CLIENT_ID:-rh_wxchat}"
 export RELAY_OAUTH_CLIENT_SECRET="${RELAY_OAUTH_CLIENT_SECRET:-9f3a2b1c-4d5e-4f6a-8b7c-2d3e4f5a6b7c}"

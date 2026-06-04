@@ -83,12 +83,16 @@ service Hub {
 relay 收到 `LoginRequest { username, password, device_id, ... }` 后,以 OAuth2 password grant 形态发到业务后台:
 
 ```
-POST {RELAY_DOWNSTREAM_URL}{RELAY_PATH_LOGIN}?scope=server&terminalId=<device_id>&grant_type=password
+POST {RELAY_DOWNSTREAM_URL}{RELAY_PATH_LOGIN}?scope=server&terminalId=<terminal_id>&grant_type=password
 Authorization: Basic Base64("<RELAY_OAUTH_CLIENT_ID>:<RELAY_OAUTH_CLIENT_SECRET>")
 Content-Type: application/x-www-form-urlencoded
 
 username=<u>&password=<p>
 ```
+
+> `terminalId` 不直接用 `device_id`,而是由 `device_id + username` 确定性派生的 UUIDv5
+> (见 `downstream::terminal_id_for`)。否则同一台设备上多账号会共用同一终端标识,业务后台
+> 会把不同账号当成同一终端而相互串扰。同设备同账号恒定不变、不同账号必不相同、仍是合法 UUID。
 
 响应 `JddTokenVO` 被 relay 摘成 `LoginResponse { access_token, user{user_id, display_name}, wecom_accounts: [] }`。
 **`wecom_accounts` 永远为空** —— 前端登录后调 `Hub.Forward("list_accounts", "")` 拿账号列表。

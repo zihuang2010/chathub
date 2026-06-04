@@ -146,6 +146,22 @@ pub struct LoginReq<'a> {
     pub device_id: &'a str,
 }
 
+/// 业务后台 OAuth2 的 `terminalId` 派生:从「设备安装 id + 登录账号」确定性算出一个 UUIDv5。
+///
+/// 为什么不直接用 device_id:device_id 每台设备只有一个(LocalTokenStore 持久化的 UUIDv4),
+/// 同一台设备上不同账号登录会发出**相同** terminalId,业务后台据此把不同账号当成同一终端,
+/// 导致踢线 / 水位串扰。这里按账号区分:
+///   - 同设备同账号 → 恒定不变(后台识别为同一终端,不产生终端膨胀);
+///   - 不同账号 / 不同设备 → 必不相同;
+///   - 结果仍是标准 36 位 UUID 字符串(后台历来只收到 UUID,保持兼容)、不可反推账号。
+///
+/// 在 relay 侧派生而非客户端:proto 的 `device_id` 字段语义是"设备安装唯一 id"(per-device),
+/// 不应被改写成 per-account;且服务端派生让所有已部署客户端无需更新即可生效。
+pub fn terminal_id_for(device_id: &str, username: &str) -> String {
+    let name = format!("chathub:terminal:{device_id}:{username}");
+    uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_URL, name.as_bytes()).to_string()
+}
+
 /// 业务后台登录响应(JddTokenVO → 摘取 relay 关心字段)。
 /// `wecom_accounts` 永远为空 —— 由前端发起独立 `Hub.Forward("list_accounts", …)` 拉取。
 #[derive(Debug, Clone)]
@@ -472,6 +488,8 @@ impl DownstreamClient {
     pub async fn login(&self, req: LoginReq<'_>) -> Result<LoginResp, RelayError> {
         use crate::secret::Redacted;
 
+        // terminalId 按账号派生(见 [`terminal_id_for`]):同设备多账号不再共用同一终端标识。
+        let terminal_id = terminal_id_for(req.device_id, req.username);
         let base = self.source.base_url().await;
         let url = format!("{}{}", base, self.paths.login);
         let started = Instant::now();
@@ -482,7 +500,8 @@ impl DownstreamClient {
             method = "POST",
             url = %url,
             query.scope = "server",
-            query.terminalId = %req.device_id,
+            query.terminalId = %terminal_id,
+            query.device_id = %req.device_id,
             query.grant_type = "password",
             content_type = "application/x-www-form-urlencoded",
             authorization = %format!("Basic <Base64({}:{})>", self.oauth.client_id, Redacted(&self.oauth.client_secret)),
@@ -500,7 +519,7 @@ impl DownstreamClient {
             .post(&url)
             .query(&[
                 ("scope", "server"),
-                ("terminalId", req.device_id),
+                ("terminalId", terminal_id.as_str()),
                 ("grant_type", "password"),
             ])
             .basic_auth(&self.oauth.client_id, Some(&self.oauth.client_secret))
@@ -1065,6 +1084,30 @@ mod tests {
     use wiremock::matchers::{body_string_contains, header, method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
+    /// terminalId 必须按账号区分,且对「同设备同账号」确定性稳定。
+    /// 回归历史 bug:terminalId 取自每设备唯一的 device_id,同设备多账号全部相同,
+    /// 业务后台把不同账号当成同一终端 → 串扰。
+    #[test]
+    fn terminal_id_is_per_account_and_stable() {
+        // 同设备同账号:确定性派生,恒定一致
+        assert_eq!(
+            terminal_id_for("dev-A", "alice"),
+            terminal_id_for("dev-A", "alice"),
+        );
+        // 同设备不同账号:必不相同(修复"全部都一样")
+        assert_ne!(
+            terminal_id_for("dev-A", "alice"),
+            terminal_id_for("dev-A", "bob"),
+        );
+        // 不同设备同账号:必不相同
+        assert_ne!(
+            terminal_id_for("dev-A", "alice"),
+            terminal_id_for("dev-B", "alice"),
+        );
+        // 仍是合法 UUID 字符串(业务后台历来只收到 UUID)
+        assert!(uuid::Uuid::parse_str(&terminal_id_for("dev-A", "alice")).is_ok());
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn base_url_source_static_trims_trailing_slash() {
         let src = BaseUrlSource::new_static("https://dn.local/");
@@ -1107,7 +1150,8 @@ mod tests {
         Mock::given(method("POST"))
             .and(path("/account-app/oauth2/token"))
             .and(query_param("scope", "server"))
-            .and(query_param("terminalId", "dev-A"))
+            // terminalId 现按账号派生:device_id="dev-A" + username="alice"
+            .and(query_param("terminalId", terminal_id_for("dev-A", "alice")))
             .and(query_param("grant_type", "password"))
             // basic_auth("rh_wxchat", Some("rh_wxchat")) → Base64("rh_wxchat:rh_wxchat")
             .and(header(

@@ -105,7 +105,11 @@ async fn login_oauth2_passes_through_business_token_and_user() {
     Mock::given(method("POST"))
         .and(path("/account-app/oauth2/token"))
         .and(query_param("scope", "server"))
-        .and(query_param("terminalId", "dev-A"))
+        // terminalId 现按账号派生:device_id="dev-A" + username="u"
+        .and(query_param(
+            "terminalId",
+            chathub_relay::downstream::terminal_id_for("dev-A", "u"),
+        ))
         .and(query_param("grant_type", "password"))
         .and(header(
             "authorization",

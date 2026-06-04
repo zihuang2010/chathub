@@ -4,13 +4,7 @@ import { buildMessageParts } from "./data";
 import type { Message, MessageAttachment, MessageBlock } from "./data";
 import { afterEach } from "vitest";
 
-import {
-  cssUrlSafe,
-  isSafeUrl,
-  messageReplyPreview,
-  resolveAvatarImageUrl,
-  thumbWidth,
-} from "./utils";
+import { cssUrlSafe, isSafeUrl, messageReplyPreview, thumbWidth } from "./utils";
 
 function makeMessage(
   partial: Omit<Partial<Message>, "parts"> & {
@@ -125,7 +119,7 @@ describe("isSafeUrl", () => {
   });
 
   it("放行站内相对路径,但拦截协议相对 //host", () => {
-    expect(isSafeUrl("/avatars/a01.png", "image")).toBe(true);
+    expect(isSafeUrl("/img/a01.png", "image")).toBe(true);
     expect(isSafeUrl("foo/bar.png", "image")).toBe(true);
     expect(isSafeUrl("//evil.example/x", "image")).toBe(false);
   });
@@ -141,7 +135,7 @@ describe("cssUrlSafe:CSS url() 上下文专用守卫", () => {
   it("放行协议安全且无 CSS 元字符的正常 URL", () => {
     expect(cssUrlSafe("https://e.example/a.png", "image")).toBe("https://e.example/a.png");
     expect(cssUrlSafe("https://e.example/v.mp4", "link")).toBe("https://e.example/v.mp4");
-    expect(cssUrlSafe("/avatars/a01.png", "image")).toBe("/avatars/a01.png");
+    expect(cssUrlSafe("/img/a01.png", "image")).toBe("/img/a01.png");
     expect(cssUrlSafe("mediaproxy://abc", "image")).toBe("mediaproxy://abc");
   });
 
@@ -159,23 +153,6 @@ describe("cssUrlSafe:CSS url() 上下文专用守卫", () => {
     expect(cssUrlSafe("javascript:alert(1)", "link")).toBeNull();
     expect(cssUrlSafe("data:text/html,x", "image")).toBeNull();
     expect(cssUrlSafe(undefined, "image")).toBeNull();
-  });
-});
-
-describe("resolveAvatarImageUrl:头像背景值始终 CSS 安全", () => {
-  it("采用合法真实头像 URL", () => {
-    expect(resolveAvatarImageUrl("seed", "https://e.example/avatar.png")).toBe(
-      "https://e.example/avatar.png",
-    );
-  });
-
-  it("含 CSS 元字符的可控头像 URL 回退到本地占位图(不注入 CSS)", () => {
-    const out = resolveAvatarImageUrl("seed", 'https://e/a.jpg");x:url("https://evil');
-    expect(out).toMatch(/^\/avatars\/a\d{2}\.png$/);
-  });
-
-  it("空头像回退到本地占位图", () => {
-    expect(resolveAvatarImageUrl("seed", undefined)).toMatch(/^\/avatars\/a\d{2}\.png$/);
   });
 });
 

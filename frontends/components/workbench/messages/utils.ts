@@ -282,7 +282,7 @@ const AVATAR_PALETTE = [
 ];
 
 // seed 字符串哈希:逐字符 hash = (hash*31 + charCode) >>> 0(无符号 32 位)。
-// pickAvatarColor / pickCustomerAvatarImage 共用,保证同一 seed 选色/选图稳定。
+// pickAvatarColor 用它保证同一 seed 选色稳定(letter-tile 底色)。
 function hashSeed(seed: string): number {
   let hash = 0;
   for (let i = 0; i < seed.length; i++) {
@@ -293,23 +293,4 @@ function hashSeed(seed: string): number {
 
 export function pickAvatarColor(seed: string): string {
   return AVATAR_PALETTE[hashSeed(seed) % AVATAR_PALETTE.length];
-}
-
-// Customer avatars use illustrated portraits served from public/avatars/.
-// Drop files named a01.png … a05.png in that directory; seed-based hashing
-// keeps the assignment stable per customer across renders.
-const CUSTOMER_AVATAR_IMAGE_COUNT = 5;
-
-export function pickCustomerAvatarImage(seed: string): string {
-  const index = (hashSeed(seed) % CUSTOMER_AVATAR_IMAGE_COUNT) + 1;
-  return `/avatars/a${String(index).padStart(2, "0")}.png`;
-}
-
-// 头像背景图解析:优先客户真实头像 URL(企微外部联系人 externalAvatar)。
-// 头像值最终落入 CSS background url("..."),故用 cssUrlSafe(协议白名单 + 拒绝 CSS
-// 元字符)而非仅 isSafeUrl,从根上消除可控 avatarUrl 闭合引号注入 CSS 的风险;
-// 为空/非法时回退到按 seed 的占位插画图(/avatars/aNN.png,本就 CSS 安全),
-// 保证缺图时不出现空白方块。供 Avatar 组件与 CustomerDetails 复用。
-export function resolveAvatarImageUrl(seed: string, avatarUrl?: string): string {
-  return cssUrlSafe(avatarUrl, "image") ?? pickCustomerAvatarImage(seed);
 }
