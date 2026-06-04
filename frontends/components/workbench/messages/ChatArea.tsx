@@ -79,6 +79,10 @@ interface ChatAreaProps {
   ) => Promise<SendMessageResp | void>;
   /** 切走/卸载该会话时回调,补一次 markRead(只在 leave 同步服务端,不按消息打)。 */
   onLeaveMarkRead?: (conversationId: string) => void | Promise<void>;
+  /** 当前会话所属企微账号 ID,透传给 useChatActions 供失败消息落库用。 */
+  wecomAccountId?: string;
+  /** 当前会话外部用户 ID,透传给 useChatActions 供失败消息落库用。 */
+  externalUserId?: string;
 }
 
 export const ChatArea = memo(function ChatArea({
@@ -102,6 +106,8 @@ export const ChatArea = memo(function ChatArea({
   mentionCandidates,
   onSendMessage,
   onLeaveMarkRead,
+  wecomAccountId,
+  externalUserId,
 }: ChatAreaProps) {
   const [composerHeight, setComposerHeight] = useState(COMPOSER_DEFAULT_HEIGHT);
   const [replyDraft, setReplyDraft] = useState<
@@ -153,6 +159,8 @@ export const ChatArea = memo(function ChatArea({
     onSendMessage,
     wasAtBottomRef,
     setReplyDraft,
+    wecomAccountId,
+    externalUserId,
   });
 
   // hub 连接断开时禁用发送并在 composer 顶部提示离线(E①)。连接态由 useHubSyncStatus 经

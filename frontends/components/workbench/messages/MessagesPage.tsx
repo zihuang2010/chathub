@@ -648,6 +648,8 @@ export function MessagesPage({
               onDeleteQuickReply={quickReplies.remove}
               // TODO(@mention API): 接通 useMentionCandidates(conversationId) 后透传
               mentionCandidates={EMPTY_MENTION_CANDIDATES}
+              wecomAccountId={selectedEntry?.wecomAccountId}
+              externalUserId={selectedEntry?.externalUserId}
             />
           </ErrorBoundary>
         ) : (
