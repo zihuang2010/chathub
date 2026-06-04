@@ -755,6 +755,109 @@ async fn upload_attachment(
         .await
 }
 
+/// 前端任一 markFailed 落地一条出站失败气泡到本地库(send_status=4),并乐观写接待列表失败态
+/// (mark_local_failed:写展示列 + last_send_status=4,不抬水位键)。随后广播 ConversationMessages +
+/// RecentSessions ChangeNotice 触发重读。employee_id 走 session 防串台。
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+async fn persist_outbox_failure(
+    messages_store: State<'_, MessagesStore>,
+    recents_store: State<'_, RecentSessionsStore>,
+    change_tx: State<'_, tokio_broadcast::Sender<ChangeNotice>>,
+    auth_api: State<'_, Arc<AuthApi>>,
+    conversation_id: String,
+    wecom_account_id: String,
+    external_user_id: String,
+    client_msg_id: String,
+    sent_at_ms: i64,
+    message_type: i32,
+    content_text: String,
+    fail_reason: String,
+    attachments_json: String,
+) -> Result<(), AuthError> {
+    let employee_id = auth_api
+        .current_session()
+        .await?
+        .ok_or(AuthError::Unauthenticated)?
+        .user_id;
+    messages_store
+        .insert_failed_outbox(
+            &employee_id,
+            &conversation_id,
+            &wecom_account_id,
+            &external_user_id,
+            &client_msg_id,
+            sent_at_ms,
+            message_type,
+            &content_text,
+            &fail_reason,
+            &attachments_json,
+        )
+        .await
+        .map_err(AuthError::from)?;
+    // 接待列表失败态乐观写(方向取出站原始值 1,与 send_message 成功路径一致);新会话 no-op。
+    let summary = summary_preview(message_type, &content_text, None);
+    if let Err(e) = recents_store
+        .mark_local_failed(
+            &employee_id,
+            &conversation_id,
+            &summary,
+            message_type,
+            1,
+            now_unix_ms(),
+        )
+        .await
+    {
+        tracing::warn!(error = %e, "persist_outbox_failure: mark_local_failed 失败(不阻塞)");
+    }
+    let _ = change_tx.send(ChangeNotice::command_upsert(
+        ChangeTopic::ConversationMessages,
+        ChangeScope {
+            employee_id: employee_id.clone(),
+            conversation_id: Some(conversation_id.clone()),
+            ..Default::default()
+        },
+    ));
+    let _ = change_tx.send(ChangeNotice::command_upsert(
+        ChangeTopic::RecentSessions,
+        ChangeScope {
+            employee_id,
+            conversation_id: Some(conversation_id),
+            ..Default::default()
+        },
+    ));
+    Ok(())
+}
+
+/// 重发前删本地失败行(让气泡回纯乐观 sending);发完 ChangeNotice 让打开着的会话重读。
+#[tauri::command]
+async fn clear_outbox_row(
+    messages_store: State<'_, MessagesStore>,
+    change_tx: State<'_, tokio_broadcast::Sender<ChangeNotice>>,
+    auth_api: State<'_, Arc<AuthApi>>,
+    conversation_id: String,
+    client_msg_id: String,
+) -> Result<(), AuthError> {
+    let employee_id = auth_api
+        .current_session()
+        .await?
+        .ok_or(AuthError::Unauthenticated)?
+        .user_id;
+    messages_store
+        .clear_outbox_row(&employee_id, &client_msg_id)
+        .await
+        .map_err(AuthError::from)?;
+    let _ = change_tx.send(ChangeNotice::command_upsert(
+        ChangeTopic::ConversationMessages,
+        ChangeScope {
+            employee_id,
+            conversation_id: Some(conversation_id),
+            ..Default::default()
+        },
+    ));
+    Ok(())
+}
+
 fn messages_err(e: chathub_state::StateError) -> AuthError {
     AuthError::Internal {
         message: format!("messages store: {e}"),
@@ -1765,7 +1868,7 @@ pub fn run() {
             set_conversation_muted, mark_conversation_read,
             fetch_message_history,
             load_conversation_messages, load_older_messages, clear_chat_messages,
-            send_message, upload_attachment,
+            send_message, upload_attachment, persist_outbox_failure, clear_outbox_row,
             list_quick_replies, create_quick_reply, update_quick_reply, delete_quick_reply,
             media::download_attachment, media::fetch_media_bytes,
             ai_polish::ai_polish, ai_polish::cancel_ai_polish,
