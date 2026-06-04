@@ -1158,4 +1158,93 @@ mod tests {
         // split(':') 失效 → 回落 stored direction=2(out)。HistoryMessage.message_direction=2 即出站。
         assert_eq!(row_to_history(&r).message_direction, 2);
     }
+
+    fn srv_row(local: &str, reqid: &str, status: i32) -> chathub_state::MessageRow {
+        chathub_state::MessageRow {
+            local_message_id: local.into(),
+            conversation_id: "c1".into(),
+            employee_id: "E".into(),
+            wecom_account_id: "wa".into(),
+            sort_key: format!("1780000000100_00000000000000000001_{local}"),
+            message_time_ms: 1_780_000_000_100,
+            message_direction: 1,
+            message_type: 1,
+            content_text: "s".into(),
+            send_status: status,
+            attachments_json: "[]".into(),
+            gmt_modified_time: String::new(),
+            revoked: false,
+            fail_reason: String::new(),
+            request_message_id: reqid.into(),
+            updated_at_ms: 0,
+        }
+    }
+
+    #[tokio::test]
+    async fn reconcile_replace_preserves_unconverged_failed_rows() {
+        use chathub_state::{MessagesStore, SqlitePool};
+        let pool = SqlitePool::in_memory().await.unwrap();
+        let store = MessagesStore::new(pool);
+        // 本地两条未收敛失败行(各自 reqid=local)
+        store
+            .insert_failed_outbox(
+                "E",
+                "c1",
+                "wa",
+                "ext",
+                "f1",
+                1_780_000_000_000,
+                1,
+                "a",
+                "r",
+                "[]",
+            )
+            .await
+            .unwrap();
+        store
+            .insert_failed_outbox(
+                "E",
+                "c1",
+                "wa",
+                "ext",
+                "f2",
+                1_780_000_000_001,
+                1,
+                "b",
+                "r",
+                "[]",
+            )
+            .await
+            .unwrap();
+
+        // 服务端首页:一条 reqid=f2 的成功行(f2 已被服务端回显/收敛)+ 一条普通 server 行(reqid 空)。
+        let page = vec![srv_row("server-A", "f2", 3), srv_row("server-B", "", 3)];
+        let page_reqids: std::collections::HashSet<String> =
+            page.iter().map(|r| r.request_message_id.clone()).collect();
+
+        // === 复刻 reconcile_newest Replace 保活序列 ===
+        let preserved = preserve_failed(
+            store.list_failed_outbox("E", "c1").await.unwrap(),
+            &page_reqids,
+        );
+        store.delete_conversation("E", "c1").await.unwrap();
+        store.upsert_messages(&page).await.unwrap();
+        store.upsert_messages(&preserved).await.unwrap();
+
+        let got = store.list_conversation_asc("E", "c1").await.unwrap();
+        let ids: std::collections::HashSet<&str> =
+            got.iter().map(|r| r.local_message_id.as_str()).collect();
+        // f1 未在服务端首页 reqid 集合 → 保活;f2 已收敛(reqid 在页) → 不保活,由 server-A 取代。
+        assert!(ids.contains("f1"), "未收敛失败行 f1 必须保活");
+        assert!(
+            !ids.contains("f2"),
+            "已被服务端回显(reqid 在页)的失败行不保活"
+        );
+        // server 多态行不被去重 DELETE 误删(server-A status=3≠4,且 f2 已被 delete_conversation 清掉)。
+        assert!(
+            ids.contains("server-A") && ids.contains("server-B"),
+            "server 行不被误删"
+        );
+        assert_eq!(got.len(), 3, "应为 server-A/server-B/f1 三行,无重影");
+    }
 }
