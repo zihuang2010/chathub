@@ -250,6 +250,31 @@ export async function uploadAttachment(params: {
   return invokeWithTimeout<UploadAttachmentResp>("upload_attachment", args, UPLOAD_TIMEOUT_MS);
 }
 
+/** 前端任一发送失败时把失败气泡落本地库(send_status=4)。对齐 Rust `persist_outbox_failure`。 */
+export async function persistOutboxFailure(params: {
+  conversationId: string;
+  wecomAccountId: string;
+  externalUserId: string;
+  clientMsgId: string;
+  /** 乐观气泡 sentAt 的 epoch-ms(同源,供后端 sort_key/message_time_ms)。 */
+  sentAtMs: number;
+  messageType: number;
+  contentText: string;
+  failReason: string;
+  /** 由前端 parts 序列化的 HistoryAttachment[] JSON 串;纯文本传 "[]"。 */
+  attachmentsJson: string;
+}): Promise<void> {
+  return invokeWithTimeout<void>("persist_outbox_failure", { ...params }, SEND_TIMEOUT_MS);
+}
+
+/** 重发前删本地失败行(让气泡回纯乐观 sending)。对齐 Rust `clear_outbox_row`。 */
+export async function clearOutboxRow(params: {
+  conversationId: string;
+  clientMsgId: string;
+}): Promise<void> {
+  return invokeWithTimeout<void>("clear_outbox_row", { ...params }, SEND_TIMEOUT_MS);
+}
+
 // ─── 形态转换:HistoryMessage → Message ─────────────────────────────────────
 //
 // UI 期望升序(早→晚,新消息在底部)。后端正常也返回升序,这里仍做一次
