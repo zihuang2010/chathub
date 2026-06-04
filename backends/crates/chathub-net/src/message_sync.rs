@@ -53,6 +53,21 @@ pub fn classify_reconcile(
     }
 }
 
+/// 从未收敛失败行中筛出「服务端首页 reqid 集合不含」的那些 —— 它们是服务端尚不知情的本地失败,
+/// Replace 清库后必须补回。已被服务端回显(reqid 在页中)的不保活,由 server 行取代。
+/// 按 reqid(非 local_message_id)判定,确保补回行与 server 行不同 reqid → 去重 DELETE 不交叉。
+pub fn preserve_failed(
+    failed: Vec<chathub_state::MessageRow>,
+    page_reqids: &std::collections::HashSet<String>,
+) -> Vec<chathub_state::MessageRow> {
+    failed
+        .into_iter()
+        .filter(|r| {
+            !r.request_message_id.is_empty() && !page_reqids.contains(&r.request_message_id)
+        })
+        .collect()
+}
+
 /// `HistoryMessage`(API 形态)→ `MessageRow`(行存)。附件序列化成 JSON 串。
 pub fn history_to_row(
     h: &HistoryMessage,
@@ -249,11 +264,27 @@ impl MessageSync {
         let should_notify = match mode {
             ReconcileMode::NoOp => return Ok(()),
             ReconcileMode::Replace => {
+                // 保活:Replace 会清库,先捞服务端首页不含其 reqid 的本地失败行,删后补回。
+                let page_reqids: std::collections::HashSet<String> =
+                    rows.iter().map(|r| r.request_message_id.clone()).collect();
+                let preserved = preserve_failed(
+                    self.store
+                        .list_failed_outbox(employee_id, conversation_id)
+                        .await
+                        .map_err(state_err)?,
+                    &page_reqids,
+                );
                 self.store
                     .delete_conversation(employee_id, conversation_id)
                     .await
                     .map_err(state_err)?;
                 self.store.upsert_messages(&rows).await.map_err(state_err)?;
+                if !preserved.is_empty() {
+                    self.store
+                        .upsert_messages(&preserved)
+                        .await
+                        .map_err(state_err)?;
+                }
                 let now = now_ms();
                 self.store
                     .upsert_window(MessageWindow {
@@ -1071,5 +1102,60 @@ mod tests {
             .await
             .expect("list_conversation_asc");
         assert!(rows.is_empty(), "send_message 不应再本地写任何消息行");
+    }
+
+    fn failed_row(local: &str, reqid: &str) -> chathub_state::MessageRow {
+        chathub_state::MessageRow {
+            local_message_id: local.into(),
+            conversation_id: "c1".into(),
+            employee_id: "E".into(),
+            wecom_account_id: "wa".into(),
+            sort_key: format!("1780000000000_00000000000000000000_{local}"),
+            message_time_ms: 1_780_000_000_000,
+            message_direction: 2,
+            message_type: 1,
+            content_text: "x".into(),
+            send_status: 4,
+            attachments_json: "[]".into(),
+            gmt_modified_time: String::new(),
+            revoked: false,
+            fail_reason: "r".into(),
+            request_message_id: reqid.into(),
+            updated_at_ms: 0,
+        }
+    }
+
+    #[test]
+    fn preserve_failed_keeps_only_rows_not_in_server_page_reqids() {
+        let failed = vec![failed_row("f1", "f1"), failed_row("f2", "f2")];
+        let mut page = std::collections::HashSet::new();
+        page.insert("f2".to_string());
+        let kept = preserve_failed(failed, &page);
+        let ids: Vec<_> = kept.iter().map(|r| r.local_message_id.as_str()).collect();
+        assert_eq!(ids, ["f1"], "服务端已知 reqid 的失败行不保活,未知的保活");
+    }
+
+    #[test]
+    fn row_to_history_recovers_out_direction_from_underscore_sort_key() {
+        let r = chathub_state::MessageRow {
+            local_message_id: "m1".into(),
+            conversation_id: "c1".into(),
+            employee_id: "E".into(),
+            wecom_account_id: "wa".into(),
+            sort_key: "1780000000000_00000000000000000000_m1".into(), // 下划线三段,无冒号
+            message_time_ms: 1_780_000_000_000,
+            message_direction: 2,
+            message_type: 1,
+            content_text: "x".into(),
+            send_status: 4,
+            attachments_json: "[]".into(),
+            gmt_modified_time: String::new(),
+            revoked: false,
+            fail_reason: "r".into(),
+            request_message_id: "m1".into(),
+            updated_at_ms: 0,
+        };
+        // split(':') 失效 → 回落 stored direction=2(out)。HistoryMessage.message_direction=2 即出站。
+        assert_eq!(row_to_history(&r).message_direction, 2);
     }
 }
