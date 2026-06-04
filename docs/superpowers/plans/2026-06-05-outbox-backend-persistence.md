@@ -120,7 +120,7 @@ git commit -m "feat(state): V24 迁移 request_message_id 部分索引(支撑 ou
         store.upsert_messages(&[row("cid", "cid", 4)]).await.unwrap();
         // 再写 server CONFIRMED 行(local=server-1, 同 reqid=cid, status=3)
         store.upsert_messages(&[row("server-1", "cid", 3)]).await.unwrap();
-        let got = store.list_conversation_asc("E", "c1", 50).await.unwrap();
+        let got = store.list_conversation_asc("E", "c1").await.unwrap();
         let ids: Vec<_> = got.iter().map(|r| r.local_message_id.as_str()).collect();
         assert_eq!(ids, ["server-1"], "失败行应被同 reqid 的 server 行塌缩");
     }
@@ -134,7 +134,7 @@ git commit -m "feat(state): V24 迁移 request_message_id 部分索引(支撑 ou
             .upsert_messages(&[row("server-pending", "cid", 2), row("server-confirmed", "cid", 3)])
             .await
             .unwrap();
-        let got = store.list_conversation_asc("E", "c1", 50).await.unwrap();
+        let got = store.list_conversation_asc("E", "c1").await.unwrap();
         assert_eq!(got.len(), 2, "server 多态行(status≠4)绝不能被去重 DELETE 误删");
     }
 ```
@@ -205,7 +205,7 @@ git commit -m "feat(state): upsert_messages 去重 client 键失败行(仅删 se
             )
             .await
             .unwrap();
-        let got = store.list_conversation_asc("E", "c1", 50).await.unwrap();
+        let got = store.list_conversation_asc("E", "c1").await.unwrap();
         assert_eq!(got.len(), 1);
         let r = &got[0];
         assert_eq!(r.local_message_id, "local-uuid-1");
@@ -304,7 +304,7 @@ git commit -m "feat(state): insert_failed_outbox 写出站失败行(下划线 so
         store.insert_failed_outbox("E","c1","wa","x","m1",1_780_000_000_000,1,"a","r","[]").await.unwrap();
         store.insert_failed_outbox("E","c1","wa","x","m2",1_780_000_000_001,1,"b","r","[]").await.unwrap();
         store.clear_outbox_row("E", "m1").await.unwrap();
-        let got = store.list_conversation_asc("E", "c1", 50).await.unwrap();
+        let got = store.list_conversation_asc("E", "c1").await.unwrap();
         let ids: Vec<_> = got.iter().map(|r| r.local_message_id.as_str()).collect();
         assert_eq!(ids, ["m2"]);
     }
@@ -545,7 +545,6 @@ LRU 整会话淘汰时，含未收敛失败行的会话不进 victim 名单（�
         store.insert_failed_outbox("E","cFail","wa","x","f1",1,1,"a","r","[]").await.unwrap();
         store.touch_accessed("E", "cFail", 1).await.unwrap();
         // 热会话 cHot:无失败行,last_accessed 最新
-        store.upsert_messages(&[row("h1", "", 3)]).await.unwrap(); // conversation_id 在 row() 里是 c1 → 改用 cHot
         store.ensure_window("E","cHot","wa","x").await.unwrap();
         store.touch_accessed("E", "cHot", 999).await.unwrap();
         // 上限=1 → 正常会淘汰最旧的 cFail,但它有失败行应豁免
