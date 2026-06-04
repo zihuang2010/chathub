@@ -148,6 +148,52 @@ impl MessagesStore {
         Ok(())
     }
 
+    /// 写一条出站失败气泡行(send_status=4)。client_msg_id 同时作 local_message_id 与
+    /// request_message_id(收敛桥)。sort_key 复刻服务端失败态形态:13位ms_20位零_id(下划线三段);
+    /// 方向写列 2(out)——新 sort_key 不含 direction 段。先 ensure_window 保证有落脚窗口。
+    /// 不 bump window.newest(避免扰动会话水位门)。
+    #[allow(clippy::too_many_arguments)]
+    pub async fn insert_failed_outbox(
+        &self,
+        employee_id: &str,
+        conversation_id: &str,
+        wecom_account_id: &str,
+        external_user_id: &str,
+        client_msg_id: &str,
+        sent_at_ms: i64,
+        message_type: i32,
+        content_text: &str,
+        fail_reason: &str,
+        attachments_json: &str,
+    ) -> Result<(), StateError> {
+        self.ensure_window(
+            employee_id,
+            conversation_id,
+            wecom_account_id,
+            external_user_id,
+        )
+        .await?;
+        let row = MessageRow {
+            local_message_id: client_msg_id.to_string(),
+            conversation_id: conversation_id.to_string(),
+            employee_id: employee_id.to_string(),
+            wecom_account_id: wecom_account_id.to_string(),
+            sort_key: format!("{:013}_{:020}_{}", sent_at_ms, 0, client_msg_id),
+            message_time_ms: sent_at_ms,
+            message_direction: 2,
+            message_type,
+            content_text: content_text.to_string(),
+            send_status: 4,
+            attachments_json: attachments_json.to_string(),
+            gmt_modified_time: String::new(),
+            revoked: false,
+            fail_reason: fail_reason.to_string(),
+            request_message_id: client_msg_id.to_string(),
+            updated_at_ms: 0,
+        };
+        self.upsert_messages(&[row]).await
+    }
+
     /// 读最新 `limit` 条,返回 **newest→oldest**(`ORDER BY sort_key DESC`)。
     /// 命令层返前端前会 `.rev()` 成升序(server records 与前端渲染都升序)。
     /// `employee_id` 强制过滤。
@@ -912,6 +958,46 @@ mod tests {
             got.len(),
             2,
             "server 多态行(status≠4)绝不能被去重 DELETE 误删"
+        );
+    }
+
+    #[tokio::test]
+    async fn insert_failed_outbox_writes_client_keyed_failed_row() {
+        let pool = SqlitePool::in_memory().await.unwrap();
+        let store = MessagesStore::new(pool);
+        store
+            .insert_failed_outbox(
+                "E",
+                "c1",
+                "wa",
+                "ext-1",
+                "local-uuid-1",
+                1_780_000_000_000,
+                1,
+                "你好",
+                "网络断开",
+                "[]",
+            )
+            .await
+            .unwrap();
+        let got = store.list_conversation_asc("E", "c1").await.unwrap();
+        assert_eq!(got.len(), 1);
+        let r = &got[0];
+        assert_eq!(r.local_message_id, "local-uuid-1");
+        assert_eq!(r.request_message_id, "local-uuid-1");
+        assert_eq!(r.send_status, 4);
+        assert_eq!(
+            r.message_direction, 2,
+            "出站方向必须写列(下划线 sort_key 不兜底方向)"
+        );
+        assert_eq!(
+            r.message_time_ms, 1_780_000_000_000,
+            "message_time_ms 须 == 乐观 sentAt 同源"
+        );
+        assert_eq!(r.fail_reason, "网络断开");
+        assert_eq!(
+            r.sort_key,
+            "1780000000000_00000000000000000000_local-uuid-1"
         );
     }
 }
