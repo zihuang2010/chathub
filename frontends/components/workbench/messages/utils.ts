@@ -215,6 +215,7 @@ export function cssUrlSafe(url: string | undefined, kind: "link" | "image"): str
 // 与 extractDraftPreview 的占位约定保持一致(草稿预览 / 引用预览同语义)。
 
 import type { Message, MessagePart } from "./data";
+import { STRINGS } from "./strings";
 
 function partTypePlaceholder(kind: Exclude<MessagePart["kind"], "text">): string {
   switch (kind) {
@@ -226,6 +227,9 @@ function partTypePlaceholder(kind: Exclude<MessagePart["kind"], "text">): string
       return "[语音]";
     case "video":
       return "[视频]";
+    case "unknown":
+      // 未知消息类型被引用时,回退与列表预览一致的「[未知消息]」占位。
+      return STRINGS.unknown.preview;
   }
 }
 

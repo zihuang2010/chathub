@@ -10,7 +10,7 @@ import {
   attachmentTypeFromExt,
   buildMessageParts,
 } from "@/components/workbench/messages/data";
-import type { Message, MessageAttachment } from "@/components/workbench/messages/data";
+import type { Message, MessageAttachment, MessagePart } from "@/components/workbench/messages/data";
 
 import { invokeWithTimeout } from "./invokeClient";
 
@@ -287,6 +287,10 @@ function historyToMessage(
     h.attachments.length > 0 ? h.attachments.map(historyAttachmentToMessage) : undefined;
   // 方向:后端 messageDirection===2 为出站,其它一律入站(直接产出 "in"/"out",无中间数值层)。
   const direction = h.messageDirection === 2 ? "out" : "in";
+  // 前端不识别的消息类型(如 messageType=99)既无可渲染文本也无可渲染附件 → parts 为空,
+  // 否则气泡渲染为空白。统一兜底为「未知消息」占位 part,由 MessageContent 显示「暂不支持」提示。
+  const built = buildMessageParts(text, undefined, attachments);
+  const parts: MessagePart[] = built.length > 0 ? built : [{ kind: "unknown" }];
   return {
     id: h.localMessageId,
     conversationId,
@@ -294,7 +298,7 @@ function historyToMessage(
     text,
     sentAt: isoOf(h.messageTime),
     status: direction === "out" ? mapSendStatus(h.sendStatus) : undefined,
-    parts: buildMessageParts(text, undefined, attachments),
+    parts,
     // 撤回标记:服务端 revoked=true → 折叠为"已撤回"系统行(MessageBubble 已有渲染)。
     // false/缺省一律收敛为 undefined,与其余可选字段保持"不存在=未撤回"语义。
     isRecalled: h.revoked || undefined,

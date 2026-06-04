@@ -12,6 +12,7 @@ import { useCallback, type Dispatch, type MutableRefObject, type SetStateAction 
 import { showToast } from "@/components/ui/toast";
 import { SEND_STATUS, uploadAttachment, type SendMessageResp } from "@/lib/api/messageHistory";
 
+import { COMPOSER_MAX_CHARS } from "../constants";
 import {
   buildMessageParts,
   type Conversation,
@@ -96,6 +97,29 @@ function attachmentMessageType(type: MessageAttachment["type"]): number {
   }
 }
 
+// 超长文本落 txt 文件名的时间戳:长文本_YYYYMMDD-HHMMSS.txt。
+function overflowFileStamp(): string {
+  const d = new Date();
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+}
+
+// 一段文本 → 发送单元:与编辑器同口径(按 code point 计)。未达 COMPOSER_MAX_CHARS 走文本单元;
+// 达到则就地改造成 .txt 文件附件单元(text/plain 的 blob 预览),下游 uploadAttachmentUnit 取字节
+// 上传 OSS、按文件消息(messageType=3)发出 —— 完全复用现有文件链路,规避对端单条文本长度限制。
+function textToSendUnit(text: string): SendUnit {
+  if ([...text].length < COMPOSER_MAX_CHARS) return { kind: "text", text };
+  const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+  return {
+    kind: "attachment",
+    messageType: MSG_TYPE_FILE,
+    attachmentType: "file",
+    url: URL.createObjectURL(blob),
+    name: `长文本_${overflowFileStamp()}.txt`,
+    sizeBytes: blob.size,
+  };
+}
+
 // 从文件名 / data URL 推断后缀(fileSuf,不含点),失败回退 "bin"。
 function inferFileSuf(name: string, url: string): string {
   const dot = name.lastIndexOf(".");
@@ -125,6 +149,7 @@ function inferContentType(name: string, url: string): string | undefined {
     wav: "audio/wav",
     mp4: "video/mp4",
     pdf: "application/pdf",
+    txt: "text/plain",
   };
   return map[suf];
 }
@@ -136,7 +161,7 @@ function buildSendUnits(blocks?: MessageBlock[], attachments?: MessageAttachment
     for (const block of blocks) {
       if (block.type === "text") {
         const value = block.value.trim();
-        if (value) units.push({ kind: "text", text: value });
+        if (value) units.push(textToSendUnit(value));
       } else if (block.type === "image" && block.url) {
         units.push({
           kind: "attachment",
@@ -327,7 +352,7 @@ export function useChatActions({
       if (units.length === 0) {
         const trimmed = text.trim();
         if (!trimmed) return;
-        units.push({ kind: "text", text: trimmed });
+        units.push(textToSendUnit(trimmed));
       }
 
       // 各单元独立 clientMsgId(= 本地 id),复用为 request_message_id 幂等键。

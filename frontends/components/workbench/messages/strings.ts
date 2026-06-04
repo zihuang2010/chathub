@@ -134,6 +134,11 @@ export const STRINGS = {
     processing: "处理中",
     unavailable: "附件暂不可查看",
   },
+  // 前端不识别的消息类型(如 messageType=99):气泡正文与会话列表预览的兜底文案。
+  unknown: {
+    bubble: "当前版本暂不支持，请在手机端查看",
+    preview: "[未知消息]",
+  },
   composer: {
     placeholder: "请输入消息",
     quickReplies: "快捷回复",
@@ -163,7 +168,7 @@ export const STRINGS = {
     sendSilentMain: "静默发送",
     charCount: (n: number) => `${n} 字`,
     charLimitNear: "接近字数上限",
-    charLimitOver: "已超过字数上限，无法发送",
+    charLimitOver: "已超过字数上限，将作为文本文件发送",
     enterToSend: "Enter 发送 · Shift+Enter 换行",
     offlineBanner: "网络已断开，消息暂时无法发送",
     expandRight: "展开右栏",

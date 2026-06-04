@@ -1,6 +1,7 @@
 import { Fragment, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
+  CircleHelp,
   Download,
   FileText,
   Image as ImageIcon,
@@ -41,10 +42,10 @@ interface MessageContentProps {
 // 当前挂载周期内比例不二次收敛；真实宽高会写缓存，下一次挂载再首帧使用。
 const NEUTRAL_IMAGE_ASPECT = "4 / 3";
 
-// 内联部分:文本 + 标记为内联的图片(composer 富文本)。其余(附件图片/文件/语音/
-// 视频)走下方卡片堆叠。
+// 内联部分:文本 + 标记为内联的图片(composer 富文本) + 未知消息占位(类文本提示)。
+// 其余(附件图片/文件/语音/视频)走下方卡片堆叠。
 function isInlinePart(p: MessagePart): boolean {
-  return p.kind === "text" || (p.kind === "image" && p.inline === true);
+  return p.kind === "text" || p.kind === "unknown" || (p.kind === "image" && p.inline === true);
 }
 
 // 附件转存态:1=待转存(loading 占位),3=转存失败(占位),0/2/缺省=就绪正常渲染。
@@ -75,6 +76,7 @@ export function MessageContent({ parts }: MessageContentProps) {
         const key = `${p.kind}-${i}`;
         if (p.kind === "text") return <TextRun key={key} value={p.text} />;
         if (p.kind === "image") return <InlineImage key={key} part={p} />;
+        if (p.kind === "unknown") return <UnknownRun key={key} />;
         return null;
       })}
       {cardParts.length > 0 && (
@@ -102,7 +104,8 @@ function PartCard({ part, fill }: { part: MessagePart; fill?: boolean }) {
     case "file":
       return <FileAttachment part={part} />;
     case "text":
-      return null; // text 走内联流,不会落到卡片
+    case "unknown":
+      return null; // text / unknown 走内联流,不会落到卡片
   }
 }
 
@@ -541,6 +544,18 @@ function TextRun({ value }: { value: string }) {
         }
       })}
     </>
+  );
+}
+
+// 未知消息占位:前端不识别的消息类型(如 messageType=99)既无文本也无可渲染附件。
+// 渲染为气泡内的淡色提示行(问号图标 + 文案),引导用户在手机端查看原消息;沿用所在
+// 气泡的 in/out 底色与排版,读作"这是一条消息,但本端暂不支持展示",而非空白/出错。
+function UnknownRun() {
+  return (
+    <span className="inline-flex items-center gap-1.5 align-middle italic text-workbench-text-muted">
+      <CircleHelp size={14} strokeWidth={1.6} className="shrink-0" aria-hidden />
+      {STRINGS.unknown.bubble}
+    </span>
   );
 }
 

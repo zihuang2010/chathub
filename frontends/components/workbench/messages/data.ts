@@ -95,7 +95,10 @@ export type MessagePart =
     }
   | { kind: "file"; url: string; name?: string; sizeBytes?: number; transferStatus?: number }
   | { kind: "voice"; url: string; durationSec?: number; transferStatus?: number }
-  | { kind: "video"; url: string; name?: string; durationSec?: number; transferStatus?: number };
+  | { kind: "video"; url: string; name?: string; durationSec?: number; transferStatus?: number }
+  // 前端不识别的消息类型(如 messageType=99):上游既无可渲染文本也无可渲染附件,
+  // 兜底为占位 part,由渲染层显示「暂不支持」提示,避免出现空白气泡。无字段。
+  | { kind: "unknown" };
 
 // 收发两侧(历史消息分类 / 本地选文件)与 composer 校验共用的单一真相源:扩展名白名单。
 export const IMAGE_EXTS = ["jpg", "jpeg", "png", "gif", "webp"] as const;
@@ -144,6 +147,14 @@ export function attachmentKindFromCode(
     default:
       return undefined;
   }
+}
+
+// 前端已知/可渲染的消息类型码:1=文本 / 2=图片 / 3=文件 / 4=语音 / 5=图文混合 / 6=视频。
+// 其余码值(如 99)是当前版本不识别的类型,UI 兜底为「未知消息」。会话列表预览在
+// lastMessageSummary 为空且类型未知时据此回退占位文案,避免出现空白预览行。
+const KNOWN_MESSAGE_TYPES = new Set([1, 2, 3, 4, 5, 6]);
+export function isKnownMessageType(type: number): boolean {
+  return KNOWN_MESSAGE_TYPES.has(type);
 }
 
 function attachmentToPart(a: MessageAttachment): MessagePart {

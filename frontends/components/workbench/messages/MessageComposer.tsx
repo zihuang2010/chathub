@@ -178,11 +178,12 @@ export function MessageComposer({
   }, [draft]);
   const overLimit = charLength >= COMPOSER_MAX_CHARS;
   const nearLimit = charLength >= COMPOSER_WARN_CHARS;
+  // 超限不再拦截发送:超过 COMPOSER_MAX_CHARS 的文本会被发送链路(buildSendUnits)自动落成
+  // .txt 文件附件发出,故 canSend 不受 overLimit 约束;计数仍以 warning 色提示已超限。
   const canSend =
-    !overLimit &&
-    (textJoined.trim().length > 0 ||
-      blocks.some((b) => b.type === "image") ||
-      pendingFileAttachments.length > 0);
+    textJoined.trim().length > 0 ||
+    blocks.some((b) => b.type === "image") ||
+    pendingFileAttachments.length > 0;
 
   // 语音独占态(派生,不引入独立 state):托盘里有一条 voice 附件时为真。
   // 真时禁用编辑器与所有内容输入控件,确保语音单独发送。退出独占态只需移除该 voice chip。
@@ -740,8 +741,8 @@ export function MessageComposer({
           <span
             className={cn(
               "wb-num text-wb-3xs ml-2 inline-flex items-center gap-2 font-medium text-workbench-text-muted",
-              nearLimit && !overLimit && "text-workbench-warning",
-              overLimit && "text-workbench-danger",
+              // 超限不再是错误态(会自动转 txt 发送),与接近上限统一用 warning 色提示。
+              nearLimit && "text-workbench-warning",
             )}
           >
             <span aria-hidden>{STRINGS.composer.charCount(charLength)}</span>

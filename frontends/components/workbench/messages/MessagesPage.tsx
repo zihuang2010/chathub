@@ -29,6 +29,7 @@ import {
 } from "./constants";
 import { ConversationList } from "./ConversationList";
 import { CustomerDetails } from "./CustomerDetails";
+import { isKnownMessageType } from "./data";
 import type { Conversation, QuickReply } from "./data";
 import { MessagesSkeleton } from "./MessagesSkeleton";
 import { useChatMessages } from "./useChatMessages";
@@ -97,11 +98,16 @@ function adaptEntryToConversation(entry: RecentFriendListEntry): Conversation {
   // 草稿时间后自动切回消息时间。否则会出现"行按草稿时间排到顶部、但右上角
   // 时间字段是旧消息时间"的视觉错位(微信桌面端约定)。
   const effectiveTimeMs = Math.max(entry.lastMessageTimeMs, entry.localDraftAtMs);
+  // 未知消息类型(如 lastMessageType=99)上游 lastMessageSummary 为空,直接展示会得到
+  // 空白预览行;摘要为空且类型不在已知集合时回退「[未知消息]」占位,与气泡兜底语义一致。
+  const summary = clampField(entry.lastMessageSummary);
+  const preview =
+    summary || (isKnownMessageType(entry.lastMessageType) ? summary : STRINGS.unknown.preview);
   return {
     id: entry.conversationId,
     name: clampField(entry.externalName) || "(未命名)",
     avatar: entry.externalAvatar || undefined,
-    preview: clampField(entry.lastMessageSummary),
+    preview,
     account: clampField(entry.wecomAlias || entry.wecomName),
     time: formatRelativeTime(effectiveTimeMs),
     unread: entry.unreadCount,

@@ -33,6 +33,7 @@ vi.mock("benz-amr-recorder", () => ({
 import { buildMessageParts } from "./data";
 import type { MessageAttachment, MessageBlock } from "./data";
 import { MessageContent } from "./MessageContent";
+import { STRINGS } from "./strings";
 
 afterEach(() => {
   cleanup();
@@ -648,5 +649,21 @@ describe("VoiceAttachment 播放接线", () => {
       benzMock.initWithBlob.mockClear();
       benzMock.play.mockClear();
     }
+  });
+});
+
+describe("MessageContent 未知消息占位", () => {
+  it("unknown part 渲染为「暂不支持」提示(含问号图标),不渲染附件卡/图片", () => {
+    const { container } = render(
+      <article data-testid="bubble">
+        <MessageContent parts={[{ kind: "unknown" }]} />
+      </article>,
+    );
+    expect(container.textContent).toContain(STRINGS.unknown.bubble);
+    // 类文本内联提示,不落附件卡/图片。
+    expect(container.querySelector("img")).toBeNull();
+    expect(container.querySelector("button")).toBeNull();
+    // 带 aria-hidden 的问号图标(lucide CircleHelp 渲染为 svg)。
+    expect(container.querySelector("svg")).not.toBeNull();
   });
 });

@@ -30,6 +30,10 @@ interface MessageBubbleProps {
 const COMPACT_TEXT_LIMIT = 8;
 
 function messageAriaText(message: Message): string {
+  // 未知消息(占位 part、无文本):读屏回退到「暂不支持」提示,避免空 aria-label。
+  if (!message.text.trim() && message.parts.some((p) => p.kind === "unknown")) {
+    return STRINGS.unknown.bubble;
+  }
   const imageCount = message.parts.filter((p) => p.kind === "image").length;
   const trimmed = message.text.trim();
   if (imageCount === 0) return message.text;
