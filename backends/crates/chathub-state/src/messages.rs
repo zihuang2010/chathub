@@ -128,6 +128,18 @@ impl MessagesStore {
                         now,
                     ],
                 )?;
+                // 去重:把同一逻辑消息(request_message_id 相同)的「client 键失败行」塌缩进刚入库的
+                // server 行。仅删 send_status=4,绝不碰 server 多态行(PENDING/CONFIRMED 同 reqid 共存)。
+                // request_message_id 空(inbound/老行)跳过,防空串互删。
+                if !r.request_message_id.is_empty() {
+                    tx.execute(
+                        "DELETE FROM hub_conversation_messages \
+                         WHERE employee_id = ?1 AND request_message_id = ?2 \
+                           AND request_message_id <> '' AND send_status = 4 \
+                           AND local_message_id <> ?3",
+                        rusqlite::params![r.employee_id, r.request_message_id, r.local_message_id],
+                    )?;
+                }
             }
             tx.commit()?;
             Ok(())
@@ -844,5 +856,62 @@ mod tests {
         store.upsert_messages(&[fixed]).await.unwrap();
         let got = store.list_recent("u-1", "c1", 10).await.unwrap();
         assert_eq!(got[0].message_direction, 1, "ON CONFLICT 应纠正方向");
+    }
+
+    fn row(local: &str, reqid: &str, status: i32) -> MessageRow {
+        MessageRow {
+            local_message_id: local.into(),
+            conversation_id: "c1".into(),
+            employee_id: "E".into(),
+            wecom_account_id: "wa".into(),
+            sort_key: format!("1780000000000_00000000000000000000_{local}"),
+            message_time_ms: 1_780_000_000_000,
+            message_direction: 2,
+            message_type: 1,
+            content_text: "hi".into(),
+            send_status: status,
+            attachments_json: "[]".into(),
+            gmt_modified_time: String::new(),
+            revoked: false,
+            fail_reason: String::new(),
+            request_message_id: reqid.into(),
+            updated_at_ms: 0,
+        }
+    }
+
+    #[tokio::test]
+    async fn dedup_collapses_failed_client_row_into_server_confirmed_row() {
+        let pool = SqlitePool::in_memory().await.unwrap();
+        let store = MessagesStore::new(pool);
+        store
+            .upsert_messages(&[row("cid", "cid", 4)])
+            .await
+            .unwrap();
+        store
+            .upsert_messages(&[row("server-1", "cid", 3)])
+            .await
+            .unwrap();
+        let got = store.list_conversation_asc("E", "c1").await.unwrap();
+        let ids: Vec<_> = got.iter().map(|r| r.local_message_id.as_str()).collect();
+        assert_eq!(ids, ["server-1"], "失败行应被同 reqid 的 server 行塌缩");
+    }
+
+    #[tokio::test]
+    async fn dedup_never_deletes_server_multistate_rows_same_reqid() {
+        let pool = SqlitePool::in_memory().await.unwrap();
+        let store = MessagesStore::new(pool);
+        store
+            .upsert_messages(&[
+                row("server-pending", "cid", 2),
+                row("server-confirmed", "cid", 3),
+            ])
+            .await
+            .unwrap();
+        let got = store.list_conversation_asc("E", "c1").await.unwrap();
+        assert_eq!(
+            got.len(),
+            2,
+            "server 多态行(status≠4)绝不能被去重 DELETE 误删"
+        );
     }
 }
