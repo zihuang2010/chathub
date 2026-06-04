@@ -10,7 +10,13 @@
 import { useCallback, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
 
 import { showToast } from "@/components/ui/toast";
-import { SEND_STATUS, uploadAttachment, type SendMessageResp } from "@/lib/api/messageHistory";
+import {
+  clearOutboxRow,
+  persistOutboxFailure,
+  SEND_STATUS,
+  uploadAttachment,
+  type SendMessageResp,
+} from "@/lib/api/messageHistory";
 
 import { COMPOSER_MAX_CHARS } from "../constants";
 import {
@@ -49,6 +55,9 @@ export interface UseChatActionsParams {
   /** 发送后强制贴底跟随(写 ChatArea 的滚动 ref)。 */
   wasAtBottomRef: MutableRefObject<boolean>;
   setReplyDraft: Dispatch<SetStateAction<ReplyDraft | null>>;
+  /** 当前会话归属账号/客户;失败落库 IPC 需要(缺则降级为仅内存 markFailed)。 */
+  wecomAccountId?: string;
+  externalUserId?: string;
 }
 
 export interface UseChatActionsResult {
@@ -259,13 +268,78 @@ function sendFailReason(err: unknown): string {
   return raw.length > 80 ? `${raw.slice(0, 80)}…` : raw;
 }
 
+// 发送 messageType(2图/3文件/4语音) → 权威 attachmentType(1图/2文件/3语音/4视频);两套编码错位,须显式映射。
+function outboxAttachmentType(messageType: number): number {
+  switch (messageType) {
+    case MSG_TYPE_IMAGE:
+      return 1;
+    case MSG_TYPE_FILE:
+      return 2;
+    case MSG_TYPE_VOICE:
+      return 3;
+    default:
+      return 2;
+  }
+}
+
+// 由失败气泡 entity 构造 HistoryAttachment[] JSON(camelCase,与后端 row_to_history 读回对齐)。
+// mediaId 取 filePath(objectName,never-uploaded 为空 → 派生不可重发);纯文本 → "[]"。
+function buildOutboxAttachmentsJson(entity: Message): string {
+  const mt = entity.messageType ?? MSG_TYPE_TEXT;
+  if (mt === MSG_TYPE_TEXT) return "[]";
+  const imagePart = entity.parts.find((p) => p.kind === "image");
+  const att: Record<string, unknown> = {
+    mediaId: entity.filePath ?? "",
+    fileName: entity.fileName ?? "",
+    fileSize: entity.fileSize ?? 0,
+    attachmentType: outboxAttachmentType(mt),
+    fileType: inferFileSuf(entity.fileName ?? "", imagePart?.url ?? ""),
+  };
+  if (imagePart && imagePart.kind === "image") {
+    if (imagePart.width !== undefined) att.width = imagePart.width;
+    if (imagePart.height !== undefined) att.height = imagePart.height;
+  }
+  if (entity.durationSeconds !== undefined) att.durationSeconds = entity.durationSeconds;
+  return JSON.stringify([att]);
+}
+
 export function useChatActions({
   conversation,
   chatStoreKey,
   onSendMessage,
   wasAtBottomRef,
   setReplyDraft,
+  wecomAccountId,
+  externalUserId,
 }: UseChatActionsParams): UseChatActionsResult {
+  // 统一失败处理:既 markFailed(内存即时态),又调 IPC 落本地库(重启不丢)。缺会话身份时降级为
+  // 仅 markFailed。IPC 失败仅 warn,绝不阻塞。entity 优先按 byId key 取,兜底按 clientMsgId 字段找。
+  const failBubble = useCallback(
+    (clientMsgId: string, failReason: string) => {
+      const owningStoreKey = chatStoreKey;
+      useChatStore.getState().markFailed(owningStoreKey, clientMsgId);
+      if (!wecomAccountId || !externalUserId) return;
+      const slice = useChatStore.getState().conversations[owningStoreKey];
+      const entity =
+        slice?.byId[clientMsgId] ??
+        Object.values(slice?.byId ?? {}).find((e) => e.clientMsgId === clientMsgId);
+      if (!entity) return;
+      const sentAtMs = Date.parse(entity.sentAt);
+      void persistOutboxFailure({
+        conversationId: conversation.id,
+        wecomAccountId,
+        externalUserId,
+        clientMsgId,
+        sentAtMs: Number.isNaN(sentAtMs) ? Date.now() : sentAtMs,
+        messageType: entity.messageType ?? MSG_TYPE_TEXT,
+        contentText: entity.text,
+        failReason,
+        attachmentsJson: buildOutboxAttachmentsJson(entity),
+      }).catch((e) => console.warn("[outbox] persist_outbox_failure 失败(不阻塞)", e));
+    },
+    [chatStoreKey, conversation.id, wecomAccountId, externalUserId],
+  );
+
   // 真发送一条出站消息:把发送时所属会话 id 闭包进来。成功 → markSent 钉 serverId(权威列表
   // 回来时按 serverId 去重收敛,不留重影气泡);失败 → markFailed(供 context menu resend)。
   // options 为附件类透传(messageType/filePath/...);纯文本不传,保持旧 onSendMessage(text, id) 调用形态。
@@ -297,7 +371,7 @@ export function useChatActions({
               resp,
             });
             showToast(STRINGS.errors.sendFailed, { type: "error" });
-            useChatStore.getState().markFailed(owningStoreKey, clientMsgId);
+            failBubble(clientMsgId, STRINGS.errors.sendFailed);
             return false;
           }
           if (resp.sendStatus === SEND_STATUS.success) {
@@ -313,12 +387,13 @@ export function useChatActions({
           textLen: text.length,
           err,
         });
-        showToast(sendFailReason(err), { type: "error" });
-        useChatStore.getState().markFailed(owningStoreKey, clientMsgId);
+        const reason = sendFailReason(err);
+        showToast(reason, { type: "error" });
+        failBubble(clientMsgId, reason);
         return false;
       }
     },
-    [chatStoreKey, onSendMessage],
+    [chatStoreKey, onSendMessage, failBubble],
   );
 
   // 上传一个附件单元(不发送):fetch 本地预览取字节 →(语音转码)→ uploadAttachment 拿
@@ -341,7 +416,7 @@ export function useChatActions({
           const voice = await prepareVoiceForSend(bytes, fileSuf);
           if (!voice.ok) {
             showToast(voice.reason, { type: "error" });
-            useChatStore.getState().markFailed(owningStoreKey, clientMsgId);
+            failBubble(clientMsgId, voice.reason);
             return null;
           }
           bytes = voice.bytes;
@@ -370,13 +445,14 @@ export function useChatActions({
         return options;
       } catch (err) {
         // 上传阶段抛错(取字节 / OSS 失败)→ 标失败并提示原因。
+        const reason = sendFailReason(err);
         console.error("[send] 附件上传失败", { clientMsgId, err });
-        showToast(sendFailReason(err), { type: "error" });
-        useChatStore.getState().markFailed(owningStoreKey, clientMsgId);
+        showToast(reason, { type: "error" });
+        failBubble(clientMsgId, reason);
         return null;
       }
     },
-    [chatStoreKey],
+    [chatStoreKey, failBubble],
   );
 
   const handleSend = useCallback<UseChatActionsResult["handleSend"]>(
@@ -456,7 +532,7 @@ export function useChatActions({
           if (!ok) {
             // 当前条失败,停止后续;把未发的气泡标 failed,供用户逐条重发。
             for (let j = i + 1; j < units.length; j += 1) {
-              useChatStore.getState().markFailed(chatStoreKey, clientMsgIds[j]);
+              failBubble(clientMsgIds[j], STRINGS.errors.sendFailed);
             }
             break;
           }
@@ -470,6 +546,7 @@ export function useChatActions({
       uploadAttachmentUnit,
       wasAtBottomRef,
       setReplyDraft,
+      failBubble,
     ],
   );
 
@@ -484,6 +561,17 @@ export function useChatActions({
           // 钉一个稳定键并写回实体——既让后端按同键去重,又让 markSent/markFailed 能按 clientMsgId
           // 收敛回这一条,不再每次重发都新增一条失败气泡。
           const clientMsgId = entity?.clientMsgId ?? message.id;
+          const mtForGuard = entity?.messageType ?? message.messageType;
+          const filePathForGuard = entity?.filePath ?? message.filePath;
+          if (mtForGuard && mtForGuard !== MSG_TYPE_TEXT && !filePathForGuard) {
+            showToast(STRINGS.toast.outboxReselectFile, { type: "error" });
+            break;
+          }
+          if (wecomAccountId && externalUserId) {
+            void clearOutboxRow({ conversationId: conversation.id, clientMsgId }).catch((e) =>
+              console.warn("[outbox] clear_outbox_row 失败(不阻塞)", e),
+            );
+          }
           useChatStore
             .getState()
             .patchMessage(chatStoreKey, message.id, { status: "sending", clientMsgId });
@@ -573,6 +661,8 @@ export function useChatActions({
       conversation.id,
       conversation.name,
       setReplyDraft,
+      wecomAccountId,
+      externalUserId,
     ],
   );
 
