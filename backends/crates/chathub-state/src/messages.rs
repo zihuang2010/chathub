@@ -440,6 +440,10 @@ impl MessagesStore {
                 let mut stmt = tx.prepare(
                     "SELECT conversation_id FROM hub_conversation_message_window \
                      WHERE employee_id = ?1 \
+                       AND conversation_id NOT IN ( \
+                         SELECT DISTINCT conversation_id FROM hub_conversation_messages \
+                         WHERE employee_id = ?1 AND send_status = 4 AND request_message_id <> '' \
+                       ) \
                      ORDER BY last_accessed_ms DESC LIMIT -1 OFFSET ?2",
                 )?;
                 let v = stmt
@@ -1077,6 +1081,25 @@ mod tests {
         let failed = store.list_failed_outbox("E", "c1").await.unwrap();
         let ids: Vec<_> = failed.iter().map(|r| r.local_message_id.as_str()).collect();
         assert_eq!(ids, ["f1"]);
+    }
+
+    #[tokio::test]
+    async fn trim_exempts_conversations_with_failed_outbox_rows() {
+        let pool = SqlitePool::in_memory().await.unwrap();
+        let store = MessagesStore::new(pool);
+        // cFail:有失败行,last_accessed 最旧(本该最先被淘汰)
+        store
+            .insert_failed_outbox("E", "cFail", "wa", "x", "f1", 1, 1, "a", "r", "[]")
+            .await
+            .unwrap();
+        store.touch_accessed("E", "cFail", 1).await.unwrap();
+        // cHot:无失败行,last_accessed 最新
+        store.ensure_window("E", "cHot", "wa", "x").await.unwrap();
+        store.touch_accessed("E", "cHot", 999).await.unwrap();
+        // 上限=1 → 正常会淘汰最旧的 cFail,但它有失败行应豁免(不进 victim)
+        store.trim_conversations("E", 1).await.unwrap();
+        let failed = store.list_failed_outbox("E", "cFail").await.unwrap();
+        assert_eq!(failed.len(), 1, "含失败行的会话必须豁免 LRU 淘汰");
     }
 
     #[tokio::test]
