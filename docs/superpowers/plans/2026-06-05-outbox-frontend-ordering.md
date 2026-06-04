@@ -221,3 +221,83 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 
 - 后端持久化（Plan A，已完成）。
 - 前端 IPC 接线 / failBubble / attachments 映射 / never-uploaded 重发拦截（Plan B，待写）。
+
+---
+
+## 补遗（二轮算法 fan-out 验证后 / 3 agent）
+
+**算法结论：正确。** 把新算法注入真实 chatStore.ts 实跑 `pnpm vitest`，**43/43 全绿**（25 既有 + RED2）；端到端「乐观失败→持久化→回读」收敛+排序无双行、clientMsgId 稳键、direction 链路完整。以下为必须修正项与已知取舍。
+
+### 修正 1（必做）：RED1 重写——原 RED1 在 main 本就绿，不是有效红测
+
+原因：旧 `mergeByTimeAscending(newAuthIds, leftover)` 已把 leftover 失败按 sentAt 归位；真正的沉底 bug 需要「后发成功 B 是**已显示的 sent 气泡**（reread 时经 serverId echo 判 knownAuth 冻结在 A 之下），A 是 leftover」。**用下面这条替换 Task 1 Step 1 的第一个 `it(...)`**：
+
+```ts
+it("失败行 leftover 时,不被已显示的后发成功行(knownAuth)顶到下方(治沉底)", () => {
+  // 沉底态:A 失败(leftover),B 已 markSent 显示(sent + serverId)在 A 之下。
+  const slice = sliceWith([
+    optimistic("c-1", {
+      status: "failed",
+      sentAt: "2026-05-19T00:00:00.000Z",
+      text: "先发失败",
+      parts: [{ kind: "text", text: "先发失败" }],
+    }),
+    optimistic("c-2", {
+      status: "sent",
+      serverId: "server-2",
+      sentAt: "2026-05-19T00:00:10.000Z",
+      text: "后发成功",
+      parts: [{ kind: "text", text: "后发成功" }],
+    }),
+  ]);
+  // 权威重读:B 的回显 server-2 到达(经 serverId 收敛 c-2),A 仍只在本地(leftover)。
+  const next = replaceAuthoritative(slice, [
+    msg("server-2", {
+      direction: "out",
+      status: "sent",
+      sentAt: "2026-05-19T00:00:10.000Z",
+      text: "后发成功",
+      parts: [{ kind: "text", text: "后发成功" }],
+    }),
+  ]);
+  // 当前 main:server-2 经 echo 判 knownAuth 冻结在 c-2 的 idx=1,A leftover 塞尾段 →
+  //   ["server-2","c-1"](A 沉到 B 下方=bug)。修后 A 按 sentAt 归位:
+  expect(selectTimeline(next).map((e) => e.id)).toEqual(["c-1", "server-2"]);
+  expect(next.byId["c-1"].status).toBe("failed");
+});
+```
+
+Task 1 Step 2 的 Expected 改为：**两条新测在当前 main 均 FAIL**（这条得 `["server-2","c-1"]`、反例护栏得 `["h0","S","c-1"]`），新算法均 PASS。
+
+### 修正 2（必做）：`at()` 加 NaN 兜底 + memo
+
+Task 2 Step 1 算法里的
+
+```ts
+const at = (id: string) => new Date(byId[id]?.sentAt ?? 0).getTime();
+```
+
+**替换为**（缓存消除重复 Date 解析的 O(n log n) 退化；NaN 兜底防非法 sentAt 让失败行漏到尾部沉底）：
+
+```ts
+const atCache = new Map<string, number>();
+const at = (id: string) => {
+  const cached = atCache.get(id);
+  if (cached !== undefined) return cached;
+  const t = new Date(byId[id]?.sentAt ?? 0).getTime();
+  const v = Number.isNaN(t) ? 0 : t;
+  atCache.set(id, v);
+  return v;
+};
+```
+
+### 已知取舍 / 限制（记录,不改算法）
+
+- **spine 非单调 × failed**：迟到入站消息按「迟到入站追底」(既有 test 381)被追到 spine 底,使 spine 非 sentAt 单调。此时一条 sentAt 介于中间的 failed 会按「第一个严格更晚的 spine 元素之前」插入,可能排在某条 sentAt 更老的迟到入站**之上**(时间局部倒挂),并可能让 `useChatTimeline` 的日期分隔符按邻接错位。**根因**:「real 保位(含迟到追底)」与「failed 按时间归位」在 spine 非单调时不可同时满足——与既有迟到入站的非单调同源、罕见。**接受**为已知取舍(治本需全局 sentAt 定位,会破坏迟到追底保位)。可选补一条回归测钉住当前行为。
+- **重发 failed→sending**:失败气泡(中段)重发置 sending 后,下次 replaceAuthoritative 从 failedIds 移到 tailLeftover **贴底**——「重发即在途、贴底」语义一致,但视觉上是一次跳动(且发生在下一次权威重读,非点击当帧)。接受。
+- **failed + sending 共存**:failed 进时间线(可能中段)、sending 恒贴底 → failed 恒在 sending 之上,即便 failed 的 sentAt 更晚。分层固有结果,接受。
+- **性能**:O(n log n)(n=byId≤500/会话),已用 atCache 消除重复 Date 解析;sliceContentEqual 短路在 sort 之后,省不掉本次 sort。绝对值亚毫秒,接受。
+
+### 给 Plan B 的备注（不在本计划落地）
+
+Plan B 实装重发(复用 clientMsgId)后,冷启动/clearConversation 后首次 replaceAuthoritative 若权威失败行(requestMessageId=c-1)与重发乐观气泡(clientMsgId=c-1,sending)同时到来,`authRequestIdMatchesOptimistic` 可能误配 → 重发气泡被当已收敛消失。Plan B 落地时在 matchedEcho 第一轮(chatStore.ts:238 附近)开头加 `if (byId[m.id]?.status === "failed") continue` 守卫提前排除失败权威行参与配对。
