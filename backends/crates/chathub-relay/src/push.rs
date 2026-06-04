@@ -43,12 +43,16 @@ pub struct PushState {
     pub events_log: EventLog,
     pub router: Arc<Router>,
     /// CONNECTION_FORCE_CLOSE 后等多久才摘除连接(让客户端读完帧)。默认 2000ms。
+    // 暂随 CONNECTION_FORCE_CLOSE 处理停用,后续打开时移除此 allow。
+    #[allow(dead_code)]
     pub force_close_grace_ms: u64,
     /// 业务后台 → relay 的 clientId 白名单(env `RELAY_ALLOWED_CLIENT_IDS`)。
     pub allowed_client_ids: Vec<String>,
     /// F2 安全:push body 最大字节数,防 body-bomb DoS。默认 1MB。
     pub max_body_bytes: usize,
     /// 与 HubSvc 共享的鉴权缓存 —— FORCE_CLOSE 时失效被踢 employee 的旧 token。
+    // 暂随 CONNECTION_FORCE_CLOSE 处理停用,后续打开时移除此 allow。
+    #[allow(dead_code)]
     pub auth: Arc<TokenAuthenticator>,
     /// 可选:push 原始入站 body 旁路写独立按日轮转文件(上线后 diff/jq 比对)。
     /// `None` = 关闭(不挂中间件,零开销)。来源 env `RELAY_SOURCE_JSON_LOG`。
@@ -295,30 +299,35 @@ async fn handle_push(
         state.router.drop_employee_stream(body.employee_id, conn_id);
     }
 
-    // P0-3:CONNECTION_FORCE_CLOSE grace 流程
+    // P0-3:CONNECTION_FORCE_CLOSE grace 流程 —— 【暂时停用,后续打开】
+    //   TODO(force_close): 暂不处理 CONNECTION_FORCE_CLOSE 事件 —— relay 侧不失效鉴权缓存、
+    //   也不 grace 摘流。事件本身仍随 batch fanout 下发给客户端(在上面的 events_json 里),
+    //   此处仅停用 relay 的踢人副作用。恢复时:取消下方整段注释,并移除
+    //   PushState.{force_close_grace_ms, auth} 上的 #[allow(dead_code)]、两个 #[ignore] 测试标记。
+    //
     //   1. force_close 事件已经包在上面 fanout 的 events_json 里送达客户端
     //   2. 立即失效该 employee 的鉴权缓存 → 旧 token 重连时不再命中缓存、强制回源 verify_token
     //   3. 等 grace,让客户端读完帧并显示提示
     //   4. 然后摘除该 employee 的所有路由 → gRPC stream 自然关闭
     //   5. 客户端旧 token 之后再 Subscribe 由缓存失效 + 后台 verify_token 双重拒(不再只靠 TTL 自然过期)
-    if has_force_close {
-        // 失效缓存:不依赖 grace timer,踢人即刻生效。
-        state.auth.invalidate_employee(body.employee_id).await;
-        let router = state.router.clone();
-        let emp_id = body.employee_id;
-        let grace = state.force_close_grace_ms;
-        tokio::spawn(async move {
-            tokio::time::sleep(std::time::Duration::from_millis(grace)).await;
-            let dropped = router.drop_all_employee_streams(emp_id);
-            tracing::info!(
-                target: "chathub_relay::push",
-                employee_id = emp_id,
-                connections_dropped = dropped.len(),
-                grace_ms = grace,
-                "force_close grace expired; streams evicted"
-            );
-        });
-    }
+    // if has_force_close {
+    //     // 失效缓存:不依赖 grace timer,踢人即刻生效。
+    //     state.auth.invalidate_employee(body.employee_id).await;
+    //     let router = state.router.clone();
+    //     let emp_id = body.employee_id;
+    //     let grace = state.force_close_grace_ms;
+    //     tokio::spawn(async move {
+    //         tokio::time::sleep(std::time::Duration::from_millis(grace)).await;
+    //         let dropped = router.drop_all_employee_streams(emp_id);
+    //         tracing::info!(
+    //             target: "chathub_relay::push",
+    //             employee_id = emp_id,
+    //             connections_dropped = dropped.len(),
+    //             grace_ms = grace,
+    //             "force_close grace expired; streams evicted"
+    //         );
+    //     });
+    // }
 
     tracing::info!(
         persisted = inserted,
@@ -610,6 +619,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "CONNECTION_FORCE_CLOSE 处理暂时停用,后续打开时移除"]
     async fn push_force_close_evicts_streams_after_grace() {
         let st = make_state().await;
         let (tx, mut rx) = tokio::sync::mpsc::channel(8);
@@ -652,6 +662,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "CONNECTION_FORCE_CLOSE 处理暂时停用,后续打开时移除"]
     async fn push_force_close_invalidates_auth_cache_for_employee() {
         let st = make_state().await;
         // 预热 emp42 与 emp99 的鉴权缓存
