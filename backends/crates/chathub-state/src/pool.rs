@@ -73,6 +73,7 @@ impl SqlitePool {
                 M::up(include_str!(
                     "../migrations/V23__recents_local_last_sent.sql"
                 )),
+                M::up(include_str!("../migrations/V24__idx_hub_msgs_req.sql")),
             ]);
             migrations
                 .to_latest(c)
