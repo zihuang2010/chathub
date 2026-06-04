@@ -284,3 +284,37 @@ if (wecomAccountId && externalUserId) {
 
 - requestMessageId 误配守卫（matchedEcho 第一轮加 `status==='failed' continue`，见 Plan C 补遗备注）——本计划落地后若发现重发收敛异常再补，属低概率冷启动竞态。
 - 撤回持久化、引用关系(replyTo)持久化：不做（spec §8）。
+
+---
+
+## 补遗（fan-out 验证后 / 3 agent）
+
+**生产代码（Task 1-4）结论：可落地。** Message 字段全在（data.ts:272-276）、MessagePart image 有 width/height、ChatArea(props :38-82/解构 :84-105/调用 :150-156)/MessagesPage(:629 + selectedEntry :310-326) 线缆对、IPC 作用域对、useCallback 依赖对、attachmentsJson 往返保真（camelCase + attachmentType 映射 2→1/3→2/4→3 与后端一致）、never-uploaded 守卫对（长文本 txt 有 filePath 不误拦）、clearOutbox 时序安全（local_message_id 不同不误删新行）、sentAtMs 同源。以下为修正项。
+
+### 修正 1（Task 3 Step 4，failBubble 取 entity robustness）
+
+`markFailed` 按 `entity.clientMsgId` 字段定位（findIdByClientMsgId），而计划用 `byId[clientMsgId]`（按 key）。首发/已落库失败行 `entity.id === clientMsgId` 命中；仅「重发历史消息再次失败」极端态（clientMsgId 可能 ≠ store id）取不到 → 静默降级。加 fallback：
+
+```ts
+const slice = useChatStore.getState().conversations[owningStoreKey];
+const entity =
+  slice?.byId[clientMsgId] ??
+  Object.values(slice?.byId ?? {}).find((e) => e.clientMsgId === clientMsgId);
+if (!entity) return;
+```
+
+### 修正 2（Task 5 测试，必做——原描述会编译错/假红）
+
+- **补 import**（测试文件顶部）：`import { persistOutboxFailure, clearOutboxRow } from "@/lib/api/messageHistory";` 与 `import { showToast } from "@/components/ui/toast";`（否则 `vi.mocked()` 无句柄、TS 报 Cannot find name）。
+- **补 mock**：既有 `vi.mock("@/lib/api/messageHistory", async (importActual) => ({ ...(await importActual()), uploadAttachment: vi.fn() }))`（test.ts:16-22）里加 `persistOutboxFailure: vi.fn().mockResolvedValue(undefined), clearOutboxRow: vi.fn().mockResolvedValue(undefined)`；若 showToast 未被 mock，加 `vi.mock("@/components/ui/toast", () => ({ showToast: vi.fn() }))`。保留 `SEND_STATUS` 真值 + `uploadAttachment` mock。
+- **setup 身份**：既有 `setup()`（test.ts:32-44）只收 onSendMessage，不传身份。改为 `setup(extra?: Partial<UseChatActionsParams>)` 内部 spread，或 4 个新用例直接 `renderHook(() => useChatActions({ conversation, chatStoreKey:"c1", onSendMessage, wasAtBottomRef, setReplyDraft, wecomAccountId:"wa", externalUserId:"ext", ...extra }))`。**4 用例都必须传 wecomAccountId/externalUserId**，否则走降级分支、persist 不被调、用例 1 假红。
+- **flush**：用例 1（persist 被调）/用例 4（clearOutbox 被调）是 fire-and-forget（`void ....catch()`），断言前必须 `await flush()`（既有 flush helper test.ts:26-29），否则微任务未结算、断言计数为 0 假红。
+- **UUID 断言**：用例 1 的 clientMsgId 是 `local-<uuid>` 随机值，用 `expect(persistOutboxFailure).toHaveBeenCalledWith(expect.objectContaining({ clientMsgId: expect.stringMatching(/^local-/), messageType: 1, attachmentsJson: "[]" }))`。
+- **用例 3（never-uploaded）塞气泡**：`useChatStore.getState().enqueueOptimistic("c1", { ...outMsg("m1"), clientMsgId:"m1", messageType: 2 })`（无 filePath）→ `handleAction("resend", msgWith id "m1")` → `await flush()` → 断言 `showToast` 以 `STRINGS.toast.outboxReselectFile` 调用、`onSendMessage` 未触发。
+
+### 记录（不改，已知/可接受）
+
+- **:459 fail-stop** 对「上传已失败（已 markFailed）的附件单元」会二次调 failBubble → `persistOutboxFailure` UPSERT 两次，**幂等无害**（同 clientMsgId 同行）。
+- **failReason 用 `sendFailReason(err)`**（已截断 80 字 + 空时兜底 `STRINGS.errors.sendFailed`），提供具体原因优于通用常量；spec §1「补 STRINGS」以此满足，不再新增网断/上传/超长常量。
+- **never-uploaded 重读 url=""** → 破图/无效链接，属失败气泡可接受降级（用户看到的是 failed + failReason）。
+- **重发成功后 recents 失败态回正** 依赖服务端 SESSION_SUMMARY（spec §5 已知），弱网下可能短暂显示失败态；e2e 验收知悉。
