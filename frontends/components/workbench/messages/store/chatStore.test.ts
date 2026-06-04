@@ -443,6 +443,53 @@ describe("chatStore reducers", () => {
     const slice = replaceAuthoritative(emptySlice(), [msg("m1")]);
     expect(replaceAuthoritative(slice, [msg("m1"), msg("m2")])).not.toBe(slice);
   });
+
+  it("失败行 leftover 时,不被已显示的后发成功行(knownAuth)顶到下方(治沉底)", () => {
+    const slice = sliceWith([
+      optimistic("c-1", {
+        status: "failed",
+        sentAt: "2026-05-19T00:00:00.000Z",
+        text: "先发失败",
+        parts: [{ kind: "text", text: "先发失败" }],
+      }),
+      optimistic("c-2", {
+        status: "sent",
+        serverId: "server-2",
+        sentAt: "2026-05-19T00:00:10.000Z",
+        text: "后发成功",
+        parts: [{ kind: "text", text: "后发成功" }],
+      }),
+    ]);
+    const next = replaceAuthoritative(slice, [
+      msg("server-2", {
+        direction: "out",
+        status: "sent",
+        sentAt: "2026-05-19T00:00:10.000Z",
+        text: "后发成功",
+        parts: [{ kind: "text", text: "后发成功" }],
+      }),
+    ]);
+    expect(selectTimeline(next).map((e) => e.id)).toEqual(["c-1", "server-2"]);
+    expect(next.byId["c-1"].status).toBe("failed");
+  });
+
+  it("反例护栏:失败行 sentAt 落在已显示历史中段,无关重读不顶动已显示的真实消息", () => {
+    const slice = sliceWith([
+      msg("h0", { sentAt: "2026-05-19T00:00:00.000Z" }),
+      optimistic("c-1", {
+        status: "failed",
+        sentAt: "2026-05-19T00:00:05.000Z",
+        text: "A",
+        parts: [{ kind: "text", text: "A" }],
+      }),
+      msg("S", { direction: "out", status: "sent", sentAt: "2026-05-19T00:00:10.000Z" }),
+    ]);
+    const next = replaceAuthoritative(slice, [
+      msg("h0", { sentAt: "2026-05-19T00:00:00.000Z" }),
+      msg("S", { direction: "out", status: "sent", sentAt: "2026-05-19T00:00:10.000Z" }),
+    ]);
+    expect(selectTimeline(next).map((e) => e.id)).toEqual(["h0", "c-1", "S"]);
+  });
 });
 
 describe("valueEqual(内容等价深比)", () => {

@@ -136,26 +136,6 @@ function authRequestIdMatchesOptimistic(authMsg: Message, optimistic: ChatMessag
   );
 }
 
-// 把两条均按 sentAt 升序的 id 序列稳定归并成一条:同一时刻权威(a)在前、乐观(b)在后,
-// 使在途(sending)气泡照旧贴底,而锚定在过去时刻的失败气泡按其 sentAt 落回正确位置。
-function mergeByTimeAscending(
-  a: string[],
-  b: string[],
-  byId: Record<string, ChatMessageEntity>,
-): string[] {
-  const at = (id: string) => new Date(byId[id]?.sentAt ?? 0).getTime();
-  const out: string[] = [];
-  let i = 0;
-  let j = 0;
-  while (i < a.length && j < b.length) {
-    if (at(a[i]) <= at(b[j])) out.push(a[i++]);
-    else out.push(b[j++]);
-  }
-  while (i < a.length) out.push(a[i++]);
-  while (j < b.length) out.push(b[j++]);
-  return out;
-}
-
 function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
@@ -275,23 +255,30 @@ export function replaceAuthoritative(
   const leftover = pendingOptimistic.filter((e) => !convergedByMatch.has(e));
   for (const e of leftover) byId[e.id] = e;
 
-  // ── 排序:单调插入(已显示保位 + 新消息进底部) ──────────────────────────────
-  // 不再照搬服务端数组顺序重排已显示的消息。屏幕上「已显示过」的权威消息按其先前相对顺序
-  // 冻结为前缀,杜绝三类抖动:① 自己刚发的被服务端时间顶到上方;② 对方迟到消息按服务端
-  // 时间插进历史中间(易漏看,且让 useScrollController 的 slice(-arrived) 取错条目而不贴底);
-  // ③ 同毫秒消息因 sort_key 的 direction 段 tiebreak 翻序。一条权威消息算「已显示」当且仅当
-  // 它本身先前已在序列(m.id 在先前 order),或它收敛了一个先前已显示的乐观气泡(echo.id 在);
-  // 取该先前实体的位置为锚点排序。本批第一次出现的权威消息按服务端序追加到底部。
-  //
-  // leftover(失败/在途乐观气泡)必来自 slice.order,与这些「新权威」按 sentAt 归并接在已显示
-  // 前缀之后:既保住失败气泡按发送时刻归位(见单测「失败气泡按 sentAt 归位」)、在途气泡 sentAt
-  // 最新仍贴底,又不再重排已显示前缀。冷加载时先前 order 为空 → 前缀空 → 整体退化为旧的服务端
-  // 序归并,即「切走重开回到规范时序」(已与产品确认接受此取舍)。
+  // ── 排序:real 消息构成 spine(已显示保位 + 新消息追底);failed 按 sentAt 插入整条时间线;
+  //          在途/待回显(sending/sent leftover)贴底 ────────────────────────────────────
+  // 三类:① real 权威消息 = spine,已显示的(knownAuth)按先前相对位置冻结、本批新出现的(newAuth)
+  // 按服务端序追加到底,real 之间不重排(保住「已显示保位/同毫秒不翻序/迟到入站追底」三测);
+  // ② status==='failed' 的条目(失败行,无论 leftover 还是已落库的权威失败行)按 sentAt 插进 spine ——
+  // 锚定在过去时刻的失败气泡落回正确位置,杜绝「先沉底→后发成功收敛→失败行被冻结在沉底位」竞态;
+  // ③ 其余 leftover(在途 sending / 已 markSent 待回显 sent)贴底。failed 用「插在第一个 sentAt 严格
+  // 大于它的 spine 元素之前」的稳定插入:同毫秒时排在 real 之后(与「失败文本不被同内容权威吞」测一致)。
+  // at():memo 消除 sort 中重复 Date 解析;NaN 兜底防非法 sentAt 让失败行漏到尾部沉底。
+  const atCache = new Map<string, number>();
+  const at = (id: string) => {
+    const cached = atCache.get(id);
+    if (cached !== undefined) return cached;
+    const t = new Date(byId[id]?.sentAt ?? 0).getTime();
+    const v = Number.isNaN(t) ? 0 : t;
+    atCache.set(id, v);
+    return v;
+  };
   const priorIndex = new Map<string, number>();
   slice.order.forEach((id, i) => priorIndex.set(id, i));
   const knownAuth: { id: string; idx: number }[] = [];
   const newAuthIds: string[] = [];
   for (const m of messages) {
+    if (byId[m.id]?.status === "failed") continue; // 失败权威行不进 spine,稍后按 sentAt 插
     const echo = echoLookup.get(m.id) ?? matchedEcho.get(m.id);
     let idx = priorIndex.get(m.id);
     if (idx === undefined && echo) idx = priorIndex.get(echo.id);
@@ -299,14 +286,25 @@ export function replaceAuthoritative(
     else knownAuth.push({ id: m.id, idx });
   }
   knownAuth.sort((a, b) => a.idx - b.idx);
-  const order = [
-    ...knownAuth.map((k) => k.id),
-    ...mergeByTimeAscending(
-      newAuthIds,
-      leftover.map((e) => e.id),
-      byId,
-    ),
-  ];
+  const spine = [...knownAuth.map((k) => k.id), ...newAuthIds];
+
+  // 所有 status==='failed' 实体(权威失败行 + leftover 失败气泡;byId 键唯一,无重复),按 sentAt 升序。
+  const failedIds = Object.keys(byId)
+    .filter((id) => byId[id]?.status === "failed")
+    .sort((a, b) => at(a) - at(b));
+  // 非失败 leftover(在途 sending / 待回显 sent)贴底,保持先前相对序。
+  const tailLeftover = leftover.filter((e) => e.status !== "failed").map((e) => e.id);
+
+  // failed 稳定插入 spine:在每个 spine 元素前,先吐出所有 sentAt 严格小于它的 failed。
+  const withFailed: string[] = [];
+  let fi = 0;
+  for (const id of spine) {
+    while (fi < failedIds.length && at(failedIds[fi]) < at(id)) withFailed.push(failedIds[fi++]);
+    withFailed.push(id);
+  }
+  while (fi < failedIds.length) withFailed.push(failedIds[fi++]);
+
+  const order = [...withFailed, ...tailLeftover];
   const next = { ...slice, byId, order };
   // 内容等价(踢水位门 / 补读 / 多订阅者重读到一字未变的数据)→ 复用原引用,渲染端零 re-render。
   return sliceContentEqual(slice, next) ? slice : next;
