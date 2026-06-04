@@ -464,6 +464,56 @@ impl MessagesStore {
         Ok(())
     }
 
+    /// 删一条本地行(重发前清掉失败行,让气泡回纯乐观 sending)。按 employee_id 校验防越权。
+    pub async fn clear_outbox_row(
+        &self,
+        employee_id: &str,
+        local_message_id: &str,
+    ) -> Result<(), StateError> {
+        let employee_id = employee_id.to_string();
+        let local_message_id = local_message_id.to_string();
+        let conn = self.pool.pool().get().await?;
+        conn.interact(move |c| -> Result<(), StateError> {
+            c.execute(
+                "DELETE FROM hub_conversation_messages \
+                 WHERE employee_id = ?1 AND local_message_id = ?2",
+                rusqlite::params![employee_id, local_message_id],
+            )?;
+            Ok(())
+        })
+        .await??;
+        Ok(())
+    }
+
+    /// 列某会话未收敛的本地失败行(send_status=4 且 request_message_id 非空)。供 reconcile/trim 保活。
+    pub async fn list_failed_outbox(
+        &self,
+        employee_id: &str,
+        conversation_id: &str,
+    ) -> Result<Vec<MessageRow>, StateError> {
+        let employee_id = employee_id.to_string();
+        let conversation_id = conversation_id.to_string();
+        let conn = self.pool.pool().get().await?;
+        let rows = conn
+            .interact(move |c| -> Result<Vec<MessageRow>, StateError> {
+                let mut stmt = c.prepare(
+                    "SELECT local_message_id, conversation_id, employee_id, wecom_account_id, \
+                            sort_key, message_time_ms, message_direction, message_type, \
+                            content_text, send_status, attachments_json, gmt_modified_time, \
+                            revoked, fail_reason, request_message_id, updated_at_ms \
+                     FROM hub_conversation_messages \
+                     WHERE employee_id = ?1 AND conversation_id = ?2 \
+                       AND send_status = 4 AND request_message_id <> ''",
+                )?;
+                let rows = stmt
+                    .query_map(rusqlite::params![employee_id, conversation_id], map_row)?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                Ok(rows)
+            })
+            .await??;
+        Ok(rows)
+    }
+
     /// 清除聊天记录(「清除聊天记录」按钮唯一调用):删该 employee 全部消息行 +
     /// **折叠**水位窗(不删)。
     ///
@@ -959,6 +1009,74 @@ mod tests {
             2,
             "server 多态行(status≠4)绝不能被去重 DELETE 误删"
         );
+    }
+
+    #[tokio::test]
+    async fn clear_outbox_row_deletes_only_that_local_id() {
+        let pool = SqlitePool::in_memory().await.unwrap();
+        let store = MessagesStore::new(pool);
+        store
+            .insert_failed_outbox(
+                "E",
+                "c1",
+                "wa",
+                "x",
+                "m1",
+                1_780_000_000_000,
+                1,
+                "a",
+                "r",
+                "[]",
+            )
+            .await
+            .unwrap();
+        store
+            .insert_failed_outbox(
+                "E",
+                "c1",
+                "wa",
+                "x",
+                "m2",
+                1_780_000_000_001,
+                1,
+                "b",
+                "r",
+                "[]",
+            )
+            .await
+            .unwrap();
+        store.clear_outbox_row("E", "m1").await.unwrap();
+        let got = store.list_conversation_asc("E", "c1").await.unwrap();
+        let ids: Vec<_> = got.iter().map(|r| r.local_message_id.as_str()).collect();
+        assert_eq!(ids, ["m2"]);
+    }
+
+    #[tokio::test]
+    async fn list_failed_outbox_returns_only_failed_outbound_rows() {
+        let pool = SqlitePool::in_memory().await.unwrap();
+        let store = MessagesStore::new(pool);
+        store
+            .insert_failed_outbox(
+                "E",
+                "c1",
+                "wa",
+                "x",
+                "f1",
+                1_780_000_000_000,
+                1,
+                "a",
+                "r",
+                "[]",
+            )
+            .await
+            .unwrap();
+        store
+            .upsert_messages(&[row("server-1", "", 3)])
+            .await
+            .unwrap(); // 正常 server 行,reqid 空
+        let failed = store.list_failed_outbox("E", "c1").await.unwrap();
+        let ids: Vec<_> = failed.iter().map(|r| r.local_message_id.as_str()).collect();
+        assert_eq!(ids, ["f1"]);
     }
 
     #[tokio::test]
