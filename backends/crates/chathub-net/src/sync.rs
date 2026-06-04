@@ -117,7 +117,9 @@ impl SyncEngine {
     /// 读已落库水位(= 已 apply-then-advance 的最高 seq)。
     /// D4:纯 SQLite 薄包装、不缓存,故连接层经此发 ack 永远读不到"超前于已落库"的 seq。
     pub(crate) async fn durable_seq(&self) -> u64 {
-        self.notify_seq_store.read().await.unwrap_or(0)
+        // 水位按当前登录账号分键读;未登录(异常路径)→ 空 employee_id → 读到 0。
+        let employee_id = self.token_store.current_user_id().unwrap_or_default();
+        self.notify_seq_store.read(&employee_id).await.unwrap_or(0)
     }
 
     /// 处理一帧 `ServerEvent`:applier 落库 + apply-then-advance 水位 + resync 编排。
@@ -153,7 +155,12 @@ impl SyncEngine {
                 // 已广播 ResyncSignal 走 REST 全量兜底,提前推进安全。false 路径不进此分支,游标仍靠
                 // PushBatch 落库后推进(apply-then-advance,见下方 upsert_if_greater)。
                 if let Some(advance) = cursor_after_subscribe_ack(true, ack.replayed_to_seq) {
-                    if let Err(e) = self.notify_seq_store.upsert_if_greater(advance).await {
+                    let employee_id = self.token_store.current_user_id().unwrap_or_default();
+                    if let Err(e) = self
+                        .notify_seq_store
+                        .upsert_if_greater(&employee_id, advance)
+                        .await
+                    {
                         tracing::warn!(
                             target: "chathub_net::sync",
                             ?e,
@@ -200,7 +207,13 @@ impl SyncEngine {
                 applier.apply_push_batch(pb).await;
             }
             // 四个 applier 都已 best-effort 应用(失败内部 log + 安排 fallback),现在才推进全局水位。
-            if let Err(e) = self.notify_seq_store.upsert_if_greater(pb.notify_seq).await {
+            // 用 batch 自带的 employee_id 分键推进:relay 只会把本账号的批投到本连接,
+            // 故 pb.employee_id == 当前登录账号,与 durable_seq 读取的键一致。
+            if let Err(e) = self
+                .notify_seq_store
+                .upsert_if_greater(&pb.employee_id.to_string(), pb.notify_seq)
+                .await
+            {
                 tracing::warn!(target: "chathub_net::sync", ?e, "notify_seq_store upsert failed, ignored");
             }
         }
