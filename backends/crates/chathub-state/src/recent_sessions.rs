@@ -593,6 +593,47 @@ impl RecentSessionsStore {
         Ok(changed)
     }
 
+    /// 出站发送失败的接待列表乐观写:与 mark_local_sent 同款只动展示列,额外写 last_send_status=4。
+    /// **不动 last_message_sort_key_ms**(水位/版本键),故随后服务端 SESSION_SUMMARY 经 apply_summary
+    /// 不倒退 CASE(4→3 允许)可把状态收敛回正。会话不在 recents 则 no-op(返 false)。
+    pub async fn mark_local_failed(
+        &self,
+        employee_id: &str,
+        conversation_id: &str,
+        last_message_summary: &str,
+        last_message_type: i32,
+        last_message_direction: i32,
+        now_ms: i64,
+    ) -> Result<bool, StateError> {
+        let employee_id = employee_id.to_string();
+        let id = conversation_id.to_string();
+        let summary = last_message_summary.to_string();
+        let conn = self.pool.pool().get().await?;
+        let changed = conn
+            .interact(move |c| -> Result<bool, StateError> {
+                let n = c.execute(
+                    "UPDATE hub_conversation_recents SET \
+                       last_message_summary   = ?1, \
+                       last_message_type      = ?2, \
+                       last_message_direction = ?3, \
+                       local_last_sent_at_ms  = ?4, \
+                       last_send_status       = 4 \
+                     WHERE employee_id = ?5 AND conversation_id = ?6",
+                    rusqlite::params![
+                        summary,
+                        last_message_type as i64,
+                        last_message_direction as i64,
+                        now_ms,
+                        employee_id,
+                        id,
+                    ],
+                )?;
+                Ok(n > 0)
+            })
+            .await??;
+        Ok(changed)
+    }
+
     /// 读单会话远端权威"最新位置"(LWW 主版本 epoch-ms)。不过滤 `removed`,行不存在返 None。
     ///
     /// 供消息页会话水位门用:与消息缓存窗口 `newest_message_time_ms` 比较,够新就跳过 reconcile。
@@ -2064,6 +2105,32 @@ mod tests {
             .await
             .unwrap();
         assert!(!hit);
+    }
+
+    #[tokio::test]
+    async fn mark_local_failed_sets_status_4_without_touching_version_key() {
+        let pool = SqlitePool::in_memory().await.unwrap();
+        let store = RecentSessionsStore::new(pool);
+        store
+            .upsert_remote_many(&[sample_remote("c1", "wa-1", 500, 0)])
+            .await
+            .unwrap(); // status=3, sort_key=500
+        let hit = store
+            .mark_local_failed(E, "c1", "发失败的消息", 1, 1, 9999)
+            .await
+            .unwrap();
+        assert!(hit);
+        let got = store.list_top(E, None, 10).await.unwrap();
+        assert_eq!(got[0].last_message_summary, "发失败的消息");
+        assert_eq!(
+            got[0].last_send_status, 4,
+            "失败态必须写 last_send_status=4"
+        );
+        assert_eq!(got[0].local_last_sent_at_ms, 9999);
+        assert_eq!(
+            got[0].last_message_sort_key_ms, 500,
+            "绝不动版本/水位键(否则破坏 apply_summary 回正)"
+        );
     }
 
     /// mark_local_sent 写 local_last_sent_at_ms → 把会话顶到前(其它排序信号为 0 时)。
