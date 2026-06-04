@@ -91,3 +91,81 @@ describe("adaptHistoryRecords 细分语义透传(revoked / failReason / requestM
     expect(m.status).toBe("failed");
   });
 });
+
+describe("附件按权威 attachmentType 分类(实时推送无 fileSuffix 的回归)", () => {
+  // 用户实测的实时推送图片附件:只带 attachmentType=1 + ossFilePath(→ mediaId),无 fileSuffix/fileName。
+  it("attachmentType=1 + 空 fileType → 渲染为 image(此前会误判成 file)", () => {
+    const r: HistoryMessage = {
+      ...record(2),
+      messageType: 2,
+      contentText: "",
+      attachments: [
+        {
+          mediaId: "t/dev/wechat-business-app/wecom/chat/2026/06/04/190543_5ddad58e.jpg",
+          fileName: "",
+          fileSize: 2341,
+          attachmentType: 1,
+          fileType: "",
+        },
+      ],
+    };
+    const [m] = adaptHistoryRecords([r], "c1");
+    expect(m.parts.map((p) => p.kind)).toEqual(["image"]);
+  });
+
+  it("attachmentType 2/3/4 → file/voice/video", () => {
+    const mk = (attachmentType: number): HistoryMessage => ({
+      ...record(2),
+      localMessageId: `a${attachmentType}`,
+      messageType: attachmentType === 2 ? 3 : attachmentType === 3 ? 4 : 6,
+      contentText: "",
+      attachments: [{ mediaId: "t/x", fileName: "", fileSize: 1, attachmentType, fileType: "" }],
+    });
+    const byId = new Map(
+      adaptHistoryRecords([mk(2), mk(3), mk(4)], "c1").map((m) => [m.id, m.parts[0]?.kind]),
+    );
+    expect(byId.get("a2")).toBe("file");
+    expect(byId.get("a3")).toBe("voice");
+    expect(byId.get("a4")).toBe("video");
+  });
+
+  it("缺省 attachmentType 时回退按扩展名分类(向后兼容旧缓存)", () => {
+    const r: HistoryMessage = {
+      ...record(2),
+      messageType: 2,
+      contentText: "",
+      // 无 attachmentType,fileType=png → 仍判 image。
+      attachments: [{ mediaId: "t/x.png", fileName: "x.png", fileSize: 1, fileType: "png" }],
+    };
+    const [m] = adaptHistoryRecords([r], "c1");
+    expect(m.parts.map((p) => p.kind)).toEqual(["image"]);
+  });
+
+  it("纯媒体大类的 [图片] 占位被剥离;图文混合(5)保留正文 + 图片", () => {
+    const image: HistoryMessage = {
+      ...record(2),
+      localMessageId: "img",
+      messageType: 2,
+      contentText: "[图片]",
+      attachments: [
+        { mediaId: "t/a.jpg", fileName: "", fileSize: 1, attachmentType: 1, fileType: "" },
+      ],
+    };
+    const mixed: HistoryMessage = {
+      ...record(2),
+      localMessageId: "mix",
+      messageType: 5,
+      contentText: "看这张图",
+      attachments: [
+        { mediaId: "t/b.jpg", fileName: "", fileSize: 1, attachmentType: 1, fileType: "" },
+      ],
+    };
+    const byId = new Map(adaptHistoryRecords([image, mixed], "c1").map((m) => [m.id, m]));
+    // 图片:占位剥离,只剩 image part。
+    expect(byId.get("img")?.text).toBe("");
+    expect(byId.get("img")?.parts.map((p) => p.kind)).toEqual(["image"]);
+    // 图文混合:正文保留,text + image 两段。
+    expect(byId.get("mix")?.text).toBe("看这张图");
+    expect(byId.get("mix")?.parts.map((p) => p.kind)).toEqual(["text", "image"]);
+  });
+});

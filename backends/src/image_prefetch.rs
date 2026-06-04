@@ -16,7 +16,7 @@ use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use chathub_net::HistoryMessage;
+use chathub_net::{HistoryAttachment, HistoryMessage};
 use chathub_state::{ImageMeta, ImageMetaStore};
 use tauri::async_runtime;
 
@@ -62,13 +62,19 @@ fn is_image(file_type: &str) -> bool {
     )
 }
 
+/// 判断附件是否为图片：权威 `attachment_type==1` 优先,扩展名 `file_type` 兜底。
+/// 实时推送的图片只带 attachmentType、不带 fileSuffix,故不能只看扩展名,否则预取被整体跳过。
+fn is_image_attachment(a: &HistoryAttachment) -> bool {
+    a.attachment_type == 1 || is_image(&a.file_type)
+}
+
 fn inject_dims_into_records(records: &mut [HistoryMessage], dims: &HashMap<String, (u32, u32)>) {
     if dims.is_empty() {
         return;
     }
     for r in records.iter_mut() {
         for a in r.attachments.iter_mut() {
-            if !is_image(&a.file_type) || (a.width.is_some() && a.height.is_some()) {
+            if !is_image_attachment(a) || (a.width.is_some() && a.height.is_some()) {
                 continue;
             }
             let Some(u) = image_url(&a.media_id) else {
@@ -85,7 +91,6 @@ fn inject_dims_into_records(records: &mut [HistoryMessage], dims: &HashMap<Strin
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chathub_net::HistoryAttachment;
     use std::collections::HashMap;
 
     fn message(media_id: &str) -> HistoryMessage {
@@ -101,6 +106,7 @@ mod tests {
                 media_id: media_id.into(),
                 file_name: "image.png".into(),
                 file_size: 1,
+                attachment_type: 1,
                 file_type: "png".into(),
                 width: None,
                 height: None,
@@ -130,6 +136,31 @@ mod tests {
         assert_eq!(attachment.width, Some(640));
         assert_eq!(attachment.height, Some(360));
         assert_eq!(attachment.local_path, None);
+    }
+
+    #[test]
+    fn is_image_attachment_prefers_attachment_type_then_falls_back_to_ext() {
+        let mut a = HistoryAttachment {
+            media_id: "t/x".into(),
+            file_name: "".into(),
+            file_size: 0,
+            attachment_type: 1,
+            file_type: "".into(),
+            width: None,
+            height: None,
+            local_path: None,
+            transfer_status: 2,
+            duration_seconds: None,
+        };
+        // 推送图片:attachmentType=1、无扩展名 → 仍判为图片(此前会漏判 → 跳过预取)。
+        assert!(is_image_attachment(&a));
+        // 文件:attachmentType=2、无图片扩展名 → 非图片。
+        a.attachment_type = 2;
+        assert!(!is_image_attachment(&a));
+        // 旧缓存:无 attachmentType(0),靠扩展名兜底仍判图片。
+        a.attachment_type = 0;
+        a.file_type = "png".into();
+        assert!(is_image_attachment(&a));
     }
 }
 
@@ -168,7 +199,7 @@ impl ImagePrefetcher {
         let urls: Vec<String> = records
             .iter()
             .flat_map(|r| r.attachments.iter())
-            .filter(|a| is_image(&a.file_type))
+            .filter(|a| is_image_attachment(a))
             .filter_map(|a| image_url(&a.media_id))
             .collect::<HashSet<_>>()
             .into_iter()
@@ -187,7 +218,7 @@ impl ImagePrefetcher {
         let mut stale_local: HashSet<String> = HashSet::new();
         for r in records.iter_mut() {
             for a in r.attachments.iter_mut() {
-                if !is_image(&a.file_type) {
+                if !is_image_attachment(a) {
                     continue;
                 }
                 if let Some(u) = image_url(&a.media_id) {

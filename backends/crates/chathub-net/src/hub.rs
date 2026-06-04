@@ -807,7 +807,12 @@ pub struct HistoryAttachment {
     pub file_name: String,
     #[serde(default, deserialize_with = "de_i64_flexible")]
     pub file_size: i64,
+    /// 媒体类型(权威):1=图片 / 2=文件 / 3=语音 / 4=视频。push 与 history 均下发 `attachmentType`。
+    /// 客户端分类首选此字段;缺省 0(未知,如旧缓存)时调用方回退按扩展名 `file_type` 判定。
+    #[serde(default)]
+    pub attachment_type: i32,
     /// 不含点的后缀(如 png)。规范键 `fileType`;上游键 `fileSuffix`。
+    /// 仅在 `attachment_type==2`(文件)时细分具体格式(pdf/doc/xls…),不再作图片/语音判定主依据。
     #[serde(default, alias = "fileSuffix")]
     pub file_type: String,
     /// 图片原始宽度（px），由后台预取注入；服务端不下发时为 None。
@@ -1161,8 +1166,31 @@ impl Inner {
                         if durable > last_acked {
                             match self.hub.ack(durable).await {
                                 Ok(()) => last_acked = durable,
-                                // 失败不前进 last_acked,下个窗口重试(seq 单调,重发幂等)。
-                                Err(e) => tracing::warn!(?e, durable, "hub.ack failed; retry next window"),
+                                Err(e) => {
+                                    // ack 报错与流路径同等 classify:Unauthenticated(token 失效/被顶
+                                    // 下线)等鉴权类错误必须升级下线,否则会无限"retry next window"成
+                                    // 僵尸在线。仅瞬时网络/内部错才不前进 last_acked、下窗重试(幂等)。
+                                    match classify(&e) {
+                                        Action::Logout => {
+                                            self.token_store.mark_token_invalid().await;
+                                            let (code, message) = reject_fields(&e);
+                                            self.state_tx.send_replace(
+                                                ConnectionState::Rejected { code, message },
+                                            );
+                                            return;
+                                        }
+                                        Action::Terminate => {
+                                            let (code, message) = reject_fields(&e);
+                                            self.state_tx.send_replace(
+                                                ConnectionState::Rejected { code, message },
+                                            );
+                                            return;
+                                        }
+                                        Action::Backoff => tracing::warn!(
+                                            ?e, durable, "hub.ack failed; retry next window"
+                                        ),
+                                    }
+                                }
                             }
                         }
                     }
@@ -1171,6 +1199,38 @@ impl Inner {
                             // 处理 v2 三件套。
                             use chathub_proto::v1::server_event::Body;
                             use chathub_proto::v1::system_signal::Kind;
+                            // DEBUG:打印收到的 relay 下发原始帧,便于排查推送链路。
+                            // events_json 是业务事件 JSON 原文,转 UTF-8 打印;字段表达式仅在 DEBUG
+                            // 开启时才求值(tracing 宏特性),故热路径零额外开销。
+                            match &event.body {
+                                Some(Body::PushBatch(b)) => tracing::debug!(
+                                    target: "chathub_net::hub",
+                                    notify_seq = b.notify_seq,
+                                    employee_id = b.employee_id,
+                                    batch_id = %b.batch_id,
+                                    device_id = %b.device_id,
+                                    events_json = %String::from_utf8_lossy(b.events_json.as_ref()),
+                                    "relay downstream PushBatch received"
+                                ),
+                                Some(Body::SubscribeAck(a)) => tracing::debug!(
+                                    target: "chathub_net::hub",
+                                    resumed_from_seq = a.resumed_from_seq,
+                                    replayed_to_seq = a.replayed_to_seq,
+                                    resync_required = a.resync_required,
+                                    resync_reason = %a.resync_reason,
+                                    "relay downstream SubscribeAck received"
+                                ),
+                                Some(Body::System(s)) => tracing::debug!(
+                                    target: "chathub_net::hub",
+                                    kind = ?s.kind(),
+                                    detail = %s.detail,
+                                    "relay downstream SystemSignal received"
+                                ),
+                                None => tracing::debug!(
+                                    target: "chathub_net::hub",
+                                    "relay downstream empty frame received"
+                                ),
+                            }
                             // 完全单向隔离:只有 SERVER_DRAIN(服务端要求断开)才断重连;RESYNC_REQUIRED
                             // 不再断连 —— 它是数据同步事件,由 SyncEngine 广播 ResyncSignal 走 REST 全量
                             // 软重拉恢复(见 sync.rs),连接照常存活。详见 proto KIND_RESYNC_REQUIRED 契约。
@@ -1191,6 +1251,26 @@ impl Inner {
                                     target: "chathub_net::hub",
                                     "first SubscribeAck received; now Subscribed (online)"
                                 );
+                            }
+
+                            // 账号被顶下线(CONNECTION_FORCE_CLOSE / EXCLUSIVE_LOGIN):清 token
+                            // (按 clearLocalToken)+ 广播 Kicked → 前端切回登录页并提示,结束本连接循环。
+                            // 这是除"ack 回 Unauthenticated"之外的主动下线路径(事件随 batch 下发,
+                            // 早于/独立于 token 失效,体验更及时)。
+                            if let Some(fc) = outcome.force_close {
+                                tracing::warn!(
+                                    target: "chathub_net::hub",
+                                    reason_code = %fc.reason_code,
+                                    message = %fc.reason_message,
+                                    clear_local_token = fc.clear_local_token,
+                                    "CONNECTION_FORCE_CLOSE received; logging out (kicked)"
+                                );
+                                self.token_store.mark_kicked(fc.clear_local_token).await;
+                                self.state_tx.send_replace(ConnectionState::Rejected {
+                                    code: fc.reason_code,
+                                    message: fc.reason_message,
+                                });
+                                return;
                             }
 
                             if should_terminate {
@@ -1312,6 +1392,8 @@ mod tests {
             resp.records[0].attachments[0].media_id,
             "t/dev/wechat-business-app/2026/05/30/202716_ec80d3fb.png"
         );
+        // attachmentType 是权威媒体类型字段,必须被捕获(1=图片),供客户端分类。
+        assert_eq!(resp.records[0].attachments[0].attachment_type, 1);
         assert!(resp.has_more);
         assert_eq!(resp.next_cursor, "cur1");
     }

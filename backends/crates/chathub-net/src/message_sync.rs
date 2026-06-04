@@ -820,6 +820,27 @@ mod tests {
         assert_eq!(a.file_name, "image.png");
         assert_eq!(a.transfer_status, 2);
         assert_eq!(a.duration_seconds, None);
+        assert_eq!(a.attachment_type, 1, "attachmentType=1 权威图片类型须捕获");
+    }
+
+    // 回归(本次 bug):实时推送的图片附件只带 attachmentType + ossFilePath,**无 fileSuffix/fileName**。
+    // 此前因 HistoryAttachment 不捕获 attachmentType,前端只能退回空 fileType → 误判成文件。
+    // 现在 attachment_type 须落到 1,file_type 允许为空(扩展名仅在文件类时细分)。
+    #[test]
+    fn history_attachment_parses_realtime_push_image_without_filesuffix() {
+        let raw = r#"{"attachmentType":1,"fileMd5":"40ea3324c64fcebd1276cd1abd08655b","fileSize":2341,"imageHeight":125,"imageWidth":162,"ossFilePath":"t/dev/wechat-business-app/wecom/chat/2026/06/04/190543_5ddad58e.jpg","ossPreviewFilePath":"https://filet.jdd51.com/t/dev/wechat-business-app/wecom/chat/2026/06/04/190543_5ddad58e.jpg","transferStatus":2}"#;
+        let a: HistoryAttachment = serde_json::from_str(raw).expect("实时推送图片附件应能解析");
+        assert_eq!(a.attachment_type, 1, "推送图片 attachmentType=1");
+        assert_eq!(
+            a.media_id, "t/dev/wechat-business-app/wecom/chat/2026/06/04/190543_5ddad58e.jpg",
+            "ossFilePath → media_id"
+        );
+        assert_eq!(
+            a.file_type, "",
+            "推送无 fileSuffix → file_type 空,改由 attachment_type 定类"
+        );
+        assert_eq!(a.file_size, 2341);
+        assert_eq!(a.transfer_status, 2);
     }
 
     // 规范形态(本地发送回显落库的 mediaId/数字 fileSize)仍正常解析,不被上游兼容改动破坏。
@@ -831,6 +852,46 @@ mod tests {
         assert_eq!(a.file_size, 42);
         assert_eq!(a.file_type, "png");
         assert_eq!(a.transfer_status, 0);
+        assert_eq!(
+            a.attachment_type, 0,
+            "无 attachmentType → 默认 0(调用方回退扩展名)"
+        );
+    }
+
+    // 回归:推送原文(含 attachmentType、无 fileSuffix)作为 attachments_json 落库后,
+    // 经 row_to_history 读回前端形态时,attachment_type 必须**透传不丢**(此前会被丢弃)。
+    #[test]
+    fn row_to_history_preserves_attachment_type_from_push_raw() {
+        let row = MessageRow {
+            local_message_id: "m1".into(),
+            conversation_id: "c1".into(),
+            employee_id: "u1".into(),
+            wecom_account_id: "wa1".into(),
+            sort_key: "1780571140000_00000000000011975805_2062490980266803200".into(),
+            message_time_ms: 1_780_571_140_000,
+            message_direction: 1,
+            message_type: 2,
+            content_text: "".into(),
+            send_status: 0,
+            attachments_json:
+                r#"[{"attachmentType":1,"fileSize":2341,"imageHeight":125,"imageWidth":162,"ossFilePath":"t/dev/wechat-business-app/wecom/chat/2026/06/04/190543_5ddad58e.jpg","transferStatus":2}]"#
+                    .into(),
+            gmt_modified_time: "".into(),
+            revoked: false,
+            fail_reason: "".into(),
+            request_message_id: "".into(),
+            updated_at_ms: 0,
+        };
+        let h = row_to_history(&row);
+        assert_eq!(h.attachments.len(), 1);
+        assert_eq!(
+            h.attachments[0].attachment_type, 1,
+            "attachmentType 经 parse→serialize 往返须存活"
+        );
+        assert_eq!(
+            h.attachments[0].file_type, "",
+            "推送无 fileSuffix,file_type 留空"
+        );
     }
 
     #[test]

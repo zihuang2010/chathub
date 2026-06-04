@@ -254,14 +254,13 @@ export function useResource<T>(opts: UseResourceOptions<T>): UseResourceResult<T
     if (!enabled) return;
     let unlisten: (() => void) | undefined;
     let cancelled = false;
+    // 先订阅再读 hub_state 回填(见 useHubSyncStatus 同款修复):先读后订阅会在两步间
+    // 留 IPC 间隙,漏掉登录瞬间唯一一次 subscribed 事件,使连接态卡在 connecting。
     void (async () => {
-      try {
-        const init = await invoke<HubConnectionState>("hub_state");
-        if (!cancelled) setConnectionState(init);
-      } catch {
-        // 命令未就绪时静默
-      }
+      let gotEvent = false;
       const un = await listen<HubConnectionState>("hub:connection", (event) => {
+        if (cancelled) return;
+        gotEvent = true;
         setConnectionState(event.payload);
       });
       // await 期间组件可能已卸载:cleanup 早于此处赋值会空跑,导致监听器悬挂永不取消。
@@ -270,6 +269,13 @@ export function useResource<T>(opts: UseResourceOptions<T>): UseResourceResult<T
         return;
       }
       unlisten = un;
+      try {
+        const init = await invoke<HubConnectionState>("hub_state");
+        // 回填期间监听器已收到事件则不用更旧的快照覆盖。
+        if (!cancelled && !gotEvent) setConnectionState(init);
+      } catch {
+        // 命令未就绪时静默
+      }
     })();
     return () => {
       cancelled = true;

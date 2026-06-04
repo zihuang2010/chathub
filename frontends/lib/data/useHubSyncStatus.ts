@@ -63,15 +63,17 @@ export function useHubSyncStatus(): UseHubSyncStatusResult {
         setConnectionState(next);
       }
     };
+    // 关键顺序:先订阅 hub:connection,再读 hub_state 回填初始态。反过来(先读后订阅)
+    // 会在两步之间留一个 IPC 间隙:登录瞬间 Connecting→Subscribed 仅 ~30ms,唯一一次
+    // "subscribed" 事件可能正好落在间隙里被永久漏掉,而此后连接态不再变化 → UI 卡死
+    // "连接中"。先订阅保证 listen 就绪后的事件不丢;listen 注册前已发生的状态变化由随后
+    // 的 hub_state 快照兜底读回。
     void (async () => {
-      try {
-        const init = await invoke<HubConnectionState>("hub_state");
-        if (!cancelled) setConnectionState(init);
-      } catch {
-        // hub_state 命令未就绪时静默
-      }
+      let gotEvent = false;
       const un = await listen<HubConnectionState>("hub:connection", (event) => {
-        if (!cancelled) applyState(event.payload);
+        if (cancelled) return;
+        gotEvent = true;
+        applyState(event.payload);
       });
       // await 期间组件可能已卸载:cleanup 早于此处赋值会空跑,导致监听器悬挂永不取消。
       if (cancelled) {
@@ -79,6 +81,13 @@ export function useHubSyncStatus(): UseHubSyncStatusResult {
         return;
       }
       unlisten = un;
+      try {
+        const init = await invoke<HubConnectionState>("hub_state");
+        // 若回填期间监听器已收到事件(更及时),不用可能更旧的快照覆盖。
+        if (!cancelled && !gotEvent) setConnectionState(init);
+      } catch {
+        // hub_state 命令未就绪时静默
+      }
     })();
     return () => {
       cancelled = true;

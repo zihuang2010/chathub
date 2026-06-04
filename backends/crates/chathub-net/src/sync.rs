@@ -62,6 +62,50 @@ pub(crate) fn cursor_after_subscribe_ack(
 pub(crate) struct FrameOutcome {
     /// 本帧是否 `SubscribeAck`。连接层据此把在线态收紧到"收到首个 ack"(防"流开了但 ack 没回"的假在线)。
     pub is_subscribe_ack: bool,
+    /// 本帧 PushBatch 含 `CONNECTION_FORCE_CLOSE`(账号被顶下线等)→ 连接层据此清 token + 回登录页。
+    /// 仍走 SyncEngine 单向隔离:此处只**识别并回报**,真正的下线动作由连接层执行。
+    pub force_close: Option<ForceClose>,
+}
+
+/// `CONNECTION_FORCE_CLOSE` 事件解析出的关键字段,经 [`FrameOutcome`] 回报连接层。
+pub(crate) struct ForceClose {
+    /// forceClose.clearLocalToken:是否一并清本地持久化 token。
+    pub clear_local_token: bool,
+    /// forceClose.reasonCode,如 "EXCLUSIVE_LOGIN"。
+    pub reason_code: String,
+    /// forceClose.reasonMessage,用户可读提示。
+    pub reason_message: String,
+}
+
+/// 从 PushBatch 的 events_json 中检测 `CONNECTION_FORCE_CLOSE`。relay 只把本账号的批投到本连接,
+/// 故批内出现的 force_close 即针对当前会话(无需再比对 employeeId)。解析失败/无此事件 → None。
+fn detect_force_close(events_json: &[u8]) -> Option<ForceClose> {
+    let events: Vec<serde_json::Value> = serde_json::from_slice(events_json).ok()?;
+    let fc = events.iter().find_map(|ev| {
+        if ev.get("eventType").and_then(|v| v.as_str()) == Some("CONNECTION_FORCE_CLOSE") {
+            ev.get("forceClose")
+        } else {
+            None
+        }
+    })?;
+    Some(ForceClose {
+        // clearLocalToken 缺省按 true(force_close 默认要求本端清 token 退出)。
+        clear_local_token: fc
+            .get("clearLocalToken")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true),
+        reason_code: fc
+            .get("reasonCode")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string(),
+        reason_message: fc
+            .get("reasonMessage")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .unwrap_or("账号在其他设备登录,本端已退出")
+            .to_string(),
+    })
 }
 
 /// 数据同步层。详见模块文档。
@@ -194,6 +238,9 @@ impl SyncEngine {
         // 水位必须在 appliers 提交 SQLite 之后才前进:否则崩溃重启会用一个超前的 since 重订阅,
         // 跳过尚未落库的批次(数据丢失到下次 resync)。
         if let Some(Body::PushBatch(pb)) = &event.body {
+            // 控制事件:CONNECTION_FORCE_CLOSE 不是四个 applier 认得的业务事件(会被静默丢弃),
+            // 故在此单独识别并经 FrameOutcome 回报连接层去执行下线(SyncEngine 仍不碰连接态)。
+            outcome.force_close = detect_force_close(pb.events_json.as_ref());
             if let Some(applier) = &self.account_event_applier {
                 applier.apply_push_batch(pb).await;
             }
@@ -259,5 +306,35 @@ mod tests {
         assert!(RESYNC_BROADCAST_TOPICS.contains(&ChangeTopic::Accounts));
         assert!(RESYNC_BROADCAST_TOPICS.contains(&ChangeTopic::Friends));
         assert!(RESYNC_BROADCAST_TOPICS.contains(&ChangeTopic::RecentSessions));
+    }
+
+    #[test]
+    fn detect_force_close_parses_exclusive_login_event() {
+        // 真实下行帧(EXCLUSIVE_LOGIN):应解析出 clearLocalToken / reasonCode / reasonMessage。
+        // 含中文,用普通 raw 串(UTF-8)取字节,br#"" 不允许非 ASCII。
+        let json = r#"[{"eventReason":"EXCLUSIVE_LOGIN","eventType":"CONNECTION_FORCE_CLOSE","forceClose":{"clearLocalToken":true,"closeMode":"IMMEDIATE","closeScope":"EMPLOYEE","reasonCode":"EXCLUSIVE_LOGIN","reasonMessage":"账号已在其他设备登录","reloginRequired":true}}]"#;
+        let fc = detect_force_close(json.as_bytes()).expect("should detect force_close");
+        assert!(fc.clear_local_token);
+        assert_eq!(fc.reason_code, "EXCLUSIVE_LOGIN");
+        assert_eq!(fc.reason_message, "账号已在其他设备登录");
+    }
+
+    #[test]
+    fn detect_force_close_absent_for_normal_batch() {
+        // 普通业务批次(无 force_close)→ None,不误触发下线。
+        let json = br#"[{"eventType":"MESSAGE_UPSERT"}]"#;
+        assert!(detect_force_close(json).is_none());
+        // 解析失败(非 JSON 数组)也安全返回 None。
+        assert!(detect_force_close(b"not-json").is_none());
+    }
+
+    #[test]
+    fn detect_force_close_defaults_when_fields_missing() {
+        // forceClose 缺 clearLocalToken/reasonMessage:clearLocalToken 缺省 true、message 给兜底文案。
+        let json = br#"[{"eventType":"CONNECTION_FORCE_CLOSE","forceClose":{"reasonCode":"X"}}]"#;
+        let fc = detect_force_close(json).expect("should detect force_close");
+        assert!(fc.clear_local_token);
+        assert_eq!(fc.reason_code, "X");
+        assert_eq!(fc.reason_message, "账号在其他设备登录,本端已退出");
     }
 }

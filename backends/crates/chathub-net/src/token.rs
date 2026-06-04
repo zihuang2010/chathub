@@ -165,6 +165,17 @@ impl TokenStore {
         let _ = self.logged_out_tx.send(LoggedOutReason::TokenInvalid);
     }
 
+    /// 被顶下线(CONNECTION_FORCE_CLOSE / EXCLUSIVE_LOGIN):清 state → broadcast Kicked。
+    /// 前端 App.tsx 对 `kicked` 有专门提示("账号在其他设备登录,本端已退出")并切回登录页。
+    /// `clear_local_token` 取自 forceClose.clearLocalToken:true 时一并清本地持久化 token。
+    pub async fn mark_kicked(&self, clear_local_token: bool) {
+        if clear_local_token {
+            let _ = self.local.clear_token().await;
+        }
+        *self.state.write() = None;
+        let _ = self.logged_out_tx.send(LoggedOutReason::Kicked);
+    }
+
     /// 读本地 SQLite 持久化的 token(冷启动 resume 用)。
     pub async fn try_load_token(&self) -> Option<String> {
         self.local.read_token().await.ok().flatten()
@@ -265,5 +276,38 @@ mod tests {
         assert!(!store.is_logged_in());
         assert!(store.try_load_token().await.is_none());
         assert_eq!(rx.recv().await.unwrap(), LoggedOutReason::TokenInvalid);
+    }
+
+    #[tokio::test]
+    async fn mark_kicked_clears_and_broadcasts_kicked() {
+        let local = fresh_local().await;
+        let ep = tonic::transport::Endpoint::from_static("http://127.0.0.1:1");
+        let store = TokenStore::new(ep, local, "dev".into());
+        store.seed_token_for_test("tok-x").await;
+        store.set_session("tok-x".into(), "u-1".into());
+        let mut rx = store.logged_out_subscribe();
+
+        store.mark_kicked(true).await;
+
+        assert!(!store.is_logged_in());
+        assert!(store.try_load_token().await.is_none());
+        assert_eq!(rx.recv().await.unwrap(), LoggedOutReason::Kicked);
+    }
+
+    #[tokio::test]
+    async fn mark_kicked_without_clear_keeps_local_token() {
+        let local = fresh_local().await;
+        let ep = tonic::transport::Endpoint::from_static("http://127.0.0.1:1");
+        let store = TokenStore::new(ep, local, "dev".into());
+        store.seed_token_for_test("tok-x").await;
+        store.set_session("tok-x".into(), "u-1".into());
+        let mut rx = store.logged_out_subscribe();
+
+        store.mark_kicked(false).await;
+
+        // 内存 state 清空(本端已退),但本地持久化 token 保留(clearLocalToken=false)。
+        assert!(!store.is_logged_in());
+        assert_eq!(store.try_load_token().await.as_deref(), Some("tok-x"));
+        assert_eq!(rx.recv().await.unwrap(), LoggedOutReason::Kicked);
     }
 }

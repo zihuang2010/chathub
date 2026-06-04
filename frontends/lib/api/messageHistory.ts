@@ -5,7 +5,11 @@
 //        → Tauri:HubClient.fetch_message_history → relay → 业务后台 → records 透传
 //        → UI 适配扁平 records[] 成 Message[] 喂给现有渲染逻辑
 
-import { attachmentTypeFromExt, buildMessageParts } from "@/components/workbench/messages/data";
+import {
+  attachmentKindFromCode,
+  attachmentTypeFromExt,
+  buildMessageParts,
+} from "@/components/workbench/messages/data";
 import type { Message, MessageAttachment } from "@/components/workbench/messages/data";
 
 import { invokeWithTimeout } from "./invokeClient";
@@ -70,6 +74,8 @@ export interface HistoryAttachment {
   mediaId: string;
   fileName: string;
   fileSize: number;
+  /** 权威媒体类型:1=图片 / 2=文件 / 3=语音 / 4=视频(上游 attachmentType)。分类首选此字段,缺省 0=未知。 */
+  attachmentType?: number;
   fileType: string;
   /** 图片原始宽度（像素），由后端 image_meta 注入；非图片附件为空。 */
   width?: number;
@@ -272,10 +278,11 @@ function historyToMessage(
   conversationId: string,
   isoOf: (messageTime: string) => string,
 ): Message {
-  // messageType=2(图片)的 contentText 是服务端给"不支持富文本的客户端"的占位
-  // "[图片]"。本前端能直接渲染 image attachment,留这段文本会在气泡上方多一行
-  // 冗余"[图片]" + 下面再叠图,体验冗余。把占位剥掉,只让附件出图。
-  const text = h.messageType === 2 ? "" : h.contentText;
+  // 纯媒体大类(图片2 / 文件3 / 语音4 / 视频6)的 contentText 是服务端给"不支持富文本的客户端"
+  // 的占位/摘要(如"[图片]")。本前端直接渲染附件,留这段占位会在气泡上方多一行冗余文本 + 下面
+  // 再叠附件,体验冗余。把占位剥掉,只让附件出内容。文本1 与图文混合5 的 contentText 是真实正文,
+  // 保留;未知大类默认保留,不藏内容。
+  const text = [2, 3, 4, 6].includes(h.messageType) ? "" : h.contentText;
   const attachments =
     h.attachments.length > 0 ? h.attachments.map(historyAttachmentToMessage) : undefined;
   // 方向:后端 messageDirection===2 为出站,其它一律入站(直接产出 "in"/"out",无中间数值层)。
@@ -311,7 +318,8 @@ function compareHistoryRecords(
 }
 
 function historyAttachmentToMessage(a: HistoryAttachment): MessageAttachment {
-  const kind = attachmentTypeFromExt(a.fileType);
+  // 权威 attachmentType 优先(实时推送只带它、不带 fileSuffix);未知/缺省再回退按扩展名判定。
+  const kind = attachmentKindFromCode(a.attachmentType) ?? attachmentTypeFromExt(a.fileType);
   return {
     type: kind,
     // 媒体走 OSS 链接:mediaId 若是完整 https 原样用;若是相对 objectName 则拼预览域名。

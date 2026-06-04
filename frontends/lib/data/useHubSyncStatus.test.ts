@@ -16,6 +16,8 @@ vi.mock("@tauri-apps/api/event", () => ({
   }),
 }));
 
+import { invoke } from "@tauri-apps/api/core";
+
 import { useHubSyncStatus } from "./useHubSyncStatus";
 
 beforeEach(() => {
@@ -111,5 +113,41 @@ describe("useHubSyncStatus hub:connection 去抖", () => {
     });
 
     expect(result.current.connectionState).toEqual({ state: "connecting" });
+  });
+
+  // 回归:登录瞬间 Connecting→Subscribed 仅 ~30ms,唯一一次 subscribed 事件可能在
+  // listen 注册前发出。修复后顺序为"先 listen 再 invoke 回填",故 hub_state 未决时
+  // 监听器也已就绪,subscribed 事件不会丢;且迟到的回填快照不得覆盖已收到的更新事件。
+  it("先订阅后回填:hub_state 未决时监听器已就绪,subscribed 事件不丢且不被旧快照覆盖", async () => {
+    let resolveInit: (v: unknown) => void = () => {};
+    // hub_state 故意挂起:旧实现(先 await invoke 再 listen)此时 connectionCb 仍为 undefined。
+    vi.mocked(invoke).mockReturnValueOnce(
+      new Promise((r) => {
+        resolveInit = r;
+      }),
+    );
+
+    const { result } = renderHook(() => useHubSyncStatus());
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    // 关键断言:listen 已先于(未决的)invoke 注册。
+    expect(connectionCb).toBeTypeOf("function");
+
+    act(() => {
+      connectionCb!({ payload: { state: "subscribed" } });
+    });
+    expect(result.current.connectionState).toEqual({ state: "subscribed" });
+
+    // 回填迟到,且监听器已收到事件:不应被(更旧的)快照覆盖。
+    await act(async () => {
+      resolveInit({ state: "connecting" });
+      await Promise.resolve();
+    });
+    expect(result.current.connectionState).toEqual({ state: "subscribed" });
   });
 });

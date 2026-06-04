@@ -125,6 +125,27 @@ export function attachmentTypeFromExt(ext: string): MessageAttachment["type"] {
   return "file";
 }
 
+// 上游权威媒体类型码值(notify/push 与 message/history 同口径的 attachmentType)→ 渲染类型。
+// 1=图片 / 2=文件 / 3=语音 / 4=视频。收到附件时**首选**按此码值分类(实时推送只带 attachmentType、
+// 不带 fileSuffix,纯靠扩展名会把图片误判成文件);未知/缺省码值返回 undefined,调用方再回退
+// attachmentTypeFromExt(按 fileType 扩展名)。文件大类内的具体格式(pdf/doc/xls)仍由扩展名细分。
+export function attachmentKindFromCode(
+  code: number | undefined,
+): MessageAttachment["type"] | undefined {
+  switch (code) {
+    case 1:
+      return "image";
+    case 2:
+      return "file";
+    case 3:
+      return "voice";
+    case 4:
+      return "video";
+    default:
+      return undefined;
+  }
+}
+
 function attachmentToPart(a: MessageAttachment): MessagePart {
   switch (a.type) {
     case "image":
