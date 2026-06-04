@@ -243,6 +243,22 @@ async function prepareVoiceForSend(
   return { ok: true, bytes: out, durationSec };
 }
 
+// 从发送错误里提取给坐席看的失败原因:业务错误({kind,msg})取 msg,普通 Error 取 message,
+// 兜底通用文案。服务端偶尔把 Java 堆栈塞进 msg,截断到 80 字符避免 toast 撑爆。
+function sendFailReason(err: unknown): string {
+  let raw = "";
+  if (err && typeof err === "object") {
+    const o = err as { msg?: unknown; message?: unknown };
+    if (typeof o.msg === "string") raw = o.msg;
+    else if (typeof o.message === "string") raw = o.message;
+  } else if (typeof err === "string") {
+    raw = err;
+  }
+  raw = raw.trim();
+  if (!raw) return STRINGS.errors.sendFailed;
+  return raw.length > 80 ? `${raw.slice(0, 80)}…` : raw;
+}
+
 export function useChatActions({
   conversation,
   chatStoreKey,
@@ -273,6 +289,14 @@ export function useChatActions({
         // 收敛终态,绝不在此假「已发送」——回调不来时也不会假成功。
         if (resp) {
           if (resp.sendStatus === SEND_STATUS.failed) {
+            // 诊断:后端返回 send_status=4(受控失败,relay/企微拒收)时打印完整响应,
+            // 看是否带失败原因,用于定位"特定内容发不出去"。
+            console.error("[send] 后端返回 send_status=4 受控失败", {
+              clientMsgId,
+              textLen: text.length,
+              resp,
+            });
+            showToast(STRINGS.errors.sendFailed, { type: "error" });
             useChatStore.getState().markFailed(owningStoreKey, clientMsgId);
             return false;
           }
@@ -281,7 +305,15 @@ export function useChatActions({
           }
         }
         return true;
-      } catch {
+      } catch (err) {
+        // 诊断:发送抛异常的真实原因过去被 catch{} 吞掉,这里显式打印(超时/传输/鉴权),
+        // 便于定位失败根因。
+        console.error("[send] deliverMessage 抛异常", {
+          clientMsgId,
+          textLen: text.length,
+          err,
+        });
+        showToast(sendFailReason(err), { type: "error" });
         useChatStore.getState().markFailed(owningStoreKey, clientMsgId);
         return false;
       }
@@ -336,8 +368,10 @@ export function useChatActions({
         // 回写已上传信息到气泡,便于失败重发复用 objectName、不再重传 OSS;语音一并存时长供重发携带。
         useChatStore.getState().patchMessage(owningStoreKey, clientMsgId, options);
         return options;
-      } catch {
-        // 上传阶段抛错(取字节 / OSS 失败)→ 标失败。
+      } catch (err) {
+        // 上传阶段抛错(取字节 / OSS 失败)→ 标失败并提示原因。
+        console.error("[send] 附件上传失败", { clientMsgId, err });
+        showToast(sendFailReason(err), { type: "error" });
         useChatStore.getState().markFailed(owningStoreKey, clientMsgId);
         return null;
       }
@@ -465,7 +499,30 @@ export function useChatActions({
             });
             break;
           }
-          // 纯文本走原逻辑。
+          // 纯文本重发:与首发一致,文本达到 COMPOSER_MAX_CHARS(企微 2000 字上限)的改为
+          // 转 .txt 文件重发(否则企微返回 WECOM_SEND_CONTENT_TOO_LONG 必失败)。
+          const unit = textToSendUnit(message.text);
+          if (unit.kind === "attachment") {
+            // 把失败的长文本气泡就地改写成 txt 文件气泡(预览 + 类型),再上传发送。
+            const fileAtt: MessageAttachment = {
+              type: "file",
+              url: unit.url,
+              name: unit.name,
+              sizeBytes: unit.sizeBytes,
+            };
+            useChatStore.getState().patchMessage(chatStoreKey, message.id, {
+              text: "",
+              parts: buildMessageParts("", undefined, [fileAtt]),
+              messageType: unit.messageType,
+              fileName: unit.name,
+              fileSize: unit.sizeBytes,
+            });
+            void (async () => {
+              const options = await uploadAttachmentUnit(clientMsgId, unit);
+              if (options) await deliverMessage(message.id, "", clientMsgId, options);
+            })();
+            break;
+          }
           void deliverMessage(message.id, message.text, clientMsgId);
           break;
         }
@@ -509,7 +566,14 @@ export function useChatActions({
           break;
       }
     },
-    [deliverMessage, chatStoreKey, conversation.id, conversation.name, setReplyDraft],
+    [
+      deliverMessage,
+      uploadAttachmentUnit,
+      chatStoreKey,
+      conversation.id,
+      conversation.name,
+      setReplyDraft,
+    ],
   );
 
   return { handleSend, handleAction };

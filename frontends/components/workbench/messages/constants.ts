@@ -24,8 +24,11 @@ export const AT_BOTTOM_THRESHOLD = 24;
 // their avatars/timestamps. 5 minutes follows IM convention (WeChat / iMessage).
 export const TIME_BURST_GAP_MS = 5 * 60 * 1000;
 
-export const COMPOSER_MAX_CHARS = 5000;
-export const COMPOSER_WARN_CHARS = 4500;
+// 企业微信服务端硬限:单条文本最多 2000 字符,超出服务端返回 WECOM_SEND_CONTENT_TOO_LONG
+// 直接拒收。故此阈值即企微上限——达到即由发送链路(buildSendUnits→textToSendUnit)自动落成
+// .txt 文件附件发出(文件消息不受 2000 字文本限制),≤1999 仍按普通文本发送。
+export const COMPOSER_MAX_CHARS = 2000;
+export const COMPOSER_WARN_CHARS = 1800;
 
 // 翻更旧页每次条数。页越小,单次 prepend 撑高越少 → 残余惯性覆盖锚点的概率与幅度都更低,
 // 网络也更快。首屏仍走 useMessageHistory 的 DEFAULT_PAGE_SIZE(=20),保证首屏撑满视口可滚;
