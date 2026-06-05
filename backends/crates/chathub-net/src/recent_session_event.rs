@@ -22,8 +22,7 @@
 
 use crate::change_notice::{ChangeNotice, ChangeScope, ChangeTopic};
 use crate::hub::RecentFriendRecord;
-// D3:复用 message_sync 的 pub(crate) 公历日数助手,去掉本模块重复 days_from_civil 副本。
-use crate::message_sync::{days_from_civil, parse_server_time_to_ms};
+use crate::message_sync::parse_server_time_to_ms;
 use chathub_proto::v1::PushBatchOut;
 use chathub_state::{
     AccountCacheStore, RecentSessionRemote, RecentSessionSummary, RecentSessionsStore,
@@ -245,7 +244,12 @@ impl RecentSessionEventApplier {
 /// `RecentFriendRecord`(API 形态)→ `RecentSessionRemote`(行存远端列)。
 /// 公开导出供 Tauri command 复用。`employee_id` 由调用方注入(从当前会话获取)。
 pub fn record_to_remote(r: RecentFriendRecord, employee_id: &str) -> RecentSessionRemote {
-    let time_ms = parse_iso_to_ms(&r.last_message_time);
+    // 显示时间口径与事件路径 `decode_summary` 一致:sortKey 首段即该会话权威 epoch-ms,
+    // 再 max 服务端时间串。时间串用**健壮**的 `parse_server_time_to_ms`(兼容真实 payload 的
+    // 无 `Z`/空格/毫秒形态)。历史用只认尾 `Z` 的 `parse_iso_to_ms`,真实格式一律解析成 0 →
+    // 纯远端行 last_message_time_ms 恒 0 → 接待列表时间空白(重启后尤为明显)。
+    let sort_ms = split_sort_key_ms(&r.last_message_sort_key);
+    let time_ms = sort_ms.max(parse_server_time_to_ms(&r.last_message_time));
     RecentSessionRemote {
         conversation_id: r.conversation_id,
         wecom_account_id: r.wecom_account_id,
@@ -266,7 +270,7 @@ pub fn record_to_remote(r: RecentFriendRecord, employee_id: &str) -> RecentSessi
         unread_count: r.unread_count,
         has_unread: r.has_unread,
         // 版本主键回退:sortKey 缺省时用消息时间(同为 epoch-ms,可比)。
-        last_message_sort_key_ms: split_sort_key_ms(&r.last_message_sort_key).max(time_ms),
+        last_message_sort_key_ms: sort_ms.max(time_ms),
         gmt_modified_time: r.gmt_modified_time,
     }
 }
@@ -368,83 +372,58 @@ fn json_id(v: &serde_json::Value, key: &str) -> String {
     }
 }
 
-/// 极简 RFC3339(`YYYY-MM-DDTHH:MM:SSZ`)解析:成功返 epoch ms,失败返 0。
-/// 业务端返回此格式;若以后加 offset / 分秒,需要换 `time` crate。
-fn parse_iso_to_ms(s: &str) -> i64 {
-    // 形如 "2026-05-18T10:28:36Z",定长 20 字节,只支持 UTC `Z` 结尾。
-    if s.len() < 20 || !s.ends_with('Z') {
-        return 0;
-    }
-    let bytes = s.as_bytes();
-    let take = |start: usize, len: usize| -> Option<i64> {
-        std::str::from_utf8(&bytes[start..start + len])
-            .ok()?
-            .parse::<i64>()
-            .ok()
-    };
-    if bytes[4] != b'-'
-        || bytes[7] != b'-'
-        || bytes[10] != b'T'
-        || bytes[13] != b':'
-        || bytes[16] != b':'
-    {
-        return 0;
-    }
-    let (y, mo, d, h, mi, se) = match (
-        take(0, 4),
-        take(5, 2),
-        take(8, 2),
-        take(11, 2),
-        take(14, 2),
-        take(17, 2),
-    ) {
-        (Some(y), Some(mo), Some(d), Some(h), Some(mi), Some(se)) => (y, mo, d, h, mi, se),
-        _ => return 0,
-    };
-    if !(1970..=9999).contains(&y) || !(1..=12).contains(&mo) || !(1..=31).contains(&d) {
-        return 0;
-    }
-    days_from_civil(y as i32, mo as i32, d as i32) * 86_400_000
-        + h * 3_600_000
-        + mi * 60_000
-        + se * 1_000
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn parse_iso_to_ms_known_value() {
-        // 2026-05-18T10:28:36Z → 1779438516000 ms
-        // 验证:2026-05-18 距 epoch 的天数 × 86400000 + 时分秒
-        let got = parse_iso_to_ms("2026-05-18T10:28:36Z");
-        // 用同一算法反推,确认 round-trip。
-        let expected =
-            days_from_civil(2026, 5, 18) * 86_400_000 + 10 * 3_600_000 + 28 * 60_000 + 36 * 1_000;
-        assert_eq!(got, expected);
-        assert!(got > 1_700_000_000_000, "must be 2024+ in ms");
+    /// 构造一条最小 `RecentFriendRecord`,只关心时间/排序键两列(其余给占位值)。
+    fn sample_record(last_message_time: &str, sort_key: &str) -> RecentFriendRecord {
+        RecentFriendRecord {
+            conversation_id: "c1".into(),
+            wecom_account_id: "wa-1".into(),
+            wecom_name: "客服-A".into(),
+            wecom_account: "wxid_a".into(),
+            wecom_alias: "客服 A".into(),
+            external_user_id: "ext".into(),
+            external_name: "外部".into(),
+            external_avatar: String::new(),
+            external_mobile: String::new(),
+            last_local_message_id: "L".into(),
+            last_message_type: 1,
+            last_message_direction: 1,
+            last_send_status: 3,
+            last_message_summary: "hi".into(),
+            last_message_time: last_message_time.into(),
+            unread_count: 0,
+            has_unread: false,
+            last_message_sort_key: sort_key.into(),
+            gmt_modified_time: String::new(),
+        }
     }
 
+    /// 回归:真实 payload 的无 `Z` ISO-T 时间串必须解析出**非零**显示时间。
+    /// 旧 `parse_iso_to_ms`(只认尾 `Z`)对此返 0 → 接待列表行时间空白(重启后尤为明显)。
     #[test]
-    fn parse_iso_to_ms_epoch_zero() {
-        assert_eq!(parse_iso_to_ms("1970-01-01T00:00:00Z"), 0);
+    fn record_to_remote_parses_real_no_z_time() {
+        // sortKey 首段小于解析时间,确保断言的是 lastMessageTime 真被解析(而非 sortKey 兜底)。
+        let r = sample_record("2026-06-02T16:55:20", "1_abc");
+        let remote = record_to_remote(r, "emp-1");
+        assert!(
+            remote.last_message_time_ms > 1_700_000_000_000,
+            "无 Z 真实格式必须解析出 2024+ 的非零显示时间,got {}",
+            remote.last_message_time_ms
+        );
+        // 与事件路径口径一致:display 时间 == 版本主键(sortKey 兜底后取 max)。
+        assert_eq!(remote.last_message_time_ms, remote.last_message_sort_key_ms);
     }
 
+    /// 治本兜底:时间串完全无法解析时,只要有 sortKey,显示时间也不再凭空为 0。
     #[test]
-    fn parse_iso_to_ms_invalid_returns_zero() {
-        assert_eq!(parse_iso_to_ms(""), 0);
-        assert_eq!(parse_iso_to_ms("not-an-iso-date"), 0);
-        assert_eq!(parse_iso_to_ms("2026-05-18T10:28:36"), 0); // 无 Z
-        assert_eq!(parse_iso_to_ms("2026-05-18T10:28:36+08:00"), 0); // offset 不支持
-        assert_eq!(parse_iso_to_ms("2026/05/18T10:28:36Z"), 0); // 分隔符错
-    }
-
-    #[test]
-    fn parse_iso_to_ms_monotonic_within_day() {
-        let a = parse_iso_to_ms("2026-05-18T10:00:00Z");
-        let b = parse_iso_to_ms("2026-05-18T11:00:00Z");
-        assert_eq!(b - a, 3_600_000);
+    fn record_to_remote_floors_display_time_with_sort_key() {
+        let r = sample_record("garbage", "1780000000000_abc");
+        let remote = record_to_remote(r, "emp-1");
+        assert_eq!(remote.last_message_time_ms, 1_780_000_000_000);
+        assert_eq!(remote.last_message_sort_key_ms, 1_780_000_000_000);
     }
 
     /// 真实 payload 形态:身份字段(conversationId/wecomAccountId/externalUserId)与摘要字段

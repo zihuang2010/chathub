@@ -872,6 +872,9 @@ mod tests {
         );
         assert_eq!(a.file_size, 2341);
         assert_eq!(a.transfer_status, 2);
+        // 服务端 imageWidth/imageHeight 须被捕获(经 alias),供前端首帧定比例盒。
+        assert_eq!(a.width, Some(162), "imageWidth → width");
+        assert_eq!(a.height, Some(125), "imageHeight → height");
     }
 
     // 规范形态(本地发送回显落库的 mediaId/数字 fileSize)仍正常解析,不被上游兼容改动破坏。
@@ -923,6 +926,10 @@ mod tests {
             h.attachments[0].file_type, "",
             "推送无 fileSuffix,file_type 留空"
         );
+        // 推送原文的 imageWidth/imageHeight 经 parse(alias 捕获)→serialize(规范键 width/height)
+        // 往返后须存活,读回前端即带尺寸 → 收图首帧正确比例盒、不依赖 OSS 取尺寸。
+        assert_eq!(h.attachments[0].width, Some(162), "imageWidth 往返存活");
+        assert_eq!(h.attachments[0].height, Some(125), "imageHeight 往返存活");
     }
 
     #[test]

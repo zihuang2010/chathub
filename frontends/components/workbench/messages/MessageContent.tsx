@@ -1,7 +1,6 @@
 import { Fragment, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
-  CircleHelp,
   Download,
   FileText,
   Image as ImageIcon,
@@ -264,10 +263,14 @@ function VoiceAttachment({ part }: { part: VoicePart }) {
   const safe = isLocal || isSafeUrl(part.url, "link");
   const ext = audioExtension(part.url);
   const isAmr = ext === "amr";
-  // amr / 本地预览走 benz 应用内解码;silk/sil 仍无解码 → 外部打开;其余 http(mp3/wav 等)用原生 <audio>。
+  // silk/sil:WebView 原生 <audio> 解不了,改走 silk-wasm 应用内解码(见 playSilkInApp)。
+  const isSilk = WEB_UNPLAYABLE_AUDIO.has(ext);
+  // amr / 本地预览走 benz;silk 走 silk-wasm 解码;其余 http(mp3/wav 等)用原生 <audio>。
   const nativePlayable = safe && !isLocal && !WEB_UNPLAYABLE_AUDIO.has(ext) && !isAmr;
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const amrRef = useRef<BenzAMRInstance | null>(null);
+  // silk 解码后的 WAV blob: URL,缓存避免二次点击重复取字节+解码;卸载时 revoke。
+  const silkUrlRef = useRef<string | null>(null);
   const [playing, setPlaying] = useState(false);
   // amr 首次播放需异步取字节 + 解码,loading 期间防重复点击。
   const [loading, setLoading] = useState(false);
@@ -276,6 +279,7 @@ function VoiceAttachment({ part }: { part: VoicePart }) {
   useEffect(() => {
     return () => {
       amrRef.current?.stop();
+      if (silkUrlRef.current) URL.revokeObjectURL(silkUrlRef.current);
     };
   }, []);
 
@@ -320,8 +324,51 @@ function VoiceAttachment({ part }: { part: VoicePart }) {
     }
   };
 
+  // silk 应用内解码播放:取字节 → silk-wasm 解成 WAV → 复用隐藏 <audio> 播放。
+  const playSilkInApp = async () => {
+    const el = audioRef.current;
+    if (!el) {
+      void openExternal(part.url);
+      return;
+    }
+    // 已解码过 → 直接 play/pause 切换,不重复取字节解码。
+    if (silkUrlRef.current) {
+      if (el.paused) void el.play().catch(() => void openExternal(part.url));
+      else el.pause();
+      return;
+    }
+    if (loading) return;
+    setLoading(true);
+    try {
+      // 本地预览(blob:/data:)直接取 Blob;远程 OSS 经后端命令取字节绕 CORS(与 amr 同口径)。
+      const bytes = isLocal
+        ? new Uint8Array(await (await fetch(part.url)).arrayBuffer())
+        : new Uint8Array(await invoke<number[]>("fetch_media_bytes", { url: part.url }));
+      const { decodeSilkToWav } = await import("./silk");
+      const { wav, durationSec } = await decodeSilkToWav(bytes);
+      const url = URL.createObjectURL(wav);
+      silkUrlRef.current = url;
+      el.src = url;
+      // durationSec 缺省时用解码时长补显示。
+      if (!part.durationSec && durationSec > 0) setAmrDuration(durationSec);
+      await el.play();
+    } catch {
+      // 取字节/解码失败(含 wasm 被 CSP 拦)→ 回退系统播放器并复位状态。
+      setPlaying(false);
+      void openExternal(part.url);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const handleClick = () => {
     if (!safe) return;
+    // silk/sil:走 silk-wasm 应用内解码(自带本地/远程取字节)。放在 isLocal 前,避免极少数
+    // blob: silk 误入 benz。
+    if (isSilk) {
+      void playSilkInApp();
+      return;
+    }
     // amr / 本地预览(blob/data,可能是 amr,原生 <audio> 解不了)统一走 benz 应用内解码。
     if (isAmr || isLocal) {
       void playInApp();
@@ -403,10 +450,10 @@ function VoiceAttachment({ part }: { part: VoicePart }) {
           {STRINGS.attachment.voiceDuration(seconds)}
         </span>
       </button>
-      {nativePlayable && (
+      {(nativePlayable || isSilk) && (
         <audio
           ref={audioRef}
-          src={part.url}
+          src={nativePlayable ? part.url : undefined}
           preload="none"
           className="hidden"
           onPlay={() => setPlaying(true)}
@@ -513,6 +560,23 @@ function VideoAttachment({ part }: { part: VideoPart }) {
 
 // ─── Inline content ──────────────────────────────────────────────────────────
 
+// 微信表情(收到的 [微笑] 等)内联渲染为本地打包 PNG。尺寸跟随字号、与文字基线对齐;
+// alt 用原文 "[微笑]" 以便复制/读屏退化为文本。加载失败 → 回退显示原文,杜绝裂图。
+function WechatEmoji({ value, src }: { value: string; src: string }) {
+  const [failed, setFailed] = useState(false);
+  if (failed) return <>{value}</>;
+  return (
+    <img
+      src={src}
+      alt={value}
+      draggable={false}
+      loading="lazy"
+      onError={() => setFailed(true)}
+      className="mx-px inline-block h-[1.25em] w-[1.25em] align-text-bottom"
+    />
+  );
+}
+
 function TextRun({ value }: { value: string }) {
   const segs = formatRichText(value);
   return (
@@ -538,6 +602,8 @@ function TextRun({ value }: { value: string }) {
                 {seg.value}
               </span>
             );
+          case "emoji-image":
+            return <WechatEmoji key={key} value={seg.value} src={seg.src} />;
           case "emoji":
           case "text":
             return <Fragment key={key}>{seg.value}</Fragment>;
@@ -548,12 +614,18 @@ function TextRun({ value }: { value: string }) {
 }
 
 // 未知消息占位:前端不识别的消息类型(如 messageType=99)既无文本也无可渲染附件。
-// 渲染为气泡内的淡色提示行(问号图标 + 文案),引导用户在手机端查看原消息;沿用所在
-// 气泡的 in/out 底色与排版,读作"这是一条消息,但本端暂不支持展示",而非空白/出错。
+// 渲染为气泡内的淡色提示行(实心信息图标 + 文案),引导用户在手机端查看原消息;沿用
+// 所在气泡的 in/out 底色与排版,读作"这是一条消息,但本端暂不支持展示",而非空白/出错。
+// 图标用实心圆(填充当前 muted 灰)+ 镂空白色 i,白色取面板底色随主题自适应,避免描边
+// 空心图标在浅底气泡上发虚。
 function UnknownRun() {
   return (
-    <span className="inline-flex items-center gap-1.5 align-middle italic text-workbench-text-muted">
-      <CircleHelp size={14} strokeWidth={1.6} className="shrink-0" aria-hidden />
+    <span className="inline-flex items-center gap-1.5 align-middle font-medium text-workbench-text-muted">
+      <svg width={16} height={16} viewBox="0 0 24 24" className="shrink-0" aria-hidden>
+        <circle cx="12" cy="12" r="10" fill="currentColor" />
+        <circle cx="12" cy="7.8" r="1.45" fill="hsl(var(--wb-surface))" />
+        <rect x="10.8" y="10.6" width="2.4" height="5.8" rx="1.2" fill="hsl(var(--wb-surface))" />
+      </svg>
       {STRINGS.unknown.bubble}
     </span>
   );

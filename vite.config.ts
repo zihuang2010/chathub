@@ -9,6 +9,13 @@ const host = process.env.TAURI_DEV_HOST;
 export default defineConfig(async () => ({
   plugins: [react()],
 
+  // silk-wasm 用 `new URL("silk.wasm", import.meta.url)` 定位 wasm。排除其 esbuild 预打包,
+  // 否则 dep optimize 会改写 import.meta.url 导致 wasm 取址跑偏(vite 才能把 silk.wasm 当
+  // 静态资源产出并重写 URL)。仅 silk 语音点击播放时懒加载,不影响首屏。
+  optimizeDeps: {
+    exclude: ["silk-wasm"],
+  },
+
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./frontends"),

@@ -216,34 +216,49 @@ impl ImagePrefetcher {
         //      并把该 url 计入「需重取缩略图」集合，B 段重新落盘 + 刷新 meta.local_path。
         let metas = self.meta.get_many(urls.clone()).await.unwrap_or_default();
         let mut stale_local: HashSet<String> = HashSet::new();
+        // 已带真实宽高的图 url(服务端 imageWidth/imageHeight 反序列化已捕获,或 meta 刚注入)。
+        // 这些图首帧即可定比例盒,A 段同步取尺寸对它们是多余的,不进同步集合(省阻塞)。
+        let mut urls_with_dims: HashSet<String> = HashSet::new();
         for r in records.iter_mut() {
             for a in r.attachments.iter_mut() {
                 if !is_image_attachment(a) {
                     continue;
                 }
-                if let Some(u) = image_url(&a.media_id) {
-                    if let Some(m) = metas.get(&u) {
-                        a.width = Some(m.width);
-                        a.height = Some(m.height);
-                        if !m.local_path.is_empty() && std::path::Path::new(&m.local_path).exists()
-                        {
-                            a.local_path = Some(m.local_path.clone());
-                        } else {
-                            stale_local.insert(u);
-                        }
+                let Some(u) = image_url(&a.media_id) else {
+                    continue;
+                };
+                if let Some(m) = metas.get(&u) {
+                    a.width = Some(m.width);
+                    a.height = Some(m.height);
+                    if !m.local_path.is_empty() && std::path::Path::new(&m.local_path).exists() {
+                        a.local_path = Some(m.local_path.clone());
+                    } else {
+                        stale_local.insert(u.clone());
                     }
+                }
+                if a.width.is_some() && a.height.is_some() {
+                    urls_with_dims.insert(u);
                 }
             }
         }
 
-        // 3. 首屏返回前优先补宽高：image/info 只回小 JSON,短预算内成功即写 meta + 注入
-        //    records；失败/超时不阻塞,当前前端保持稳定中性比例盒,后台 B 段再下整图补。
+        // 3. 首屏返回前优先补宽高：只对**仍缺宽高**的图同步取 image/info(已有服务端 imageWidth/
+        //    imageHeight 或 meta 命中的图跳过,省掉一次最多 SYNC_DIMS_TIMEOUT 的 OSS 阻塞)。
+        //    image/info 只回小 JSON,短预算内成功即写 meta + 注入 records；失败/超时不阻塞,
+        //    前端保持稳定中性比例盒,后台 B 段再下整图补。
+        //    注:`missing`(缺 meta)仍是 B 段缩略图工作集 —— 带服务端宽高但无本地缩略图的图
+        //    仍需 B 段下整图补 local_path,故 B 段集合不收窄。
         let missing: Vec<String> = urls
             .into_iter()
             .filter(|u| !metas.contains_key(u))
             .collect();
-        if !missing.is_empty() {
-            let dims = self.fetch_dims_with_timeout(missing.clone()).await;
+        let dims_missing: Vec<String> = missing
+            .iter()
+            .filter(|u| !urls_with_dims.contains(*u))
+            .cloned()
+            .collect();
+        if !dims_missing.is_empty() {
+            let dims = self.fetch_dims_with_timeout(dims_missing).await;
             inject_dims_into_records(records, &dims);
         }
 

@@ -74,6 +74,12 @@ impl SqlitePool {
                     "../migrations/V23__recents_local_last_sent.sql"
                 )),
                 M::up(include_str!("../migrations/V24__idx_hub_msgs_req.sql")),
+                M::up(include_str!(
+                    "../migrations/V25__recents_backfill_display_time.sql"
+                )),
+                M::up(include_str!(
+                    "../migrations/V26__recents_backfill_remote_display_time.sql"
+                )),
             ]);
             migrations
                 .to_latest(c)
@@ -198,5 +204,63 @@ mod tests {
             2,
             "source direction 3=多端同步方,应迁移为本地 out"
         );
+    }
+
+    #[test]
+    fn v25_migration_backfills_display_time_from_local_last_sent() {
+        let conn = rusqlite::Connection::open_in_memory().expect("open in-memory sqlite");
+        // V25 的 UPDATE 仅引用这两列,建最小表覆盖回填语义即可(真实 recents 表跨多迁移构建)。
+        conn.execute_batch(
+            "CREATE TABLE hub_conversation_recents ( \
+               conversation_id       TEXT NOT NULL, \
+               last_message_time_ms  INTEGER NOT NULL DEFAULT 0, \
+               local_last_sent_at_ms INTEGER NOT NULL DEFAULT 0 \
+             );",
+        )
+        .expect("create minimal recents table");
+        // 四类行:① 只有本地发送/无服务端确认(坏行,待回填)② 真实消息更新(不下调)
+        // ③ 本地发送晚于真实消息(抬齐,与写入口 MAX 一致)④ 无任何活动(保持空)。
+        conn.execute_batch(
+            "INSERT INTO hub_conversation_recents VALUES \
+               ('timeless',  0,    9999), \
+               ('real_newer',5000, 3000), \
+               ('sent_newer',2000, 8000), \
+               ('idle',      0,    0);",
+        )
+        .expect("seed rows");
+
+        conn.execute_batch(include_str!(
+            "../migrations/V25__recents_backfill_display_time.sql"
+        ))
+        .expect("run V25 migration");
+
+        let time_ms = |id: &str| -> i64 {
+            conn.query_row(
+                "SELECT last_message_time_ms FROM hub_conversation_recents WHERE conversation_id = ?1",
+                [id],
+                |r| r.get(0),
+            )
+            .expect("read last_message_time_ms")
+        };
+        assert_eq!(time_ms("timeless"), 9999, "坏行应用本地发送时间补齐");
+        assert_eq!(time_ms("real_newer"), 5000, "更新的真实消息时间不得被下调");
+        assert_eq!(
+            time_ms("sent_newer"),
+            8000,
+            "本地发送更晚应抬齐(与写入口 MAX 一致)"
+        );
+        assert_eq!(
+            time_ms("idle"),
+            0,
+            "无活动行保持空(打开空白会话不应有显示时间)"
+        );
+
+        // 幂等:重跑无任何变化。
+        conn.execute_batch(include_str!(
+            "../migrations/V25__recents_backfill_display_time.sql"
+        ))
+        .expect("rerun V25 migration");
+        assert_eq!(time_ms("timeless"), 9999, "重跑须幂等");
+        assert_eq!(time_ms("sent_newer"), 8000, "重跑须幂等");
     }
 }

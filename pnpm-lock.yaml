@@ -89,6 +89,9 @@ importers:
       react-dom:
         specifier: ^19.1.0
         version: 19.2.5(react@19.2.5)
+      silk-wasm:
+        specifier: ^3.7.1
+        version: 3.7.1
       tailwind-merge:
         specifier: ^3.5.0
         version: 3.5.0
@@ -2440,6 +2443,10 @@ packages:
   signal-exit@4.1.0:
     resolution: {integrity: sha512-bzyZ1e88w9O1iNJbKnOlvYTrWPDl46O1bG0D3XInv+9tkPrxrN8jUUTiFlDkkmKWgn1M6CfIA13SuGqOa9Korw==}
     engines: {node: '>=14'}
+
+  silk-wasm@3.7.1:
+    resolution: {integrity: sha512-mXPwLRtZxrYV3TZx41jMAeKc80wvmyrcXIcs8HctFxK15Ahz2OJQENYhNgEPeCEOdI6Mbx1NxQsqxzwc3DKerw==}
+    engines: {node: '>=16.11.0'}
 
   sirv@3.0.2:
     resolution: {integrity: sha512-2wcC/oGxHis/BoHkkPwldgiPSYcpZK3JU28WoMVv55yHJgcZ8rlXvuG9iZggz+sU1d4bRgIGASwyWqjxu3FM0g==}
@@ -4889,6 +4896,8 @@ snapshots:
   siginfo@2.0.0: {}
 
   signal-exit@4.1.0: {}
+
+  silk-wasm@3.7.1: {}
 
   sirv@3.0.2:
     dependencies:

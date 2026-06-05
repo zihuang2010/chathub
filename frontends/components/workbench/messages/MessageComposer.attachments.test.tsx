@@ -159,6 +159,12 @@ describe("MessageComposer 附件三入口 + 语音独占态", () => {
     // 文档:含 .pdf;可多选。
     expect(doc!.accept).toContain(".pdf");
     expect(doc!.multiple).toBe(true);
+
+    // 回归守卫:accept 必须带 MIME 类型,不能只有扩展名 —— Tauri/macOS 的 WKWebView 只认
+    // MIME、忽略纯扩展名,只给扩展名会让原生文件框不过滤(点"语音"仍能选图片的根因)。
+    expect(image!.accept).toMatch(/image\//);
+    expect(voice!.accept).toMatch(/audio\//);
+    expect(doc!.accept).toMatch(/application\//);
   });
 
   it("选入语音文件 → 进入语音独占态:出现语音 chip、编辑器置只读、内容按钮禁用", async () => {

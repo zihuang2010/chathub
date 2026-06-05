@@ -1870,7 +1870,7 @@ pub fn run() {
             load_conversation_messages, load_older_messages, clear_chat_messages,
             send_message, upload_attachment, persist_outbox_failure, clear_outbox_row,
             list_quick_replies, create_quick_reply, update_quick_reply, delete_quick_reply,
-            media::download_attachment, media::fetch_media_bytes,
+            media::download_attachment, media::fetch_media_bytes, media::read_local_file,
             ai_polish::ai_polish, ai_polish::cancel_ai_polish,
         ])
         .run(tauri::generate_context!())

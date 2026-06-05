@@ -1,10 +1,14 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
-// mock @tauri-apps/api/core 让 assetImageSrc 在测试环境下正常工作
+// mock @tauri-apps/api/core:assetImageSrc 用 isTauri/convertFileSrc;silk 远端取字节用 invoke。
+const coreMock = vi.hoisted(() => ({
+  invoke: vi.fn(() => Promise.resolve([1, 2, 3])),
+}));
 vi.mock("@tauri-apps/api/core", () => ({
   isTauri: () => true,
   convertFileSrc: (p: string) => `asset://localhost/${encodeURIComponent(p)}`,
+  invoke: coreMock.invoke,
 }));
 
 // mock benz-amr-recorder:语音点击播放经动态 import 该库解码;此处用最小桩暴露
@@ -29,6 +33,28 @@ vi.mock("benz-amr-recorder", () => ({
     stop() {}
   },
 }));
+
+// mock silk 解码:点击 silk 语音经动态 import("./silk") 解码;桩暴露 decodeSilkToWav 的 spy。
+const silkMock = vi.hoisted(() => ({
+  decodeSilkToWav: vi.fn(() =>
+    Promise.resolve({ wav: new Blob(["wav"], { type: "audio/wav" }), durationSec: 4 }),
+  ),
+}));
+vi.mock("./silk", () => ({ decodeSilkToWav: silkMock.decodeSilkToWav }));
+
+// mock openExternal:验证 silk 解码失败时回退系统播放器。
+const openExternalMock = vi.hoisted(() => ({ openExternal: vi.fn() }));
+vi.mock("@/lib/openExternal", () => ({ openExternal: openExternalMock.openExternal }));
+
+// jsdom 不实现媒体播放与 ObjectURL;silk 播放路径需要,统一桩掉(本配置未开 clear/restoreMocks,
+// 直接赋值的桩跨用例稳定,调用计数在 silk 用例 beforeEach 里清)。
+HTMLMediaElement.prototype.play = vi.fn(() =>
+  Promise.resolve(),
+) as unknown as typeof HTMLMediaElement.prototype.play;
+globalThis.URL.createObjectURL = vi.fn(
+  () => "blob:silk-test",
+) as unknown as typeof URL.createObjectURL;
+globalThis.URL.revokeObjectURL = vi.fn() as unknown as typeof URL.revokeObjectURL;
 
 import { buildMessageParts } from "./data";
 import type { MessageAttachment, MessageBlock } from "./data";
@@ -181,6 +207,20 @@ describe("MessageContent blocks path", () => {
     // mention span: formatRichText emits a span with workbench-accent text class
     const mention = container.querySelector("span.font-medium.text-workbench-accent");
     expect(mention?.textContent).toContain("张三");
+  });
+
+  it("微信表情 [微笑] 渲染为内联 img(alt 保留原文,src 指向本地 PNG)", () => {
+    const { container } = renderContent({ text: "[微笑]" });
+    const img = container.querySelector('img[alt="[微笑]"]');
+    expect(img).not.toBeNull();
+    expect(img?.getAttribute("src")).toMatch(/^\/wechat-emojis\/\d{3}\.png$/);
+    expect(img?.className).toContain("inline-block");
+  });
+
+  it("未在白名单的方括号文本 [链接] 不渲染图片,保留原文", () => {
+    const { container } = renderContent({ text: "[链接]" });
+    expect(container.querySelector("img")).toBeNull();
+    expect(container.textContent).toContain("[链接]");
   });
 });
 
@@ -652,8 +692,76 @@ describe("VoiceAttachment 播放接线", () => {
   });
 });
 
+describe("VoiceAttachment silk 应用内解码播放", () => {
+  beforeEach(() => {
+    silkMock.decodeSilkToWav.mockReset();
+    silkMock.decodeSilkToWav.mockResolvedValue({
+      wav: new Blob(["wav"], { type: "audio/wav" }),
+      durationSec: 4,
+    });
+    coreMock.invoke.mockClear();
+    openExternalMock.openExternal.mockClear();
+    (globalThis.URL.createObjectURL as unknown as ReturnType<typeof vi.fn>).mockClear();
+    (HTMLMediaElement.prototype.play as unknown as ReturnType<typeof vi.fn>).mockClear();
+  });
+
+  it("silk 渲染隐藏 <audio>(初始无 src),点击后解码 → 设 src → 播放", async () => {
+    const { container } = renderContent({
+      attachments: [{ type: "voice", url: "https://e.example/v.silk", durationSec: 4 }],
+    });
+    const audio = container.querySelector("audio");
+    expect(audio).not.toBeNull();
+    // 初始无 src:silk 不走「远端 url 直接给 <audio>」,解码后才动态赋 blob URL。
+    expect(audio!.getAttribute("src")).toBeNull();
+    const btn = container.querySelector("button")!;
+    await act(async () => {
+      fireEvent.click(btn);
+    });
+    await waitFor(() => expect(silkMock.decodeSilkToWav).toHaveBeenCalledTimes(1));
+    // 远端 silk 经后端命令取字节(绕 CORS)。
+    expect(coreMock.invoke).toHaveBeenCalledWith("fetch_media_bytes", {
+      url: "https://e.example/v.silk",
+    });
+    // 解码出的 WAV 经 createObjectURL 赋给 <audio> 并播放。
+    expect(globalThis.URL.createObjectURL).toHaveBeenCalledTimes(1);
+    expect(audio!.getAttribute("src")).toContain("blob:silk-test");
+    expect(HTMLMediaElement.prototype.play).toHaveBeenCalled();
+  });
+
+  it("silk 解码失败 → 回退 openExternal", async () => {
+    silkMock.decodeSilkToWav.mockRejectedValueOnce(new Error("wasm blocked"));
+    const { container } = renderContent({
+      attachments: [{ type: "voice", url: "https://e.example/bad.silk", durationSec: 2 }],
+    });
+    const btn = container.querySelector("button")!;
+    await act(async () => {
+      fireEvent.click(btn);
+    });
+    await waitFor(() =>
+      expect(openExternalMock.openExternal).toHaveBeenCalledWith("https://e.example/bad.silk"),
+    );
+  });
+
+  it("二次点击不重复解码(走缓存的 play/pause)", async () => {
+    const { container } = renderContent({
+      attachments: [{ type: "voice", url: "https://e.example/twice.silk", durationSec: 4 }],
+    });
+    const btn = container.querySelector("button")!;
+    await act(async () => {
+      fireEvent.click(btn);
+    });
+    await waitFor(() => expect(silkMock.decodeSilkToWav).toHaveBeenCalledTimes(1));
+    await act(async () => {
+      fireEvent.click(btn);
+    });
+    // 第二次点击命中 silkUrlRef 缓存,不再取字节/解码。
+    expect(silkMock.decodeSilkToWav).toHaveBeenCalledTimes(1);
+    expect(coreMock.invoke).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("MessageContent 未知消息占位", () => {
-  it("unknown part 渲染为「暂不支持」提示(含问号图标),不渲染附件卡/图片", () => {
+  it("unknown part 渲染为「暂不支持」提示(含信息图标),不渲染附件卡/图片", () => {
     const { container } = render(
       <article data-testid="bubble">
         <MessageContent parts={[{ kind: "unknown" }]} />
@@ -663,7 +771,7 @@ describe("MessageContent 未知消息占位", () => {
     // 类文本内联提示,不落附件卡/图片。
     expect(container.querySelector("img")).toBeNull();
     expect(container.querySelector("button")).toBeNull();
-    // 带 aria-hidden 的问号图标(lucide CircleHelp 渲染为 svg)。
+    // 带 aria-hidden 的信息图标(lucide Info 渲染为 svg)。
     expect(container.querySelector("svg")).not.toBeNull();
   });
 });

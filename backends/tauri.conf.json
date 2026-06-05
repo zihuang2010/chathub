@@ -24,7 +24,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https: http: asset: http://asset.localhost https://asset.localhost cachedimg: http://cachedimg.localhost https://cachedimg.localhost mediaproxy:; media-src 'self' blob: https: http: asset: http://asset.localhost https://asset.localhost mediaproxy:; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost https: http: ws: wss: blob: data:; object-src 'none'; frame-src 'none'; base-uri 'self'; form-action 'none'",
+      "csp": "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https: http: asset: http://asset.localhost https://asset.localhost cachedimg: http://cachedimg.localhost https://cachedimg.localhost mediaproxy:; media-src 'self' blob: https: http: asset: http://asset.localhost https://asset.localhost mediaproxy:; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost https: http: ws: wss: blob: data:; object-src 'none'; frame-src 'none'; base-uri 'self'; form-action 'none'",
       "devCsp": "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https: http: asset: cachedimg: mediaproxy:; media-src 'self' blob: https: http: asset: mediaproxy:; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost https: http: ws: wss: blob: data:; object-src 'none'; base-uri 'self'",
       "assetProtocol": {
         "enable": true,

@@ -552,6 +552,12 @@ impl RecentSessionsStore {
     /// **不动 last_message_sort_key_ms(版本键)与 last_send_status** —— 由随后的 SESSION_SUMMARY
     /// push(版本门)权威对齐。返回是否命中一行(会话不在 recents 则 no-op)。
     ///
+    /// 额外用 `MAX(last_message_time_ms, now_ms)` 抬**显示时间**:列表行右上角时间取
+    /// `MAX(last_message_time_ms, local_draft_at_ms)`(前端),不含 `local_last_sent_at_ms`,故
+    /// 不补这一列时,「发出但尚无服务端 SESSION_SUMMARY 确认」的会话 `last_message_time_ms` 恒 0 →
+    /// 时间空白。此列是显示时间、非版本/水位键,写它不影响 `apply_summary` 的状态收敛;`MAX` 防
+    /// 本地 now 倒拉已有的更新服务端时间。
+    ///
     /// `last_message_summary` 是乐观覆盖远端列;因不动 `last_message_sort_key_ms`,随后 PENDING 摘要
     /// (sortKey_ms 更大)必过版本门并以权威值覆盖(同文案→无闪),符合"本地动预览、不抬版本键"原则。
     /// `last_message_direction` 取 push 原始出站值(出站=1,不经 to_local_direction 转换),
@@ -576,7 +582,8 @@ impl RecentSessionsStore {
                        last_message_summary   = ?1, \
                        last_message_type      = ?2, \
                        last_message_direction = ?3, \
-                       local_last_sent_at_ms  = ?4 \
+                       local_last_sent_at_ms  = ?4, \
+                       last_message_time_ms   = MAX(last_message_time_ms, ?4) \
                      WHERE employee_id = ?5 AND conversation_id = ?6",
                     rusqlite::params![
                         summary,
@@ -596,6 +603,8 @@ impl RecentSessionsStore {
     /// 出站发送失败的接待列表乐观写:与 mark_local_sent 同款只动展示列,额外写 last_send_status=4。
     /// **不动 last_message_sort_key_ms**(水位/版本键),故随后服务端 SESSION_SUMMARY 经 apply_summary
     /// 不倒退 CASE(4→3 允许)可把状态收敛回正。会话不在 recents 则 no-op(返 false)。
+    /// 同 mark_local_sent 抬显示时间 `last_message_time_ms = MAX(.., now_ms)`:失败气泡若是该会话
+    /// 唯一活动(无服务端确认消息),否则 `last_message_time_ms` 恒 0 → 列表行时间空白。
     pub async fn mark_local_failed(
         &self,
         employee_id: &str,
@@ -617,7 +626,8 @@ impl RecentSessionsStore {
                        last_message_type      = ?2, \
                        last_message_direction = ?3, \
                        local_last_sent_at_ms  = ?4, \
-                       last_send_status       = 4 \
+                       last_send_status       = 4, \
+                       last_message_time_ms   = MAX(last_message_time_ms, ?4) \
                      WHERE employee_id = ?5 AND conversation_id = ?6",
                     rusqlite::params![
                         summary,
@@ -2087,6 +2097,11 @@ mod tests {
         assert_eq!(got[0].last_message_type, 2);
         assert_eq!(got[0].last_message_direction, 1);
         assert_eq!(got[0].local_last_sent_at_ms, 9999);
+        // 显示时间随本地发送抬到 now(MAX(种子 500, 9999)=9999),否则列表行时间空白。
+        assert_eq!(
+            got[0].last_message_time_ms, 9999,
+            "mark_local_sent 须抬显示时间 last_message_time_ms"
+        );
         // 版本键与发送状态绝不被动。
         assert_eq!(
             got[0].last_message_sort_key_ms, 500,
@@ -2127,6 +2142,11 @@ mod tests {
             "失败态必须写 last_send_status=4"
         );
         assert_eq!(got[0].local_last_sent_at_ms, 9999);
+        // 失败气泡同样抬显示时间(MAX(种子 500, 9999)=9999)。
+        assert_eq!(
+            got[0].last_message_time_ms, 9999,
+            "mark_local_failed 须抬显示时间 last_message_time_ms"
+        );
         assert_eq!(
             got[0].last_message_sort_key_ms, 500,
             "绝不动版本/水位键(否则破坏 apply_summary 回正)"

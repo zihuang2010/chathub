@@ -815,11 +815,18 @@ pub struct HistoryAttachment {
     /// 仅在 `attachment_type==2`(文件)时细分具体格式(pdf/doc/xls…),不再作图片/语音判定主依据。
     #[serde(default, alias = "fileSuffix")]
     pub file_type: String,
-    /// 图片原始宽度（px），由后台预取注入；服务端不下发时为 None。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// 图片原始宽度（px）。上游推送/历史以 `imageWidth` 下发(消息到达即可用,首帧定真实
+    /// 比例盒、零网络往返);后台预取测得的宽高也写回此字段。序列化恒用规范键 `width`。
+    /// 服务端不下发且未预取时为 None。
+    #[serde(default, alias = "imageWidth", skip_serializing_if = "Option::is_none")]
     pub width: Option<i64>,
-    /// 图片原始高度（px），由后台预取注入；服务端不下发时为 None。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// 图片原始高度（px）。上游以 `imageHeight` 下发;其余同 `width`。
+    /// 服务端不下发且未预取时为 None。
+    #[serde(
+        default,
+        alias = "imageHeight",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub height: Option<i64>,
     /// 本地缩略图绝对路径，由后台预取落盘后注入；前端走 asset 协议读取。
     #[serde(default, skip_serializing_if = "Option::is_none")]

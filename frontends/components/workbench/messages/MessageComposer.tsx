@@ -4,17 +4,17 @@ import * as Popover from "@radix-ui/react-popover";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import type { Editor, JSONContent } from "@tiptap/react";
 import {
-  Camera,
   FileText,
-  FileUp,
-  ImagePlus,
+  FolderUp,
+  Image,
   Mic,
+  Laugh,
   PanelRightClose,
   PanelRightOpen,
-  Paperclip,
-  Laugh,
+  Scissors,
   WifiOff,
   X,
+  type LucideIcon,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -94,13 +94,26 @@ function clampComposerHeight(height: number) {
 // visible: 64px file-chip + 12px gap + ~8px slack for the X-button overhang.
 const CHIP_TRAY_FOOTPRINT_PX = 84;
 
-// 把扩展名白名单转成 <input accept> 字符串(如 "jpg" → ".jpg,.png,…")。
-// accept 仅是文件对话框的提示,不可信:用户仍能通过"所有文件"绕过,故 onChange 里必须用
-// keepByExt 二次校验。
-const acceptFor = (exts: readonly string[]) => exts.map((e) => "." + e).join(",");
-const IMAGE_ACCEPT = acceptFor(IMAGE_EXTS);
-const VOICE_ACCEPT = acceptFor(VOICE_EXTS);
-const DOC_ACCEPT = acceptFor(DOC_EXTS);
+// <input accept> 取值:Tauri/macOS 的 WKWebView **只认 MIME 类型,忽略纯扩展名**
+// (".amr" 这种)→ 只给扩展名时原生文件框根本不过滤、任何文件都能选(点"语音"却能选图片)。
+// 故必须带 MIME 才能让原生框真正按类型限制;扩展名一并附上(Chromium 网页预览据此过滤、
+// 也便于阅读)。accept 仅是对话框提示、不可信,onChange 里仍用 keepByExt 按扩展名白名单二次校验。
+const acceptFor = (mime: string, exts: readonly string[]) =>
+  [mime, ...exts.map((e) => "." + e)].join(",");
+const IMAGE_ACCEPT = acceptFor("image/jpeg,image/png,image/gif,image/webp", IMAGE_EXTS);
+// 语音用 audio/* 通配:已核验 amr(本应用主力语音格式)的 UTI 归属 public.audio,通配可靠纳入
+// amr/mp3/wav,不会因个别 MIME 未声明而把 amr 误排除;少数旁系音频(m4a/aac)露出由 keepByExt 拦下。
+const VOICE_ACCEPT = acceptFor("audio/*", VOICE_EXTS);
+const DOC_ACCEPT = acceptFor(
+  "application/pdf,application/msword," +
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document," +
+    "application/vnd.ms-excel," +
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet," +
+    "application/vnd.ms-powerpoint," +
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation," +
+    "text/plain,application/zip,application/vnd.rar",
+  DOC_EXTS,
+);
 
 // 取文件名扩展名(不含点,小写);无扩展名返回空串。
 const extOf = (name: string) => {
@@ -111,6 +124,58 @@ const extOf = (name: string) => {
 // 按扩展名白名单过滤文件,丢弃不在白名单内的(对话框 accept 提示的兜底二次校验)。
 const keepByExt = (files: File[], exts: readonly string[]) =>
   files.filter((f) => (exts as readonly string[]).includes(extOf(f.name)));
+
+// 选错文件 / 读取失败时的统一提示。
+const reportPickError = (e: unknown) =>
+  showToast(`选择文件失败：${e instanceof Error ? e.message : String(e)}`, { type: "error" });
+
+// 扩展名 → MIME:给 new File 的 type 用(图片尤其需要正确 type 才能在编辑器/上传中正常处理)。
+const MIME_BY_EXT: Record<string, string> = {
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  png: "image/png",
+  gif: "image/gif",
+  webp: "image/webp",
+  amr: "audio/amr",
+  mp3: "audio/mpeg",
+  wav: "audio/wav",
+  pdf: "application/pdf",
+  doc: "application/msword",
+  docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  xls: "application/vnd.ms-excel",
+  xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  ppt: "application/vnd.ms-powerpoint",
+  pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  txt: "text/plain",
+  zip: "application/zip",
+  rar: "application/vnd.rar",
+};
+
+// 用 Tauri 原生文件框按扩展名过滤(macOS 上 <input accept> 无法过滤,见 wry#1191):选中路径经
+// read_local_file 读回字节,就地组装成 File 交给与 <input> 完全一致的下游管线。仅在 Tauri 下调用;
+// web 预览仍走隐藏 <input>(其 accept 在 Chromium 下有效)。
+async function pickNativeFiles(
+  label: string,
+  exts: readonly string[],
+  multiple: boolean,
+): Promise<File[]> {
+  const { open } = await import("@tauri-apps/plugin-dialog");
+  const sel = await open({
+    multiple,
+    filters: [{ name: label, extensions: exts as unknown as string[] }],
+  });
+  if (!sel) return [];
+  const paths = Array.isArray(sel) ? sel : [sel];
+  return Promise.all(
+    paths.map(async (path) => {
+      const buf = await invoke<ArrayBuffer>("read_local_file", { path });
+      const name = path.split(/[/\\]/).pop() || path;
+      return new File([buf], name, {
+        type: MIME_BY_EXT[extOf(name)] ?? "application/octet-stream",
+      });
+    }),
+  );
+}
 
 export function MessageComposer({
   conversationId,
@@ -281,49 +346,58 @@ export function MessageComposer({
     });
   };
 
-  const handleImagePicker = (event: ChangeEvent<HTMLInputElement>) => {
-    const raw = Array.from(event.target.files ?? []);
+  // 选中文件的落地处理:原生 dialog 与 web <input> 两条路径共用。按扩展名白名单兜底过滤
+  // (原生 dialog 已按扩展名过滤,这里对 web 路径与极端情况再兜一层),非法格式提示后插入/入托盘。
+  const acceptImageFiles = useCallback((raw: File[]) => {
     const files = keepByExt(raw, IMAGE_EXTS);
-    // 过滤后数量变少 → 用户选中了非法格式,提示并只处理合法文件。
     if (files.length < raw.length) showToast(STRINGS.toast.imageFormatOnly, { type: "error" });
     insertImageFiles(files);
-    event.target.value = "";
-  };
+  }, []);
 
-  const handleFilePicker = (event: ChangeEvent<HTMLInputElement>) => {
-    const raw = Array.from(event.target.files ?? []);
-    const files = keepByExt(raw, DOC_EXTS);
-    if (files.length < raw.length) showToast(STRINGS.toast.fileFormatOnly, { type: "error" });
-    const next: MessageAttachment[] = files.map((file) => {
+  const acceptDocFiles = useCallback(
+    (raw: File[]) => {
+      const files = keepByExt(raw, DOC_EXTS);
+      if (files.length < raw.length) showToast(STRINGS.toast.fileFormatOnly, { type: "error" });
       // 按文件后缀判定附件类型,使 messageType 正确分流(如 amr→voice→4),与接收侧一致。
-      const dot = file.name.lastIndexOf(".");
-      const ext = dot >= 0 ? file.name.slice(dot + 1) : "";
-      return {
-        type: attachmentTypeFromExt(ext),
+      const next: MessageAttachment[] = files.map((file) => ({
+        type: attachmentTypeFromExt(extOf(file.name)),
         url: URL.createObjectURL(file),
         name: file.name,
         sizeBytes: file.size,
-      };
-    });
-    setPendingFileAttachments([...pendingFileAttachments, ...next]);
+      }));
+      // 追加到当前托盘(setPendingFileAttachments 取数组、不支持函数式更新)。原生 dialog 为模态,
+      // 选择期间用户无法改动托盘,故依赖闭包捕获的 pendingFileAttachments 即当前值,不会丢已有附件。
+      if (next.length > 0) setPendingFileAttachments([...pendingFileAttachments, ...next]);
+    },
+    [pendingFileAttachments, setPendingFileAttachments],
+  );
+
+  // 语音:单选,取第 1 个合法文件做成 type:"voice" 附件,替换托盘为单条(进入独占态)。
+  const acceptVoiceFiles = useCallback(
+    (raw: File[]) => {
+      const files = keepByExt(raw, VOICE_EXTS);
+      if (files.length < raw.length) showToast(STRINGS.toast.voiceFormatOnly, { type: "error" });
+      const file = files[0];
+      if (file) {
+        setPendingFileAttachments([
+          { type: "voice", url: URL.createObjectURL(file), name: file.name, sizeBytes: file.size },
+        ]);
+      }
+    },
+    [setPendingFileAttachments],
+  );
+
+  // web 预览(非 Tauri)的隐藏 <input> onChange:复用上面的 accept* 落地逻辑。
+  const handleImagePicker = (event: ChangeEvent<HTMLInputElement>) => {
+    acceptImageFiles(Array.from(event.target.files ?? []));
     event.target.value = "";
   };
-
-  // 语音 picker:单选,取第 1 个合法文件做成 type:"voice" 附件,替换托盘为单条(进入独占态)。
+  const handleFilePicker = (event: ChangeEvent<HTMLInputElement>) => {
+    acceptDocFiles(Array.from(event.target.files ?? []));
+    event.target.value = "";
+  };
   const handleVoicePicker = (event: ChangeEvent<HTMLInputElement>) => {
-    const raw = Array.from(event.target.files ?? []);
-    const files = keepByExt(raw, VOICE_EXTS);
-    if (files.length < raw.length) showToast(STRINGS.toast.voiceFormatOnly, { type: "error" });
-    const file = files[0];
-    if (file) {
-      const voiceAtt: MessageAttachment = {
-        type: "voice",
-        url: URL.createObjectURL(file),
-        name: file.name,
-        sizeBytes: file.size,
-      };
-      setPendingFileAttachments([voiceAtt]);
-    }
+    acceptVoiceFiles(Array.from(event.target.files ?? []));
     event.target.value = "";
   };
 
@@ -387,8 +461,20 @@ export function MessageComposer({
     setEmojiOpen(false);
   }, []);
 
-  const handleImageButton = useCallback(() => imageInputRef.current?.click(), []);
-  const handleFileButton = useCallback(() => fileInputRef.current?.click(), []);
+  // 图片/文档/语音:Tauri 下走原生 dialog 按扩展名过滤(macOS 上 <input accept> 不过滤);
+  // 非 Tauri(web 预览)回退隐藏 <input>。
+  const handleImageButton = useCallback(() => {
+    if (!isTauri()) return void imageInputRef.current?.click();
+    pickNativeFiles("图片", IMAGE_EXTS, true).then(acceptImageFiles).catch(reportPickError);
+  }, [acceptImageFiles]);
+  const handleFileButton = useCallback(() => {
+    if (!isTauri()) return void fileInputRef.current?.click();
+    pickNativeFiles("文档", DOC_EXTS, true).then(acceptDocFiles).catch(reportPickError);
+  }, [acceptDocFiles]);
+  const openVoicePicker = useCallback(() => {
+    if (!isTauri()) return void voiceInputRef.current?.click();
+    pickNativeFiles("语音", VOICE_EXTS, false).then(acceptVoiceFiles).catch(reportPickError);
+  }, [acceptVoiceFiles]);
 
   // 点语音按钮:编辑器已有内容(文本 / 内联图片 / 已有附件)时先弹确认框,避免误清空;
   // 否则直接打开语音选择器。
@@ -400,9 +486,9 @@ export function MessageComposer({
     if (composerHasContent) {
       setVoiceConfirmOpen(true);
     } else {
-      voiceInputRef.current?.click();
+      openVoicePicker();
     }
-  }, [textJoined, blocks, pendingFileAttachments]);
+  }, [textJoined, blocks, pendingFileAttachments, openVoicePicker]);
 
   // 确认"改用语音":清空文本与编辑器、revoke 并清空现有附件,再打开语音选择器。
   const confirmVoiceSwitch = useCallback(() => {
@@ -417,8 +503,8 @@ export function MessageComposer({
       if (a.url.startsWith("blob:")) URL.revokeObjectURL(a.url);
     }
     setPendingFileAttachments([]);
-    voiceInputRef.current?.click();
-  }, [conversationId, pendingFileAttachments, setPendingFileAttachments]);
+    openVoicePicker();
+  }, [conversationId, pendingFileAttachments, setPendingFileAttachments, openVoicePicker]);
 
   // ─── Resize ───────────────────────────────────────────────────────────────
 
@@ -613,26 +699,25 @@ export function MessageComposer({
             </Popover.Portal>
           </Popover.Root>
           <ToolButton
-            icon={Camera}
+            icon={Scissors}
             label={STRINGS.composer.screenshot}
             onClick={handleScreenshot}
             disabled={voiceMode}
           />
           <ToolButton
-            icon={ImagePlus}
+            icon={Image}
             label={STRINGS.composer.image}
             onClick={handleImageButton}
-            withHoverDot
             disabled={voiceMode}
           />
           <ToolButton
-            icon={Paperclip}
+            icon={Mic}
             label={STRINGS.composer.voice}
             onClick={handleVoiceButton}
             disabled={voiceMode}
           />
           <ToolButton
-            icon={FileUp}
+            icon={FolderUp}
             label={STRINGS.composer.addAttachment}
             onClick={handleFileButton}
             disabled={voiceMode}
@@ -801,7 +886,7 @@ const ToolButton = memo(function ToolButton({
   withHoverDot,
   disabled,
 }: {
-  icon: typeof Camera;
+  icon: LucideIcon;
   label: string;
   onClick?: () => void;
   withHoverDot?: boolean;

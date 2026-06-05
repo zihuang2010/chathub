@@ -88,8 +88,11 @@ export function RichComposer({
     },
     editorProps: {
       attributes: {
+        // flex-1 让编辑区填满外层(下方 EditorContent 已设为 flex 列):内容少时也撑满整片
+        // 高度,点击输入框下方空白处同样能定位光标(此前编辑区只有内容高度,空白处点不进);
+        // 内容超高时由外层 overflow-y-auto 滚动。min-h-[64px] 仅作折叠到最小高度时的地板。
         class:
-          "min-h-[64px] w-full px-2 pb-2 pt-0 text-wb-xs font-medium text-workbench-text outline-none",
+          "min-h-[64px] w-full flex-1 px-2 pb-2 pt-0 text-wb-xs font-medium text-workbench-text outline-none",
       },
       // HTML 富文本粘贴净化:严格白名单只留基础格式标签,剥离所有属性
       // (href/style/on* 全去),杜绝 <script>/事件处理器/危险协议注入。链接文本
@@ -161,10 +164,16 @@ export function RichComposer({
     editor?.setEditable(editable);
   }, [editor, editable]);
 
+  // 外层包裹层设为 flex 列,使内部 .ProseMirror(flex-1)纵向填满整片可视区域 ——
+  // 让"点击输入框任意位置都能聚焦"成立(原先编辑区只有内容高度,下方空白点不进光标)。
   return (
     <EditorContent
       editor={editor}
-      className={editable ? className : cn(className, "pointer-events-none select-none opacity-60")}
+      className={cn(
+        className,
+        "flex flex-col",
+        !editable && "pointer-events-none select-none opacity-60",
+      )}
     />
   );
 }

@@ -124,6 +124,10 @@ export function attachmentTypeFromExt(ext: string): MessageAttachment["type"] {
   const lower = ext.toLowerCase();
   if ((IMAGE_EXTS as readonly string[]).includes(lower)) return "image";
   if ((VOICE_EXTS as readonly string[]).includes(lower)) return "voice";
+  // silk/sil 仅收侧出现(企微/微信语音原始格式)。归 voice 走语音气泡 + 应用内解码(见 silk.ts);
+  // 刻意不进 VOICE_EXTS —— 发送 picker 白名单只收 amr/mp3/wav(企微语音只接受 AMR-NB),且 silk
+  // 进不了任何发送 picker。带权威 attachmentType=3 时本就判 voice,此处兜"只带后缀、无码值"的边界。
+  if (lower === "silk" || lower === "sil") return "voice";
   if (lower === "mp4" || lower === "mov") return "video";
   return "file";
 }

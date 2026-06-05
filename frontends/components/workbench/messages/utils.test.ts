@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { buildMessageParts } from "./data";
+import { attachmentTypeFromExt, buildMessageParts } from "./data";
 import type { Message, MessageAttachment, MessageBlock } from "./data";
 import { afterEach } from "vitest";
 
-import { cssUrlSafe, isSafeUrl, messageReplyPreview, thumbWidth } from "./utils";
+import { cssUrlSafe, formatRichText, isSafeUrl, messageReplyPreview, thumbWidth } from "./utils";
 
 function makeMessage(
   partial: Omit<Partial<Message>, "parts"> & {
@@ -194,5 +194,56 @@ describe("thumbWidth:DPR 自适应缩略图宽(封顶 384)", () => {
     for (const w of [192, 260, 300, 400]) {
       expect(thumbWidth(w)).toBeLessThanOrEqual(384);
     }
+  });
+});
+
+describe("formatRichText:微信表情映射", () => {
+  it("白名单内的 [微笑] → emoji-image 段(value 保留原文,src 指向本地 PNG)", () => {
+    const segs = formatRichText("[微笑]");
+    expect(segs).toHaveLength(1);
+    const seg = segs[0];
+    expect(seg.type).toBe("emoji-image");
+    if (seg.type !== "emoji-image") throw new Error("unreachable");
+    expect(seg.value).toBe("[微笑]");
+    expect(seg.src).toMatch(/^\/wechat-emojis\/\d{3}\.png$/);
+  });
+
+  it("不在白名单的方括号文本(如 [链接])原样作为普通文字,不误伤", () => {
+    const segs = formatRichText("[链接]");
+    expect(segs).toEqual([{ type: "text", value: "[链接]" }]);
+  });
+
+  it("文字 + 表情 + 文字:顺序与分段正确", () => {
+    const segs = formatRichText("你好[微笑]再见");
+    expect(segs.map((s) => s.type)).toEqual(["text", "emoji-image", "text"]);
+    expect(segs[0]).toEqual({ type: "text", value: "你好" });
+    expect(segs[2]).toEqual({ type: "text", value: "再见" });
+  });
+
+  it("连续多个表情各自成段", () => {
+    const segs = formatRichText("[微笑][撇嘴][色]");
+    expect(segs).toHaveLength(3);
+    expect(segs.every((s) => s.type === "emoji-image")).toBe(true);
+  });
+
+  it("与链接共存:链接仍走 link 段,表情走 emoji-image 段", () => {
+    const segs = formatRichText("[微笑] https://example.com");
+    expect(segs.map((s) => s.type)).toEqual(["emoji-image", "text", "link"]);
+  });
+});
+
+describe("attachmentTypeFromExt:按扩展名判定附件类型", () => {
+  it("silk/sil → voice(收侧边界:只带后缀、无 attachmentType 码值时不误判成文件)", () => {
+    expect(attachmentTypeFromExt("silk")).toBe("voice");
+    expect(attachmentTypeFromExt("sil")).toBe("voice");
+    expect(attachmentTypeFromExt("SILK")).toBe("voice"); // 大小写不敏感
+  });
+
+  it("既有分类不回归", () => {
+    expect(attachmentTypeFromExt("amr")).toBe("voice");
+    expect(attachmentTypeFromExt("mp3")).toBe("voice");
+    expect(attachmentTypeFromExt("png")).toBe("image");
+    expect(attachmentTypeFromExt("mp4")).toBe("video");
+    expect(attachmentTypeFromExt("pdf")).toBe("file");
   });
 });

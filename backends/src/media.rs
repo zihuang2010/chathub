@@ -73,3 +73,17 @@ pub async fn fetch_media_bytes(
 ) -> Result<Vec<u8>, String> {
     media.get_bytes(&url).await
 }
+
+/// 读取本地文件原始字节,以 ArrayBuffer 经 IPC 返回前端。
+/// 用途:macOS 上 webview 的 `<input accept>` 无法过滤原生文件框(WebKit/wry 上游限制,见 wry#1191),
+/// 改用 Tauri 原生 `dialog.open({filters})` 按扩展名过滤选路径,再用本命令把所选文件读回字节、在前端
+/// 组装成 File 交给既有上传管线。路径来自用户在原生文件框中的显式选择。
+/// 用 `tauri::ipc::Response`(原始字节)返回,避免 Vec<u8> 经 JSON 序列化成 number[] 的体积/转换开销。
+#[tauri::command]
+pub async fn read_local_file(path: String) -> Result<tauri::ipc::Response, String> {
+    let bytes = tauri::async_runtime::spawn_blocking(move || std::fs::read(&path))
+        .await
+        .map_err(|e| format!("join: {e}"))?
+        .map_err(|e| format!("read: {e}"))?;
+    Ok(tauri::ipc::Response::new(bytes))
+}

@@ -1,3 +1,5 @@
+import { WECHAT_EMOJI_SRC } from "./wechatEmojiMap";
+
 // Account strings look like "杭州企微-小美"; UIs that show the operator initials
 // only want the trailing segment.
 export function extractAccountOperator(account: string): string {
@@ -68,11 +70,16 @@ export type RichSegment =
   | { type: "text"; value: string }
   | { type: "link"; value: string; href: string }
   | { type: "mention"; value: string; handle: string }
-  | { type: "emoji"; value: string };
+  | { type: "emoji"; value: string }
+  // 微信表情图片:value 为原文(如 "[微笑]",用作 alt / 加载失败回退),src 为本地 PNG 路径。
+  | { type: "emoji-image"; value: string; src: string };
 
 const URL_PATTERN = /(https?:\/\/[^\s<>]+)/g;
 const MENTION_PATTERN = /@([一-龥A-Za-z0-9_-]{1,32})/g;
 const EMOJI_PATTERN = /:([a-z_+-]{2,20}):/g;
+// 微信表情透传文本形如 [微笑];仅当名字在白名单(WECHAT_EMOJI_SRC)内才映射成图片,其余
+// 方括号文本(如 [链接]、用户自打的 [备注])不产生匹配,原样作为普通文字渲染。
+const WECHAT_EMOJI_PATTERN = /\[([^[\]]{1,8})\]/g;
 
 const EMOJI_MAP: Record<string, string> = {
   smile: "😊",
@@ -134,6 +141,10 @@ export function formatRichText(text: string): RichSegment[] {
     ...collectMatches(text, EMOJI_PATTERN, (m) => {
       const emoji = EMOJI_MAP[m[1]];
       return emoji ? { type: "emoji", value: emoji } : null;
+    }),
+    ...collectMatches(text, WECHAT_EMOJI_PATTERN, (m) => {
+      const src = WECHAT_EMOJI_SRC[m[1]];
+      return src ? { type: "emoji-image", value: m[0], src } : null;
     }),
   ].sort((a, b) => a.start - b.start);
 
