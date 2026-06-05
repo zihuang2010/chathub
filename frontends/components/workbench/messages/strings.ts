@@ -79,10 +79,40 @@ export const STRINGS = {
   contextMenu: {
     copy: "复制",
     reply: "引用回复",
+    /** 放大阅读:把文本在弹层里大字呈现,便于阅读长文/老花用户。仅对有文本的消息显示。 */
+    enlarge: "放大阅读",
+    /** 转发:把文本转发到另一个会话。仅对有文本的消息显示(附件转发本期不做)。 */
+    forward: "转发",
     recall: "撤回",
     delete: "删除",
     /** 删除前的二次确认(删除当前仅本地隐藏,重读历史可能补回,故用中性措辞)。 */
     deleteConfirm: "确定删除这条消息?",
+  },
+  // 放大阅读弹层(MessageContextMenu「放大阅读」唤出)。
+  enlarge: {
+    title: "放大阅读",
+    zoomIn: "放大字号",
+    zoomOut: "缩小字号",
+    close: "关闭",
+  },
+  // 转发弹层(MessageContextMenu「转发」唤出)。本期仅转发文本,点最近会话行即发送。
+  forward: {
+    title: "转发消息",
+    searchPlaceholder: "搜索",
+    recent: "最近聊天",
+    empty: "无匹配会话",
+    close: "关闭",
+    success: "已转发",
+    failed: "转发失败",
+    partial: "部分转发失败",
+    selected: "已选择",
+    confirm: "确定",
+    cancel: "取消",
+    emptySelection: "从左侧选择转发对象",
+    modeFriend: "按好友选",
+    modeGroup: "按群聊选",
+    modeOrg: "按架构选",
+    modeDisabled: "暂未开放",
   },
   toast: {
     copySuccess: "已复制到剪贴板",
@@ -105,6 +135,8 @@ export const STRINGS = {
     voiceFormatOnly: "仅支持 amr / mp3 / wav 语音格式",
     fileFormatOnly:
       "仅支持 pdf / doc / docx / xls / xlsx / ppt / pptx / txt / zip / rar 等文件格式",
+    // 单个附件体积上限(图片/文件),与 MessageComposer 的 MAX_UPLOAD_BYTES 对应。
+    fileTooLarge: "单个文件不能超过 200 MB",
   },
   errors: {
     pageUnavailable: "消息页暂时不可用",
@@ -137,7 +169,7 @@ export const STRINGS = {
   },
   // 前端不识别的消息类型(如 messageType=99):气泡正文与会话列表预览的兜底文案。
   unknown: {
-    bubble: "当前版本暂不支持，请在手机端查看",
+    bubble: "当前版本暂不支持该消息类型，请在官方客户端查看",
     preview: "[未知消息]",
   },
   composer: {

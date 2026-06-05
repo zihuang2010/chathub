@@ -303,7 +303,6 @@ const FilterToolbar = memo(function FilterToolbar({
           onSelect={onAccountChange}
           open={accountPickerOpen}
           onOpenChange={onAccountPickerOpenChange}
-          title={STRINGS.conversationList.accountFilterTitle}
         >
           <button
             type="button"
@@ -314,8 +313,8 @@ const FilterToolbar = memo(function FilterToolbar({
               // 短而固定的状态 Tab(全部/未读/@我),避免 @我 被挤进 overflow 滚动区不可见。
               "focus-ring inline-flex h-9 min-w-0 max-w-[96px] items-center gap-1 rounded-md px-2 transition-colors",
               selectedAccountId
-                ? "bg-workbench-surface-active text-workbench-accent"
-                : "bg-workbench-surface-soft text-workbench-text hover:bg-workbench-surface-active hover:text-workbench-accent",
+                ? "bg-workbench-surface-soft font-semibold text-[#5B7C99]"
+                : "hover:bg-workbench-surface-active hover:text-[#5B7C99]",
             )}
             title={selectedAccountName ?? STRINGS.rangePill.allAccountsBare}
           >
@@ -342,8 +341,8 @@ const FilterToolbar = memo(function FilterToolbar({
               className={cn(
                 "focus-ring inline-flex h-9 shrink-0 items-center rounded-md px-2 transition-colors",
                 active
-                  ? "bg-workbench-surface-active text-workbench-accent"
-                  : "hover:bg-workbench-surface-subtle hover:text-workbench-text",
+                  ? "bg-workbench-surface-soft font-semibold text-[#5B7C99]"
+                  : "hover:bg-workbench-surface-active hover:text-[#5B7C99]",
               )}
             >
               {tab.label}

@@ -10,7 +10,10 @@ use chathub_net::{
     TokenStore,
 };
 use chathub_proto::v1::{server_event::Body, ForwardResponse, PushBatchOut, ServerEvent};
-use chathub_state::{LocalTokenStore, MessageWindow, MessagesStore, NotifySeqStore, SqlitePool};
+use chathub_state::{
+    LocalTokenStore, MessageWindow, MessagesStore, NotifySeqStore, QuarantinedEventsStore,
+    SqlitePool,
+};
 use common::stub_relay::{start_stub_full, ForwardStubOutcome};
 use common::{push_event, wait_for_state};
 use std::sync::Arc;
@@ -61,12 +64,14 @@ async fn message_upsert_lands_bubble_via_connection_manager() {
     let hub = HubClient::new(channel, interceptor);
 
     let messages_store = MessagesStore::new(pool.clone());
+    let quarantine_store = QuarantinedEventsStore::new(pool.clone());
     let notify_seq_store = NotifySeqStore::new(pool.clone());
     let (change_tx, mut change_rx) = broadcast::channel::<ChangeNotice>(64);
     let sync = MessageSync::new(messages_store.clone(), hub.clone(), change_tx.clone());
     let message_applier = Arc::new(MessageEventApplier::new(
         messages_store.clone(),
         sync,
+        quarantine_store,
         change_tx.clone(),
     ));
 

@@ -178,26 +178,35 @@ function SidebarBackdrop({ collapsed }: { collapsed: boolean }) {
           collapsed ? "opacity-0" : "opacity-100",
         )}
       >
-        {/* 中下部空白区的 5 颗低调装饰圈点(底部锚定,浮在波浪之上),大小/位置/相位
-            各异,chSidebarHaloA/B/C 缓慢漂移营造呼吸感;prefers-reduced-motion 下由
+        {/* 中下部空白区的 5 颗装饰气泡(底部锚定,浮在波浪之上):与顶栏共用同一套配色/尺寸,
+            清晰不糊(无柔焦)——近=近白小 / 中=中蓝 #9FBDE6 / 远=略深蓝 #8AB0E6 稍大,靠颜色与
+            大小保持远近景深;chSidebarHaloA/B/C 轻柔漂浮营造呼吸感;prefers-reduced-motion 下由
             index.css 自动静止为纯色背景。 */}
+        {/* 中层(mid)。 */}
         <span
-          className="absolute bottom-[300px] right-7 size-3 rounded-full bg-[#9FBDE6]/40"
-          style={{ animation: "chSidebarHaloB 28s ease-in-out infinite" }}
+          className="absolute bottom-[300px] right-7 size-2.5 rounded-full bg-[#9FBDE6]/55"
+          style={{ animation: "chSidebarHaloB 18s ease-in-out infinite" }}
         />
+        {/* 远层(far):略深蓝、稍大 —— 沉在最后。 */}
         <span
-          className="absolute bottom-[252px] left-9 size-4 rounded-full bg-[#A9C7F0]/35"
-          style={{ animation: "chSidebarHaloC 32s ease-in-out infinite" }}
+          className="absolute bottom-[252px] left-9 size-3 rounded-full bg-[#8AB0E6]/50"
+          style={{ animation: "chSidebarHaloC 22s ease-in-out infinite" }}
         />
+        {/* 近层(near)。 */}
         <span
-          className="absolute bottom-[372px] right-10 size-2.5 rounded-full bg-[#B8D2F4]/40"
-          style={{ animation: "chSidebarHaloA 24s ease-in-out infinite" }}
+          className="absolute bottom-[372px] right-10 size-2 rounded-full bg-white/85"
+          style={{ animation: "chSidebarHaloA 16s ease-in-out infinite" }}
         />
+        {/* 近层(near):最小 —— 浮在最前。 */}
         <span
-          className="absolute bottom-[212px] right-12 size-1.5 rounded-full bg-white/55"
-          style={{ animation: "chSidebarHaloC 36s ease-in-out infinite" }}
+          className="absolute bottom-[212px] right-12 size-1.5 rounded-full bg-white/80"
+          style={{ animation: "chSidebarHaloC 20s ease-in-out infinite" }}
         />
-        <span className="absolute bottom-[340px] left-12 size-2 rounded-full bg-white/55" />
+        {/* 中层(mid):原先漏了动画,此处补齐使其一同漂浮。 */}
+        <span
+          className="absolute bottom-[340px] left-12 size-2 rounded-full bg-[#9FBDE6]/50"
+          style={{ animation: "chSidebarHaloA 19s ease-in-out infinite" }}
+        />
         {/* 底部柔光波浪,托在"更多"上方给左栏一个底部重心。超长波长 → 平缓大波澜,
             两层反向错相缓慢漂移。波幅收敛、铺得更低,整体更含蓄。 */}
         <svg

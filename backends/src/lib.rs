@@ -22,9 +22,10 @@ use chathub_net::{
 use chathub_proto::v1::UserProfile;
 use chathub_state::{
     AccountCacheStore, FriendDetailCacheStore, ImageMetaStore, LocalTokenStore, MessagesStore,
-    NotifySeqStore, QuickRepliesStore, QuickReplyRow, RecentSessionRow, RecentSessionsStore,
-    SessionStore, SqlitePool, WecomAccountRow, MESSAGE_HOT_CONVERSATIONS_LIMIT,
-    RECENT_SESSIONS_GLOBAL_LIMIT, RECENT_SESSIONS_PER_ACCOUNT_LIMIT,
+    NotifySeqStore, QuarantinedEventsStore, QuickRepliesStore, QuickReplyRow, RecentSessionRow,
+    RecentSessionsStore, SessionStore, SqlitePool, WecomAccountRow,
+    MESSAGE_HOT_CONVERSATIONS_LIMIT, RECENT_SESSIONS_GLOBAL_LIMIT,
+    RECENT_SESSIONS_PER_ACCOUNT_LIMIT,
 };
 use std::time::Duration;
 use tokio::sync::broadcast as tokio_broadcast;
@@ -1646,6 +1647,8 @@ pub fn run() {
                 let recents_store = RecentSessionsStore::new(pool.clone());
                 let messages_store = MessagesStore::new(pool.clone());
                 let quick_replies_store = QuickRepliesStore::new(pool.clone());
+                // 异常库:语义矛盾脏事件落库前被拦截改入此库(见 MessageEventApplier 网关)。
+                let quarantined_store = QuarantinedEventsStore::new(pool.clone());
                 let friend_detail_cache = FriendDetailCacheStore::new(pool.clone());
                 // 图片派生元数据存储（按 URL 为键，存宽高 + 本地缩略图路径）
                 let image_meta_store = ImageMetaStore::new(pool.clone());
@@ -1691,6 +1694,7 @@ pub fn run() {
                 let message_applier = Arc::new(MessageEventApplier::new(
                     messages_store.clone(),
                     message_sync.clone(),
+                    quarantined_store.clone(),
                     change_notice_tx.clone(),
                 ));
                 let conn_manager = Arc::new(ConnectionManager::new(

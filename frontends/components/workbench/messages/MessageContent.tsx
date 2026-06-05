@@ -119,7 +119,7 @@ function ImageAttachment({ part, fill = false }: { part: ImagePart; fill?: boole
       <span
         role="img"
         aria-label={STRINGS.attachment.processing}
-        className="grid aspect-[4/3] w-40 max-w-full animate-pulse place-items-center rounded-xl bg-workbench-surface-soft text-workbench-text-muted ring-1 ring-workbench-line motion-reduce:animate-none"
+        className="grid aspect-[4/3] w-40 max-w-full animate-pulse place-items-center rounded-lg bg-workbench-surface-soft text-workbench-text-muted ring-1 ring-workbench-line motion-reduce:animate-none"
       >
         <ImageIcon size={28} strokeWidth={1.5} aria-hidden />
       </span>
@@ -131,7 +131,7 @@ function ImageAttachment({ part, fill = false }: { part: ImagePart; fill?: boole
       <span
         role="img"
         aria-label={STRINGS.attachment.unavailable}
-        className="text-wb-3xs grid aspect-[4/3] w-40 max-w-full place-items-center rounded-xl bg-workbench-surface-soft text-workbench-text-muted ring-1 ring-workbench-line"
+        className="text-wb-3xs grid aspect-[4/3] w-40 max-w-full place-items-center rounded-lg bg-workbench-surface-soft text-workbench-text-muted ring-1 ring-workbench-line"
       >
         <span className="flex flex-col items-center gap-2">
           <ImageOff size={22} strokeWidth={1.5} aria-hidden />
@@ -158,7 +158,7 @@ function ImageAttachment({ part, fill = false }: { part: ImagePart; fill?: boole
           });
         }}
         className={cn(
-          "focus-ring cursor-pointer overflow-hidden rounded-xl align-bottom leading-none shadow-wb-bubble transition-shadow hover:shadow-wb-popover",
+          "focus-ring cursor-pointer overflow-hidden rounded-lg align-bottom leading-none shadow-wb-bubble transition-shadow hover:shadow-wb-popover",
           // 带配文时铺满气泡宽度(随配文,封顶 360);独占图保持本征宽度上限 256。
           fill ? "block w-full" : "inline-block max-w-full",
         )}
@@ -188,7 +188,7 @@ function FileAttachment({ part }: { part: FilePart }) {
   if (state !== "ready") {
     // 转存中/失败:复用文件卡外壳,左侧图标换 loading/失败,文案右移,保持卡片尺寸不跳。
     return (
-      <div className="flex w-72 max-w-full items-center gap-3 rounded-2xl border border-workbench-line bg-workbench-surface px-3.5 py-3 shadow-wb-bubble">
+      <div className="flex w-72 max-w-full items-center gap-3 rounded-lg border border-workbench-line bg-workbench-surface px-3.5 py-3 shadow-wb-bubble">
         <span className="grid size-11 shrink-0 place-items-center rounded-xl bg-workbench-surface-soft text-workbench-text-muted">
           {state === "pending" ? (
             <Loader2
@@ -212,7 +212,7 @@ function FileAttachment({ part }: { part: FilePart }) {
   const safe = isSafeUrl(part.url, "link");
   return (
     // 整卡不再可点:仅右侧下载按钮触发保存(另存为)。卡片本体只承载文件名/大小展示。
-    <div className="flex w-72 max-w-full items-center gap-3 rounded-2xl border border-workbench-line bg-workbench-surface px-3.5 py-3 shadow-wb-bubble">
+    <div className="flex w-72 max-w-full items-center gap-3 rounded-lg border border-workbench-line bg-workbench-surface px-3.5 py-3 shadow-wb-bubble">
       <span className="grid size-11 shrink-0 place-items-center rounded-xl bg-workbench-surface-soft text-workbench-accent">
         <FileText size={22} strokeWidth={1.6} aria-hidden />
       </span>
@@ -400,7 +400,7 @@ function VoiceAttachment({ part }: { part: VoicePart }) {
         aria-label={
           state === "pending" ? STRINGS.attachment.processing : STRINGS.attachment.unavailable
         }
-        className="text-wb-3xs inline-flex items-center gap-2 rounded-2xl border border-workbench-line bg-workbench-surface px-3 py-2 text-workbench-text-muted shadow-wb-bubble"
+        className="text-wb-3xs inline-flex items-center gap-2 rounded-lg border border-workbench-line bg-workbench-surface px-3 py-2 text-workbench-text-muted shadow-wb-bubble"
       >
         {state === "pending" ? (
           <Loader2
@@ -425,7 +425,7 @@ function VoiceAttachment({ part }: { part: VoicePart }) {
         type="button"
         onClick={handleClick}
         aria-label={`${STRINGS.attachment.voice} ${seconds}″`}
-        className="focus-ring inline-flex items-center gap-2.5 rounded-2xl border border-workbench-line bg-workbench-surface px-3 py-2 shadow-wb-bubble transition-colors hover:bg-workbench-surface-subtle"
+        className="focus-ring inline-flex items-center gap-2.5 rounded-lg border border-workbench-line bg-workbench-surface px-3 py-2 shadow-wb-bubble transition-colors hover:bg-workbench-surface-subtle"
       >
         <span className="grid size-7 shrink-0 place-items-center rounded-full bg-workbench-accent text-white">
           {playing ? (
@@ -477,7 +477,7 @@ function VideoAttachment({ part }: { part: VideoPart }) {
       <span
         role="img"
         aria-label={STRINGS.attachment.processing}
-        className="grid aspect-video w-64 max-w-full animate-pulse place-items-center rounded-xl bg-workbench-surface-soft text-workbench-text-muted ring-1 ring-workbench-line motion-reduce:animate-none"
+        className="grid aspect-video w-64 max-w-full animate-pulse place-items-center rounded-lg bg-workbench-surface-soft text-workbench-text-muted ring-1 ring-workbench-line motion-reduce:animate-none"
       >
         <Video size={28} strokeWidth={1.5} aria-hidden />
       </span>
@@ -489,7 +489,7 @@ function VideoAttachment({ part }: { part: VideoPart }) {
       <span
         role="img"
         aria-label={STRINGS.attachment.unavailable}
-        className="text-wb-3xs grid aspect-video w-64 max-w-full place-items-center rounded-xl bg-workbench-surface-soft text-workbench-text-muted ring-1 ring-workbench-line"
+        className="text-wb-3xs grid aspect-video w-64 max-w-full place-items-center rounded-lg bg-workbench-surface-soft text-workbench-text-muted ring-1 ring-workbench-line"
       >
         <span className="flex flex-col items-center gap-2">
           <VideoOff size={22} strokeWidth={1.5} aria-hidden />
@@ -659,7 +659,7 @@ function InlineImage({ part }: { part: ImagePart }) {
             if (!opened) setOpen(true);
           });
         }}
-        className="focus-ring mx-1 inline-block cursor-pointer overflow-hidden rounded-xl align-bottom leading-none"
+        className="focus-ring mx-1 inline-block cursor-pointer overflow-hidden rounded-lg align-bottom leading-none"
       >
         <MessageImage
           part={part}
@@ -829,13 +829,16 @@ function MessageImage({ part, alt, maxW = 256, maxH = 320, fill = false }: Messa
   const hasDims = !!(dimW && dimH);
   // 非配文图(inline-block 父级,shrink-to-fit):给盒子确定 px 宽,aspectRatio 首帧即算出
   // 高度,不依赖父级宽度/图片解码 → 消除「解码前塌成 0、解码后弹满」的发图首帧位移。
-  // 宽度 = min(上限, 真实宽);无尺寸回退到上限。配文图(fill)外层 block w-full 宽度本就
-  // 确定,保留 width:100% 铺满气泡。
+  // 宽度 = 在 maxW×maxH 内等比缩放后的真实显示宽(scale 与 virtualListSizing.estimateImageBoxHeight
+  // 同式),使盒子比例严格等于图片比例。否则竖图被 maxHeight 夹住高度、盒宽仍是 maxW → 盒比图宽,
+  // object-contain 透出气泡底色形成左右白边。横图本就高度受限,该式仍得 min(maxW,真实宽),宽度不变。
+  // 配文图(fill)外层 block w-full 宽度本就确定,保留 width:100% 铺满气泡。
   const boxStyle: React.CSSProperties = {
     aspectRatio: hasDims ? `${dimW} / ${dimH}` : NEUTRAL_IMAGE_ASPECT,
     maxWidth: maxW,
     maxHeight: maxH,
-    width: !fill && hasDims ? Math.min(maxW, dimW) : "100%",
+    width:
+      !fill && dimW && dimH ? Math.round(dimW * Math.min(maxW / dimW, maxH / dimH, 1)) : "100%",
   };
 
   if (renderState.phase === "error") {
@@ -843,7 +846,7 @@ function MessageImage({ part, alt, maxW = 256, maxH = 320, fill = false }: Messa
       <span
         role="img"
         aria-label={STRINGS.attachment.imageLoadFailed}
-        className="text-wb-3xs grid place-items-center rounded-xl bg-workbench-surface-soft text-workbench-text-muted ring-1 ring-workbench-line"
+        className="text-wb-3xs grid place-items-center rounded-lg bg-workbench-surface-soft text-workbench-text-muted ring-1 ring-workbench-line"
         style={boxStyle}
       >
         <span className="flex flex-col items-center gap-1.5">
@@ -885,7 +888,7 @@ function MessageImage({ part, alt, maxW = 256, maxH = 320, fill = false }: Messa
 
   return (
     <span
-      className="relative inline-block overflow-hidden rounded-xl align-bottom ring-1 ring-workbench-line"
+      className="relative inline-block overflow-hidden rounded-lg align-bottom ring-1 ring-workbench-line"
       style={boxStyle}
     >
       <img

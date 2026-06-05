@@ -9,7 +9,7 @@ use crate::change_notice::{ChangeNotice, ChangeScope, ChangeTopic};
 use crate::message_sync::{now_ms, parse_server_time_to_ms, MessageSync};
 use crate::recent_session_event::split_sort_key_ms;
 use chathub_proto::v1::PushBatchOut;
-use chathub_state::{MessageRow, MessagesStore};
+use chathub_state::{MessageRow, MessagesStore, QuarantinedEventsStore};
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
@@ -133,11 +133,43 @@ fn decode_message_row(ev: &serde_json::Value, employee_id: &str) -> Option<Messa
     })
 }
 
+/// 判定一条 `MESSAGE_UPSERT` 事件是否「语义矛盾」(明显错误的上游推送)。命中返回隔离原因,
+/// 调用方据此把整条事件丢进异常库、不入正常消息库。
+///
+/// 当前唯一指纹(四者同时成立才算脏,读**原始 push 字段**,非 to_local_direction 之后的本地值):
+///   - messageType==99(`chatMessageType` 优先,`messageType` 兜底,与 decode 同口径) → 未知类型
+///   - messageDirection==1                                                          → 上游标「发送方」
+///   - eventReason=="CUSTOMER_MESSAGE_RECEIVED"                                      → 实为入站客户消息
+///   - sendStatus==0                                                                → 入站无 send_status
+///
+/// 入站却被标成发送方 ⇒ 落库会被判成出站 + 永久「发送中」转圈。指纹刻意收窄,避免误伤正常消息。
+fn semantic_conflict_reason(ev: &serde_json::Value) -> Option<&'static str> {
+    let msg = ev.get("message")?;
+    let message_type = msg
+        .get("chatMessageType")
+        .or_else(|| msg.get("messageType"))
+        .and_then(|v| v.as_i64())?;
+    let direction = msg.get("messageDirection").and_then(|v| v.as_i64())?;
+    let send_status = msg.get("sendStatus").and_then(|v| v.as_i64()).unwrap_or(0);
+    let event_reason = ev.get("eventReason").and_then(|v| v.as_str()).unwrap_or("");
+    if message_type == 99
+        && direction == 1
+        && event_reason == "CUSTOMER_MESSAGE_RECEIVED"
+        && send_status == 0
+    {
+        Some("semantic_conflict_in_as_out")
+    } else {
+        None
+    }
+}
+
 #[derive(Clone)]
 pub struct MessageEventApplier {
     store: MessagesStore,
     /// 兜底复用:reconcile_newest(fetch → classify → stitch/replace → upsert window → 发通知)。
     sync: MessageSync,
+    /// 异常库:语义矛盾的脏事件落库前被拦截,改入此库供后续排查(见 `semantic_conflict_reason`)。
+    quarantine: QuarantinedEventsStore,
     change_notice_tx: broadcast::Sender<ChangeNotice>,
     /// 全局兜底节流(同 RecentSessionEventApplier)。
     last_fallback_ms: Arc<AtomicI64>,
@@ -147,11 +179,13 @@ impl MessageEventApplier {
     pub fn new(
         store: MessagesStore,
         sync: MessageSync,
+        quarantine: QuarantinedEventsStore,
         change_notice_tx: broadcast::Sender<ChangeNotice>,
     ) -> Self {
         Self {
             store,
             sync,
+            quarantine,
             change_notice_tx,
             last_fallback_ms: Arc::new(AtomicI64::new(0)),
         }
@@ -192,6 +226,26 @@ impl MessageEventApplier {
                 }
                 None => continue, // 无 message 快照
             };
+
+            // 语义矛盾脏事件网关:入站客户消息却被上游标成发送方(messageDirection=1)+ 未知类型
+            // (messageType=99)+ 无 send_status(0)。若入正常库会被 to_local_direction(1→2) 判成
+            // 出站、send_status=0 永远算「发送中」→ 前端无限转圈。拦截:写异常库 + 丢弃,绝不入正常
+            // 消息库、也不进 fallback(避免 reconcile_newest 从上游把同一脏消息再拉回)。
+            if let Some(reason) = semantic_conflict_reason(ev) {
+                let local_id = ev
+                    .get("message")
+                    .and_then(|m| m.get("localMessageId"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                if let Err(e) = self
+                    .quarantine
+                    .insert_event(&employee_id, &conv_id, local_id, reason, &ev.to_string())
+                    .await
+                {
+                    warn!(target: "chathub_net::message_event", ?e, conv_id, "quarantine insert failed");
+                }
+                continue;
+            }
 
             // 热会话门控:无窗口 → 冷会话,跳过(recents + 打开时 reconcile 负责)。
             let has_window = match self.store.get_window(&employee_id, &conv_id).await {
@@ -486,6 +540,7 @@ mod tests {
     async fn applier_with_store() -> (
         MessageEventApplier,
         MessagesStore,
+        QuarantinedEventsStore,
         broadcast::Receiver<ChangeNotice>,
     ) {
         let pool = SqlitePool::in_memory().await.unwrap();
@@ -501,8 +556,9 @@ mod tests {
         let hub = HubClient::new(channel, interceptor);
         let (tx, rx) = broadcast::channel(16);
         let sync = MessageSync::new(store.clone(), hub, tx.clone());
-        let applier = MessageEventApplier::new(store.clone(), sync, tx);
-        (applier, store, rx)
+        let quarantine = QuarantinedEventsStore::new(pool.clone());
+        let applier = MessageEventApplier::new(store.clone(), sync, quarantine.clone(), tx);
+        (applier, store, quarantine, rx)
     }
 
     fn batch(events: serde_json::Value, employee_id: i64, notify_seq: u64) -> PushBatchOut {
@@ -539,7 +595,7 @@ mod tests {
 
     #[tokio::test]
     async fn hot_conversation_inserts_bubble_and_emits_notice() {
-        let (applier, store, mut rx) = applier_with_store().await;
+        let (applier, store, _quarantine, mut rx) = applier_with_store().await;
         store
             .upsert_window(seed_window(CONV, "42", "0000000000000_0_0"))
             .await
@@ -570,7 +626,7 @@ mod tests {
 
     #[tokio::test]
     async fn cold_conversation_skips_no_orphan() {
-        let (applier, store, mut rx) = applier_with_store().await;
+        let (applier, store, _quarantine, mut rx) = applier_with_store().await;
         // 不预置窗口 → 冷会话
         applier
             .apply_push_batch(&batch(serde_json::json!([full_event(CONV, 2)]), 42, 10))
@@ -588,7 +644,7 @@ mod tests {
 
     #[tokio::test]
     async fn send_confirmed_updates_same_bubble_not_duplicate() {
-        let (applier, store, _rx) = applier_with_store().await;
+        let (applier, store, _quarantine, _rx) = applier_with_store().await;
         store
             .upsert_window(seed_window(CONV, "42", "0000000000000_0_0"))
             .await
@@ -615,7 +671,7 @@ mod tests {
 
     #[tokio::test]
     async fn non_message_event_is_noop() {
-        let (applier, store, mut rx) = applier_with_store().await;
+        let (applier, store, _quarantine, mut rx) = applier_with_store().await;
         store
             .upsert_window(seed_window(CONV, "42", "0000000000000_0_0"))
             .await
@@ -629,5 +685,88 @@ mod tests {
             .await;
         assert!(store.list_recent("42", CONV, 10).await.unwrap().is_empty());
         assert!(rx.try_recv().is_err());
+    }
+
+    /// 拦截指纹只在四条件同时成立时命中,缺任一条件都不拦截(防误伤正常消息)。
+    #[test]
+    fn semantic_conflict_reason_matches_only_full_fingerprint() {
+        // 真实脏报文形态:messageType=99(无 chatMessageType)+ messageDirection=1
+        //   + eventReason=CUSTOMER_MESSAGE_RECEIVED + sendStatus=0。
+        let mut dirty = full_event(CONV, 1);
+        dirty["message"]
+            .as_object_mut()
+            .unwrap()
+            .remove("chatMessageType");
+        dirty["message"]["messageType"] = serde_json::json!(99);
+        dirty["message"]["sendStatus"] = serde_json::json!(0);
+        assert_eq!(
+            semantic_conflict_reason(&dirty),
+            Some("semantic_conflict_in_as_out"),
+            "四条件齐(messageType 兜底取 99)→ 命中"
+        );
+
+        // 缺任一条件都不拦截:
+        let mut s3 = dirty.clone();
+        s3["message"]["sendStatus"] = serde_json::json!(3);
+        assert!(
+            semantic_conflict_reason(&s3).is_none(),
+            "sendStatus≠0 不拦截"
+        );
+        let mut t1 = dirty.clone();
+        t1["message"]["messageType"] = serde_json::json!(1);
+        assert!(
+            semantic_conflict_reason(&t1).is_none(),
+            "messageType≠99 不拦截"
+        );
+        let mut d2 = dirty.clone();
+        d2["message"]["messageDirection"] = serde_json::json!(2);
+        assert!(
+            semantic_conflict_reason(&d2).is_none(),
+            "messageDirection≠1 不拦截"
+        );
+        let mut r = dirty.clone();
+        r["eventReason"] = serde_json::json!("SEND_CONFIRMED");
+        assert!(
+            semantic_conflict_reason(&r).is_none(),
+            "eventReason≠CUSTOMER_MESSAGE_RECEIVED 不拦截"
+        );
+    }
+
+    /// 脏事件被隔离进异常库、不入正常消息库;同批次正常事件不受影响照常落库。
+    #[tokio::test]
+    async fn dirty_semantic_conflict_event_quarantined_not_stored() {
+        let (applier, store, quarantine, _rx) = applier_with_store().await;
+        // 预置窗口:让同批正常事件能命中热会话直接 upsert(证明拦截不波及兄弟事件)。
+        store
+            .upsert_window(seed_window(CONV, "42", "0000000000000_0_0"))
+            .await
+            .unwrap();
+
+        // 脏事件(真实报文形态)+ 同批正常客户消息(type=1, direction=2 → in, localMessageId=LM_A)。
+        let mut dirty = full_event(CONV, 1);
+        dirty["message"]["localMessageId"] = serde_json::json!("LM_DIRTY");
+        dirty["message"]
+            .as_object_mut()
+            .unwrap()
+            .remove("chatMessageType");
+        dirty["message"]["messageType"] = serde_json::json!(99);
+        dirty["message"]["sendStatus"] = serde_json::json!(0);
+        let clean = full_event(CONV, 2);
+
+        applier
+            .apply_push_batch(&batch(serde_json::json!([dirty, clean]), 42, 10))
+            .await;
+
+        // 脏事件进异常库,原文 + 原因 + 定位字段留存。
+        let q = quarantine.list_recent("42", 10).await.unwrap();
+        assert_eq!(q.len(), 1, "脏事件入异常库");
+        assert_eq!(q[0].reason, "semantic_conflict_in_as_out");
+        assert_eq!(q[0].local_message_id, "LM_DIRTY");
+        assert_eq!(q[0].conversation_id, CONV);
+
+        // 正常消息库:仅 clean(LM_A),绝无脏 LM_DIRTY → 不再被渲染成永久转圈。
+        let rows = store.list_recent("42", CONV, 10).await.unwrap();
+        assert_eq!(rows.len(), 1, "脏事件不入正常库、同批正常事件正常落库");
+        assert_eq!(rows[0].local_message_id, "LM_A");
     }
 }

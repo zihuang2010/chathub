@@ -479,17 +479,26 @@ html[data-os="mac"] #app-shell {
   }
 }
 
-/* Sidebar ambient halos — three slow, decorrelated drifts so the sidebar
-   surface feels alive without ever crossing into motion that competes with
-   real content. Different periods (22/28/34s) prevent visible looping. */
+/* Sidebar ambient halos — gentle 2D float loops (slow wander + soft bob) so the
+   bubbles read as drifting in place rather than sliding back and forth. Each
+   path returns to its origin for a seamless loop; three decorrelated phases keep
+   the cadence from ever becoming visible. */
 @keyframes chSidebarHaloA {
   0%,
   100% {
     transform: translate(0, 0);
   }
 
+  25% {
+    transform: translate(7px, -13px);
+  }
+
   50% {
-    transform: translate(14px, 18px);
+    transform: translate(15px, 9px);
+  }
+
+  75% {
+    transform: translate(5px, 17px);
   }
 }
 
@@ -499,8 +508,16 @@ html[data-os="mac"] #app-shell {
     transform: translate(0, 0);
   }
 
+  25% {
+    transform: translate(-9px, -15px);
+  }
+
   50% {
-    transform: translate(-18px, 22px);
+    transform: translate(-18px, 11px);
+  }
+
+  75% {
+    transform: translate(-7px, 18px);
   }
 }
 
@@ -510,22 +527,39 @@ html[data-os="mac"] #app-shell {
     transform: translate(0, 0);
   }
 
+  25% {
+    transform: translate(11px, 12px);
+  }
+
   50% {
-    transform: translate(20px, -14px);
+    transform: translate(19px, -11px);
+  }
+
+  75% {
+    transform: translate(8px, -17px);
   }
 }
 
-/* Title-bar ambient orbs — three soft, heavily-blurred glows that drift mostly
-   horizontally (the bar is only 40px tall, so vertical travel is tiny). Periods
-   26/30/38s are decorrelated so the motion never visibly loops. */
+/* Title-bar ambient orbs — soft, heavily-blurred glows on a gentle 2D float.
+   Travel stays mostly horizontal (the bar is only 40px tall, so vertical is held
+   to a few px) but the multi-stop path adds a faint bob so the orbs feel alive
+   instead of merely sliding. Decorrelated phases avoid a visible loop. */
 @keyframes chTitleOrbA {
   0%,
   100% {
     transform: translate(0, 0);
   }
 
+  25% {
+    transform: translate(16px, -4px);
+  }
+
   50% {
-    transform: translate(40px, 6px);
+    transform: translate(36px, 2px);
+  }
+
+  75% {
+    transform: translate(17px, 5px);
   }
 }
 
@@ -535,8 +569,16 @@ html[data-os="mac"] #app-shell {
     transform: translate(0, 0);
   }
 
+  25% {
+    transform: translate(-22px, 4px);
+  }
+
   50% {
-    transform: translate(-52px, -5px);
+    transform: translate(-46px, -3px);
+  }
+
+  75% {
+    transform: translate(-23px, 4px);
   }
 }
 
@@ -546,8 +588,16 @@ html[data-os="mac"] #app-shell {
     transform: translate(0, 0);
   }
 
+  25% {
+    transform: translate(19px, 5px);
+  }
+
   50% {
-    transform: translate(34px, 7px);
+    transform: translate(33px, -4px);
+  }
+
+  75% {
+    transform: translate(14px, 3px);
   }
 }
 

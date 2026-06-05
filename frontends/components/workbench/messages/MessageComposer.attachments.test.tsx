@@ -52,6 +52,13 @@ function fileNamed(name: string, type = "application/octet-stream"): File {
   return new File(["x"], name, { type });
 }
 
+// 造一个"声称"超大的 File:内容仍是 1 字节,只覆写 size 以触发大小拦截,避免真分配 200MB。
+function fileNamedSized(name: string, size: number, type = "application/octet-stream"): File {
+  const f = fileNamed(name, type);
+  Object.defineProperty(f, "size", { value: size, configurable: true });
+  return f;
+}
+
 // 三个隐藏 file input 按 accept 特征区分(实现里它们都是 type=file + class hidden,
 // 无独立 testid;accept 是唯一稳定判别特征)。
 function fileInputs(container: HTMLElement) {
@@ -261,6 +268,41 @@ describe("MessageComposer 附件三入口 + 语音独占态", () => {
     expect(showToastMock).toHaveBeenCalled();
     const messages = showToastMock.mock.calls.map((c) => c[0]);
     expect(messages).toContain(STRINGS.toast.fileFormatOnly);
+  });
+
+  it("向文档 input 灌入超 200MB 文件被拒:不产生 chip 并提示 fileTooLarge", async () => {
+    const { container } = await renderComposer();
+    const { doc } = fileInputs(container);
+
+    await act(async () => {
+      fireEvent.change(doc!, {
+        target: { files: [fileNamedSized("big.pdf", 201 * 1024 * 1024, "application/pdf")] },
+      });
+    });
+
+    // 超 200MiB → 被 keepBySize 过滤掉,不生成 file chip。
+    expect(
+      document.body.querySelector(`button[aria-label="${STRINGS.composer.removeAttachment}"]`),
+    ).toBeNull();
+    // 提示文案为体积超限。
+    const messages = showToastMock.mock.calls.map((c) => c[0]);
+    expect(messages).toContain(STRINGS.toast.fileTooLarge);
+  });
+
+  it("向图片 input 灌入超 200MB 图片被拒:不插入编辑器并提示 fileTooLarge", async () => {
+    const { container } = await renderComposer();
+    const { image } = fileInputs(container);
+
+    await act(async () => {
+      fireEvent.change(image!, {
+        target: { files: [fileNamedSized("big.png", 201 * 1024 * 1024, "image/png")] },
+      });
+    });
+
+    // 超限图片在 insertImageFiles 收口处被拦,编辑器无 <img> 插入。
+    expect(container.querySelector("img")).toBeNull();
+    const messages = showToastMock.mock.calls.map((c) => c[0]);
+    expect(messages).toContain(STRINGS.toast.fileTooLarge);
   });
 
   it("发送语音后不 revoke 其 blob URL:气泡需复用该 blob 做应用内播放", async () => {

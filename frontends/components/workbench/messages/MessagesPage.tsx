@@ -11,11 +11,12 @@ import { adaptFriendDetailToCustomer, type WecomFriend } from "@/lib/api/custome
 import { useFriendDetail } from "@/lib/api/useFriendDetail";
 import { useQuickReplies } from "@/lib/api/useQuickReplies";
 import { useRecentFriends, type RecentFriendListEntry } from "@/lib/api/useRecentFriends";
-import { sendMessage } from "@/lib/api/messageHistory";
+import { sendMessage, SEND_STATUS } from "@/lib/api/messageHistory";
 import { appReady } from "@/lib/data/appReady";
 import { cn } from "@/lib/utils";
 
 import { ChatArea } from "./ChatArea";
+import type { ForwardTarget } from "./ForwardDialog";
 import type { SendMessageOptions } from "./hooks/useChatActions";
 import { STRINGS } from "./strings";
 import {
@@ -30,7 +31,7 @@ import {
 import { ConversationList } from "./ConversationList";
 import { CustomerDetails } from "./CustomerDetails";
 import { isKnownMessageType } from "./data";
-import type { Conversation, QuickReply } from "./data";
+import type { Conversation, Message, QuickReply } from "./data";
 import { MessagesSkeleton } from "./MessagesSkeleton";
 import { useChatMessages } from "./useChatMessages";
 import { useDetailsWindow } from "./useDetailsWindow";
@@ -379,6 +380,51 @@ export function MessagesPage({
     [conversation, selectedEntry],
   );
 
+  // 转发目标:由最近会话列表派生(带发送所需的会话身份)。转发弹层内有自己的本地搜索框。
+  const forwardTargets = useMemo<ForwardTarget[]>(
+    () =>
+      recentEntries.map((e) => ({
+        conversationId: e.conversationId,
+        wecomAccountId: e.wecomAccountId,
+        externalUserId: e.externalUserId,
+        name: clampField(e.externalName) || "(未命名)",
+        avatar: e.externalAvatar || undefined,
+        account: clampField(e.wecomAlias || e.wecomName),
+      })),
+    [recentEntries],
+  );
+
+  // 转发(仅文本):复用 sendMessage 把文本批量发到所有勾选目标(与编辑器发送同一调用)。无乐观气泡——
+  // 目标会话经后端落库 + ChangeNotice 重读自然出现(若恰为当前打开会话也会刷新)。
+  // 单个目标 sendStatus=4(受控失败)或抛异常视为该条失败;汇总成一条 toast:
+  // 全成功→「已转发」、部分失败→「部分转发失败」、全失败→「转发失败」。
+  const handleForward = useCallback((message: Message, targets: ForwardTarget[]) => {
+    if (!message.text.trim() || targets.length === 0) return;
+    void Promise.all(
+      targets.map((target) =>
+        sendMessage({
+          conversationId: target.conversationId,
+          wecomAccountId: target.wecomAccountId,
+          externalUserId: target.externalUserId,
+          contentText: message.text,
+          clientMsgId: `local-${crypto.randomUUID()}`,
+          messageType: 1,
+        })
+          .then((resp) => !(resp && resp.sendStatus === SEND_STATUS.failed))
+          .catch(() => false),
+      ),
+    ).then((results) => {
+      const ok = results.filter(Boolean).length;
+      if (ok === 0) {
+        showToast(STRINGS.forward.failed, { type: "error" });
+      } else if (ok < results.length) {
+        showToast(STRINGS.forward.partial, { type: "error" });
+      } else {
+        showToast(STRINGS.forward.success, { type: "success" });
+      }
+    });
+  }, []);
+
   const clampConversationListWidth = useCallback(
     (nextWidth: number) => {
       const pageWidth = pageRef.current?.clientWidth ?? 0;
@@ -650,6 +696,8 @@ export function MessagesPage({
               mentionCandidates={EMPTY_MENTION_CANDIDATES}
               wecomAccountId={selectedEntry?.wecomAccountId}
               externalUserId={selectedEntry?.externalUserId}
+              forwardTargets={forwardTargets}
+              onForward={handleForward}
             />
           </ErrorBoundary>
         ) : (

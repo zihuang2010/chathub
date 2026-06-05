@@ -168,19 +168,19 @@ function AllAccountsRow({
       onClick={onClick}
       className={cn(
         "focus-ring flex h-9 w-full items-center gap-2 rounded-md px-2 text-left text-[12px] transition-colors",
-        active ? "bg-workbench-surface-active" : "hover:bg-workbench-surface-subtle",
+        active ? "bg-workbench-surface-soft" : "hover:bg-workbench-surface-subtle",
       )}
     >
       <span
         aria-hidden
-        className="grid size-6 shrink-0 place-items-center rounded-md bg-workbench-surface-active text-[10px] font-medium text-workbench-accent"
+        className="grid size-6 shrink-0 place-items-center rounded-md bg-workbench-surface-soft text-[10px] font-medium text-[#5B7C99]"
       >
         全
       </span>
       <span
         className={cn(
           "min-w-0 flex-1 truncate font-medium",
-          active ? "text-workbench-accent" : "text-workbench-text",
+          active ? "text-[#5B7C99]" : "text-workbench-text",
         )}
       >
         {STRINGS.rangePill.allAccountsBare}
@@ -188,7 +188,7 @@ function AllAccountsRow({
       <span className="shrink-0 rounded-full bg-workbench-surface-subtle px-1.5 py-0.5 font-numeric text-[11px] tabular-nums text-workbench-text-muted">
         {formatTotalCount(total)}
       </span>
-      {active && <span className="ml-1 size-1.5 shrink-0 rounded-full bg-workbench-accent" />}
+      {active && <span className="ml-1 size-1.5 shrink-0 rounded-full bg-[#5B7C99]" />}
     </button>
   );
 }
@@ -213,19 +213,19 @@ function AccountRow({
       onClick={onClick}
       className={cn(
         "focus-ring flex h-9 w-full items-center gap-2 rounded-md px-2 text-left text-[12px] transition-colors",
-        active ? "bg-workbench-surface-active" : "hover:bg-workbench-surface-subtle",
+        active ? "bg-workbench-surface-soft" : "hover:bg-workbench-surface-subtle",
       )}
     >
       <Avatar account={account} />
       <span
         className={cn(
           "min-w-0 flex-1 truncate",
-          active ? "font-medium text-workbench-accent" : "text-workbench-text",
+          active ? "font-medium text-[#5B7C99]" : "text-workbench-text",
         )}
       >
         {account.name}
       </span>
-      {active && <span className="size-1.5 shrink-0 rounded-full bg-workbench-accent" />}
+      {active && <span className="size-1.5 shrink-0 rounded-full bg-[#5B7C99]" />}
     </button>
   );
 }

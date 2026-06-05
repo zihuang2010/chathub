@@ -1,4 +1,4 @@
-import { memo, useMemo, useState } from "react";
+import { memo, useCallback, useMemo, useState } from "react";
 import { ArrowDown, ArrowUp } from "lucide-react";
 
 import type { SendMessageResp } from "@/lib/api/messageHistory";
@@ -14,6 +14,8 @@ import type { Conversation, Message, QuickReply } from "./data";
 import { useChatActions, type SendMessageOptions } from "./hooks/useChatActions";
 import { useChatTimeline } from "./hooks/useChatTimeline";
 import { useScrollController } from "./hooks/useScrollController";
+import { EnlargeReader } from "./EnlargeReader";
+import { ForwardDialog, type ForwardTarget } from "./ForwardDialog";
 import { DateDivider, MessageBubble, type ReplyTarget, UnreadDivider } from "./MessageBubble";
 import { MessageComposer } from "./MessageComposer";
 import type { MessageActionType } from "./MessageContextMenu";
@@ -83,6 +85,10 @@ interface ChatAreaProps {
   wecomAccountId?: string;
   /** 当前会话外部用户 ID,透传给 useChatActions 供失败消息落库用。 */
   externalUserId?: string;
+  /** 可转发到的最近会话(由 MessagesPage 派生);转发弹层的目标列表。 */
+  forwardTargets?: ForwardTarget[];
+  /** 转发一条消息到多个目标会话(仅文本);由 MessagesPage 调 sendMessage 批量实现。 */
+  onForward?: (message: Message, targets: ForwardTarget[]) => void;
 }
 
 export const ChatArea = memo(function ChatArea({
@@ -108,8 +114,14 @@ export const ChatArea = memo(function ChatArea({
   onLeaveMarkRead,
   wecomAccountId,
   externalUserId,
+  forwardTargets,
+  onForward,
 }: ChatAreaProps) {
   const [composerHeight, setComposerHeight] = useState(COMPOSER_DEFAULT_HEIGHT);
+  // 放大阅读 / 转发弹层:右键菜单的 enlarge/forward 在 ChatArea 拦截(本地 UI 态),
+  // 不进 useChatActions(那里只管发送/重发/删除/撤回/引用等 store 动作)。
+  const [enlargeMessage, setEnlargeMessage] = useState<Message | null>(null);
+  const [forwardMessage, setForwardMessage] = useState<Message | null>(null);
   const [replyDraft, setReplyDraft] = useState<
     (ReplyTarget & { id: string; conversationId: string }) | null
   >(null);
@@ -162,6 +174,23 @@ export const ChatArea = memo(function ChatArea({
     wecomAccountId,
     externalUserId,
   });
+
+  // 在 ChatArea 拦截 enlarge/forward(开本地弹层),其余动作仍交给 useChatActions。
+  // useCallback 保持引用稳定:onAction 进 MessageTimelineRow 的 memo 比较,引用变化会整列重渲。
+  const handleMessageAction = useCallback(
+    (action: MessageActionType, message: Message) => {
+      if (action === "enlarge") {
+        setEnlargeMessage(message);
+        return;
+      }
+      if (action === "forward") {
+        setForwardMessage(message);
+        return;
+      }
+      handleAction(action, message);
+    },
+    [handleAction],
+  );
 
   // hub 连接断开时禁用发送并在 composer 顶部提示离线(E①)。连接态由 useHubSyncStatus 经
   // hub:connection 事件派生,与 Sidebar 在线圆点同源;disconnected(网络暂断) 与 rejected(鉴权被拒
@@ -221,7 +250,7 @@ export const ChatArea = memo(function ChatArea({
                     avatarColor={conversation.avatarColor}
                     avatarUrl={conversation.avatar}
                     account={conversation.account}
-                    onAction={handleAction}
+                    onAction={handleMessageAction}
                     setUnreadDividerNode={setUnreadDividerNode}
                   />
                 );
@@ -261,6 +290,17 @@ export const ChatArea = memo(function ChatArea({
         getPolishContext={() => buildPolishContext(localMessages)}
         offline={offline}
       />
+      {enlargeMessage && (
+        <EnlargeReader text={enlargeMessage.text} onClose={() => setEnlargeMessage(null)} />
+      )}
+      {forwardMessage && (
+        <ForwardDialog
+          targets={forwardTargets ?? []}
+          previewText={forwardMessage.text}
+          onForward={(targets) => onForward?.(forwardMessage, targets)}
+          onClose={() => setForwardMessage(null)}
+        />
+      )}
     </div>
   );
 });

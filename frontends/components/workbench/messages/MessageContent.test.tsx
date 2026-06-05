@@ -233,7 +233,7 @@ describe("MessageImage layout-shift + error fallback", () => {
     const button = container.querySelector("button[title]")!;
     expect(button.className).toContain("align-bottom");
     expect(button.className).toContain("overflow-hidden");
-    expect(button.className).toContain("rounded-xl");
+    expect(button.className).toContain("rounded-lg");
   });
 
   it("renders a fixed-size container + opacity-0 img + skeleton in loading state", () => {
@@ -463,6 +463,31 @@ describe("MessageImage 比例盒 + asset 源（R1/R2/R4）", () => {
     expect(box.style.aspectRatio).toBe("400 / 200");
   });
 
+  it("竖图盒宽按 maxW×maxH 等比收紧，盒比=图比，无 object-contain 左右白边", () => {
+    // 300×900(1:3)竖图:旧逻辑盒宽=min(256,300)=256、高被 maxH=320 夹住 → 盒(256×320,0.8)
+    // 比图(0.333)宽,object-contain 透出气泡底色形成左右白边。修复后盒宽=round(300*min(256/300,
+    // 320/900,1))=round(300*0.3556)=107,盒(107×320)严格等于图比,白边消失;高度仍 320(行高不变)。
+    render(
+      <article>
+        <MessageContent
+          parts={[
+            {
+              kind: "image",
+              url: "https://filet.jdd51.com/tall.png",
+              width: 300,
+              height: 900,
+              localPath: "/c/tall.img",
+            },
+          ]}
+        />
+      </article>,
+    );
+    const img = screen.getByRole("img", { hidden: true }) as HTMLImageElement;
+    const box = img.parentElement!;
+    expect(box.style.aspectRatio).toBe("300 / 900");
+    expect(box.style.width).toBe("107px");
+  });
+
   it("无宽高时回退中性 4:3 占位比例盒（width:100%，非正方形）", () => {
     const { container } = render(
       <article>
@@ -501,7 +526,7 @@ describe("MessageImage 比例盒 + asset 源（R1/R2/R4）", () => {
     expect(img!.className).not.toContain("opacity-0");
   });
 
-  it("容器样式含 rounded-xl ring-1 ring-workbench-line（四边一致）", () => {
+  it("容器样式含 rounded-lg ring-1 ring-workbench-line（四边一致）", () => {
     const { container } = render(
       <article>
         <MessageContent parts={[{ kind: "image", url: "https://e.example/img.png" }]} />
@@ -509,7 +534,7 @@ describe("MessageImage 比例盒 + asset 源（R1/R2/R4）", () => {
     );
     const img = container.querySelector("img");
     const box = img!.parentElement!;
-    expect(box.className).toContain("rounded-xl");
+    expect(box.className).toContain("rounded-lg");
     expect(box.className).toContain("ring-1");
     expect(box.className).toContain("ring-workbench-line");
   });

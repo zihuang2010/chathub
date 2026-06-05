@@ -173,16 +173,16 @@ function IncomingBubble({
             className={cn(
               "group relative flex min-w-0 max-w-full flex-col gap-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-workbench-accent/40",
               mediaOnly
-                ? "rounded-xl"
+                ? "rounded-lg"
                 : cn(
-                    "rounded-xl rounded-tl-md bg-workbench-bubble-in text-[13.5px] font-[450] leading-[1.65] text-workbench-text shadow-wb-bubble ring-1 ring-workbench-bubble-in-border/50",
+                    "rounded-lg rounded-tl-sm bg-workbench-bubble-in text-[13.5px] font-[450] leading-[1.65] text-workbench-text shadow-wb-bubble ring-1 ring-workbench-bubble-in-border/50",
                     compact ? "px-3.5 py-1.5" : "px-4 py-2",
                   ),
             )}
           >
             <MessageTimeTooltip label={fullLabel} align="left" />
             {replyTarget && <ReplyBlock target={replyTarget} />}
-            <span className="whitespace-pre-wrap [overflow-wrap:anywhere]">
+            <span className="cursor-text select-text whitespace-pre-wrap [overflow-wrap:anywhere]">
               <MessageContent parts={message.parts} />
             </span>
           </article>
@@ -214,16 +214,16 @@ function OutgoingBubble({
             className={cn(
               "group relative flex min-w-0 max-w-full flex-col gap-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-workbench-accent/40",
               mediaOnly
-                ? "rounded-xl"
+                ? "rounded-lg"
                 : cn(
-                    "rounded-xl rounded-tr-md bg-workbench-bubble-out text-[13.5px] font-[450] leading-[1.65] text-workbench-text shadow-wb-bubble ring-1 ring-workbench-bubble-out-border/50",
+                    "rounded-lg rounded-tr-sm bg-workbench-bubble-out text-[13.5px] font-[450] leading-[1.65] text-workbench-text shadow-wb-bubble ring-1 ring-workbench-bubble-out-border/50",
                     compact ? "px-3.5 py-1.5" : "px-4 py-2",
                   ),
             )}
           >
             <MessageTimeTooltip label={fullLabel} align="right" />
             {replyTarget && <ReplyBlock target={replyTarget} />}
-            <span className="whitespace-pre-wrap [overflow-wrap:anywhere]">
+            <span className="cursor-text select-text whitespace-pre-wrap [overflow-wrap:anywhere]">
               <MessageContent parts={message.parts} />
             </span>
           </article>

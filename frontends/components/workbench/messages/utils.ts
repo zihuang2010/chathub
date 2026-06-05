@@ -11,13 +11,18 @@ const dateFormatter = new Intl.DateTimeFormat("zh-CN", {
   year: "numeric",
   month: "long",
   day: "numeric",
-});
+}); // 2025年11月21日
+
+const monthDayFormatter = new Intl.DateTimeFormat("zh-CN", {
+  month: "long",
+  day: "numeric",
+}); // 5月28日
 
 const timeFormatter = new Intl.DateTimeFormat("zh-CN", {
   hour: "2-digit",
   minute: "2-digit",
   hour12: false,
-});
+}); // 09:33
 
 function isSameLocalDay(a: Date, b: Date): boolean {
   return (
@@ -35,29 +40,34 @@ export function getMessageDayKey(sentAt: string): string {
   return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
 }
 
-// Returns the time-only label for messages sent today and the full date label
-// otherwise. The date divider and the hover tooltip both consume this — when
-// the conversation is happening today the year/month/day prefix is redundant
-// noise, so we collapse to just HH:mm.
+// 相对日期前缀(不含时分),对齐微信语义:
+//   今天 / 昨天 / 本年更早「M月D日」/ 跨年「YYYY年M月D日」。
+// crossYear 标记跨年:分隔条据此省去时分,tooltip 据此判断是否仍要补时分。
+function relativeDay(date: Date, now: Date): { label: string; crossYear: boolean } {
+  if (isSameLocalDay(date, now)) return { label: "今天", crossYear: false };
+  const yesterday = new Date(now);
+  yesterday.setDate(now.getDate() - 1);
+  if (isSameLocalDay(date, yesterday)) return { label: "昨天", crossYear: false };
+  if (date.getFullYear() === now.getFullYear()) {
+    return { label: monthDayFormatter.format(date), crossYear: false };
+  }
+  return { label: dateFormatter.format(date), crossYear: true };
+}
+
+// 日期分隔条标签:今天/昨天/本年「M月D日」均带「HH:mm」;跨年只显示「YYYY年M月D日」
+// (跨年消息已足够久远,省去时分,对齐微信)。
 export function formatMessageDate(sentAt: string): string {
   const date = new Date(sentAt);
-  if (isSameLocalDay(date, new Date())) {
-    return timeFormatter.format(date);
-  }
-  return dateFormatter.format(date);
+  const { label, crossYear } = relativeDay(date, new Date());
+  return crossYear ? label : `${label} ${timeFormatter.format(date)}`;
 }
 
-// 仅本文件内使用(被 formatMessageDateTime 调用),不对外导出。
-function formatMessageTime(sentAt: string): string {
-  return timeFormatter.format(new Date(sentAt));
-}
-
+// 气泡 hover tooltip / aria 的完整时间:与分隔条同样的相对日期前缀,但跨年也补上时分,
+// 保证 hover 始终能看到精确到分钟的发送时间。
 export function formatMessageDateTime(sentAt: string): string {
-  // For today's messages, formatMessageDate already yields the time, so
-  // concatenating with another time would print the same value twice.
-  const datePart = formatMessageDate(sentAt);
-  const timePart = formatMessageTime(sentAt);
-  return datePart === timePart ? timePart : `${datePart} ${timePart}`;
+  const date = new Date(sentAt);
+  const { label } = relativeDay(date, new Date());
+  return `${label} ${timeFormatter.format(date)}`;
 }
 
 // ─── Rich-text segmentation ─────────────────────────────────────────────────

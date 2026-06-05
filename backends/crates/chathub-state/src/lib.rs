@@ -20,6 +20,7 @@ pub mod local_token;
 pub mod messages;
 pub mod notify_seq;
 pub mod pool;
+pub mod quarantined_events;
 pub mod quick_replies;
 pub mod recent_sessions;
 pub mod session;
@@ -32,6 +33,7 @@ pub use local_token::LocalTokenStore;
 pub use messages::{MessageRow, MessageWindow, MessagesStore, MESSAGE_HOT_CONVERSATIONS_LIMIT};
 pub use notify_seq::NotifySeqStore;
 pub use pool::SqlitePool;
+pub use quarantined_events::{QuarantinedEventRow, QuarantinedEventsStore};
 pub use quick_replies::{QuickRepliesStore, QuickReplyRow};
 pub use recent_sessions::{
     RecentSessionRemote, RecentSessionRow, RecentSessionSummary, RecentSessionsStore,

@@ -125,6 +125,11 @@ const extOf = (name: string) => {
 const keepByExt = (files: File[], exts: readonly string[]) =>
   files.filter((f) => (exts as readonly string[]).includes(extOf(f.name)));
 
+// 单个附件体积上限(200 MiB):超限的图片/文件在选择/粘贴/截图入口即拦下,不入编辑器/托盘,
+// 避免无谓读字节再上传到 OSS 才失败。语音另有 2MB/60s 硬限(见 useChatActions 的 voiceExceedsLimit)。
+const MAX_UPLOAD_BYTES = 200 * 1024 * 1024;
+const keepBySize = (files: File[], max: number) => files.filter((f) => f.size <= max);
+
 // 选错文件 / 读取失败时的统一提示。
 const reportPickError = (e: unknown) =>
   showToast(`选择文件失败：${e instanceof Error ? e.message : String(e)}`, { type: "error" });
@@ -312,7 +317,12 @@ export function MessageComposer({
 
   /** Insert image files as inline image nodes in the TipTap editor. */
   const insertImageFiles = (files: File[]) => {
-    if (!editorRef.current || files.length === 0) return;
+    if (!editorRef.current) return;
+    // 超 200MiB 的图片在入编辑器前拦下并提示(图片选择 / 粘贴 / 截图三入口共用此处收口)。
+    const allowed = keepBySize(files, MAX_UPLOAD_BYTES);
+    if (allowed.length < files.length) showToast(STRINGS.toast.fileTooLarge, { type: "error" });
+    if (allowed.length === 0) return;
+    files = allowed;
     // 内嵌图片走 data: URL 而非 blob: URL。
     // blob URL 是 composer 实例级资源:切会话时本组件按 conversation.id 重挂载,
     // unmount cleanup(createdBlobUrlsRef effect) 会把所有 tracked blob 全 revoke,
@@ -356,8 +366,11 @@ export function MessageComposer({
 
   const acceptDocFiles = useCallback(
     (raw: File[]) => {
-      const files = keepByExt(raw, DOC_EXTS);
-      if (files.length < raw.length) showToast(STRINGS.toast.fileFormatOnly, { type: "error" });
+      const byExt = keepByExt(raw, DOC_EXTS);
+      if (byExt.length < raw.length) showToast(STRINGS.toast.fileFormatOnly, { type: "error" });
+      // 超 200MiB 的文件拦下并提示,不入托盘(避免上传到 OSS 才失败)。
+      const files = keepBySize(byExt, MAX_UPLOAD_BYTES);
+      if (files.length < byExt.length) showToast(STRINGS.toast.fileTooLarge, { type: "error" });
       // 按文件后缀判定附件类型,使 messageType 正确分流(如 amr→voice→4),与接收侧一致。
       const next: MessageAttachment[] = files.map((file) => ({
         type: attachmentTypeFromExt(extOf(file.name)),

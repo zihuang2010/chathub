@@ -80,6 +80,10 @@ impl SqlitePool {
                 M::up(include_str!(
                     "../migrations/V26__recents_backfill_remote_display_time.sql"
                 )),
+                M::up(include_str!("../migrations/V27__quarantined_events.sql")),
+                M::up(include_str!(
+                    "../migrations/V28__purge_dirty_unknown_out_bubbles.sql"
+                )),
             ]);
             migrations
                 .to_latest(c)
@@ -118,7 +122,7 @@ mod tests {
                    'hub_secrets', 'hub_settings', \
                    'hub_conversation_recents', \
                    'hub_conversation_messages', 'hub_conversation_message_window', \
-                   'hub_quick_replies', 'hub_image_meta'\
+                   'hub_quick_replies', 'hub_image_meta', 'hub_quarantined_events'\
                  )",
                     [],
                     |r| r.get(0),
@@ -129,10 +133,10 @@ mod tests {
             .expect("query");
 
         assert_eq!(
-            table_count, 9,
-            "全部 V1-V20 跑完应剩 9 张 hub_ 前缀业务表(account_seqs/friends_cache 在 V4/V6 DROP;\
+            table_count, 10,
+            "全部迁移跑完应剩 10 张 hub_ 前缀业务表(account_seqs/friends_cache 在 V4/V6 DROP;\
              V16 退役 friends 行存 + 3 张 per-resource 水位表;真正在用的续点水位在 hub_settings.notify_seq;\
-             + V19 hub_image_meta;V20 仅修数据)"
+             + V19 hub_image_meta;V20/V28 仅修数据;+ V27 hub_quarantined_events 异常库)"
         );
     }
 
@@ -203,6 +207,54 @@ mod tests {
             direction("m-sync"),
             2,
             "source direction 3=多端同步方,应迁移为本地 out"
+        );
+    }
+
+    #[test]
+    fn v28_migration_purges_dirty_unknown_out_bubbles() {
+        let conn = rusqlite::Connection::open_in_memory().expect("open in-memory sqlite");
+        conn.execute_batch(include_str!("../migrations/V14__conversation_messages.sql"))
+            .expect("create conversation message tables");
+        let insert = |id: &str, dir: i64, mtype: i64, status: i64| {
+            conn.execute(
+                "INSERT INTO hub_conversation_messages ( \
+                   local_message_id, conversation_id, employee_id, wecom_account_id, sort_key, \
+                   message_time_ms, message_direction, message_type, content_text, send_status, \
+                   attachments_json, gmt_modified_time, updated_at_ms \
+                 ) VALUES (?1, 'c1', 'u1', 'wa1', ?1, 0, ?2, ?3, 'x', ?4, '[]', '', 0)",
+                rusqlite::params![id, dir, mtype, status],
+            )
+            .expect("insert row");
+        };
+        insert("dirty", 2, 99, 0); // 语义矛盾脏气泡:type=99 + out + send_status=0 → 删
+        insert("real_out", 2, 1, 3); // 正常出站文本 → 留
+        insert("unknown_in", 1, 99, 0); // 入站未知(direction=1)→ 留(非本类脏行)
+        insert("unknown_out_sent", 2, 99, 3); // type=99 出站但已发送(status≠0)→ 留
+
+        conn.execute_batch(include_str!(
+            "../migrations/V28__purge_dirty_unknown_out_bubbles.sql"
+        ))
+        .expect("run V28 migration");
+
+        let exists = |id: &str| -> i64 {
+            conn.query_row(
+                "SELECT COUNT(*) FROM hub_conversation_messages WHERE local_message_id = ?1",
+                [id],
+                |r| r.get(0),
+            )
+            .expect("count row")
+        };
+        assert_eq!(exists("dirty"), 0, "语义矛盾脏气泡被清除");
+        assert_eq!(exists("real_out"), 1, "正常出站消息保留");
+        assert_eq!(
+            exists("unknown_in"),
+            1,
+            "入站未知消息(direction=1)不在删除范围"
+        );
+        assert_eq!(
+            exists("unknown_out_sent"),
+            1,
+            "type=99 出站但已发送(status≠0)保留"
         );
     }
 

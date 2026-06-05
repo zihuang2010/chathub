@@ -30,21 +30,20 @@ export function RangePill({ accounts, selectedAccountId, onAccountChange }: Rang
           onSelect={onAccountChange}
           open={open}
           onOpenChange={setOpen}
-          title={STRINGS.rangePill.selectAccount}
         >
           <button
             type="button"
             aria-expanded={open}
             aria-label={STRINGS.rangePill.selectAccount}
-            className="focus-ring inline-flex h-8 min-w-0 max-w-full items-center gap-1.5 rounded-md px-2 text-left text-workbench-accent transition-colors hover:bg-workbench-surface-soft data-[state=open]:bg-workbench-surface-soft"
+            className="focus-ring inline-flex h-8 min-w-0 max-w-full items-center gap-1.5 rounded-md px-2 text-left text-[#5B7C99] transition-colors hover:bg-workbench-surface-soft data-[state=open]:bg-workbench-surface-soft"
           >
-            <ListFilter size={12} className="shrink-0" />
+            <ListFilter size={12} className="shrink-0 text-[#6B86A6]" />
             <span className="min-w-0 truncate">
               {STRINGS.rangePill.currentRange}：{label}
             </span>
             <ChevronDown
               size={12}
-              className={cn("shrink-0 transition-transform", open && "rotate-180")}
+              className={cn("shrink-0 text-[#6B86A6] transition-transform", open && "rotate-180")}
             />
           </button>
         </AccountDropdown>

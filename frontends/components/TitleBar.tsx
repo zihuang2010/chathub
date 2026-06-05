@@ -65,10 +65,10 @@ export function TitleBar({ tone = "transparent" }: TitleBarProps) {
   );
 }
 
-// ─── Ambient backdrop: three soft drifting orbs ──────────────────────────────
+// ─── Ambient backdrop: four small drifting orbs ──────────────────────────────
 
-// 顶栏只有 40px 高,在右侧拖拽区散放一排小气泡(浅蓝/白、大小相间、轻微柔边),缓慢
-// 横向漂移营造"动态"。pointer-events-none + aria-hidden 保证不挡拖拽区与窗口按钮
+// 顶栏只有 40px 高,在右侧拖拽区散放 4 颗小气泡(与左栏同套配色,按远近分层:远层略深蓝、
+// 近层近白、整体偏小且清晰不糊),轻柔 2D 漂浮营造"动态"。pointer-events-none + aria-hidden 保证不挡拖拽区与窗口按钮
 // (它们以 relative z-10 绘制在其上);仅毛玻璃态渲染,避免 splash 透明态露出圆。
 // prefers-reduced-motion 下由 index.css 自动静止为纯色圆点。
 //
@@ -88,29 +88,27 @@ function TitleBarBackdrop({ visible, rounded = false }: { visible: boolean; roun
       )}
       style={{ maskImage: fadeMask, WebkitMaskImage: fadeMask }}
     >
+      {/* 顶栏气泡精简为 4 颗,与左栏共用同一套配色/尺寸,清晰不糊(无柔焦):
+          近=近白小 / 中=中蓝 #9FBDE6 / 远=略深蓝 #8AB0E6、稍大。 */}
+      {/* 近层(near)。 */}
       <span
-        className="absolute left-[24%] top-[7px] size-[13px] rounded-full bg-white/80 blur-[1.5px]"
-        style={{ animation: "chTitleOrbA 30s ease-in-out infinite" }}
+        className="absolute left-[30%] top-[8px] size-[9px] rounded-full bg-white/85"
+        style={{ animation: "chTitleOrbA 22s ease-in-out infinite" }}
       />
+      {/* 远层(far):略深蓝、稍大 —— 沉在最后。 */}
       <span
-        className="absolute left-[36%] top-[17px] size-[9px] rounded-full bg-[#BCD3F1]/60 blur-[1.5px]"
-        style={{ animation: "chTitleOrbC 27s ease-in-out infinite" }}
+        className="absolute left-[50%] top-[7px] size-[11px] rounded-full bg-[#8AB0E6]/50"
+        style={{ animation: "chTitleOrbB 26s ease-in-out infinite" }}
       />
+      {/* 中层(mid)。 */}
       <span
-        className="bg-[#C6DAF2]/58 absolute left-[50%] top-[6px] size-[17px] rounded-full blur-[2px]"
-        style={{ animation: "chTitleOrbB 40s ease-in-out infinite" }}
+        className="absolute left-[68%] top-[16px] size-[8px] rounded-full bg-[#9FBDE6]/55"
+        style={{ animation: "chTitleOrbC 21s ease-in-out infinite" }}
       />
+      {/* 近层(near):最小。 */}
       <span
-        className="absolute left-[63%] top-[18px] size-[8px] rounded-full bg-white/70 blur-[1.5px]"
-        style={{ animation: "chTitleOrbA 35s ease-in-out infinite" }}
-      />
-      <span
-        className="bg-[#BCD3F1]/62 absolute left-[75%] top-[9px] size-[12px] rounded-full blur-[1.5px]"
-        style={{ animation: "chTitleOrbC 31s ease-in-out infinite" }}
-      />
-      <span
-        className="absolute right-[7%] top-[15px] size-[11px] rounded-full bg-[#C6DAF2]/60 blur-[1.5px]"
-        style={{ animation: "chTitleOrbB 44s ease-in-out infinite" }}
+        className="absolute right-[9%] top-[12px] size-[7px] rounded-full bg-white/80"
+        style={{ animation: "chTitleOrbA 24s ease-in-out infinite" }}
       />
     </div>
   );

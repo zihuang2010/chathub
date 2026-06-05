@@ -9,11 +9,10 @@ import { QuickRepliesPanel } from "./QuickRepliesPanel";
 import { STRINGS } from "./strings";
 import { pickAvatarColor } from "./utils";
 
-type DetailsTab = "profile" | "replies" | "trace";
+type DetailsTab = "profile" | "trace";
 
 const TABS: { value: DetailsTab; label: string }[] = [
   { value: "profile", label: STRINGS.customerDetails.tabProfile },
-  { value: "replies", label: STRINGS.customerDetails.tabReplies },
   { value: "trace", label: STRINGS.customerDetails.tabTrace },
 ];
 
@@ -55,7 +54,6 @@ export const CustomerDetails = memo(function CustomerDetails({
           ) : (
             <EmptyTab text={STRINGS.empty.loading} />
           ))}
-        {tab === "replies" && <EmptyTab text={STRINGS.customerDetails.emptyReplies} />}
         {tab === "trace" && <EmptyTab text={STRINGS.customerDetails.emptyTrace} />}
       </div>
     </aside>
@@ -69,7 +67,7 @@ function Tabs({ value, onChange }: { value: DetailsTab; onChange: (t: DetailsTab
     <div
       role="tablist"
       aria-label={STRINGS.customerDetails.tabsLabel}
-      className="grid grid-cols-3 border-b border-workbench-line px-2 pt-2"
+      className="grid grid-cols-2 border-b border-workbench-line px-2 pt-2"
     >
       {TABS.map((t) => {
         const active = t.value === value;
@@ -151,7 +149,7 @@ function ProfileHeader({
       <div className="flex min-w-0 flex-col gap-0.5">
         <div className="flex items-center gap-1.5">
           <span className="text-wb-sm font-semibold text-workbench-text">{customer.name}</span>
-          <span className="text-wb-2xs text-workbench-text-muted">@ {customer.channel}</span>
+          <span className="text-wb-2xs text-workbench-wechat-text">@ {customer.channel}</span>
         </div>
         <div className="text-wb-3xs flex items-center gap-1.5 text-workbench-text-secondary">
           <span className="truncate">{customer.account}</span>
