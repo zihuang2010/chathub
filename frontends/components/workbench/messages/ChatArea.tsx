@@ -1,4 +1,12 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type MutableRefObject,
+} from "react";
 import { ArrowDown, ArrowUp } from "lucide-react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 
@@ -73,6 +81,12 @@ interface ChatAreaProps {
   hasMoreHistory?: boolean;
   /** Called when the user scrolls near the top and older messages should be loaded. */
   onLoadMoreHistory?: () => Promise<void> | void;
+  /** Stage C:窗口底之下是否仍有更新行(= !slice.atCacheBottom);近底预取 loadNewer 的门控。 */
+  hasMoreNewer?: boolean;
+  /** Stage C:用户下滚近底时把曾 drop 的较新行重新拉回(对称 onLoadMoreHistory)。 */
+  onLoadNewer?: () => Promise<void> | void;
+  /** Stage C:贴底实时 ref(MessagesPage 持有);useScrollController 在维护 wasAtBottomRef 处镜像写入。 */
+  atBottomRef?: MutableRefObject<boolean>;
   /** Quick-reply templates surfaced in the composer popover. */
   quickReplies?: QuickReply[];
   /** 快捷回复增删改回调:透传给 composer popover 内的管理 UI。 */
@@ -117,6 +131,9 @@ export const ChatArea = memo(function ChatArea({
   onRetry,
   hasMoreHistory = false,
   onLoadMoreHistory,
+  hasMoreNewer = false,
+  onLoadNewer,
+  atBottomRef,
   quickReplies,
   onCreateQuickReply,
   onUpdateQuickReply,
@@ -197,6 +214,9 @@ export const ChatArea = memo(function ChatArea({
     error,
     hasMoreHistory,
     onLoadMoreHistory,
+    hasMoreNewer,
+    onLoadNewer,
+    atBottomRef,
     onLeaveMarkRead,
     unreadDividerIndex,
     scrollToIndex,

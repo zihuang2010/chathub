@@ -184,6 +184,10 @@ export function MessagesPage({
   const [isResizing, setIsResizing] = useState(false);
   const pageRef = useRef<HTMLDivElement | null>(null);
   const chatAreaRef = useRef<HTMLDivElement | null>(null);
+  // Stage C:用户贴底实时 ref(单一真相)。useScrollController(ChatArea 内)在维护 wasAtBottomRef
+  // 处镜像写入,useMessageHistory(本页内)readCache 经此读判塌缩/缝合 —— 打破跨组件读 ref 的环。
+  // 初值 true(冷开首屏贴底)。
+  const atBottomRef = useRef(true);
   const dragStartRef = useRef({ x: 0, width: CONVERSATION_LIST_DEFAULT_WIDTH });
   // 列表宽度的「记忆」是比例(列表占窗口宽度 innerWidth 的比),px 由它 × innerWidth 再钳制而来。
   // 窗口缩放时按此比例重算 → 平滑联动;用户拖拽/键盘调宽后回写此比例 → 偏好被记住。
@@ -323,12 +327,16 @@ export function MessagesPage({
     error: messagesError,
     hasMore: hasMoreMessages,
     loadMore: loadMoreMessages,
+    loadNewer: loadNewerMessages,
+    atCacheBottom: messagesAtCacheBottom,
+    atCacheTop: messagesAtCacheTop,
     retry: retryMessages,
     storeKey: chatStoreKey,
   } = useChatMessages({
     conversationId: conversation?.id ?? "",
     wecomAccountId: selectedEntry?.wecomAccountId,
     externalUserId: selectedEntry?.externalUserId,
+    atBottomRef,
   });
   // 客户资料:按选中会话归属的 (wecomAccountId, externalUserId) 拉好友详情。
   // 两者缺一时 hook 不发请求、detail 为 null,CustomerDetails 渲染空态。
@@ -703,8 +711,11 @@ export function MessagesPage({
               loading={messagesLoading}
               error={messagesError}
               onRetry={retryMessages}
-              hasMoreHistory={hasMoreMessages}
+              hasMoreHistory={hasMoreMessages || !messagesAtCacheTop}
               onLoadMoreHistory={loadMoreMessages}
+              hasMoreNewer={!messagesAtCacheBottom}
+              onLoadNewer={loadNewerMessages}
+              atBottomRef={atBottomRef}
               onSendMessage={handleSendMessage}
               onLeaveMarkRead={markReadRecent}
               quickReplies={quickReplyItems}

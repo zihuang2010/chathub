@@ -62,6 +62,19 @@ export interface UseScrollControllerParams {
   error?: Error | null;
   hasMoreHistory?: boolean;
   onLoadMoreHistory?: () => Promise<void> | void;
+  /**
+   * Stage C 数据窗口化(对称 hasMoreHistory/onLoadMoreHistory):
+   *   - `hasMoreNewer`:窗口底之下缓存里是否仍有更新行(= !slice.atCacheBottom)。
+   *   - `onLoadNewer`:近底(≤一屏)预取把曾 drop 的较新行重新拉回。尾部 append 不改视口上方内容、
+   *     scrollTop 自然不动,故无需 prepend 锚点(比 loadOlder 简单的本质区别)。
+   */
+  hasMoreNewer?: boolean;
+  onLoadNewer?: () => Promise<void> | void;
+  /**
+   * Stage C:贴底实时 ref(MessagesPage 持有,useMessageHistory 读它判塌缩/缝合)。本控制器在
+   * 维护 wasAtBottomRef 的各处(handleScrollMetrics/snap/锚点 effect)镜像写入,作为单一真相。
+   */
+  atBottomRef?: MutableRefObject<boolean>;
   onLeaveMarkRead?: (conversationId: string) => void | Promise<void>;
   /**
    * Stage B 渲染虚拟化:未读分隔条 / 锚点行可能被虚拟化卸载,DOM 不再常驻。
@@ -105,6 +118,9 @@ export function useScrollController({
   error,
   hasMoreHistory = false,
   onLoadMoreHistory,
+  hasMoreNewer = false,
+  onLoadNewer,
+  atBottomRef,
   onLeaveMarkRead,
   unreadDividerIndex = -1,
   scrollToIndex,
@@ -117,11 +133,26 @@ export function useScrollController({
     if (node) scrollRef.current = node;
   }, []);
   const wasAtBottomRef = useRef(true);
+  // Stage C:把贴底真相镜像写到外部 atBottomRef(MessagesPage 持有,useMessageHistory 读它判
+  // 塌缩/缝合)。所有维护 wasAtBottomRef 的写点都过此 helper,保证两 ref 同步、单一真相。
+  const atBottomExternalRef = atBottomRef;
+  const setWasAtBottom = useCallback(
+    (v: boolean) => {
+      wasAtBottomRef.current = v;
+      if (atBottomExternalRef) atBottomExternalRef.current = v;
+    },
+    [atBottomExternalRef],
+  );
   const metricsFromUserScrollRef = useRef(false);
   const previousMessageCountRef = useRef(localMessages.length);
   const pendingInitialScrollToLatestRef = useRef(true);
   const prependAnchorRef = useRef<PrependAnchor | null>(null);
   const historyLoadInFlightRef = useRef(false);
+  // Stage C:loadNewer 近底预取的 in-flight 守卫(对称 historyLoadInFlightRef)。
+  const newerLoadInFlightRef = useRef(false);
+  // hasMoreNewer/onLoadNewer 用 ref 镜像,让稳定 useCallback(maybeLoadNewerHistory)读最新值而不入 deps。
+  const hasMoreNewerRef = useRef(hasMoreNewer);
+  const onLoadNewerRef = useRef(onLoadNewer);
   const historyPrependAppliedMessageCountRef = useRef<number | null>(null);
   // prepend 后有限重断言锚点的 rAF 句柄(见锚点恢复 layout effect)。
   const reassertRafRef = useRef<number | null>(null);
@@ -163,26 +194,35 @@ export function useScrollController({
   useEffect(() => {
     getOffsetForIndexRef.current = getOffsetForIndex;
   }, [getOffsetForIndex]);
+  useEffect(() => {
+    hasMoreNewerRef.current = hasMoreNewer;
+  }, [hasMoreNewer]);
+  useEffect(() => {
+    onLoadNewerRef.current = onLoadNewer;
+  }, [onLoadNewer]);
 
-  const handleScrollMetrics = useCallback((m: ScrollMetrics) => {
-    const fromUserScroll = metricsFromUserScrollRef.current;
-    metricsFromUserScrollRef.current = false;
+  const handleScrollMetrics = useCallback(
+    (m: ScrollMetrics) => {
+      const fromUserScroll = metricsFromUserScrollRef.current;
+      metricsFromUserScrollRef.current = false;
 
-    if (!fromUserScroll && !m.atBottom && wasAtBottomRef.current) {
-      const node = scrollRef.current;
-      if (node) {
-        node.scrollTop = node.scrollHeight;
-        wasAtBottomRef.current = true;
-        setAtBottom((prev) => (prev ? prev : true));
-        setUnreadBelow((prev) => (prev === 0 ? prev : 0));
-        return;
+      if (!fromUserScroll && !m.atBottom && wasAtBottomRef.current) {
+        const node = scrollRef.current;
+        if (node) {
+          node.scrollTop = node.scrollHeight;
+          setWasAtBottom(true);
+          setAtBottom((prev) => (prev ? prev : true));
+          setUnreadBelow((prev) => (prev === 0 ? prev : 0));
+          return;
+        }
       }
-    }
 
-    wasAtBottomRef.current = m.atBottom;
-    setAtBottom((prev) => (prev === m.atBottom ? prev : m.atBottom));
-    if (m.atBottom) setUnreadBelow(0);
-  }, []);
+      setWasAtBottom(m.atBottom);
+      setAtBottom((prev) => (prev === m.atBottom ? prev : m.atBottom));
+      if (m.atBottom) setUnreadBelow(0);
+    },
+    [setWasAtBottom],
+  );
 
   // localMessages.length 用 ref 读,而非作为 callback dep —— 写出去的快照不影响
   // callback 行为本身,放进 deps 会让 callback 每条消息都重建,间接 invalidate
@@ -251,6 +291,30 @@ export function useScrollController({
     [loadOlderHistoryAtBoundary],
   );
 
+  // Stage C 近底预取 loadNewer:对称 loadOlderHistoryAtBoundary,但**无需 prepend 锚点** —— 尾部
+  // append 不改变视口上方内容,scrollTop 自然不动(append 比 prepend 简单的本质区别)。仅 in-flight
+  // 守卫 + hasMoreNewer/!loading/有回调/不在首屏 snap。dropFromTop 删的是远离视口的顶部行(用户视线
+  // 在底部),参照行天然在视口、保位不漂。hasMoreNewer/onLoadNewer 走 ref 读最新值,保 callback 稳定。
+  const loadNewerAtBoundary = useCallback(() => {
+    if (newerLoadInFlightRef.current) return;
+    if (!hasMoreNewerRef.current || loading || !onLoadNewerRef.current) return;
+    if (pendingInitialScrollToLatestRef.current) return;
+    newerLoadInFlightRef.current = true;
+    Promise.resolve(onLoadNewerRef.current()).finally(() => {
+      newerLoadInFlightRef.current = false;
+    });
+  }, [loading]);
+
+  // 进入近底预取区(距底 ≤ 一屏)即拉更新页。重入由 loadNewerAtBoundary 内部守卫吸收。
+  const maybeLoadNewerHistory = useCallback(
+    (m: ScrollMetrics) => {
+      const distToBottom = m.scrollHeight - m.scrollTop - m.clientHeight;
+      if (distToBottom > prefetchThreshold(m.clientHeight)) return;
+      loadNewerAtBoundary();
+    },
+    [loadNewerAtBoundary],
+  );
+
   const handleWheelCapture = useCallback(
     (event: WheelEvent<HTMLDivElement>) => {
       if (event.deltaY >= 0) return;
@@ -282,6 +346,7 @@ export function useScrollController({
       const viewport = scrollRef.current;
       if (!viewport) return;
       maybeLoadOlderHistory(m);
+      maybeLoadNewerHistory(m);
 
       // 三态:true=在视口上方(用户还没看到),false=已可见/在下方,null=无从判定(等同无 divider)。
       let dividerAbove: boolean | null;
@@ -314,16 +379,25 @@ export function useScrollController({
       if (unreadAbove === unread) return;
       setUnreadAboveState({ conversationId: conversation.id, count: unread });
     },
-    [conversation.id, conversation.unread, maybeLoadOlderHistory, unreadAbove],
+    [
+      conversation.id,
+      conversation.unread,
+      maybeLoadOlderHistory,
+      maybeLoadNewerHistory,
+      unreadAbove,
+    ],
   );
 
-  const scrollToBottom = useCallback((behavior: ScrollBehavior = "smooth") => {
-    const node = scrollRef.current;
-    if (!node) return;
-    node.scrollTo({ top: node.scrollHeight, behavior });
-    wasAtBottomRef.current = true;
-    setUnreadBelow(0);
-  }, []);
+  const scrollToBottom = useCallback(
+    (behavior: ScrollBehavior = "smooth") => {
+      const node = scrollRef.current;
+      if (!node) return;
+      node.scrollTo({ top: node.scrollHeight, behavior });
+      setWasAtBottom(true);
+      setUnreadBelow(0);
+    },
+    [setWasAtBottom],
+  );
 
   // 切走/卸载该会话时补一次 markRead:打开期间客户消息已读靠列表红标抑制(view-only),
   // 服务端只在离开时同步一次。用 ref 读实时 unread,不入 deps,避免每来一条消息就重跑 cleanup。
@@ -350,7 +424,10 @@ export function useScrollController({
     // 取消上个会话悬挂的重断言 rAF,防跨会话野回调改新会话 scrollTop。
     if (reassertRafRef.current != null) cancelAnimationFrame(reassertRafRef.current);
     reassertRafRef.current = null;
-    wasAtBottomRef.current = true;
+    // 切会话也镜像写外部 atBottomRef:新会话首屏走 snap 到底,贴底真相重置为 true,
+    // 使 useMessageHistory 首屏 readCache 走整窗塌缩(collapseToLatest=true)。
+    newerLoadInFlightRef.current = false;
+    setWasAtBottom(true);
     // 切会话**不**点亮顶部 pill。pill 只有当用户从底部主动向上滚动且 divider 仍在视口上方时触发。
     hasSeenDividerRef.current = false;
     previousMessageCountRef.current = localMessages.length;
@@ -369,7 +446,7 @@ export function useScrollController({
       const current = scrollRef.current;
       if (!current || activeConversationIdRef.current !== conversation.id) return false;
       current.scrollTop = current.scrollHeight;
-      wasAtBottomRef.current = true;
+      setWasAtBottom(true);
       setAtBottom((prev) => (prev ? prev : true));
       setUnreadBelow((prev) => (prev === 0 ? prev : 0));
       return true;
@@ -381,7 +458,7 @@ export function useScrollController({
       pendingInitialScrollToLatestRef.current = false;
     });
     return () => cancelAnimationFrame(rafId);
-  }, [conversation.id, error, loading, localMessages.length]);
+  }, [conversation.id, error, loading, localMessages.length, setWasAtBottom]);
 
   useLayoutEffect(() => {
     const anchor = prependAnchorRef.current;
@@ -425,7 +502,7 @@ export function useScrollController({
     historyPrependAppliedMessageCountRef.current = localMessages.length;
     const nextAtBottom =
       node.scrollHeight - node.scrollTop - node.clientHeight < AT_BOTTOM_THRESHOLD;
-    wasAtBottomRef.current = nextAtBottom;
+    setWasAtBottom(nextAtBottom);
     setAtBottom((prev) => (prev === nextAtBottom ? prev : nextAtBottom));
 
     // 2) 有界重断言:逐帧重新对齐参照行(快滚残余惯性、边界处晚到的高度变化都扳回)。WebKit 无
@@ -461,7 +538,7 @@ export function useScrollController({
       if (reassertRafRef.current != null) cancelAnimationFrame(reassertRafRef.current);
       reassertRafRef.current = null;
     };
-  }, [conversation.id, loading, localMessages.length]);
+  }, [conversation.id, loading, localMessages.length, setWasAtBottom]);
 
   const scrollToUnread = useCallback(() => {
     // Stage B:虚拟化后分隔条 DOM 可能被卸载,scrollIntoView 失效。优先用虚拟器
@@ -495,6 +572,9 @@ export function useScrollController({
     if (wasAtBottomRef.current) {
       const node = scrollRef.current;
       if (node) node.scrollTop = node.scrollHeight;
+      // 贴底跟随(含 useChatActions 发送后直接置 wasAtBottomRef=true 的路径)→ 镜像外部 atBottomRef,
+      // 使下次 readCache 走整窗塌缩(乐观气泡随塌缩进入尾窗、正常收敛)。
+      setWasAtBottom(true);
       return;
     }
     // Only count INCOMING bumps — sending out a message that you can see in
@@ -505,7 +585,7 @@ export function useScrollController({
     if (incomingArrivals > 0) {
       setUnreadBelow((current) => current + incomingArrivals);
     }
-  }, [localMessages]);
+  }, [localMessages, setWasAtBottom]);
 
   // 卸载时取消悬挂的重断言 rAF,防野回调。
   useEffect(

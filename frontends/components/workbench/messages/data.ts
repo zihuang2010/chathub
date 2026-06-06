@@ -285,6 +285,13 @@ export interface Message {
    * 气泡据此渲染「企业微信来源」差异化样式(中性底色 + 来源徽章 + 头像角标)。
    */
   syncedFromOtherDevice?: boolean;
+  /**
+   * 后端权威排序键(opaque 复合串,见 hub_conversation_messages.sort_key)。窗口化(Stage C)
+   * 据它派生窗口两端边界、调 load_cached_window 的严格 sort_key>/< 锚点。historyToMessage
+   * 透传;乐观气泡未落库无此键(undefined),与边界推导/区间过滤兼容(空键端被守卫跳过)。
+   * 字符串比较一律走 localeCompare(与 compareHistoryRecords 同款),不可数值化。
+   */
+  sortKey?: string;
 }
 
 // `Customer` is now defined in `@/lib/types/customer` so the customers page and

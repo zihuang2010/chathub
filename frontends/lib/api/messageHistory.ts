@@ -363,6 +363,8 @@ function historyToMessage(
     failReason: h.failReason,
     // 多端同步标记:后端据持久化的 source_direction=3 派生;出站气泡据此渲染「企业微信来源」样式。
     syncedFromOtherDevice: h.syncedFromOtherDevice,
+    // 后端权威 sortKey 透传:窗口化(Stage C)据它派生窗口两端边界 + load_cached_window 锚点。
+    sortKey: h.sortKey,
   };
 }
 

@@ -4,14 +4,19 @@ import { attachmentPreviewUrl } from "@/lib/api/messageHistory";
 
 import type { Message } from "../data";
 import {
+  appendNewerWindow,
   type ChatMessageEntity,
   type ConversationSlice,
+  dropFromBottom,
+  dropFromTop,
   emptySlice,
   enqueueOptimistic,
+  isUnconvergedOptimistic,
   MAX_HOT_CONVERSATIONS,
   markFailed,
   markSent,
   prependOlder,
+  prependOlderWindow,
   removeEntity,
   replaceAuthoritative,
   selectTimeline,
@@ -26,6 +31,8 @@ function msg(id: string, overrides: Partial<Message> = {}): Message {
     direction: "in",
     text: id,
     sentAt: "2026-05-19T00:00:00.000Z",
+    // 权威条目都带 sortKey(窗口边界派生依赖);默认用 id 作 sortKey,顺序与 id 字典序一致。
+    sortKey: id,
     parts: [{ kind: "text", text: id }],
     ...overrides,
   };
@@ -37,6 +44,8 @@ function optimistic(
 ): ChatMessageEntity {
   return {
     ...msg(clientMsgId, { direction: "out", status: "sending" }),
+    // 乐观气泡未落库,无后端 sortKey(与生产一致:enqueueOptimistic 不带 sortKey)。
+    sortKey: undefined,
     clientMsgId,
     ...overrides,
   };
@@ -489,6 +498,274 @@ describe("chatStore reducers", () => {
       msg("S", { direction: "out", status: "sent", sentAt: "2026-05-19T00:00:10.000Z" }),
     ]);
     expect(selectTimeline(next).map((e) => e.id)).toEqual(["h0", "c-1", "S"]);
+  });
+});
+
+// ─── Stage C 数据窗口化:窗口 reducer + 缝合 UPSERT ────────────────────────────────────
+//
+// 用 emptySlice 兜底所有窗口字段;sliceWith 已沿用 emptySlice 默认(atCacheBottom=true 等)。
+// 窗口边界由 reducer 从 order 两端有 sortKey 实体派生,测试只需断言派生结果与 atCacheTop/Bottom。
+
+describe("isUnconvergedOptimistic 判据", () => {
+  it("乐观在途/失败(有 clientMsgId、无 serverId)= true;权威/已收敛 = false", () => {
+    expect(isUnconvergedOptimistic(optimistic("c-1"))).toBe(true);
+    expect(isUnconvergedOptimistic(optimistic("c-1", { status: "failed" }))).toBe(true);
+    // 已 markSent 钉 serverId(待回显)→ 已收敛在即,不算未收敛乐观。
+    expect(isUnconvergedOptimistic(optimistic("c-1", { status: "sent", serverId: "s-1" }))).toBe(
+      false,
+    );
+    // 权威条目(无 clientMsgId)。
+    expect(isUnconvergedOptimistic(msg("m1") as ChatMessageEntity)).toBe(false);
+    expect(isUnconvergedOptimistic(undefined)).toBe(false);
+  });
+});
+
+describe("appendNewerWindow(尾部追加更新页)", () => {
+  it("尾部追加去重、不重排,更新 windowNewestSortKey + atCacheBottom", () => {
+    const slice = sliceWith([msg("m1"), msg("m2")]);
+    const next = appendNewerWindow(slice, [msg("m2"), msg("m3"), msg("m4")], {
+      atCacheBottom: true,
+    });
+    // m2 已在窗口内 → 去重;m3/m4 升序追加,不重排。
+    expect(selectTimeline(next).map((e) => e.id)).toEqual(["m1", "m2", "m3", "m4"]);
+    expect(next.windowNewestSortKey).toBe("m4");
+    expect(next.atCacheBottom).toBe(true);
+  });
+
+  it("新页插在未收敛乐观尾部之前(乐观气泡永远贴最底)", () => {
+    const slice = sliceWith([msg("m1"), optimistic("c-opt")]);
+    const next = appendNewerWindow(slice, [msg("m2")], { atCacheBottom: false });
+    // m2 插在乐观气泡 c-opt 之前。
+    expect(selectTimeline(next).map((e) => e.id)).toEqual(["m1", "m2", "c-opt"]);
+    expect(next.windowNewestSortKey).toBe("m2");
+    expect(next.atCacheBottom).toBe(false);
+  });
+
+  it("中段失败乐观气泡:新页插在最后一个真实条目之后,中段乐观保位、较新页不错序", () => {
+    // failed 乐观气泡按 sentAt 归位可落在 real 中段(m1 与 m2 之间)。append [m3] 必须插在「最后一个
+    // 有 sortKey 的真实条目 m2」之后,而非「第一个乐观 c-fail」之前(后者会把 m3 排到 m2 之前 → 错序)。
+    const slice = sliceWith([msg("m1"), optimistic("c-fail", { status: "failed" }), msg("m2")]);
+    const next = appendNewerWindow(slice, [msg("m3")], { atCacheBottom: false });
+    expect(selectTimeline(next).map((e) => e.id)).toEqual(["m1", "c-fail", "m2", "m3"]);
+    expect(next.windowNewestSortKey).toBe("m3");
+  });
+
+  it("无新增且 meta 未变 → 复用原 slice 引用", () => {
+    const slice = sliceWith([msg("m1"), msg("m2")]);
+    // 全部已存在 + 不带 meta(视为不改边界)→ 复用引用。
+    expect(appendNewerWindow(slice, [msg("m1")], {})).toBe(slice);
+  });
+});
+
+describe("prependOlderWindow(头部 prepend 更旧页)", () => {
+  it("复用 prependOlder 去重 + prepend,更新 windowOldestSortKey + atCacheTop", () => {
+    const slice = sliceWith([msg("m3"), msg("m4")]);
+    const next = prependOlderWindow(slice, [msg("m1"), msg("m2"), msg("m3")], { atCacheTop: true });
+    expect(selectTimeline(next).map((e) => e.id)).toEqual(["m1", "m2", "m3", "m4"]);
+    expect(next.windowOldestSortKey).toBe("m1");
+    expect(next.atCacheTop).toBe(true);
+  });
+
+  it("空(无新增)且 meta 未变 → 复用原 slice 引用", () => {
+    const slice = sliceWith([msg("m1")]);
+    expect(prependOlderWindow(slice, [], {})).toBe(slice);
+    expect(prependOlderWindow(slice, [msg("m1")], {})).toBe(slice);
+  });
+});
+
+describe("dropFromTop(裁头部最旧)", () => {
+  it("删头 n 条,更新 windowOldestSortKey,atCacheTop=false", () => {
+    const slice = sliceWith([msg("m1"), msg("m2"), msg("m3")]);
+    const next = dropFromTop(slice, 2);
+    expect(selectTimeline(next).map((e) => e.id)).toEqual(["m3"]);
+    expect(next.byId["m1"]).toBeUndefined();
+    expect(next.byId["m2"]).toBeUndefined();
+    expect(next.windowOldestSortKey).toBe("m3");
+    // 裁了头,顶部之上必有更旧。
+    expect(next.atCacheTop).toBe(false);
+  });
+
+  it("n<=0 复用引用", () => {
+    const slice = sliceWith([msg("m1")]);
+    expect(dropFromTop(slice, 0)).toBe(slice);
+  });
+});
+
+describe("dropFromBottom(裁尾部较新真实行,绝不裁未收敛乐观尾部)", () => {
+  it("核心约束:order=[real, real, opt-sending],裁紧贴乐观尾部的真实行、绝不裁乐观", () => {
+    // 请求裁 1:裁掉紧贴乐观尾部的较新真实行 m2(离上滚视口最远),保 m1 + 乐观气泡。
+    const slice = sliceWith([msg("m1"), msg("m2"), optimistic("c-opt")]);
+    const next = dropFromBottom(slice, 1);
+    expect(selectTimeline(next).map((e) => e.id)).toEqual(["m1", "c-opt"]);
+    expect(next.byId["m2"]).toBeUndefined();
+    expect(next.byId["c-opt"]).toBeDefined();
+    // 边界从裁后有 sortKey 实体派生(m1);atCacheBottom=false。
+    expect(next.windowNewestSortKey).toBe("m1");
+    expect(next.atCacheBottom).toBe(false);
+  });
+
+  it("核心约束:请求条数 ≥ 真实行数时,裁光真实尾部但乐观气泡仍保留(永不可裁)", () => {
+    // 裁 2(= 全部真实行):m1/m2 都可裁(在 SQLite、可恢复);乐观 c-opt 不在 SQLite,绝不裁。
+    const slice = sliceWith([msg("m1"), msg("m2"), optimistic("c-opt")]);
+    const next = dropFromBottom(slice, 2);
+    expect(selectTimeline(next).map((e) => e.id)).toEqual(["c-opt"]);
+    expect(next.byId["c-opt"]).toBeDefined();
+  });
+
+  it("失败乐观气泡同样不可裁(不在 SQLite、裁了不可恢复)", () => {
+    const slice = sliceWith([msg("m1"), msg("m2"), optimistic("c-fail", { status: "failed" })]);
+    const next = dropFromBottom(slice, 5);
+    // 只能裁乐观之前的真实尾部 m1/m2;乐观失败气泡 c-fail 保留。
+    expect(selectTimeline(next).map((e) => e.id)).toEqual(["c-fail"]);
+    expect(next.byId["c-fail"]).toBeDefined();
+  });
+
+  it("中段失败乐观气泡:逐条跳过任意位置乐观,裁两侧真实行而绝不裁中段乐观", () => {
+    // failed 乐观 c-fail 落在 real 中段。dropFromBottom(3) 从尾逐条裁真实行(m3/m2/m1,均在 SQLite
+    // 可恢复)、跳过中段乐观 c-fail。旧「遇尾部第一个乐观即停」会漏裁 m1、错留 [m1, c-fail]。
+    const slice = sliceWith([
+      msg("m1"),
+      optimistic("c-fail", { status: "failed" }),
+      msg("m2"),
+      msg("m3"),
+    ]);
+    const next = dropFromBottom(slice, 3);
+    expect(selectTimeline(next).map((e) => e.id)).toEqual(["c-fail"]);
+    expect(next.byId["c-fail"]).toBeDefined();
+  });
+
+  it("纯真实尾部:dropFromBottom(2) 裁掉最新 2 条,更新 windowNewestSortKey,atCacheBottom=false", () => {
+    const slice = sliceWith([msg("m1"), msg("m2"), msg("m3")]);
+    const next = dropFromBottom(slice, 2);
+    expect(selectTimeline(next).map((e) => e.id)).toEqual(["m1"]);
+    expect(next.windowNewestSortKey).toBe("m1");
+    expect(next.atCacheBottom).toBe(false);
+  });
+
+  it("全是未收敛乐观(无可裁真实尾部)→ 复用引用", () => {
+    const slice = sliceWith([optimistic("c-1"), optimistic("c-2")]);
+    expect(dropFromBottom(slice, 2)).toBe(slice);
+  });
+
+  it("n<=0 复用引用", () => {
+    const slice = sliceWith([msg("m1")]);
+    expect(dropFromBottom(slice, 0)).toBe(slice);
+  });
+});
+
+describe("replaceAuthoritative collapseToLatest=false(缝合 UPSERT,不丢上滚历史)", () => {
+  it("① 窗口内条目 status UPSERT 不丢上滚历史:order 长度不变、上滚旧 id 仍在、status 就地更新", () => {
+    // 上滚窗口 [m1..m3](非贴底),其中 m2 是出站 sending。缝合重读带来 m2 已变 sent。
+    const slice = sliceWith([
+      msg("m1"),
+      msg("m2", { direction: "out", status: "sending" }),
+      msg("m3"),
+    ]);
+    const next = replaceAuthoritative(
+      slice,
+      [msg("m2", { direction: "out", status: "sent" })],
+      false,
+    );
+    // order 不变(不丢上滚历史),m2 status 就地升级。
+    expect(selectTimeline(next).map((e) => e.id)).toEqual(["m1", "m2", "m3"]);
+    expect(next.byId["m2"].status).toBe("sent");
+  });
+
+  it("② 区间外较新权威条目不并入(它们留在 SQLite,下滚 loadNewer 再取)", () => {
+    // 窗口区间 [m1, m3];权威重读带来一条 sortKey=m9 的较新入站消息 → 越界,不并入。
+    const slice = sliceWith([msg("m1"), msg("m2"), msg("m3")]);
+    const next = replaceAuthoritative(
+      slice,
+      [msg("m1"), msg("m2"), msg("m3"), msg("m9", { sortKey: "m9" })],
+      false,
+    );
+    expect(selectTimeline(next).map((e) => e.id)).toEqual(["m1", "m2", "m3"]);
+    expect(next.byId["m9"]).toBeUndefined();
+  });
+
+  it("③ 乐观气泡的权威回显 sortKey>hi 仍被 requestMessageId 配对收敛(不因区间过滤丢)", () => {
+    // 上滚窗口 [m1, m2] + 尾部一条在途乐观 c-1(无 sortKey)。其权威回显 server-1 的 sortKey=z9
+    // 越界(> hi=m2),但带 requestMessageId=c-1,必须配对收敛(否则双行)。
+    const slice = sliceWith([msg("m1"), msg("m2"), optimistic("c-1")]);
+    const auth = msg("server-1", {
+      direction: "out",
+      status: "sent",
+      sortKey: "z9",
+      requestMessageId: "c-1",
+    });
+    const next = replaceAuthoritative(slice, [auth], false);
+    // 乐观 c-1 被 server-1 在原位收敛(保位);m1/m2 保留。
+    expect(selectTimeline(next).map((e) => e.id)).toEqual(["m1", "m2", "server-1"]);
+    expect(next.byId["c-1"]).toBeUndefined();
+    expect(next.byId["server-1"].clientMsgId).toBe("c-1");
+  });
+
+  it("④ failed 乐观气泡在缝合下仍按 sentAt 归位(不被顶到末尾)", () => {
+    // 窗口 [h0, S](h0 早、S 晚);中间一条 failed 乐观 c-1(sentAt 在两者之间)。
+    const slice = sliceWith([
+      msg("h0", { sortKey: "a", sentAt: "2026-05-19T00:00:00.000Z" }),
+      optimistic("c-1", {
+        status: "failed",
+        sentAt: "2026-05-19T00:00:05.000Z",
+        text: "A",
+        parts: [{ kind: "text", text: "A" }],
+      }),
+      msg("S", {
+        direction: "out",
+        status: "sent",
+        sortKey: "z",
+        sentAt: "2026-05-19T00:00:10.000Z",
+      }),
+    ]);
+    // 区间内重读(纯 status 等价),failed 行 sentAt 归位在 h0 与 S 之间。
+    const next = replaceAuthoritative(
+      slice,
+      [
+        msg("h0", { sortKey: "a", sentAt: "2026-05-19T00:00:00.000Z" }),
+        msg("S", {
+          direction: "out",
+          status: "sent",
+          sortKey: "z",
+          sentAt: "2026-05-19T00:00:10.000Z",
+        }),
+      ],
+      false,
+    );
+    expect(selectTimeline(next).map((e) => e.id)).toEqual(["h0", "c-1", "S"]);
+    expect(next.byId["c-1"].status).toBe("failed");
+  });
+
+  it("⑤ 缝合内容等价(纯重读无变化)→ 复用原 slice 引用", () => {
+    const slice = sliceWith([msg("m1"), msg("m2"), msg("m3")]);
+    expect(replaceAuthoritative(slice, [msg("m1"), msg("m2"), msg("m3")], false)).toBe(slice);
+  });
+
+  it("⑤b 区间内的全新 id(非配对、非已存在)不插入 order 中段(留 SQLite、避免 byId 孤儿键)", () => {
+    // 窗口 [m1, m3];权威重读带来一条区间内但前所未见的乱序插入 m2x(sortKey=m2,落在 m1/m3 之间)。
+    // 只更新窗口内已存在条目,不在历史中段凭空插新行 → m2x 不并入,order/byId 仍干净。
+    const slice = sliceWith([msg("m1"), msg("m3")]);
+    const next = replaceAuthoritative(
+      slice,
+      [msg("m1"), msg("m2x", { sortKey: "m2" }), msg("m3")],
+      false,
+    );
+    expect(selectTimeline(next).map((e) => e.id)).toEqual(["m1", "m3"]);
+    expect(next.byId["m2x"]).toBeUndefined();
+    // byId 键 == order(无孤儿)。
+    expect(Object.keys(next.byId).sort()).toEqual(["m1", "m3"]);
+  });
+
+  it("⑥ collapseToLatest=true(默认)与显式 true 等价 = 现状整窗塌缩(回归)", () => {
+    // 同一输入,默认参与显式 true 必须产出逐字段等价的 order/byId(默认走塌缩路径,不受缝合影响)。
+    const slice = sliceWith([msg("m1"), optimistic("c-1")]);
+    const a = replaceAuthoritative(slice, [msg("m1"), msg("m2")]);
+    const b = replaceAuthoritative(slice, [msg("m1"), msg("m2")], true);
+    expect(selectTimeline(a).map((e) => e.id)).toEqual(selectTimeline(b).map((e) => e.id));
+    // 塌缩路径:乐观气泡 c-1 贴底保留(未被权威收敛)。
+    expect(selectTimeline(a).map((e) => e.id)).toEqual(["m1", "m2", "c-1"]);
+    // 塌缩刷新 atCacheBottom=true + windowNewestSortKey=尾部有 sortKey 实体(m2)。
+    expect(a.atCacheBottom).toBe(true);
+    expect(a.windowNewestSortKey).toBe("m2");
   });
 });
 
