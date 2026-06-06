@@ -30,6 +30,19 @@ pub fn to_local_direction(direction: i64) -> i32 {
     }
 }
 
+/// 多端同步消息(上游 `messageDirection==3`,新 `MULTI_DEVICE_SYNC` 事件承载)的 send_status 归一。
+/// 多端同步是「已在他端发出的成品消息」,不存在「发送中」语义;但上游对其 `sendStatus` 给 0(未置位)。
+/// 若原样落库,出站气泡走前端 `mapSendStatus(0)` 会判成「发送中」→ 永久转圈(同 type99 出站误判一类)。
+/// 故 `direction==3` 且 `sendStatus` 未置位(0)时归一为成功(3);上游已明确的非 0 终态(含 4=失败)
+/// 一律尊重原值,不臆改。direction 1/2 完全不动(发送方走正常 send→PENDING(2)→CONFIRMED(3) 生命周期)。
+pub fn normalize_sync_send_status(source_direction: i64, raw_send_status: i32) -> i32 {
+    if source_direction == 3 && raw_send_status == 0 {
+        3 // SEND_STATUS 成功
+    } else {
+        raw_send_status
+    }
+}
+
 fn str_or_empty(v: &serde_json::Value, key: &str) -> String {
     v.get(key)
         .and_then(|x| x.as_str())
@@ -99,6 +112,11 @@ fn decode_message_row(ev: &serde_json::Value, employee_id: &str) -> Option<Messa
         .get("messageDirection")
         .and_then(|v| v.as_i64())
         .unwrap_or(2);
+    // 多端同步(direction==3)的 sendStatus 上游给 0(未置位):归一为成功,杜绝出站气泡永久转圈。
+    let send_status = normalize_sync_send_status(
+        direction,
+        msg.get("sendStatus").and_then(|v| v.as_i64()).unwrap_or(0) as i32,
+    );
     let attachments_json = msg
         .get("attachments")
         .map(|a| a.to_string())
@@ -123,7 +141,7 @@ fn decode_message_row(ev: &serde_json::Value, employee_id: &str) -> Option<Messa
         message_direction: to_local_direction(direction),
         message_type,
         content_text: str_or_empty(msg, "contentText"),
-        send_status: msg.get("sendStatus").and_then(|v| v.as_i64()).unwrap_or(0) as i32,
+        send_status,
         attachments_json,
         gmt_modified_time: str_or_empty(msg, "gmtModifiedTime"),
         revoked: ev.get("eventReason").and_then(|v| v.as_str()) == Some("MESSAGE_REVOKED"),
@@ -452,6 +470,26 @@ mod tests {
     }
 
     #[test]
+    fn normalize_sync_send_status_only_lifts_unset_for_multi_device_sync() {
+        // 多端同步(源方向 3)且 sendStatus 未置位(0)→ 归一成功(3),杜绝出站气泡永久转圈。
+        assert_eq!(normalize_sync_send_status(3, 0), 3, "多端同步未置位 → 成功");
+        // 上游已明确终态一律尊重原值,不臆改(含 4=失败)。
+        assert_eq!(
+            normalize_sync_send_status(3, 4),
+            4,
+            "多端同步已明确失败 → 保留 4"
+        );
+        assert_eq!(normalize_sync_send_status(3, 3), 3, "已成功 → 不变");
+        // 发送方/客户方完全不动:发送方走正常 send→PENDING(2)→CONFIRMED(3),0 是合法在途。
+        assert_eq!(
+            normalize_sync_send_status(1, 0),
+            0,
+            "发送方 sendStatus=0 不动"
+        );
+        assert_eq!(normalize_sync_send_status(2, 0), 0, "客户/接收方不动");
+    }
+
+    #[test]
     fn decode_prefers_chat_message_type_then_falls_back_to_message_type() {
         // 仅 messageType(无 chatMessageType)→ 取 messageType。
         let mut ev = full_event("2060260503288029184", 2);
@@ -622,6 +660,36 @@ mod tests {
         assert_eq!(notice.topic, ChangeTopic::ConversationMessages);
         assert_eq!(notice.scope.conversation_id.as_deref(), Some(CONV));
         assert_eq!(notice.scope.employee_id, "42");
+    }
+
+    #[tokio::test]
+    async fn multi_device_sync_lands_as_sent_outbound_bubble() {
+        let (applier, store, quarantine, _rx) = applier_with_store().await;
+        store
+            .upsert_window(seed_window(CONV, "42", "0000000000000_0_0"))
+            .await
+            .unwrap();
+
+        // 真实多端同步事件:新 MULTI_DEVICE_SYNC + messageDirection=3 + sendStatus=0 + messageType=1。
+        let mut ev = full_event(CONV, 3);
+        ev["eventReason"] = serde_json::json!("MULTI_DEVICE_SYNC");
+        ev["message"]["sendStatus"] = serde_json::json!(0);
+        applier
+            .apply_push_batch(&batch(serde_json::json!([ev]), 42, 10))
+            .await;
+
+        // 不应被语义矛盾网关误隔离(指纹要求 direction==1 + CUSTOMER_MESSAGE_RECEIVED)。
+        assert!(
+            quarantine.list_recent("42", 10).await.unwrap().is_empty(),
+            "MULTI_DEVICE_SYNC 不该进异常库"
+        );
+        let rows = store.list_recent("42", CONV, 10).await.unwrap();
+        assert_eq!(rows.len(), 1, "多端同步气泡已落库");
+        assert_eq!(rows[0].message_direction, 2, "源方向 3 → 本地 out(出站)");
+        assert_eq!(
+            rows[0].send_status, 3,
+            "sendStatus=0 归一为成功(3):出站气泡显示已发送、不永久转圈"
+        );
     }
 
     #[tokio::test]

@@ -12,7 +12,7 @@ use crate::hub::{
     FetchMessageHistoryRequest, FirstConversationHistory, HistoryAttachment, HistoryMessage,
     HubClient, SendMessageRequest, SendMessageResp,
 };
-use crate::message_event::to_local_direction;
+use crate::message_event::{normalize_sync_send_status, to_local_direction};
 use crate::recent_session_event::split_sort_key_ms;
 use chathub_state::{MessageRow, MessageWindow, MessagesStore};
 use tokio::sync::broadcast;
@@ -85,7 +85,9 @@ pub fn history_to_row(
         message_direction: to_local_direction(h.message_direction as i64),
         message_type: h.message_type,
         content_text: h.content_text.clone(),
-        send_status: h.send_status,
+        // 多端同步(源方向 3)历史行 send_status 上游同样可能为 0 → 归一为成功,与 push 路径一致,
+        // 避免冷会话首开经 history 落库后出站气泡又转圈。
+        send_status: normalize_sync_send_status(h.message_direction as i64, h.send_status),
         attachments_json: serde_json::to_string(&h.attachments).unwrap_or_else(|e| {
             tracing::warn!(
                 target: "chathub::msg",
@@ -963,6 +965,35 @@ mod tests {
             history_to_row(&mk(3), "c1", "u1", "wa1").message_direction,
             2,
             "3=多端同步方 → 本地 2(out)"
+        );
+    }
+
+    #[test]
+    fn history_to_row_lifts_multi_device_sync_unset_send_status() {
+        // 多端同步历史行(message/history 返回源方向 3 + send_status 0):出站(2)且归一为成功(3),
+        // 与 push 路径一致 → 冷会话首开经 history 落库后出站气泡不再永久转圈。
+        let mk = |dir: i32, status: i32| HistoryMessage {
+            local_message_id: "m1".into(),
+            message_direction: dir,
+            message_type: 1,
+            content_text: "123".into(),
+            send_status: status,
+            message_time: "2026-06-06 14:48:21".into(),
+            sort_key: "1780728501000_00000000000005336575_2063150995537395712".into(),
+            attachments: vec![],
+            gmt_modified_time: "".into(),
+            revoked: false,
+            fail_reason: "".into(),
+            request_message_id: "".into(),
+        };
+        let synced = history_to_row(&mk(3, 0), "c1", "u1", "wa1");
+        assert_eq!(synced.message_direction, 2, "源方向 3 → out");
+        assert_eq!(synced.send_status, 3, "多端同步 sendStatus=0 → 归一成功");
+        // 发送方在途(源方向 1 + status 0)绝不被误伤:保持 0(正常发送生命周期未终态)。
+        assert_eq!(
+            history_to_row(&mk(1, 0), "c1", "u1", "wa1").send_status,
+            0,
+            "发送方 sendStatus=0 是合法在途,不归一"
         );
     }
 
