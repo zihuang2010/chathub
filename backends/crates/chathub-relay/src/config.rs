@@ -287,11 +287,6 @@ impl DownstreamRoutes {
     pub fn path_for(&self, method: &str) -> Option<&str> {
         self.map.get(method).map(|s| s.path.as_str())
     }
-
-    /// 已知的所有 method,主要给日志/调试用。
-    pub fn known_methods(&self) -> Vec<&str> {
-        self.map.keys().map(|s| s.as_str()).collect()
-    }
 }
 
 #[derive(Clone, Debug)]
@@ -300,7 +295,7 @@ pub struct LogConfig {
     pub file_prefix: String,
     pub stdout: StdoutFormat,
     /// push 原始入站 body 旁路到独立按日轮转文件(上线后 diff/jq 比对)。
-    /// env `RELAY_SOURCE_JSON_LOG`("true"|"1"),默认 true。
+    /// env `RELAY_SOURCE_JSON_LOG`("true"|"1"),默认 false(opt-in,避免默认把业务事件原文落第二份盘)。
     pub source_json: bool,
 }
 
@@ -376,7 +371,7 @@ impl Config {
                 stdout: parse_stdout_format("RELAY_LOG_STDOUT")?,
                 source_json: std::env::var("RELAY_SOURCE_JSON_LOG")
                     .map(|v| v == "true" || v == "1")
-                    .unwrap_or(true),
+                    .unwrap_or(false),
             },
             routes: DownstreamRoutes::from_env(),
             force_close_grace_ms: std::env::var("RELAY_FORCE_CLOSE_GRACE_MS")
@@ -1008,7 +1003,7 @@ mod tests {
         assert_eq!(cfg.log.dir.to_string_lossy(), "./logs");
         assert_eq!(cfg.log.file_prefix, "relay");
         assert_eq!(cfg.log.stdout, StdoutFormat::Compact);
-        assert!(cfg.log.source_json); // 默认开
+        assert!(!cfg.log.source_json); // 默认关(opt-in)
         clear_all();
     }
 
@@ -1020,12 +1015,12 @@ mod tests {
         std::env::set_var("RELAY_LOG_DIR", "/var/log/relay");
         std::env::set_var("RELAY_LOG_FILE_PREFIX", "relay-prod");
         std::env::set_var("RELAY_LOG_STDOUT", "json");
-        std::env::set_var("RELAY_SOURCE_JSON_LOG", "false");
+        std::env::set_var("RELAY_SOURCE_JSON_LOG", "true");
         let cfg = Config::from_env().expect("config");
         assert_eq!(cfg.log.dir.to_string_lossy(), "/var/log/relay");
         assert_eq!(cfg.log.file_prefix, "relay-prod");
         assert_eq!(cfg.log.stdout, StdoutFormat::Json);
-        assert!(!cfg.log.source_json); // 显式关
+        assert!(cfg.log.source_json); // 显式开
         clear_all();
     }
 

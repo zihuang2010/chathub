@@ -53,8 +53,6 @@ impl AccountEventApplier {
     ///   3. 任一 fallback 触发后,**当前 employee** 走一次全量 `list_accounts` 替换缓存;
     ///   4. 广播 `AccountChanged`(applied 或 fallback 任一发生)。
     pub async fn apply_push_batch(&self, batch: &PushBatchOut) {
-        let employee_id_str = batch.employee_id.to_string();
-
         let events: Vec<serde_json::Value> = match serde_json::from_slice(&batch.events_json) {
             Ok(arr) => arr,
             Err(e) => {
@@ -62,6 +60,13 @@ impl AccountEventApplier {
                 return;
             }
         };
+        self.apply_parsed(batch.employee_id, &events).await;
+    }
+
+    /// 应用已解析好的事件数组。SyncEngine 每帧只解析一次 events_json,四个 applier 复用同一份,
+    /// 避免每帧重复多次 JSON 解析;`apply_push_batch` 作为薄壳供单测直接喂字节。
+    pub(crate) async fn apply_parsed(&self, employee_id: i64, events: &[serde_json::Value]) {
+        let employee_id_str = employee_id.to_string();
 
         let mut applied = 0usize;
         let mut needs_fallback = false;
@@ -69,7 +74,7 @@ impl AccountEventApplier {
         // 聚合本批涉及的 wecom_account_id:若只 1 个,ChangeNotice scope 可带;否则不带(广义)。
         let mut accounts_in_batch: HashSet<String> = HashSet::new();
 
-        for ev in &events {
+        for ev in events {
             let event_type = ev.get("eventType").and_then(|v| v.as_str()).unwrap_or("");
             if event_type != "ACCOUNT_BINDING_CHANGE" && event_type != "ACCOUNT_STATUS_CHANGE" {
                 continue;

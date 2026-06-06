@@ -100,6 +100,7 @@ mod tests {
             message_type: 2,
             content_text: "".into(),
             send_status: 3,
+            synced_from_other_device: false,
             message_time: "2026-05-30 10:00:00".into(),
             sort_key: "1770000000000:2:00000000000000009001:m1".into(),
             attachments: vec![HistoryAttachment {

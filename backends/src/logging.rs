@@ -19,7 +19,10 @@ pub fn init(log_dir: &Path) -> anyhow::Result<WorkerGuard> {
     ));
 
     let env_filter = EnvFilter::try_from_env("CHATHUB_LOG")
-        .unwrap_or_else(|_| EnvFilter::new("info,chathub=debug"));
+        // 默认放开 chathub_net=debug:推送链路(subscribe/PushBatch 收帧/SubscribeAck/流错误)
+        // 的日志 target 为 chathub_net::hub,不在 chathub 命名空间下;不加这段则收帧与 ack 的
+        // debug 全被过滤,排查 Windows 收不到推送时日志里看不到关键证据。
+        .unwrap_or_else(|_| EnvFilter::new("info,chathub=debug,chathub_net=debug"));
 
     let stdout_layer = fmt::layer()
         .with_timer(timer.clone())

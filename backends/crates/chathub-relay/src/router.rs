@@ -17,6 +17,7 @@ use arc_swap::ArcSwap;
 use chathub_proto::v1::ServerEvent;
 use dashmap::DashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
+#[cfg(test)]
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tonic::Status;
@@ -213,12 +214,6 @@ impl Router {
             .map(|e| e.load(Ordering::Relaxed))
             .unwrap_or(0)
     }
-}
-
-// Arc 重出口,方便外部测试(避免 type 推断折腾)
-#[allow(dead_code)]
-pub(crate) fn _new_arc() -> Arc<Router> {
-    Arc::new(Router::new())
 }
 
 #[cfg(test)]

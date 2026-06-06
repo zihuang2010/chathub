@@ -33,8 +33,12 @@ export function AvatarTile({
   size: number;
   children?: ReactNode;
 }) {
-  const [failed, setFailed] = useState(false);
-  const safe = !failed ? cssUrlSafe(avatarUrl, "image") : null;
+  // 失败态按「具体哪个 URL 失败」记录,而非布尔。AvatarTile 在头部(ChatHeader 单实例,
+  // 切会话只改 props 不重挂)与虚拟化列表(行回收复用实例)里都会被同一实例承载多个 avatarUrl,
+  // 若用 useState(false) 记失败,任一头像加载失败一次就会永久粘住、把后续有效头像也打回首字母。
+  // 记 failedUrl 后,avatarUrl 一变旧失败记录自动失效,复用实例随之恢复 —— 无 effect、无额外重渲。
+  const [failedUrl, setFailedUrl] = useState<string | null>(null);
+  const safe = failedUrl !== avatarUrl ? cssUrlSafe(avatarUrl, "image") : null;
   const boxClass = "rounded-lg shadow-[inset_0_0_0_1px_rgba(255,255,255,0.48)]";
   return (
     <div className="relative shrink-0" style={{ width: size, height: size }}>
@@ -43,7 +47,7 @@ export function AvatarTile({
           src={safe}
           alt={name}
           loading="lazy"
-          onError={() => setFailed(true)}
+          onError={() => setFailedUrl(avatarUrl ?? null)}
           className={cn(boxClass, "block size-full bg-center object-cover")}
         />
       ) : (

@@ -39,8 +39,14 @@ fn main() {
         .unwrap_or_else(|_| "https://dashscope.aliyuncs.com/compatible-mode/v1".to_string());
     let ai_base = ai_base.trim_end_matches('/').to_string();
     let ai_model = std::env::var("CHATHUB_AI_MODEL").unwrap_or_else(|_| "qwen-flash".to_string());
-    let ai_key = std::env::var("CHATHUB_AI_API_KEY")
-        .unwrap_or_else(|_| "sk-0b5c8dc438014ccc8b1e6aea206362fd".to_string());
+    // 缺失时回落空串(对齐上方注释:运行时空串 →「AI 未配置」),绝不内置真实 key ——
+    // 硬编码 key 会随每个分发包出厂、且进 git 历史泄漏。key 只由 CI/打包环境 env 注入。
+    let ai_key = std::env::var("CHATHUB_AI_API_KEY").unwrap_or_else(|_| {
+        if std::env::var("PROFILE").as_deref() == Ok("release") {
+            println!("cargo:warning=CHATHUB_AI_API_KEY not set; AI polish disabled in this build");
+        }
+        String::new()
+    });
     println!("cargo:rustc-env=CHATHUB_AI_BASE_URL_RESOLVED={ai_base}");
     println!("cargo:rustc-env=CHATHUB_AI_MODEL_RESOLVED={ai_model}");
     println!("cargo:rustc-env=CHATHUB_AI_API_KEY_RESOLVED={ai_key}");

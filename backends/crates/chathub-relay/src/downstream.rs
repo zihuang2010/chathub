@@ -495,7 +495,8 @@ impl DownstreamClient {
         let started = Instant::now();
 
         // 出站请求快照(脱敏):URL/query/Basic 客户端凭证/form 都打出来便于对账 curl。
-        tracing::info!(
+        // debug 级(默认 info 不输出),避免每次 login 固定打长 info 噪声 + 默认落 username。
+        tracing::debug!(
             target: "chathub_relay::downstream",
             method = "POST",
             url = %url,
@@ -554,7 +555,7 @@ impl DownstreamClient {
             .and_then(|b| b.as_bytes())
             .map(|b| b.len())
             .unwrap_or(0);
-        tracing::info!(
+        tracing::debug!(
             target: "chathub_relay::downstream",
             final_url = %final_url,
             headers = ?header_dump,
@@ -626,18 +627,16 @@ impl DownstreamClient {
             );
             RelayError::Http(e.to_string())
         })?;
-        // 2xx body 在 info 级别打印一份(限 2KB),失败定位最关键的就是它。
-        // accessToken.tokenValue 不在这里单独脱敏 —— 它就是这次调用要返还给客户端的 token,
-        // 与 verify_token 路径上的 Bearer 同源,日志已是受控环境,接受这一权衡。
+        // 2xx 成功 body 不打全文 —— 内含 accessToken.tokenValue(本次要返还给客户端的 Bearer)。
+        // 失败路径(非 2xx / envelope 解析失败)已各自在 warn 打 body 供诊断,成功路径只记录长度。
         let body_preview = {
             let take = body_bytes.len().min(2048);
             String::from_utf8_lossy(&body_bytes[..take]).into_owned()
         };
-        tracing::info!(
+        tracing::debug!(
             target: "chathub_relay::downstream",
-            body = %body_preview,
             body_len = body_bytes.len(),
-            "oauth2 login: response body",
+            "oauth2 login: response body received",
         );
         let jdd: JddTokenVO = unwrap_envelope::<JddTokenVO>(&body_bytes, "login")
             .map_err(|e| {
@@ -952,8 +951,8 @@ impl DownstreamClient {
         let url = format!("{}{}", base, spec.path);
         let started = Instant::now();
 
-        // 排查辅助(debug 级):出站请求全文(method/url/query/body),核对实际发给
-        // 业务后台的参数(如 list_friends 的 wecomAccountIds)。默认 chathub_relay=debug 可见。
+        // 排查辅助(debug 级):出站请求元信息(method/url/query),核对发给业务后台的参数
+        // (如 list_friends 的 wecomAccountIds)。请求体全文降到 trace,见下。
         tracing::debug!(
             target: "chathub_relay::downstream",
             method,
@@ -963,8 +962,15 @@ impl DownstreamClient {
             body_len = body.len(),
             query_len = query.len(),
             query = ?query,
-            req_body = %String::from_utf8_lossy(&body),
             "forward request",
+        );
+        // 请求体全文含消息明文 + 手机号等 PII;降到 trace,需显式 chathub_relay=trace 才落盘,
+        // 避免开 debug 排障即把全量业务 payload 写进日志文件。
+        tracing::trace!(
+            target: "chathub_relay::downstream",
+            method,
+            req_body = %String::from_utf8_lossy(&body),
+            "forward request body",
         );
 
         let builder = match spec.method {
@@ -1044,8 +1050,9 @@ impl DownstreamClient {
             return Err(RelayError::Internal);
         }
 
-        // 排查辅助(debug 级):响应体全文(截断 4000 字符,避免大列表刷屏)。
-        tracing::debug!(
+        // 响应体全文(截断 4000 字符)含好友手机号/消息列表等 PII;降到 trace,
+        // 需显式 chathub_relay=trace 才落盘,避免默认 debug 排障即把业务响应写盘。
+        tracing::trace!(
             target: "chathub_relay::downstream",
             method,
             status = status.as_u16(),

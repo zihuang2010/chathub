@@ -29,7 +29,6 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "time",
 tracing-appender = "0.2"
 time = { version = "0.3", features = ["macros", "formatting", "local-offset"] }
 anyhow = "1"
-xcap = "0.9"
 base64 = "0.22"
 chathub-proto = { path = "crates/chathub-proto" }
 chathub-state = { path = "crates/chathub-state" }

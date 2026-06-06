@@ -27,8 +27,6 @@ impl FriendEventApplier {
 
     /// 处理一批 `PushBatchOut`(对照 `AccountEventApplier::apply_push_batch`)。
     pub async fn apply_push_batch(&self, batch: &PushBatchOut) {
-        let employee_id = batch.employee_id.to_string();
-
         let events: Vec<serde_json::Value> = match serde_json::from_slice(&batch.events_json) {
             Ok(arr) => arr,
             Err(e) => {
@@ -40,13 +38,20 @@ impl FriendEventApplier {
                 return;
             }
         };
+        self.apply_parsed(batch.employee_id, &events).await;
+    }
+
+    /// 应用已解析好的事件数组。SyncEngine 每帧只解析一次 events_json,四个 applier 复用同一份,
+    /// 避免每帧重复多次 JSON 解析;`apply_push_batch` 作为薄壳供单测直接喂字节。
+    pub(crate) async fn apply_parsed(&self, employee_id: i64, events: &[serde_json::Value]) {
+        let employee_id = employee_id.to_string();
 
         // 只关心 FRIEND_UPSERT 事件涉及的账号集合;具体 reason 不再分支(纯 refetch 语义)。
         // 真实 payload:{eventReason, eventType:"FRIEND_UPSERT", friend:{wecomAccountId, ...}},
         // wecomAccountId 在 friend{} 内部,用于 scope 聚合。
         let mut accounts_in_batch: HashSet<String> = HashSet::new();
         let mut friend_event_seen = false;
-        for ev in &events {
+        for ev in events {
             let event_type = ev.get("eventType").and_then(|v| v.as_str()).unwrap_or("");
             if event_type != "FRIEND_UPSERT" {
                 continue;

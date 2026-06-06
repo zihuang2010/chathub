@@ -33,12 +33,6 @@ use tokio::sync::broadcast::channel as broadcast_channel;
 
 // ============================== 现有命令保留 ==============================
 
-#[tauri::command]
-fn greet(name: &str) -> String {
-    info!(target: "chathub::cmd", %name, "greet command invoked");
-    format!("Hello, {}! You've been greeted from Rust!", name)
-}
-
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ScreenshotResult {
@@ -117,12 +111,12 @@ async fn login(
     username: String,
     password: String,
 ) -> Result<UserProfile, AuthError> {
-    // 不在常规日志打印 username(PII);失败路径保留账号以便排查认证问题。
+    // 不打印 username(PII):成功/失败路径均不记录账号,仅记录错误原因以便排查认证问题。
     info!(target: "chathub::cmd", "login command invoked");
     let profile = match state.login(&username, &password).await {
         Ok(p) => p,
         Err(e) => {
-            tracing::warn!(target: "chathub::cmd", %username, error = %e, "login command failed");
+            tracing::warn!(target: "chathub::cmd", error = %e, "login command failed");
             return Err(e);
         }
     };
@@ -958,7 +952,7 @@ async fn list_recent_friends(
 
 /// 远端拉一页"接待好友列表"。
 ///   - `persist=true`(通常仅首页 cursor="")→ records 同步 UPSERT 到本地表(仅远端列),
-///     成功后 trim 到 `RECENT_SESSIONS_MAX_ROWS` 并 emit `recent_friends_changed`。
+///     成功后 trim 到 `RECENT_SESSIONS_GLOBAL_LIMIT` 并 emit `recent_friends_changed`。
 ///   - `persist=false`(滚动加载更多 / 带筛选的搜索)→ 仅透传响应,不写库不发事件。
 ///
 /// `persist=true` 时,所有 UPSERT 行打上当前 employee_id 标记,trim 也按 employee 维度执行。
@@ -1885,7 +1879,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            greet, take_screenshot,
+            take_screenshot,
             login, logout, current_session,
             hub_forward, hub_ack, hub_state, list_accounts, list_friends, friend_detail,
             list_recent_friends, list_recent_friends_remote_page, prefill_recent_friends,

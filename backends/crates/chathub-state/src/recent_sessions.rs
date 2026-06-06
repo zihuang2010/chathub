@@ -8,13 +8,13 @@
 //! - **写入纪律**:
 //!     - `upsert_remote_many` / `upsert_remote_one` 由远端拉取与事件 applier 调,
 //!       严格只 UPSERT 远端列(`ON CONFLICT DO UPDATE SET <远端列>=excluded.<列>`)。
-//!     - `set_pinned` / `set_draft_at` 由用户操作 command 调,只 UPDATE 本地列,
+//!     - `set_pinned` / `set_draft` 由用户操作 command 调,只 UPDATE 本地列,
 //!       SQL 同时校验 employee_id,防止跨 employee 误触发。
 //!     - 两路从不重叠,避免远端拉取把"置顶/草稿"抹掉。
 //! - **多键 ORDER BY**:`list_top` 内部用
 //!   `pinned DESC, pinned_at_ms DESC, MAX(last_message_time_ms, local_draft_at_ms) DESC,
 //!   last_message_time_ms DESC` 合成最终顺序。客户端字段全 0 时退化为纯服务端时序。
-//! - **trim**:`trim_to_max` per-employee 维度执行,只删 `pinned=0` 的尾部行,置顶永不被裁。
+//! - **trim**:`trim` per-employee 维度执行,只删 `pinned=0` 的尾部行,置顶永不被裁。
 //! - **watermark**:沿用 V6 模板"取大不取小",应对 relay redelivery。
 
 use crate::error::StateError;
@@ -30,9 +30,6 @@ pub const RECENT_SESSIONS_PER_ACCOUNT_LIMIT: usize = 500;
 /// 整 employee 维度的非置顶行总上限(兜底)。一般 4 个以下账号都不会摸到这个限,
 /// 5+ 账号才会触发。置顶不计入。
 pub const RECENT_SESSIONS_GLOBAL_LIMIT: usize = 2000;
-
-/// 向后兼容别名,= GLOBAL_LIMIT;若有外部 import 用旧名也不会断。
-pub const RECENT_SESSIONS_MAX_ROWS: usize = RECENT_SESSIONS_GLOBAL_LIMIT;
 
 /// 一条最近会话行:17 远端 + employee_id + updated_at_ms + 5 本地
 /// (pinned/pinned_at_ms/local_draft_at_ms/local_draft_text + removed/removed_at_ms + muted/muted_at_ms)。
@@ -534,20 +531,6 @@ impl RecentSessionsStore {
         Ok(())
     }
 
-    /// 向后兼容:`set_draft_at(emp, conv, has_draft)` → `set_draft(emp, conv, "<placeholder>")`。
-    /// `has_draft=true` 时草稿文本为占位空串(实际生产应直接调 `set_draft` 传文本)。
-    pub async fn set_draft_at(
-        &self,
-        employee_id: &str,
-        conversation_id: &str,
-        has_draft: bool,
-    ) -> Result<(), StateError> {
-        // has_draft=true 但无 text 时,用单字符 " " 兜底,避免被视为"清空草稿"
-        let placeholder = if has_draft { " " } else { "" };
-        self.set_draft(employee_id, conversation_id, placeholder)
-            .await
-    }
-
     /// 发送时乐观本地写:预览文案 + 类型/方向 + 本地置顶信号。只更本地可见列,
     /// **不动 last_message_sort_key_ms(版本键)与 last_send_status** —— 由随后的 SESSION_SUMMARY
     /// push(版本门)权威对齐。返回是否命中一行(会话不在 recents 则 no-op)。
@@ -734,12 +717,6 @@ impl RecentSessionsStore {
         })
         .await??;
         Ok(())
-    }
-
-    /// 向后兼容:单参数版本,等价于 `trim(employee_id, max, max)`(即只裁全员总数,
-    /// 不按 account 分桶)。新代码请用 [`trim`]。
-    pub async fn trim_to_max(&self, employee_id: &str, max: usize) -> Result<(), StateError> {
-        self.trim(employee_id, max, max).await
     }
 
     /// 清空指定员工的本地缓存(登出 / 切员工时调)。
@@ -1044,7 +1021,7 @@ mod tests {
             .unwrap();
         // 用户置顶
         store.set_pinned(E, "c1", true).await.unwrap();
-        store.set_draft_at(E, "c1", true).await.unwrap();
+        store.set_draft(E, "c1", " ").await.unwrap();
         // 再次 UPSERT 远端列(模拟事件 applier 推一条新消息)
         store
             .upsert_remote_many(&[sample_remote("c1", "wa-1", 999, 5)])
@@ -1221,7 +1198,7 @@ mod tests {
             .await
             .unwrap();
         // c1 起草草稿(now_ms 必然 > 200,这条会跑赢)
-        store.set_draft_at(E, "c1", true).await.unwrap();
+        store.set_draft(E, "c1", " ").await.unwrap();
         let got = store.list_top(E, None, 10).await.unwrap();
         assert_eq!(got[0].conversation_id, "c1");
     }
@@ -1286,7 +1263,7 @@ mod tests {
         // 把最旧的 c1 置顶,即使被裁也不该真的被删
         store.set_pinned(E, "c1", true).await.unwrap();
         // 上限 2 → c1(置顶不裁)+ c4(非置顶最新)= 共 2 行
-        store.trim_to_max(E, 2).await.unwrap();
+        store.trim(E, 2, 2).await.unwrap();
         let got = store.list_top(E, None, 10).await.unwrap();
         let ids: Vec<String> = got.iter().map(|r| r.conversation_id.clone()).collect();
         assert!(ids.contains(&"c1".to_string()), "pinned must survive trim");
@@ -1312,7 +1289,7 @@ mod tests {
             .await
             .unwrap();
         // 只裁 u-A 到 1 行,u-B 必须完全不动
-        store.trim_to_max("u-A", 1).await.unwrap();
+        store.trim("u-A", 1, 1).await.unwrap();
         let a = store.list_top("u-A", None, 10).await.unwrap();
         assert_eq!(a.len(), 1);
         assert_eq!(a[0].conversation_id, "a2");

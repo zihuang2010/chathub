@@ -320,7 +320,9 @@ async fn handle_push(
         });
     }
 
-    tracing::info!(
+    // 每批 push 成功一条;热路径(峰值约 1000/s),降 debug 避免放大日志量。
+    // 异常(backpressure / fanout closed / force_close)各有独立 warn,不靠这条体现。
+    tracing::debug!(
         persisted = inserted,
         control_count,
         unknown_count,

@@ -79,8 +79,16 @@ pub(crate) struct ForceClose {
 
 /// 从 PushBatch 的 events_json 中检测 `CONNECTION_FORCE_CLOSE`。relay 只把本账号的批投到本连接,
 /// 故批内出现的 force_close 即针对当前会话(无需再比对 employeeId)。解析失败/无此事件 → None。
+/// 字节版:解析后委托 [`detect_force_close_in`]。生产路径(handle_frame)已每帧只解析一次,
+/// 故此版本现仅供本模块单测直接喂字节使用。
+#[cfg(test)]
 fn detect_force_close(events_json: &[u8]) -> Option<ForceClose> {
     let events: Vec<serde_json::Value> = serde_json::from_slice(events_json).ok()?;
+    detect_force_close_in(&events)
+}
+
+/// 同 [`detect_force_close`],但直接吃已解析好的事件数组(handle_frame 每帧只解析一次后复用)。
+fn detect_force_close_in(events: &[serde_json::Value]) -> Option<ForceClose> {
     let fc = events.iter().find_map(|ev| {
         if ev.get("eventType").and_then(|v| v.as_str()) == Some("CONNECTION_FORCE_CLOSE") {
             ev.get("forceClose")
@@ -238,20 +246,35 @@ impl SyncEngine {
         // 水位必须在 appliers 提交 SQLite 之后才前进:否则崩溃重启会用一个超前的 since 重订阅,
         // 跳过尚未落库的批次(数据丢失到下次 resync)。
         if let Some(Body::PushBatch(pb)) = &event.body {
+            // 每帧只解析一次 events_json,force_close 检测 + 四个 applier 复用同一份,替代历史上
+            // 「每帧 5 次重复 JSON 解析」。解析失败 → 空数组(各 applier 等价于跳过),但水位仍按
+            // apply-then-advance 推进(见下方 upsert_if_greater),不因脏帧卡住游标。
+            let events: Vec<serde_json::Value> =
+                match serde_json::from_slice(pb.events_json.as_ref()) {
+                    Ok(arr) => arr,
+                    Err(e) => {
+                        tracing::warn!(
+                            target: "chathub_net::sync",
+                            ?e,
+                            "events_json parse failed; skipping appliers (watermark still advances)"
+                        );
+                        Vec::new()
+                    }
+                };
             // 控制事件:CONNECTION_FORCE_CLOSE 不是四个 applier 认得的业务事件(会被静默丢弃),
             // 故在此单独识别并经 FrameOutcome 回报连接层去执行下线(SyncEngine 仍不碰连接态)。
-            outcome.force_close = detect_force_close(pb.events_json.as_ref());
+            outcome.force_close = detect_force_close_in(&events);
             if let Some(applier) = &self.account_event_applier {
-                applier.apply_push_batch(pb).await;
+                applier.apply_parsed(pb.employee_id, &events).await;
             }
             if let Some(applier) = &self.friend_event_applier {
-                applier.apply_push_batch(pb).await;
+                applier.apply_parsed(pb.employee_id, &events).await;
             }
             if let Some(applier) = &self.recent_session_event_applier {
-                applier.apply_push_batch(pb).await;
+                applier.apply_parsed(pb.employee_id, &events).await;
             }
             if let Some(applier) = &self.message_event_applier {
-                applier.apply_push_batch(pb).await;
+                applier.apply_parsed(pb.employee_id, &events).await;
             }
             // 四个 applier 都已 best-effort 应用(失败内部 log + 安排 fallback),现在才推进全局水位。
             // 用 batch 自带的 employee_id 分键推进:relay 只会把本账号的批投到本连接,

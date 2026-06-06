@@ -1,0 +1,13 @@
+# Cargo 网络加固(主要给 CI 用,本地无害)
+#
+# 背景:CI 的 macOS runner 在用 curl 拉取 crates.io 稀疏索引时偶发
+#   curl [55] Failed sending data to the peer (Send failure: Broken pipe)
+# 根因是 cargo 默认用 libcurl 的 HTTP/2 多路复用并发抓大量小索引文件,
+# 在抖动网络 / CDN 边缘节点上连接被重置。关闭多路复用即可规避。
+# 本地构建只是索引更新略慢,不影响结果。
+[http]
+multiplexing = false
+
+# 网络抖动时多重试几次(默认 3),进一步抗瞬时失败。
+[net]
+retry = 10

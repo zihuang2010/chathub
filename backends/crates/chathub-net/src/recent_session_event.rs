@@ -58,8 +58,6 @@ impl RecentSessionEventApplier {
 
     /// 处理一批 `PushBatchOut`(对照 `FriendEventApplier::apply_push_batch`)。
     pub async fn apply_push_batch(&self, batch: &PushBatchOut) {
-        let employee_id_str = batch.employee_id.to_string();
-
         let events: Vec<serde_json::Value> = match serde_json::from_slice(&batch.events_json) {
             Ok(arr) => arr,
             Err(e) => {
@@ -71,6 +69,13 @@ impl RecentSessionEventApplier {
                 return;
             }
         };
+        self.apply_parsed(batch.employee_id, &events).await;
+    }
+
+    /// 应用已解析好的事件数组。SyncEngine 每帧只解析一次 events_json,四个 applier 复用同一份,
+    /// 避免每帧重复多次 JSON 解析;`apply_push_batch` 作为薄壳供单测直接喂字节。
+    pub(crate) async fn apply_parsed(&self, employee_id: i64, events: &[serde_json::Value]) {
+        let employee_id_str = employee_id.to_string();
 
         let mut seen = false;
         let mut applied = 0usize;
@@ -79,7 +84,7 @@ impl RecentSessionEventApplier {
         // 聚合本批涉及的 wecom_account_id,用于 ChangeNotice scope。
         let mut accounts_in_batch: HashSet<String> = HashSet::new();
 
-        for ev in &events {
+        for ev in events {
             let event_type = ev.get("eventType").and_then(|v| v.as_str()).unwrap_or("");
             if event_type != "MESSAGE_UPSERT" && event_type != "SESSION_SUMMARY_UPSERT" {
                 continue;

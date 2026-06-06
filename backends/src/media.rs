@@ -81,9 +81,22 @@ pub async fn fetch_media_bytes(
 /// 用 `tauri::ipc::Response`(原始字节)返回,避免 Vec<u8> 经 JSON 序列化成 number[] 的体积/转换开销。
 #[tauri::command]
 pub async fn read_local_file(path: String) -> Result<tauri::ipc::Response, String> {
-    let bytes = tauri::async_runtime::spawn_blocking(move || std::fs::read(&path))
-        .await
-        .map_err(|e| format!("join: {e}"))?
-        .map_err(|e| format!("read: {e}"))?;
+    // 防御性约束:仅读「常规文件」(拒绝目录与 /dev/random 这类设备文件——后者会被无限读),
+    // 并对体积设上限(本命令把整文件读进内存经 IPC 返回,避免被诱导读超大/特殊文件把内存读爆)。
+    // 残留风险:路径仍由前端(原生 dialog 选择结果)传入;若 webview 被注入脚本,理论上仍可读任意
+    // 「常规文件」。根治需把「选路径 + 读字节」并入后端单命令(路径不经前端往返)+ 收紧 CSP,属后续架构改动。
+    const MAX_LOCAL_FILE_BYTES: u64 = 500 * 1024 * 1024;
+    let bytes = tauri::async_runtime::spawn_blocking(move || -> Result<Vec<u8>, String> {
+        let meta = std::fs::metadata(&path).map_err(|e| format!("stat: {e}"))?;
+        if !meta.is_file() {
+            return Err("not a regular file".into());
+        }
+        if meta.len() > MAX_LOCAL_FILE_BYTES {
+            return Err(format!("file too large: {} bytes", meta.len()));
+        }
+        std::fs::read(&path).map_err(|e| format!("read: {e}"))
+    })
+    .await
+    .map_err(|e| format!("join: {e}"))??;
     Ok(tauri::ipc::Response::new(bytes))
 }

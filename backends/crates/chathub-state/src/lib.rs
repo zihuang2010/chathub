@@ -37,6 +37,6 @@ pub use quarantined_events::{QuarantinedEventRow, QuarantinedEventsStore};
 pub use quick_replies::{QuickRepliesStore, QuickReplyRow};
 pub use recent_sessions::{
     RecentSessionRemote, RecentSessionRow, RecentSessionSummary, RecentSessionsStore,
-    RECENT_SESSIONS_GLOBAL_LIMIT, RECENT_SESSIONS_MAX_ROWS, RECENT_SESSIONS_PER_ACCOUNT_LIMIT,
+    RECENT_SESSIONS_GLOBAL_LIMIT, RECENT_SESSIONS_PER_ACCOUNT_LIMIT,
 };
 pub use session::SessionStore;

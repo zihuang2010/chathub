@@ -203,12 +203,6 @@ impl TokenStore {
             .await
             .expect("seed_token_for_test");
     }
-
-    /// 仅供测试:主动 emit 一个 LoggedOut 给订阅者。
-    #[doc(hidden)]
-    pub fn _emit_logged_out_for_test(&self, reason: LoggedOutReason) {
-        let _ = self.logged_out_tx.send(reason);
-    }
 }
 
 fn hostname_or_default() -> String {

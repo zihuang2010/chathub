@@ -1212,9 +1212,10 @@ impl Inner {
                             // 处理 v2 三件套。
                             use chathub_proto::v1::server_event::Body;
                             use chathub_proto::v1::system_signal::Kind;
-                            // DEBUG:打印收到的 relay 下发原始帧,便于排查推送链路。
-                            // events_json 是业务事件 JSON 原文,转 UTF-8 打印;字段表达式仅在 DEBUG
-                            // 开启时才求值(tracing 宏特性),故热路径零额外开销。
+                            // DEBUG:打印收到的 relay 下发帧「元信息」,便于排查推送链路。
+                            // 不打印 events_json 原文 —— 它含聊天正文/手机号/externalUserId 等 PII,
+                            // 而默认 filter 即开 chathub_net=debug,打全文等于把业务明文落盘;此处仅记录
+                            // notify_seq/employee_id/batch_id 等定位字段(排查 Windows 收不到推送够用)。
                             match &event.body {
                                 Some(Body::PushBatch(b)) => tracing::debug!(
                                     target: "chathub_net::hub",
@@ -1222,7 +1223,7 @@ impl Inner {
                                     employee_id = b.employee_id,
                                     batch_id = %b.batch_id,
                                     device_id = %b.device_id,
-                                    events_json = %String::from_utf8_lossy(b.events_json.as_ref()),
+                                    events_len = b.events_json.len(),
                                     "relay downstream PushBatch received"
                                 ),
                                 Some(Body::SubscribeAck(a)) => tracing::debug!(
