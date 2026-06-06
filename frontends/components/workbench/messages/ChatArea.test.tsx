@@ -5,6 +5,7 @@ import type { Account } from "@/lib/types/account";
 
 import { ChatArea } from "./ChatArea";
 import type { Conversation, Message } from "./data";
+import type { ChatMessageEntity } from "./store/chatStore";
 import { clearImageDimsCache, rememberMeasuredDims } from "./imageDimsCache";
 import {
   estimateTimelineRowHeight,
@@ -143,6 +144,15 @@ vi.mock("./WorkbenchScrollArea", async () => {
           configurable: true,
           get: () => scrollAreaMock.clientHeight,
         });
+        // @tanstack/react-virtual 经 observeElementRect → getRect 读 viewport 的
+        // offsetHeight 作为可视高度(outerSize)。jsdom 下默认 0 → calculateRange 直接返回
+        // 空(outerSize>0 不成立)→ 一行都不渲染。给 viewport 注入 offsetHeight=clientHeight,
+        // 让虚拟器能算出可见窗口(给虚拟器一个可测视口高度,而非删断言)。行 offsetHeight 的
+        // 桩在 beforeEach 里挂在 HTMLElement.prototype 上(实例属性优先,故 viewport 仍取此处)。
+        Object.defineProperty(node, "offsetHeight", {
+          configurable: true,
+          get: () => scrollAreaMock.clientHeight,
+        });
         Object.defineProperty(node, "scrollHeight", {
           configurable: true,
           get: () => scrollAreaMock.scrollHeight,
@@ -252,9 +262,23 @@ function renderChatArea(
   return render(<ChatArea {...(props as React.ComponentProps<typeof ChatArea>)} />);
 }
 
+// 虚拟行(measureElement 量的绝对定位盒)在 jsdom 下 offsetHeight=0,会被虚拟器记成 0 →
+// 整列塌缩。给 HTMLElement.prototype.offsetHeight 一个正值桩,让行有可测高度;viewport 自身在
+// mock 内用实例属性覆盖为 clientHeight(实例优先于原型)。仅作用于行盒,保存原描述符以便还原。
+const ROW_STUB_HEIGHT = 60;
+let originalOffsetHeightDescriptor: PropertyDescriptor | undefined;
+
 beforeEach(() => {
   scrollAreaMock.reset();
   messageBubbleMock.render.mockClear();
+  originalOffsetHeightDescriptor = Object.getOwnPropertyDescriptor(
+    HTMLElement.prototype,
+    "offsetHeight",
+  );
+  Object.defineProperty(HTMLElement.prototype, "offsetHeight", {
+    configurable: true,
+    get: () => ROW_STUB_HEIGHT,
+  });
   vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) => {
     cb(0);
     return 1;
@@ -263,13 +287,18 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  if (originalOffsetHeightDescriptor) {
+    Object.defineProperty(HTMLElement.prototype, "offsetHeight", originalOffsetHeightDescriptor);
+  } else {
+    delete (HTMLElement.prototype as unknown as { offsetHeight?: number }).offsetHeight;
+  }
   vi.unstubAllGlobals();
   clearImageDimsCache();
   cleanup();
 });
 
 describe("ChatArea history scrolling", () => {
-  it("renders long image-heavy timelines as stable DOM rows instead of variable-height virtual rows", async () => {
+  it("virtualizes long image-heavy timelines, mounting only the visible window plus overscan", async () => {
     const manyImages = Array.from({ length: 80 }, (_, i) => ({
       ...imageMessage(String(i + 1).padStart(2, "0"), {
         width: i % 2 === 0 ? 320 : 900,
@@ -278,11 +307,17 @@ describe("ChatArea history scrolling", () => {
       sentAt: `2026-05-19T10:${String(i % 50).padStart(2, "0")}:00.000Z`,
     }));
 
+    // Stage B 渲染虚拟化:给虚拟器一个可测视口高度(viewport offsetHeight=clientHeight=300,
+    // 见 WorkbenchScrollArea mock),仅可见窗口 + overscan 的行进入 DOM,而非 80 条全渲染。
     const { container } = renderChatArea({ messages: manyImages });
     await act(async () => undefined);
 
-    expect(container.querySelectorAll('[data-testid="message"]')).toHaveLength(80);
-    expect(container.querySelector("[data-index]")).toBeNull();
+    const rendered = container.querySelectorAll('[data-testid="message"]');
+    // 远少于 80(可见 ~2-3 行 + 图片密集 overscan 3),证明已虚拟化只挂可见窗口。
+    expect(rendered.length).toBeGreaterThan(0);
+    expect(rendered.length).toBeLessThan(80);
+    // 虚拟行盒带 data-index(虚拟化的结构标记),反向证明不是全量 .map。
+    expect(container.querySelector("[data-index]")).not.toBeNull();
   });
 
   it("shows no history-loading indicator while older messages load (silent prepend)", () => {
@@ -645,6 +680,79 @@ describe("ChatArea history scrolling", () => {
     const { getByTestId } = renderChatArea({ loading: true, messages: [] });
 
     expect(getByTestId("loading")).toBeTruthy();
+  });
+
+  it("pans the rendered window when the user scrolls a long timeline", async () => {
+    // 80 条文本(行桩高 60px → 总高 ~4800),viewport 300。在顶部时窗口含首条;滚到中部并触发
+    // scroll 事件(虚拟器经 observeElementOffset 读 scrollTop 更新 offset)后,窗口平移、首条移出 DOM,
+    // 中部某条进入 —— 证明渲染随滚动平移而非全量常驻。
+    const many = Array.from({ length: 80 }, (_, i) => ({
+      ...message(String(i + 1).padStart(2, "0"), `m${i + 1}`),
+      sentAt: `2026-05-19T10:${String(i % 50).padStart(2, "0")}:00.000Z`,
+    }));
+    const { container } = renderChatArea({ messages: many });
+    await act(async () => undefined);
+
+    const idsAt = () =>
+      Array.from(container.querySelectorAll("[data-index]")).map((el) =>
+        el.getAttribute("data-index"),
+      );
+    const topWindow = idsAt();
+    expect(topWindow).toContain("0"); // 首条在顶部窗口内
+    expect(topWindow.length).toBeLessThan(80);
+
+    // 滚到中部:虚拟器在 scroll 事件里读 viewport.scrollTop 重算窗口。
+    scrollAreaMock.scrollTop = 2400;
+    await act(async () => {
+      fireEvent.scroll(scrollAreaMock.viewport!);
+    });
+
+    const midWindow = idsAt();
+    expect(midWindow).not.toContain("0"); // 首条已移出 DOM(窗口平移)
+    // 中部窗口应含 2400/60 ≈ 第 40 行附近的下标。
+    expect(midWindow.some((i) => Number(i) >= 30 && Number(i) <= 50)).toBe(true);
+  });
+
+  it("keeps message bubbles mounted (zero remount) when an optimistic row converges to authoritative", async () => {
+    // getItemKey=clientMsgId??id:乐观气泡(clientMsgId 稳定)被权威条目替换(id 变、clientMsgId 不变)
+    // 时,虚拟行 key 不变 → 不 remount。这里用同一 clientMsgId 的两个不同 message 对象模拟收敛,
+    // 断言 MessageBubble 不因 key 变化整行重建(render 次数不暴涨为"卸载+新建")。
+    const optimistic: ChatMessageEntity = {
+      id: "optimistic-1",
+      clientMsgId: "cid-1",
+      conversationId: conversation.id,
+      direction: "out",
+      text: "hi",
+      parts: [{ kind: "text", text: "hi" }],
+      sentAt: "2026-05-19T10:01:00.000Z",
+    };
+    const authoritative: ChatMessageEntity = {
+      ...optimistic,
+      id: "auth-1", // 权威 id 不同,但 clientMsgId 相同 → 行 key 稳定
+    };
+
+    const { rerender } = renderChatArea({ messages: [optimistic] });
+    await act(async () => undefined);
+    const mountedKeys = new Set(messageBubbleMock.render.mock.calls.map(([id]) => id));
+    expect(mountedKeys.has("optimistic-1")).toBe(true);
+    messageBubbleMock.render.mockClear();
+
+    rerender(
+      <ChatArea
+        conversation={conversation}
+        chatStoreKey="c1"
+        messages={[authoritative]}
+        accounts={accounts}
+        selectedAccountId={null}
+        onAccountChange={vi.fn()}
+        detailsOpen={false}
+        onToggleDetails={vi.fn()}
+      />,
+    );
+    await act(async () => undefined);
+
+    // 收敛后仍渲染该行(内容更新),且只渲染这一行(无其它行卷入 remount)。
+    expect(messageBubbleMock.render.mock.calls.map(([id]) => id)).toEqual(["auth-1"]);
   });
 });
 

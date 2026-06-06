@@ -63,6 +63,18 @@ export interface UseScrollControllerParams {
   hasMoreHistory?: boolean;
   onLoadMoreHistory?: () => Promise<void> | void;
   onLeaveMarkRead?: (conversationId: string) => void | Promise<void>;
+  /**
+   * Stage B 渲染虚拟化:未读分隔条 / 锚点行可能被虚拟化卸载,DOM 不再常驻。
+   *   - `unreadDividerIndex`:未读分隔条在 timelineItems 里的下标(无未读为 -1)。
+   *   - `scrollToIndex`:虚拟器 `scrollToIndex(index, {align})` 的回调。
+   *   - `getOffsetForIndex`:虚拟器据估高算出某行相对内容顶的 offset(无则 null);分隔条被虚拟
+   *     卸载、DOM 不可用时,handleUserScroll 的 pill 判定回退到它。
+   * 三者由 ChatArea 注入;若未注入(无虚拟器)则 scrollToUnread 回退到 DOM scrollIntoView、
+   * pill 判定回退到原"无 divider"语义。
+   */
+  unreadDividerIndex?: number;
+  scrollToIndex?: (index: number, options?: { align?: "start" | "center" | "end" }) => void;
+  getOffsetForIndex?: (index: number) => number | null;
 }
 
 export interface UseScrollControllerResult {
@@ -78,6 +90,12 @@ export interface UseScrollControllerResult {
   unreadAbove: number;
   /** 暴露给发送流程:发出消息后置 true 触发贴底跟随(原 ChatArea handleSend 行为)。 */
   wasAtBottomRef: MutableRefObject<boolean>;
+  /**
+   * Stage B 渲染虚拟化:把控制器内部持有的 viewport node 暴露给 ChatArea,
+   * 供 useVirtualizer 的 getScrollElement 复用同一个原生滚动 viewport
+   * (不另建容器,保留 WorkbenchScrollArea 的 ScrollMetrics/ResizeObserver/overscroll 通道)。
+   */
+  scrollElementRef: MutableRefObject<HTMLDivElement | null>;
 }
 
 export function useScrollController({
@@ -88,6 +106,9 @@ export function useScrollController({
   hasMoreHistory = false,
   onLoadMoreHistory,
   onLeaveMarkRead,
+  unreadDividerIndex = -1,
+  scrollToIndex,
+  getOffsetForIndex,
 }: UseScrollControllerParams): UseScrollControllerResult {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   // 旧 viewport unmount 时 React 会把 ref 写成 null;用 callback ref 拒绝 null,
@@ -118,11 +139,30 @@ export function useScrollController({
     unreadAboveState.conversationId === conversation.id ? unreadAboveState.count : 0;
 
   const unreadDividerRef = useRef<HTMLDivElement | null>(null);
+  // Stage B 虚拟化:分隔条行滚出 overscan 即被卸载,React 以 null 调本 ref。必须**接受 null 写回**
+  // (卸载即清 ref),否则 ref 滞留 detach 旧节点 → handleUserScroll 对其 getBoundingClientRect()
+  // 得全 0 矩形 → "divider 已进入视口"分支永不触发,pill 判定失真。清空后 handleUserScroll 改走
+  // 虚拟器 offset 兜底(见下),DOM 不可用时仍能判定 divider 相对视口位置。
   const setUnreadDividerNode = useCallback((node: HTMLDivElement | null) => {
-    if (node) unreadDividerRef.current = node;
+    unreadDividerRef.current = node;
   }, []);
   // 本会话内 divider 是否已被用户"看到过"(进入视口或滚到下方)。切会话清回 false。
   const hasSeenDividerRef = useRef(false);
+
+  // Stage B 渲染虚拟化:未读分隔条 index + 虚拟器 scrollToIndex 用 ref 镜像,
+  // 让稳定 useCallback(scrollToUnread)读到最新值而不必把它们放进 deps、避免重建。
+  const unreadDividerIndexRef = useRef(unreadDividerIndex);
+  useEffect(() => {
+    unreadDividerIndexRef.current = unreadDividerIndex;
+  }, [unreadDividerIndex]);
+  const scrollToIndexRef = useRef(scrollToIndex);
+  useEffect(() => {
+    scrollToIndexRef.current = scrollToIndex;
+  }, [scrollToIndex]);
+  const getOffsetForIndexRef = useRef(getOffsetForIndex);
+  useEffect(() => {
+    getOffsetForIndexRef.current = getOffsetForIndex;
+  }, [getOffsetForIndex]);
 
   const handleScrollMetrics = useCallback((m: ScrollMetrics) => {
     const fromUserScroll = metricsFromUserScrollRef.current;
@@ -228,7 +268,13 @@ export function useScrollController({
   //   - divider 已可见 / 在视口下方 → 用户已经看到 → 清 pill + 标 seen
   //   - divider 在视口上方 + 未看过 + 不在底 + 有未读 → 显示 pill
   //   - 其他情况(在底 / 已看过 / 无未读) → 不动 pill
-  // 所有判定基于一次 getBoundingClientRect 对比,没有异步 reporting 时序边界,行为可预测。
+  // 「divider 相对视口位置」的来源做成"DOM 优先 + 虚拟器 offset 兜底"(Stage B 虚拟化感知):
+  //   - 节点存在且 isConnected → 用 getBoundingClientRect 精确判定(主路径,jsdom 走这条);
+  //   - 否则(被虚拟卸载)若有 unreadDividerIndex 且 getOffsetForIndex 可用 → 用估算行 offset 与
+  //     scrollTop 比较;
+  //   - 两者皆无 → 按原"无 divider"语义(有 pill 则清)。
+  // 守卫(hasSeenDividerRef / m.atBottom / conversation.unread / unreadAbove)与 setUnreadAboveState
+  // 行为完全不变,只换"在视口上方"的判定来源。
   const handleUserScroll = useCallback(
     (m: ScrollMetrics) => {
       metricsFromUserScrollRef.current = true;
@@ -236,17 +282,25 @@ export function useScrollController({
       const viewport = scrollRef.current;
       if (!viewport) return;
       maybeLoadOlderHistory(m);
-      if (!divider) {
-        if (unreadAbove > 0) {
-          setUnreadAboveState({ conversationId: conversation.id, count: 0 });
-        }
-        return;
+
+      // 三态:true=在视口上方(用户还没看到),false=已可见/在下方,null=无从判定(等同无 divider)。
+      let dividerAbove: boolean | null;
+      if (divider && divider.isConnected) {
+        const dRect = divider.getBoundingClientRect();
+        const vRect = viewport.getBoundingClientRect();
+        // dRect.bottom <= vRect.top 即整条 divider 都在视口上方;反之至少一部分在视口内或下方。
+        dividerAbove = dRect.bottom <= vRect.top;
+      } else {
+        const index = unreadDividerIndexRef.current;
+        const dividerOffset = index >= 0 ? (getOffsetForIndexRef.current?.(index) ?? null) : null;
+        // 行 offset(相对内容顶)< scrollTop 即该行已滚到视口上方;同坐标系直接比较。
+        dividerAbove = dividerOffset != null ? dividerOffset < viewport.scrollTop : null;
       }
-      const dRect = divider.getBoundingClientRect();
-      const vRect = viewport.getBoundingClientRect();
-      // divider.bottom > viewport.top 即:divider 至少有一部分在视口内,或整个在视口下方。
-      if (dRect.bottom > vRect.top) {
-        hasSeenDividerRef.current = true;
+
+      if (dividerAbove === null || dividerAbove === false) {
+        // 无从判定(无 divider) / divider 已可见或在下方 → 用户已看到 → 清 pill。
+        // (已可见分支额外标 seen,与原逻辑一致;无从判定分支不标 seen。)
+        if (dividerAbove === false) hasSeenDividerRef.current = true;
         if (unreadAbove > 0) {
           setUnreadAboveState({ conversationId: conversation.id, count: 0 });
         }
@@ -410,6 +464,15 @@ export function useScrollController({
   }, [conversation.id, loading, localMessages.length]);
 
   const scrollToUnread = useCallback(() => {
+    // Stage B:虚拟化后分隔条 DOM 可能被卸载,scrollIntoView 失效。优先用虚拟器
+    // scrollToIndex(index, {align:'center'}) —— 它据估高把该行滚进视口并挂载,
+    // 不依赖 DOM 常驻。未注入虚拟器(或无未读)时回退到原 DOM scrollIntoView(单测走这条)。
+    const index = unreadDividerIndexRef.current;
+    const scrollTo = scrollToIndexRef.current;
+    if (scrollTo && index >= 0) {
+      scrollTo(index, { align: "center" });
+      return;
+    }
     const node = unreadDividerRef.current;
     if (!node) return;
     node.scrollIntoView({ block: "center", behavior: "smooth" });
@@ -465,5 +528,6 @@ export function useScrollController({
     unreadBelow,
     unreadAbove,
     wasAtBottomRef,
+    scrollElementRef: scrollRef,
   };
 }

@@ -1,5 +1,6 @@
-import { memo, useCallback, useEffect, useMemo, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowDown, ArrowUp } from "lucide-react";
+import { useVirtualizer } from "@tanstack/react-virtual";
 
 import type { SendMessageResp } from "@/lib/api/messageHistory";
 import { useHubSyncStatus } from "@/lib/data/useHubSyncStatus";
@@ -23,9 +24,19 @@ import { nextOfflineSticky } from "./offlineState";
 import { RangePill } from "./RangePill";
 import type { ChatMessageEntity } from "./store/chatStore";
 import { STRINGS } from "./strings";
+import { estimateTimelineRowHeight, getVirtualOverscan } from "./virtualListSizing";
 import { WorkbenchScrollArea } from "./WorkbenchScrollArea";
 
 type MessageTimelineItem = ReturnType<typeof useChatTimeline>[number];
+
+// 行 key:乐观→权威收敛时 clientMsgId 由 replaceAuthoritative 带到权威条目,key 不变 →
+// 整行不 remount、MessageImage 实例存活、首帧不闪。历史消息无 clientMsgId 回退 id。
+// 同时供 useVirtualizer 的 getItemKey 复用,保证虚拟器按稳定 key 复用已测尺寸。
+function timelineRowKey(item: MessageTimelineItem): string {
+  return item.type === "message"
+    ? ((item.message as ChatMessageEntity).clientMsgId ?? item.id)
+    : item.id;
+}
 
 interface MessageTimelineRowProps {
   item: MessageTimelineItem;
@@ -137,6 +148,33 @@ export const ChatArea = memo(function ChatArea({
   // 时间线派生(日期/未读分隔 + 气泡 + 未读锚点冻结)抽到 useChatTimeline(Stage 4d),纯派生。
   const timelineItems = useChatTimeline({ localMessages, conversation });
 
+  // 未读分隔条在 timelineItems 里的下标(无未读为 -1)。Stage B 虚拟化后分隔条 DOM 可能
+  // 被卸载,scrollToUnread 改用虚拟器 scrollToIndex,需把该 index 注入控制器。
+  const unreadDividerIndex = useMemo(
+    () => timelineItems.findIndex((item) => item.type === "unread-divider"),
+    [timelineItems],
+  );
+
+  // 虚拟器实例用 ref 桥接:控制器(scrollToUnread)需要 scrollToIndex,但虚拟器在控制器
+  // 之后才创建 → 用稳定回调读 ref,打破"控制器先于虚拟器"的初始化时序环。
+  const virtualizerRef = useRef<ReturnType<typeof useVirtualizer<HTMLDivElement, Element>> | null>(
+    null,
+  );
+  const scrollToIndex = useCallback(
+    (index: number, options?: { align?: "start" | "center" | "end" }) => {
+      virtualizerRef.current?.scrollToIndex(index, options);
+    },
+    [],
+  );
+  // 未读分隔条行被虚拟卸载后 DOM 不可用,handleUserScroll 的 pill 判定回退到虚拟器估算的行 offset。
+  // getOffsetForIndex(index, "start") 返回 [offset, align] | undefined(react-virtual v3),取 [0]
+  // 即该行相对内容顶的 offset(与 viewport.scrollTop 同坐标系,可直接比较"在视口上方")。
+  const getOffsetForIndex = useCallback(
+    (index: number): number | null =>
+      virtualizerRef.current?.getOffsetForIndex(index, "start")?.[0] ?? null,
+    [],
+  );
+
   // 滚动控制器(置底跟随/翻页锚点/未读 pill/切会话 snap/离开 markRead)抽到 useScrollController
   // (Stage 4d)。滚动位置行为依赖真实布局,需真机手测;此处仅做结构接线。
   const {
@@ -151,6 +189,7 @@ export const ChatArea = memo(function ChatArea({
     unreadBelow,
     unreadAbove,
     wasAtBottomRef,
+    scrollElementRef,
   } = useScrollController({
     conversation,
     localMessages,
@@ -159,7 +198,33 @@ export const ChatArea = memo(function ChatArea({
     hasMoreHistory,
     onLoadMoreHistory,
     onLeaveMarkRead,
+    unreadDividerIndex,
+    scrollToIndex,
+    getOffsetForIndex,
   });
+
+  // Stage B 渲染虚拟化:DOM 节点与离屏图片位图恒定(≈可见 + overscan)。
+  //   - getScrollElement 复用控制器持有的 viewport node(WorkbenchScrollArea 的同一 viewport,
+  //     经 setScrollNode 写入),不另建容器 → 保留 ScrollMetrics/ResizeObserver/overscroll 通道。
+  //   - estimateSize 复用 virtualListSizing.estimateTimelineRowHeight(图片行接 dims 缓存、
+  //     与渲染盒对齐),杜绝写死常数引起的首帧大幅校正「整列下沉」(上次回退主因)。
+  //   - getItemKey=clientMsgId??id(timelineRowKey),保乐观→权威收敛零 remount、发图不闪。
+  //   - 不做阈值门控:统一虚拟化,消除 49→50 跨阈值切换渲染结构的跳变。
+  //   - initialOffset=首挂时的 scrollHeight(到底):react-virtual v3 首次发现 scrollElement
+  //     (null→node)时 _willUpdate 会 _scrollToOffset(getScrollOffset());首挂 scrollOffset 为 null
+  //     → 退回 initialOffset。不传(默认 0)会把 useScrollController snap 的 scrollTop=scrollHeight
+  //     打回 0,只靠 snap 的 rAF 二次置底碰巧抢赢、脆弱。把初始 offset 目标本身设成"到底",从根上
+  //     消除与 snap 对打。initialOffset 只在虚拟器初始化(首挂)读一次,切会话不重读(实例持久),
+  //     故不影响后续切会话 snap(那走 useScrollController 的 layout effect)。
+  const virtualizer = useVirtualizer({
+    count: timelineItems.length,
+    getScrollElement: () => scrollElementRef.current,
+    estimateSize: (index) => estimateTimelineRowHeight(timelineItems[index]),
+    overscan: getVirtualOverscan(timelineItems),
+    getItemKey: (index) => timelineRowKey(timelineItems[index]),
+    initialOffset: () => scrollElementRef.current?.scrollHeight ?? 0,
+  });
+  virtualizerRef.current = virtualizer;
   // Stale drafts from a prior conversation are ignored at render time rather
   // than cleared via effect — keeps state mutations off the conversation-switch
   // path and out of React's "setState in effect" lint surface.
@@ -242,27 +307,43 @@ export const ChatArea = memo(function ChatArea({
             viewportClassName="overscroll-contain [overflow-anchor:none] bg-workbench-surface px-4 pt-5 pb-10 pr-6"
             contentClassName="flex w-full flex-col"
           >
-            <div role="log" aria-live="polite" aria-atomic="false" className="flex flex-col">
-              {timelineItems.map((item, idx) => {
-                // 消息行 key 用 clientMsgId(收敛后由 replaceAuthoritative 带到权威条目),使
-                // 「乐观→权威」收敛时 key 不变、整行不 remount → 发图时 MessageImage 实例存活,
-                // 其内建 transition 接管 data:→服务端 src 切换,首帧不闪。历史消息无 clientMsgId 回退 id。
-                const rowKey =
-                  item.type === "message"
-                    ? ((item.message as ChatMessageEntity).clientMsgId ?? item.id)
-                    : item.id;
+            {/* Stage B 渲染虚拟化:外层 spacer 高度 = 虚拟器 totalSize(撑出真实可滚高度,
+                spacer 高=totalSize 时「scrollTop=scrollHeight」即等价置底,控制器贴底/snap 逻辑
+                作用对象不变)。role=log a11y 容器留在 spacer 上;每行绝对定位 + translateY(start),
+                ref=measureElement 实测高校正估高(图片行不再据差值整列下沉)。 */}
+            <div
+              role="log"
+              aria-live="polite"
+              aria-atomic="false"
+              style={{ height: virtualizer.getTotalSize(), position: "relative", width: "100%" }}
+            >
+              {virtualizer.getVirtualItems().map((virtualRow) => {
+                const item = timelineItems[virtualRow.index];
+                if (!item) return null;
                 return (
-                  <MessageTimelineRow
-                    key={rowKey}
-                    item={item}
-                    index={idx}
-                    avatarName={conversation.name}
-                    avatarColor={conversation.avatarColor}
-                    avatarUrl={conversation.avatar}
-                    account={conversation.account}
-                    onAction={handleMessageAction}
-                    setUnreadDividerNode={setUnreadDividerNode}
-                  />
+                  <div
+                    key={virtualRow.key}
+                    ref={virtualizer.measureElement}
+                    data-index={virtualRow.index}
+                    style={{
+                      position: "absolute",
+                      top: 0,
+                      left: 0,
+                      width: "100%",
+                      transform: `translateY(${virtualRow.start}px)`,
+                    }}
+                  >
+                    <MessageTimelineRow
+                      item={item}
+                      index={virtualRow.index}
+                      avatarName={conversation.name}
+                      avatarColor={conversation.avatarColor}
+                      avatarUrl={conversation.avatar}
+                      account={conversation.account}
+                      onAction={handleMessageAction}
+                      setUnreadDividerNode={setUnreadDividerNode}
+                    />
+                  </div>
                 );
               })}
             </div>
@@ -325,16 +406,20 @@ const MessageTimelineRow = memo(function MessageTimelineRow({
   onAction,
   setUnreadDividerNode,
 }: MessageTimelineRowProps) {
+  // 行间距用 padding(pt-*)而非 margin(mt-*):Stage B 虚拟化后每行包在绝对定位盒里、由
+  // measureElement 量 getBoundingClientRect 高度并入 totalSize/offset;margin 在盒外不计入实测
+  // → 会让估高与实测错位、整列漂。改 padding(border-box)后间距被实测、虚拟器精确对齐(参 34eca70
+  // 与 ConversationList 的 padding-for-spacing)。
   if (item.type === "date-divider") {
     return (
-      <div className={index === 0 ? "" : "mt-7"}>
+      <div className={index === 0 ? "" : "pt-7"}>
         <DateDivider label={item.label} />
       </div>
     );
   }
   if (item.type === "unread-divider") {
     return (
-      <div ref={setUnreadDividerNode} className={index === 0 ? "" : "mt-7"}>
+      <div ref={setUnreadDividerNode} className={index === 0 ? "" : "pt-7"}>
         <UnreadDivider count={item.count} />
       </div>
     );
@@ -344,7 +429,7 @@ const MessageTimelineRow = memo(function MessageTimelineRow({
   // 约 16px),并让上下两条气泡有充裕留白。续条 44px / 换发送者 48px。
   // containment 去掉 paint(仅留 layout)——失败/重发行与悬停时间戳是浮出行盒的绝对定位
   // 元素,paint 裁剪会把它们切掉。
-  const spacing = index === 0 ? "" : item.isFirstInBurst ? "mt-12" : "mt-11";
+  const spacing = index === 0 ? "" : item.isFirstInBurst ? "pt-12" : "pt-11";
   return (
     <div data-message-row-id={item.id} className={cn("[contain:layout_style]", spacing)}>
       <MessageBubble
