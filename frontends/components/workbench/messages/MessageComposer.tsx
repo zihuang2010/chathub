@@ -45,6 +45,7 @@ import {
   clearDraft,
   flushDraftToBackend,
   getDraft,
+  setDraft,
   useDraft,
   useFileAttachments,
 } from "./useDraftStore";
@@ -199,7 +200,7 @@ export function MessageComposer({
   getPolishContext,
   offline = false,
 }: MessageComposerProps) {
-  const [draft, setDraftValue] = useDraft(conversationId);
+  const [draft] = useDraft(conversationId);
   const [pendingFileAttachments, setPendingFileAttachments] = useFileAttachments(conversationId);
   const [isResizing, setIsResizing] = useState(false);
   const [quickRepliesOpen, setQuickRepliesOpen] = useState(false);
@@ -215,6 +216,49 @@ export function MessageComposer({
   // draft 在同一拍内重复触发 onSend → 同一条消息发多份。提交后上锁,本帧内的重复提交被吞掉,
   // 下一帧(draft 已清空、canSend 已 false)放开。
   const submitLockRef = useRef(false);
+
+  // ─── 草稿节流落库 ──────────────────────────────────────────────────────────
+  // 连续输入时把 getJSON→store→MessageComposer 重渲 从「每字一次」降到 ~每 120ms 一次,
+  // 降低输入期重渲。字数/canSend 显示随之滞后 ≤120ms(已与用户确认接受);发送与
+  // 切会话/卸载分别用「实时编辑器内容」「flushPendingDraft」兜底,保证不丢字、不误判。
+  //
+  // pending 连同其所属 conversationId 一起暂存:切会话的 setContent 会触发一次 onUpdate,
+  // 若只存 doc、由旧会话 cleanup 落库,会把「新会话内容」误写进旧会话(草稿串台,被
+  // MessageComposer.switch.test.tsx 钉死)。带上 id 后,落库永远写回内容真正所属的会话。
+  const pendingDraftRef = useRef<{ id: string; doc: JSONContent } | null>(null);
+  const draftThrottleRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // 把节流窗口内最新草稿立即落到「它所属的」会话 store 并清计时器 —— 切走/卸载/发送前调用。
+  const flushPendingDraft = useCallback(() => {
+    if (draftThrottleRef.current) {
+      clearTimeout(draftThrottleRef.current);
+      draftThrottleRef.current = null;
+    }
+    const pending = pendingDraftRef.current;
+    if (pending) {
+      pendingDraftRef.current = null;
+      setDraft(pending.id, pending.doc);
+    }
+  }, []);
+
+  // RichComposer 每次按键仍回调本函数,但只暂存最新 doc(连同当前 conversationId);真正写
+  // store(触发重渲)被节流到 ~120ms 一次。切会话由下方 layout effect 先 flush 旧会话 pending
+  // 再 setContent,故 setContent 触发的 onUpdate 暂存的已是新会话 id,落库不串台。
+  const handleEditorChange = useCallback(
+    (doc: JSONContent) => {
+      pendingDraftRef.current = { id: conversationId, doc };
+      if (draftThrottleRef.current) return; // 冷却窗口内:仅更新最新 doc,不重复排程
+      draftThrottleRef.current = setTimeout(() => {
+        draftThrottleRef.current = null;
+        const pending = pendingDraftRef.current;
+        if (pending) {
+          pendingDraftRef.current = null;
+          setDraft(pending.id, pending.doc);
+        }
+      }, 120);
+    },
+    [conversationId],
+  );
 
   // 文件附件 blob URL 的生命周期由 useFileAttachments store 持有,跨切会话存活:
   // - 用户显式移除 chip → removePendingFileAttachment 立即 revoke
@@ -293,9 +337,13 @@ export function MessageComposer({
   // 双挂不会误把刚打开的会话标成草稿态。
   useEffect(() => {
     return () => {
+      // 卸载(离开消息页)时把节流窗口内未提交的草稿落库,再刷后端,否则最后 <120ms 的输入会丢。
+      // 切会话的落库已由下方 layout effect 在 setContent 前完成;此处主要兜住「整体卸载」路径。
+      // pending 自带所属 id,flush 写回正确会话;flushDraftToBackend 用旧 conversationId 闭包。
+      flushPendingDraft();
       flushDraftToBackend(conversationId);
     };
-  }, [conversationId]);
+  }, [conversationId, flushPendingDraft]);
 
   // 持久化编辑器:过去靠 ChatArea 的 key={conversation.id} 让本组件每次切会话整块重挂 →
   // 重建整个 TipTap/ProseMirror 编辑器(本 UI 单次开销最大的对象),频繁切换接待列表时是
@@ -307,11 +355,14 @@ export function MessageComposer({
   const prevConversationIdRef = useRef(conversationId);
   useLayoutEffect(() => {
     if (prevConversationIdRef.current === conversationId) return;
+    // 切走前先把旧会话在节流窗口内未提交的草稿落库(pending 自带旧 id),且必须在 setContent
+    // 之前——否则 setContent 触发的 onUpdate 会用新会话内容覆盖 pending,导致旧会话丢字。
+    flushPendingDraft();
     const editor = editorRef.current;
     if (!editor) return; // 编辑器尚未就绪(极早期):本次跳过,下次切换再载入最新会话
     prevConversationIdRef.current = conversationId;
     editor.chain().setContent(getDraft(conversationId)).focus("end").run();
-  }, [conversationId]);
+  }, [conversationId, flushPendingDraft]);
 
   // ─── Attachment helpers ────────────────────────────────────────────────────
 
@@ -575,12 +626,27 @@ export function MessageComposer({
   // ─── Submit ───────────────────────────────────────────────────────────────
 
   const submitDraft = () => {
-    if (!canSend || offline || submitLockRef.current) return;
+    if (offline || submitLockRef.current) return;
+    // 读实时编辑器内容算 blocks/canSend(而非 debounce 后的 draft):打字后立刻回车不丢最后
+    // 几个字;空框敲首字立刻回车也不会被滞后的 canSend 误吞。
+    const liveDoc = editorRef.current?.getJSON() ?? draft;
+    const liveBlocks = docToBlocks(liveDoc);
+    const liveText = liveBlocks
+      .filter((b): b is { type: "text"; value: string } => b.type === "text")
+      .map((b) => b.value)
+      .join("");
+    const liveCanSend =
+      liveText.trim().length > 0 ||
+      liveBlocks.some((b) => b.type === "image") ||
+      pendingFileAttachments.length > 0;
+    if (!liveCanSend) return;
     submitLockRef.current = true;
-    const finalBlocks = blocks.filter((b) => !(b.type === "text" && b.value.trim().length === 0));
+    const finalBlocks = liveBlocks.filter(
+      (b) => !(b.type === "text" && b.value.trim().length === 0),
+    );
     const fileAttachments = pendingFileAttachments;
     onSend?.(
-      textJoined.trim(),
+      liveText.trim(),
       finalBlocks.length > 0 ? finalBlocks : undefined,
       fileAttachments.length > 0 ? [...fileAttachments] : undefined,
       replyDraft?.id,
@@ -598,6 +664,12 @@ export function MessageComposer({
       if (a.type !== "voice" && a.url.startsWith("blob:")) URL.revokeObjectURL(a.url);
     }
     setPendingFileAttachments([]);
+    // 取消未提交的草稿节流(马上要清空草稿,避免计时器回写已清空前的内容)。
+    if (draftThrottleRef.current) {
+      clearTimeout(draftThrottleRef.current);
+      draftThrottleRef.current = null;
+    }
+    pendingDraftRef.current = null;
     // Reset draft (sets EMPTY_DOC in the store).
     clearDraft(conversationId);
     // Reset the editor's content AND collapse the selection back to position 0.
@@ -671,16 +743,32 @@ export function MessageComposer({
         onChange={handleVoicePicker}
       />
       <div className="flex h-full w-full flex-col gap-1 bg-workbench-surface">
-        {offline && (
-          <div
-            role="status"
-            aria-live="polite"
-            className="text-wb-3xs flex shrink-0 items-center gap-1.5 rounded-md bg-workbench-surface-soft px-2.5 py-1 font-medium text-workbench-danger"
-          >
-            <WifiOff size={12} strokeWidth={1.8} aria-hidden />
-            <span>{STRINGS.composer.offlineBanner}</span>
+        {/* 离线横幅:常驻挂载 + grid-rows 0fr↔1fr 高度过渡 + opacity 淡入淡出。常驻挂载才能在
+            「重连成功 → 隐藏」时也走淡出(条件卸载只能淡入);offline 由 ChatArea 粘滞派生,重连
+            期间保持 true 不变 → 不重放动画、稳定不闪。!offline 时 -mb-1 抵消父级 gap-1 给 0 高度
+            子项留下的 4px 缝,在线时整体布局零变化。 */}
+        <div
+          data-testid="composer-offline-banner"
+          data-visible={offline ? "true" : "false"}
+          aria-hidden
+          className={cn(
+            "grid shrink-0 overflow-hidden transition-all duration-300 ease-out motion-reduce:transition-none",
+            offline ? "grid-rows-[1fr] opacity-100" : "-mb-1 grid-rows-[0fr] opacity-0",
+          )}
+        >
+          <div className="min-h-0 overflow-hidden">
+            <div className="text-wb-3xs flex items-center gap-1.5 rounded-md bg-workbench-surface-soft px-2.5 py-1 font-medium text-workbench-danger">
+              <WifiOff size={12} strokeWidth={1.8} aria-hidden />
+              <span>{STRINGS.composer.offlineBanner}</span>
+            </div>
           </div>
-        )}
+        </div>
+        {/* 屏幕阅读器播报:上方视觉横幅常驻挂载以走淡入「淡出」,故置 aria-hidden 装饰化;播报改由
+            独立 sr-only live region 承担 —— 文本「空↔有」切换才能可靠触发(仅翻转 aria-hidden 多数
+            浏览器不重播),与下方字数上限提示同一套路。 */}
+        <span role="status" aria-live="polite" className="sr-only">
+          {offline ? STRINGS.composer.offlineBanner : ""}
+        </span>
         {replyDraft && <ReplyPreview draft={replyDraft} onCancel={() => onCancelReply?.()} />}
         <div className="flex items-center gap-0.5 text-workbench-text-secondary">
           <Popover.Root open={emojiOpen} onOpenChange={setEmojiOpen}>
@@ -773,7 +861,7 @@ export function MessageComposer({
           // 表情/截图/快捷回复等命令式插入仍靠各自按钮 disabled 兜底。
           editable={!voiceMode}
           mentionCandidates={mentionCandidates}
-          onChange={(doc: JSONContent) => setDraftValue(doc)}
+          onChange={handleEditorChange}
           onSubmit={submitDraft}
           onPasteFiles={(files) => {
             insertImageFiles(files);

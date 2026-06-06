@@ -16,6 +16,17 @@ interface DriftingWaveProps {
  * animateTransform. Translation is in SVG user units, so the loop stays
  * correct at any rendered viewport width.
  */
+// SMIL 的 animateTransform 不受 CSS @media (prefers-reduced-motion) 影响,只能在
+// 渲染前由 JS 判断是否输出该动画节点。SSR/无 window 环境(matchMedia 不存在)按"非
+// reduce"处理,保持现有动画。
+function prefersReducedMotion(): boolean {
+  return (
+    typeof window !== "undefined" &&
+    typeof window.matchMedia === "function" &&
+    window.matchMedia("(prefers-reduced-motion: reduce)").matches
+  );
+}
+
 export const DriftingWave = memo(function DriftingWave({
   d,
   fill,
@@ -23,16 +34,20 @@ export const DriftingWave = memo(function DriftingWave({
   dur,
   shift = 1280,
 }: DriftingWaveProps) {
+  // reduce 时只画静态波浪,不挂载平移动画。
+  const reduceMotion = prefersReducedMotion();
   return (
     <path d={d} fill={fill} opacity={opacity}>
-      <animateTransform
-        attributeName="transform"
-        type="translate"
-        from="0 0"
-        to={`-${shift} 0`}
-        dur={dur}
-        repeatCount="indefinite"
-      />
+      {!reduceMotion && (
+        <animateTransform
+          attributeName="transform"
+          type="translate"
+          from="0 0"
+          to={`-${shift} 0`}
+          dur={dur}
+          repeatCount="indefinite"
+        />
+      )}
     </path>
   );
 });

@@ -90,6 +90,10 @@ type SendUnit =
       sizeBytes?: number;
       width?: number;
       height?: number;
+      // 本函数内临时 createObjectURL 造的、不归任何 store 持有的 blob url(仅超长文本转 .txt 这一处)。
+      // 上传消费完即可 revokeObjectURL 释放;归属气泡的图片/语音/文件附件 url 不带此标记,绝不在此释放,
+      // 否则会误伤气泡渲染。来源标记比单纯按 blob: 前缀判定更稳妥(气泡附件也可能是 blob:)。
+      transientUrl?: boolean;
     };
 
 // 前端附件类型 → 后端 messageType;video 本期按文件(3)发送。
@@ -126,6 +130,8 @@ function textToSendUnit(text: string): SendUnit {
     url: URL.createObjectURL(blob),
     name: `长文本_${overflowFileStamp()}.txt`,
     sizeBytes: blob.size,
+    // 这是本函数临时造的 blob url(不入 draft/composer 生命周期),上传取字节后即可释放。
+    transientUrl: true,
   };
 }
 
@@ -407,6 +413,9 @@ export function useChatActions({
       const owningStoreKey = chatStoreKey;
       try {
         let bytes = await fetchBytes(unit.url);
+        // 临时 blob url(超长文本转 .txt)字节已取出,此后不再需要,立即释放避免泄漏。
+        // 仅对本函数临时造的 url 释放;归属气泡的图片/语音/文件附件 url 不带 transientUrl,不在此释放。
+        if (unit.transientUrl) URL.revokeObjectURL(unit.url);
         let fileSuf = inferFileSuf(unit.name, unit.url);
         let fileName = unit.name;
         let contentType = inferContentType(unit.name, unit.url);

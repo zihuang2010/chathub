@@ -1,5 +1,7 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 
+import { isSafeUrl } from "@/components/workbench/messages/utils";
+
 /**
  * 用系统默认应用打开 URL（浏览器 / 媒体播放器等）。
  *
@@ -10,6 +12,13 @@ import { invoke, isTauri } from "@tauri-apps/api/core";
  * 典型用途：文件下载（系统浏览器拉起下载）、WebView 内无法解码的音频（如企微 amr）外部播放。
  */
 export async function openExternal(url: string): Promise<void> {
+  // 纵深防御:仅放行 http(s) 等安全协议(复用 isSafeUrl 的 link 白名单),
+  // 拦掉 javascript:/file:/data: 等可触发脚本或本地文件读取的协议,避免外部
+  // 注入的 URL 被系统/浏览器直接拉起。合法 http/https 链接行为不变。
+  if (!isSafeUrl(url, "link")) {
+    console.warn("openExternal:已拦截不安全协议的 URL", url);
+    return;
+  }
   if (isTauri()) {
     try {
       await invoke("plugin:opener|open_url", { url });

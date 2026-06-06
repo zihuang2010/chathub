@@ -7,7 +7,7 @@ import { DriftingWave } from "@/components/illustrations";
 import { useCurrentProfile } from "@/lib/data/useCurrentProfile";
 import { useHubSyncStatus } from "@/lib/data/useHubSyncStatus";
 import type { HubConnectionState } from "@/lib/data/useResource";
-import { isWindows } from "@/lib/platform";
+import { isMac, isWindows } from "@/lib/platform";
 import { FROSTED_GLASS_STYLE, WORKBENCH_BLUE, WORKBENCH_NAV_TEXT } from "@/lib/theme";
 import { cn } from "@/lib/utils";
 
@@ -84,10 +84,12 @@ export const Sidebar = memo(function Sidebar({
       className={cn(
         // overflow-visible 是为了让 EdgeHandle 的药丸能外探到右侧消息列表之上；
         // z-10 让外探部分盖在 MessagesPage 的左边沿上方，否则同级 flex 子元素
-        // 默认按 DOM 顺序堆叠会被后面的兄弟节点遮住。rounded-bl-[10px] 仍留在
-        // aside 上，因为 backdrop-filter 自带 stacking context，圆角必须由它
-        // 的元素本身承担。
-        "relative flex h-full shrink-0 select-none flex-col overflow-visible rounded-bl-[10px] transition-[width] duration-200 ease-out",
+        // 默认按 DOM 顺序堆叠会被后面的兄弟节点遮住。左下圆角仍留在 aside 上，
+        // 因为 backdrop-filter 自带 stacking context，圆角必须由它的元素本身承担。
+        "relative flex h-full shrink-0 select-none flex-col overflow-visible transition-[width] duration-200 ease-out",
+        // 左下圆角仅 macOS 应用:mac 是圆角透明窗,该圆角与窗口外形吻合;Windows 是
+        // decorations:false 的直角窗,加圆角反而会在左下角裁出背景小三角。
+        isMac ? "rounded-bl-[10px]" : "",
         // Windows:工作台顶到 top-0(见 Workbench),左栏要盖在 z-100 顶栏左半之上——顶栏控件
         // 在右上角,左半只是空拖拽区,两者又共用同款毛玻璃,覆盖处无缝;这样头像才能露在顶部
         // 40px 内,补上"左上空白"。macOS 维持 z-10(顶栏整条在工作台之上,左栏不需上浮)。
@@ -100,7 +102,13 @@ export const Sidebar = memo(function Sidebar({
         ...FROSTED_GLASS_STYLE,
       }}
     >
-      <div className="relative z-10 flex h-full flex-col overflow-hidden rounded-bl-[10px]">
+      <div
+        className={cn(
+          "relative z-10 flex h-full flex-col overflow-hidden",
+          // 与 aside 同步:左下圆角仅 macOS,避免 Windows 直角窗下左下角裁出小三角。
+          isMac ? "rounded-bl-[10px]" : "",
+        )}
+      >
         {/* 渐变层 + 装饰层,垫在内容之下,营造层次/重心/呼吸感。 */}
         <SidebarBackdrop collapsed={collapsed} />
         <div className="relative z-10 flex flex-1 flex-col">

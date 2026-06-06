@@ -729,14 +729,22 @@ export function MessagesPage({
         // 面板挂载只看 detailsOpen,不再 && conversation:无选中会话也能展开
         // (CustomerDetails 对 customer=null 渲染空态),避免"会话恰好为空 →
         // 面板挂不上 → React 状态与窗口尺寸不同步"。
-        <ErrorBoundary {...ERROR_BOUNDARY_PROPS}>
-          <CustomerDetails
-            customer={customer}
-            quickReplies={quickReplyItems}
-            onRefresh={() => void refreshCustomer(true)}
-            refreshing={customerLoading}
-          />
-        </ErrorBoundary>
+        // 详情面板裁切护栏:CustomerDetails 的 <aside> 是 w-[324px] shrink-0,无 min-w-0/
+        // overflow-hidden。窗口装不下更宽尺寸(squeeze、canGrow=false)时,父容器(WorkbenchPanel
+        // overflow-hidden)会从右侧硬裁掉这 324px 列的边缘。这里套一层可收缩的 flex 子项
+        // (min-w-0 让 flex 子项突破默认 min-width:auto 而能收缩,overflow-hidden 在本层内部
+        // 裁切),把硬裁边界从整个面板收回到详情列自身边界;宽窗下 flex-1 聊天区吸收所有余量、
+        // 本层无收缩压力,仍保持 324px,表现不变。
+        <div className="flex min-w-0 overflow-hidden">
+          <ErrorBoundary {...ERROR_BOUNDARY_PROPS}>
+            <CustomerDetails
+              customer={customer}
+              quickReplies={quickReplyItems}
+              onRefresh={() => void refreshCustomer(true)}
+              refreshing={customerLoading}
+            />
+          </ErrorBoundary>
+        </div>
       )}
       <ToastViewport />
     </WorkbenchPanel>

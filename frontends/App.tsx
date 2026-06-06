@@ -1,18 +1,25 @@
-import { useCallback, useEffect, useState } from "react";
+import { Suspense, lazy, useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
-import { Login } from "@/components/Login";
 import { Splash } from "@/components/Splash";
 import { TitleBar } from "@/components/TitleBar";
 import { WindowResizeEdges } from "@/components/WindowResizeEdges";
-import { Workbench } from "@/components/Workbench";
 import { UpdateDialogViewport } from "@/components/ui/UpdateDialog";
 import { useMessagesReady } from "@/lib/data/appReady";
 import { changeBus } from "@/lib/data/changeBus";
 import { checkForAppUpdates } from "@/lib/updater";
 import { cn } from "@/lib/utils";
 import { useWindowMaxSize } from "@/lib/useWindowMaxSize";
+
+// 路由级懒加载:Login / Workbench 各自把 tiptap 全家桶、framer-motion 等重依赖带进自己
+// 的 chunk,推迟到真正进入对应界面才下载解析,显著减小首屏 JS。两者均为具名导出,
+// React.lazy 要求模块默认导出,故用 .then 适配成 { default }。Splash 仍静态导入——
+// 它就是加载期间的轻量 fallback,不能再走懒加载(否则 fallback 自身还要先下载)。
+const Login = lazy(() => import("@/components/Login").then((m) => ({ default: m.Login })));
+const Workbench = lazy(() =>
+  import("@/components/Workbench").then((m) => ({ default: m.Workbench })),
+);
 
 const SPLASH_DURATION_MS = 2000;
 
@@ -67,9 +74,12 @@ function App() {
   // C2: 监听 auth:logged_out — token 失效 / 被踢 / 主动登出时 emit
   // backends/src/lib.rs 已经在 setup 阶段桥接了 LoggedOutReason broadcast。
   useEffect(() => {
+    // 早卸载守卫:listen 是异步的,effect 可能在 promise resolve 前就卸载;此时直接调
+    // unlisten 还是 undefined。用 cancelled 标记,resolve 时若已卸载立即 unlisten。
+    let cancelled = false;
     let unlisten: (() => void) | undefined;
     void (async () => {
-      unlisten = await listen<{ reason: LoggedOutReason }>("auth:logged_out", (event) => {
+      const un = await listen<{ reason: LoggedOutReason }>("auth:logged_out", (event) => {
         const reason = event.payload?.reason;
         // 注意:先 set notice 再 set profile,确保 Login mount 时 notice 已就绪
         if (reason === "token-invalid") {
@@ -81,8 +91,13 @@ function App() {
         }
         setProfile(null);
       });
+      if (cancelled) un();
+      else unlisten = un;
     })();
-    return () => unlisten?.();
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
   }, []);
 
   // Splash 内部计时到点 → 触发 ready(只 set 一个 boolean,无副作用)。
@@ -151,13 +166,20 @@ function App() {
 
         {/* Underlying view 在 profile 就绪后立即挂载,与 splash 并行存在;splash z:40
             覆盖在上,用户看不到 underlying 的初始数据加载过程。等数据就绪 splash 退场,
-            用户看到的就是完整真组件。 */}
-        {profile !== undefined &&
-          (profile ? (
-            <Workbench />
-          ) : (
-            <Login notice={loginNotice} onSuccess={(p) => setProfile(p)} />
-          ))}
+            用户看到的就是完整真组件。
+            Login / Workbench 走 React.lazy,故包一层 Suspense:首次启动时 splash 盖在上面,
+            chunk 下载期间 fallback 不可见;登录成功后 Workbench chunk 拉取那一瞬,fallback
+            用与 #app-shell 同色的纯底兜底,避免闪白。Suspense 只包懒加载子树,根级 TitleBar /
+            Splash / 监听不受其挂起影响。 */}
+        {profile !== undefined && (
+          <Suspense fallback={<div className="absolute inset-0 bg-[#F1F5F9]" />}>
+            {profile ? (
+              <Workbench />
+            ) : (
+              <Login notice={loginNotice} onSuccess={(p) => setProfile(p)} />
+            )}
+          </Suspense>
+        )}
 
         {!splashHidden && (
           <div

@@ -1,4 +1,4 @@
-import { memo, useCallback, useMemo, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useState } from "react";
 import { ArrowDown, ArrowUp } from "lucide-react";
 
 import type { SendMessageResp } from "@/lib/api/messageHistory";
@@ -19,6 +19,7 @@ import { ForwardDialog, type ForwardTarget } from "./ForwardDialog";
 import { DateDivider, MessageBubble, type ReplyTarget, UnreadDivider } from "./MessageBubble";
 import { MessageComposer } from "./MessageComposer";
 import type { MessageActionType } from "./MessageContextMenu";
+import { nextOfflineSticky } from "./offlineState";
 import { RangePill } from "./RangePill";
 import type { ChatMessageEntity } from "./store/chatStore";
 import { STRINGS } from "./strings";
@@ -195,9 +196,18 @@ export const ChatArea = memo(function ChatArea({
   // hub 连接断开时禁用发送并在 composer 顶部提示离线(E①)。连接态由 useHubSyncStatus 经
   // hub:connection 事件派生,与 Sidebar 在线圆点同源;disconnected(网络暂断) 与 rejected(鉴权被拒
   // 终态) 都视为离线、禁发。
+  //
+  // 「粘滞」派生:重连期间后端 run_loop 退避重试会反复 Connecting↔Disconnected 跳变,若直接按
+  // disconnected 瞬时派生,离线横幅会随每次重连尝试显隐 → 闪烁。改用 nextOfflineSticky 维持上一
+  // 稳定态(connecting 不翻转),整段重连保持稳定,只在真正 subscribed 后才消失。
   const { connectionState } = useHubSyncStatus();
-  const offline =
-    connectionState?.state === "disconnected" || connectionState?.state === "rejected";
+  // 惰性初始化:挂载时即按当前连接态派生。若用 useState(false),在「已离线时首次进入会话」
+  // (或 ChatArea 由无会话→有会话重挂)时首帧 offline 恒为 false → 横幅延迟一帧滑入、发送按钮
+  // 一帧内误可用,effect 跑完才纠正。惰性初始化让首帧即正确,无延迟、无动画重放。
+  const [offline, setOffline] = useState(() => nextOfflineSticky(false, connectionState));
+  useEffect(() => {
+    setOffline((prev) => nextOfflineSticky(prev, connectionState));
+  }, [connectionState]);
 
   // 切会话即时切换(无 crossfade):标题与消息区随 conversation 直接重渲,同步硬切,
   // 无淡入淡出延迟、无双倍 DOM —— 跟手丝滑(IM 桌面端标准)。

@@ -1,7 +1,8 @@
-import { useEffect, type ReactNode } from "react";
+import { type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { AnimatePresence, motion } from "framer-motion";
 
+import { useEscKey } from "@/lib/useEscKey";
 import { TRANSITION_DURATIONS, TRANSITION_EASE } from "@/lib/theme";
 import { cn } from "@/lib/utils";
 
@@ -24,15 +25,10 @@ interface ModalProps {
  * 刻意不引入 radix-dialog 依赖(最小改动)。
  */
 export function Modal({ open, onClose, children, labelledBy, ariaLabel, className }: ModalProps) {
-  // Esc 关闭。仅在 open 时挂监听,关闭即解绑。
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [open, onClose]);
+  // Esc 关闭。复用 useEscKey:它已正确判输入法 composition(isComposing / keyCode===229),
+  // 避免中文输入候选框按 Esc 误关模态。enabled 仅在 open 时挂监听;skipIfInInput 关掉以保持
+  // 原行为(模态内 input 聚焦时按 Esc 仍关闭模态)。
+  useEscKey(onClose, { enabled: open, skipIfInInput: false });
 
   return createPortal(
     <AnimatePresence>

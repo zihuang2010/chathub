@@ -1,6 +1,7 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 
 import { showToast } from "@/components/ui/toast";
+import { isSafeUrl } from "@/components/workbench/messages/utils";
 
 import { openExternal } from "./openExternal";
 
@@ -17,6 +18,11 @@ import { openExternal } from "./openExternal";
 export async function downloadAttachment(url: string, fileName?: string): Promise<void> {
   // 浏览器开发态：没有 Tauri 后端,用原生 <a download> 触发下载。
   if (!isTauri()) {
+    // 纵深防御:a.href 赋值前校验协议,拦掉 javascript:/file:/data: 等不安全 URL。
+    if (!isSafeUrl(url, "link")) {
+      console.warn("downloadAttachment:已拦截不安全协议的 URL", url);
+      return;
+    }
     const a = document.createElement("a");
     a.href = url;
     if (fileName) a.download = fileName;

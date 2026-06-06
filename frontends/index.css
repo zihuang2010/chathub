@@ -306,7 +306,8 @@ html[data-os="mac"] #app-shell {
  */
 /* 故意不设标准属性 scrollbar-width/scrollbar-color:新版 WebKit(Safari 18.2+)下
  * 它们一旦为非 auto 就会让下面整套 ::-webkit-scrollbar 失效,回落成带 track/边线的
- * 原生细滚动条(生产环境表现)。Tauri 仅 WebKit,无需 Firefox 兼容,故只用私有伪元素。 */
+ * 原生细滚动条(生产环境表现)。Tauri 的 WebView 在 macOS 是 WebKit、Windows 是
+ * WebView2(Blink),二者均支持 ::-webkit-scrollbar 伪元素,无需 Firefox 兼容,故只用私有伪元素。 */
 *::-webkit-scrollbar {
   width: 6px;
   height: 6px;
@@ -602,10 +603,20 @@ html[data-os="mac"] #app-shell {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  /* Keep the halos/orbs as static colored backdrops — still adds depth without
-     drifting motion. */
+  /* 降级开屏/登录页等装饰动画为静态:仍保留其颜色/形状构图(纯静态背景),只去掉漂移、
+     脉冲、旋转等持续运动,尊重系统"减少动态效果"偏好。这些动画均以内联 style 形式挂载,
+     故用属性选择器逐一兜底。注意:仅覆盖纯装饰动画,不触碰功能性必须的状态反馈。 */
   [style*="chSidebarHalo"],
-  [style*="chTitleOrb"] {
+  [style*="chTitleOrb"],
+  [style*="chFadeUpSmall"],
+  [style*="chFadeUp"],
+  [style*="chIllustrationIn"],
+  [style*="chCardIn"],
+  [style*="chSpin"],
+  [style*="chDotFloat"],
+  [style*="chHaloPulse"],
+  [style*="chPlaneFloat"],
+  [style*="chPlaneTrailFlow"] {
     animation: none !important;
   }
 }

@@ -421,16 +421,23 @@ describe("MessageComposer 离线态(E①)", () => {
     const utils = render(<MessageComposer conversationId={CONV} {...baseProps} offline />);
     await act(async () => undefined);
 
-    expect(utils.getByText(STRINGS.composer.offlineBanner)).toBeTruthy();
+    // 视觉横幅文本与新增的 sr-only 播报 region 同文案,全局 getByText 会命中两个 → 收窄到 testid 内。
+    expect(
+      within(utils.getByTestId("composer-offline-banner")).getByText(
+        STRINGS.composer.offlineBanner,
+      ),
+    ).toBeTruthy();
+    expect(utils.getByTestId("composer-offline-banner").getAttribute("data-visible")).toBe("true");
     expect(sendButton().disabled).toBe(true);
   });
 
-  it("在线(默认)时无横幅,有内容发送按钮可用", async () => {
+  it("在线(默认)时横幅折叠隐藏,有内容发送按钮可用", async () => {
     setDraft(CONV, TEXT_DOC);
     const utils = render(<MessageComposer conversationId={CONV} {...baseProps} />);
     await act(async () => undefined);
 
-    expect(utils.queryByText(STRINGS.composer.offlineBanner)).toBeNull();
+    // 横幅改为常驻挂载 + 过渡淡出:在线时仍在 DOM,但折叠隐藏(data-visible=false)。
+    expect(utils.getByTestId("composer-offline-banner").getAttribute("data-visible")).toBe("false");
     expect(sendButton().disabled).toBe(false);
   });
 });
