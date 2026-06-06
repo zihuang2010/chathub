@@ -23,7 +23,7 @@ const FALLBACK_THROTTLE_MS: i64 = 1000;
 
 /// 上游消息方向 → 本地约定。本地:1=入站(in),2=出站(out)。
 /// 上游:1=发送方,2=客户/接收方,3=多端同步方。
-pub(crate) fn to_local_direction(direction: i64) -> i32 {
+pub fn to_local_direction(direction: i64) -> i32 {
     match direction {
         1 | 3 => 2,
         _ => 1,

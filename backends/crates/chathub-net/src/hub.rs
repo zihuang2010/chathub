@@ -681,7 +681,7 @@ pub struct RecentFriendRecord {
     pub last_local_message_id: String,
     /// 1=文本 / 2=图片 / 3=…(具体枚举翻译留给前端)
     pub last_message_type: i32,
-    /// 1=入 / 2=出
+    /// 上游原始值(1=发送方 / 2=客户 / 3=多端同步);读出命令经 `to_local_direction` 转本地(1=in / 2=out)。
     pub last_message_direction: i32,
     /// 3=已读 / 4=失败 …
     pub last_send_status: i32,

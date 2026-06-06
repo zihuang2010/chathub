@@ -10,14 +10,14 @@ use tauri::{Emitter, LogicalSize, Manager, State};
 use tracing::info;
 
 use chathub_net::{
-    record_to_remote, row_to_history, AccountEventApplier, AuthApi, AuthError, AuthInterceptor,
-    BackoffConfig, ChangeCoalescer, ChangeNotice, ChangeScope, ChangeSource, ChangeTopic,
-    ConnectionManager, ConnectionState, FetchMessageHistoryRequest, FetchMessageHistoryResp,
-    FriendDetailRequest, FriendEventApplier, HistoryMessage, HubClient, ListAccountsFilter,
-    ListAccountsItem, ListFriendsRequest, ListFriendsResp, ListRecentFriendsRequest,
-    ListRecentFriendsResp, LoggedOutReason, MarkReadRequest, MessageEventApplier, MessageSync,
-    OssUploader, RecentFriendRecord, RecentSessionEventApplier, SendMessageResp, TokenStore,
-    UploadedAttachment, WecomFriendDetail,
+    record_to_remote, row_to_history, to_local_direction, AccountEventApplier, AuthApi, AuthError,
+    AuthInterceptor, BackoffConfig, ChangeCoalescer, ChangeNotice, ChangeScope, ChangeSource,
+    ChangeTopic, ConnectionManager, ConnectionState, FetchMessageHistoryRequest,
+    FetchMessageHistoryResp, FriendDetailRequest, FriendEventApplier, HistoryMessage, HubClient,
+    ListAccountsFilter, ListAccountsItem, ListFriendsRequest, ListFriendsResp,
+    ListRecentFriendsRequest, ListRecentFriendsResp, LoggedOutReason, MarkReadRequest,
+    MessageEventApplier, MessageSync, OssUploader, RecentFriendRecord, RecentSessionEventApplier,
+    SendMessageResp, TokenStore, UploadedAttachment, WecomFriendDetail,
 };
 use chathub_proto::v1::UserProfile;
 use chathub_state::{
@@ -913,6 +913,23 @@ fn recents_internal_error(op: &'static str, e: impl std::fmt::Display) -> AuthEr
 ///
 /// **未登录返空,不报错**:本命令是本地缓存读取,未登录(冷启动 try_resume_session 未完成 /
 /// 用户登出后)就应该是 0 行,而不是抛 Unauthenticated 让 UI 误报"同步失败"。
+/// recents 读出边界方向收口:库存 `last_message_direction` 是上游原始语义
+/// (1=发送方 / 2=客户 / 3=多端同步),与消息库本地语义(1=in / 2=out)不同。读出命令吐给前端前
+/// 统一过 `to_local_direction`,使前端拿到的 recents 方向与消息库一致。两个读出出口
+/// (`list_recent_friends` / `list_recent_friends_remote_page`)必须一致调用,否则缓存行与远端页双轨。
+/// 不写回库 —— 库恒存上游值,每次读出单次转换,幂等。
+fn normalize_recents_rows_direction_for_read(rows: &mut [RecentSessionRow]) {
+    for r in rows {
+        r.last_message_direction = to_local_direction(r.last_message_direction as i64);
+    }
+}
+
+fn normalize_recents_records_direction_for_read(recs: &mut [RecentFriendRecord]) {
+    for r in recs {
+        r.last_message_direction = to_local_direction(r.last_message_direction as i64);
+    }
+}
+
 /// 防御性已经由 list_top 内部 WHERE employee_id 兜底,即使本地表里有别人的残留行也读不到。
 #[tauri::command]
 async fn list_recent_friends(
@@ -931,10 +948,12 @@ async fn list_recent_friends(
     let limit = limit
         .unwrap_or(RECENT_FRIENDS_LIST_LIMIT)
         .clamp(1, RECENT_SESSIONS_GLOBAL_LIMIT);
-    store
+    let mut rows = store
         .list_top(&employee_id, filter, limit)
         .await
-        .map_err(|e| recents_internal_error("list_top", e))
+        .map_err(|e| recents_internal_error("list_top", e))?;
+    normalize_recents_rows_direction_for_read(&mut rows);
+    Ok(rows)
 }
 
 /// 远端拉一页"接待好友列表"。
@@ -955,7 +974,7 @@ async fn list_recent_friends_remote_page(
 ) -> Result<ListRecentFriendsResp, AuthError> {
     // 纵深防御:钳制分页 size,挡住超大请求放大服务端/网络负载(前端固定 20)。
     req.size = req.size.clamp(1, RECENT_FRIENDS_REMOTE_MAX_SIZE);
-    let resp = hub.list_recent_friends(req).await?;
+    let mut resp = hub.list_recent_friends(req).await?;
     if persist && !resp.records.is_empty() {
         let profile = auth_api
             .current_session()
@@ -990,6 +1009,9 @@ async fn list_recent_friends_remote_page(
         // app 参数仍需保留(命令签名依赖),但 app.emit("recent_friends_changed") 已废弃。
         let _ = app;
     }
+    // 读出边界方向收口:写库分支(上方 record_to_remote)须保持存上游值,故转换放在 if persist 块
+    // 之外、返回之前,只作用于即将吐给前端的 resp.records。见 normalize_recents_* 文档。
+    normalize_recents_records_direction_for_read(&mut resp.records);
     Ok(resp)
 }
 
@@ -1934,5 +1956,85 @@ mod tests {
             250,
             RECENT_FRIENDS_WATERMARK_TARGET
         ));
+    }
+
+    fn recents_row(dir: i32) -> RecentSessionRow {
+        RecentSessionRow {
+            conversation_id: "c1".into(),
+            wecom_account_id: "wa1".into(),
+            employee_id: "e1".into(),
+            wecom_name: String::new(),
+            wecom_account: String::new(),
+            wecom_alias: String::new(),
+            external_user_id: String::new(),
+            external_name: String::new(),
+            external_avatar: String::new(),
+            external_mobile: String::new(),
+            last_local_message_id: String::new(),
+            last_message_type: 1,
+            last_message_direction: dir,
+            last_send_status: 0,
+            last_message_summary: String::new(),
+            last_message_time_ms: 0,
+            unread_count: 0,
+            has_unread: false,
+            last_message_sort_key_ms: 0,
+            gmt_modified_time: String::new(),
+            updated_at_ms: 0,
+            pinned: false,
+            pinned_at_ms: 0,
+            local_draft_at_ms: 0,
+            local_draft_text: String::new(),
+            removed: false,
+            removed_at_ms: 0,
+            muted: false,
+            muted_at_ms: 0,
+            opened_at_ms: 0,
+            local_last_sent_at_ms: 0,
+        }
+    }
+
+    fn recents_record(dir: i32) -> RecentFriendRecord {
+        RecentFriendRecord {
+            conversation_id: "c1".into(),
+            wecom_account_id: "wa1".into(),
+            wecom_name: String::new(),
+            wecom_account: String::new(),
+            wecom_alias: String::new(),
+            external_user_id: String::new(),
+            external_name: String::new(),
+            external_avatar: String::new(),
+            external_mobile: String::new(),
+            last_local_message_id: String::new(),
+            last_message_type: 1,
+            last_message_direction: dir,
+            last_send_status: 0,
+            last_message_summary: String::new(),
+            last_message_time: String::new(),
+            unread_count: 0,
+            has_unread: false,
+            last_message_sort_key: String::new(),
+            gmt_modified_time: String::new(),
+        }
+    }
+
+    /// 读出边界收口:两个出口的包装都把 recents 上游方向转本地语义。
+    /// 上游 1=发送方 / 3=多端同步 → 本地 2(out);上游 2=客户 → 本地 1(in)。
+    /// 映射本身由 message_event.rs 覆盖;本测试只验证读出包装确实施加了转换、且不动其它字段。
+    #[test]
+    fn normalize_recents_direction_for_read_translates_upstream_to_local() {
+        let mut rows = vec![recents_row(1), recents_row(2), recents_row(3)];
+        normalize_recents_rows_direction_for_read(&mut rows);
+        assert_eq!(rows[0].last_message_direction, 2, "上游1发送方→本地out");
+        assert_eq!(rows[1].last_message_direction, 1, "上游2客户→本地in");
+        assert_eq!(rows[2].last_message_direction, 2, "上游3多端同步→本地out");
+        assert_eq!(rows[0].conversation_id, "c1", "仅动方向,其它字段不变");
+
+        let mut recs = vec![recents_record(1), recents_record(2), recents_record(3)];
+        normalize_recents_records_direction_for_read(&mut recs);
+        assert_eq!(recs[0].last_message_direction, 2, "上游1发送方→本地out");
+        assert_eq!(recs[1].last_message_direction, 1, "上游2客户→本地in");
+        assert_eq!(recs[2].last_message_direction, 2, "上游3多端同步→本地out");
+        assert_eq!(recs[0].conversation_id, "c1", "仅动方向,其它字段不变");
     }
 }

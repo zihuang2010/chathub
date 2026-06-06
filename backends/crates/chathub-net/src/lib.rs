@@ -34,7 +34,7 @@ pub use error::AuthError;
 pub use friend_event::FriendEventApplier;
 pub use hub::*;
 pub use interceptor::AuthInterceptor;
-pub use message_event::MessageEventApplier;
+pub use message_event::{to_local_direction, MessageEventApplier};
 pub use message_sync::{
     classify_reconcile, history_to_row, row_to_history, LoadOlderResult, MessageSync, ReconcileMode,
 };
