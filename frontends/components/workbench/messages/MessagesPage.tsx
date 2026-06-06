@@ -21,6 +21,7 @@ import type { SendMessageOptions } from "./hooks/useChatActions";
 import { STRINGS } from "./strings";
 import {
   CHAT_AREA_MIN_WIDTH,
+  CONVERSATION_LIST_DEFAULT_RATIO,
   CONVERSATION_LIST_DEFAULT_WIDTH,
   CONVERSATION_LIST_MAX_WIDTH,
   CONVERSATION_LIST_MIN_WIDTH,
@@ -184,6 +185,9 @@ export function MessagesPage({
   const pageRef = useRef<HTMLDivElement | null>(null);
   const chatAreaRef = useRef<HTMLDivElement | null>(null);
   const dragStartRef = useRef({ x: 0, width: CONVERSATION_LIST_DEFAULT_WIDTH });
+  // 列表宽度的「记忆」是比例(列表占窗口宽度 innerWidth 的比),px 由它 × innerWidth 再钳制而来。
+  // 窗口缩放时按此比例重算 → 平滑联动;用户拖拽/键盘调宽后回写此比例 → 偏好被记住。
+  const listWidthRatioRef = useRef(CONVERSATION_LIST_DEFAULT_RATIO);
 
   const { detailsOpen, chatWidthLock, toggleDetails } = useDetailsWindow({
     chatAreaRef,
@@ -442,18 +446,26 @@ export function MessagesPage({
     [detailsOpen],
   );
 
-  // Window resize + detailsOpen toggles both invalidate the previously clamped
-  // width. Re-running this effect when `clampConversationListWidth` identity
-  // changes (i.e. detailsOpen flipped) covers the toggle case via the initial
-  // `handleWindowResize()` call below.
+  // 把一个(已钳制的)像素宽换算成相对窗口宽的比例回写记忆 —— 用户拖拽/键盘手动调宽后
+  // 调用,之后窗口缩放就按这个新比例联动。innerWidth 不可用时不动旧比例。
+  const rememberListWidthRatio = useCallback((width: number) => {
+    if (typeof window === "undefined" || window.innerWidth <= 0) return;
+    listWidthRatioRef.current = width / window.innerWidth;
+  }, []);
+
+  // 「丝滑比例联动」核心:窗口缩放(及 detailsOpen 切换使 clampConversationListWidth
+  // 身份变化)时,按记忆的比例重算列表宽并钳制 —— 宽度始终 = clamp(ratio × innerWidth, MIN, MAX)。
+  // 首次提交即跑一次,把初始 px 校正到当前窗口宽对应的比例宽。
   useEffect(() => {
-    const handleWindowResize = () => {
-      setConversationListWidth((width) => clampConversationListWidth(width));
+    const applyRatioWidth = () => {
+      if (typeof window === "undefined") return;
+      const target = window.innerWidth * listWidthRatioRef.current;
+      setConversationListWidth(clampConversationListWidth(target));
     };
 
-    handleWindowResize();
-    window.addEventListener("resize", handleWindowResize);
-    return () => window.removeEventListener("resize", handleWindowResize);
+    applyRatioWidth();
+    window.addEventListener("resize", applyRatioWidth);
+    return () => window.removeEventListener("resize", applyRatioWidth);
   }, [clampConversationListWidth]);
 
   useEffect(() => {
@@ -461,7 +473,9 @@ export function MessagesPage({
 
     const handlePointerMove = (event: PointerEvent) => {
       const deltaX = event.clientX - dragStartRef.current.x;
-      setConversationListWidth(clampConversationListWidth(dragStartRef.current.width + deltaX));
+      const next = clampConversationListWidth(dragStartRef.current.width + deltaX);
+      setConversationListWidth(next);
+      rememberListWidthRatio(next); // 拖动即记住新比例,后续窗口缩放按它联动
     };
     const stopResizing = () => setIsResizing(false);
     const previousCursor = document.body.style.cursor;
@@ -480,7 +494,7 @@ export function MessagesPage({
       window.removeEventListener("pointerup", stopResizing);
       window.removeEventListener("pointercancel", stopResizing);
     };
-  }, [clampConversationListWidth, isResizing]);
+  }, [clampConversationListWidth, isResizing, rememberListWidthRatio]);
 
   const handleResizePointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (event.button !== 0) return;
@@ -499,12 +513,17 @@ export function MessagesPage({
       return;
     }
     event.preventDefault();
-    setConversationListWidth((width) => {
-      if (event.key === "Home") return CONVERSATION_LIST_MIN_WIDTH;
-      if (event.key === "End") return clampConversationListWidth(CONVERSATION_LIST_MAX_WIDTH);
+    let next: number;
+    if (event.key === "Home") {
+      next = clampConversationListWidth(CONVERSATION_LIST_MIN_WIDTH);
+    } else if (event.key === "End") {
+      next = clampConversationListWidth(CONVERSATION_LIST_MAX_WIDTH);
+    } else {
       const direction = event.key === "ArrowLeft" ? -1 : 1;
-      return clampConversationListWidth(width + direction * RESIZE_KEYBOARD_STEP);
-    });
+      next = clampConversationListWidth(conversationListWidth + direction * RESIZE_KEYBOARD_STEP);
+    }
+    setConversationListWidth(next);
+    rememberListWidthRatio(next); // 键盘调宽同样记住比例
   };
 
   const handleAccountChange = useCallback(

@@ -12,6 +12,7 @@ import {
 } from "@/components/illustrations";
 import { isWindows } from "@/lib/platform";
 import { FONT_BODY } from "@/lib/theme";
+import { useFitScale } from "@/lib/useFitScale";
 import { cn } from "@/lib/utils";
 
 interface SplashProps {
@@ -141,7 +142,15 @@ const SPLASH_WAVES = [
 
 // ─── Splash ───────────────────────────────────────────────────────────────
 
+// 小屏 / Windows 高 DPI 显示缩放下整体等比缩小的设计基准。开屏主内容垂直堆叠约
+// 675px(pt-14 + 插画 340 + 标题/副标 + 转圈 + 特性)、最宽约插画 520 → 取 560×700。
+// 视口小于此即等比缩小,底部特性行不再被裁(图6 那排被切的六边形即由此修复)。
+const SPLASH_FIT_W = 560;
+const SPLASH_FIT_H = 700;
+
 export function Splash({ onReady, durationMs = 6500 }: SplashProps) {
+  const fitScale = useFitScale(SPLASH_FIT_W, SPLASH_FIT_H);
+
   useEffect(() => {
     if (!onReady) return;
     const t = window.setTimeout(onReady, durationMs);
@@ -158,7 +167,16 @@ export function Splash({ onReady, durationMs = 6500 }: SplashProps) {
     >
       <VersionBadge />
 
-      <main className="relative flex h-full w-full flex-col items-center pt-14">
+      <main
+        className="relative flex h-full w-full flex-col items-center pt-14"
+        // 矮/窄视口整体等比缩小;origin 顶部居中,内容从顶端起向下收缩,不与底部
+        // 波浪/品牌条(在 main 之外、绝对贴底,不缩放)相撞。scale=1 时不写 transform。
+        style={
+          fitScale < 1
+            ? { transform: `scale(${fitScale})`, transformOrigin: "top center" }
+            : undefined
+        }
+      >
         <Illustration />
 
         <h1

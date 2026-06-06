@@ -14,6 +14,7 @@ import {
   type Satellite,
 } from "@/components/illustrations";
 import { cn } from "@/lib/utils";
+import { useFitScale } from "@/lib/useFitScale";
 import { encryptPassword } from "@/lib/crypto/passwordCipher";
 import {
   BLUE_GRADIENT,
@@ -120,7 +121,14 @@ const LOGIN_WAVES = [
 
 // ─── Login (entry) ──────────────────────────────────────────────────────────
 
+// 小屏 / Windows 高 DPI 显示缩放下整体等比缩小的设计基准。卡片自然高约 620 + 余量
+// → 高度基准 660;宽度基准取 900 —— ≥1024 的双列由 grid 自身响应式压缩处理(宽度不
+// 参与缩放),仅 <900 的窄屏单列卡片才按宽度温和缩放。height 是矮屏裁切的主因。
+const LOGIN_FIT_W = 900;
+const LOGIN_FIT_H = 660;
+
 export function Login({ onSuccess, notice }: LoginProps) {
+  const fitScale = useFitScale(LOGIN_FIT_W, LOGIN_FIT_H);
   const [tab, setTab] = useState<Tab>("account");
   // C3: 持久化预填 — 上次"记住账号"勾选时存的 identifier 在 mount 时读回。
   const [account, setAccount] = useState<string>(readRememberAccount);
@@ -177,7 +185,16 @@ export function Login({ onSuccess, notice }: LoginProps) {
       <Backdrop />
 
       <main className="relative flex h-full w-full items-center justify-center px-6 md:px-10 lg:px-12">
-        <div className="grid w-full max-w-[1080px] grid-cols-1 items-center gap-10 lg:grid-cols-[1fr_460px] lg:gap-16">
+        <div
+          className="grid w-full max-w-[1080px] grid-cols-1 items-center gap-10 lg:grid-cols-[1fr_460px] lg:gap-16"
+          // 矮/窄视口整体等比缩小,避免登录卡片竖向被裁;origin 居中保持视觉居中。
+          // scale=1 时不写 transform,维持原始观感与排版。
+          style={
+            fitScale < 1
+              ? { transform: `scale(${fitScale})`, transformOrigin: "center" }
+              : undefined
+          }
+        >
           <BrandPanel />
           <FormCard
             tab={tab}

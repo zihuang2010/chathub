@@ -7,8 +7,15 @@ export const COMPOSER_MIN_HEIGHT = 184;
 export const COMPOSER_MAX_HEIGHT = 360;
 
 // Page-level layout
+// 会话(接待)列表宽度改为「按窗口宽度比例驱动」:渲染宽 = clamp(ratio × innerWidth, MIN, MAX),
+// 其中 MAX 再受面板布局上限(面板宽 − 详情 − 聊天区最小 − 手柄)钳制以防挤塌聊天区。
+// 窗口缩放时按比例平滑联动(丝滑),不再是定长 px;拖拽/键盘仍可手动调,拖动即记住新比例。
+// DEFAULT_RATIO ≈ 0.21:标准窗口(~1250)落到 ≈262,与历史默认 260 基本一致;小屏按比例
+// 收窄到 MIN(220),大屏放宽到 MAX(460)。MIN 由 260 下调到 220 让小屏能真正变窄
+// (ConversationList 行内均 min-w-0 truncate,较窄仅截断不错位)。
 export const CONVERSATION_LIST_DEFAULT_WIDTH = 260;
-export const CONVERSATION_LIST_MIN_WIDTH = 260;
+export const CONVERSATION_LIST_DEFAULT_RATIO = 0.21;
+export const CONVERSATION_LIST_MIN_WIDTH = 220;
 export const CONVERSATION_LIST_MAX_WIDTH = 460;
 export const CUSTOMER_DETAILS_WIDTH = 324;
 export const CHAT_AREA_MIN_WIDTH = 360;

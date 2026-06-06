@@ -161,7 +161,14 @@ function App() {
 
         {!splashHidden && (
           <div
-            className={cn("absolute inset-0 z-40", shouldFade && "pointer-events-none opacity-0")}
+            // z 必须高于 Workbench 全部图层 —— Windows 下 Sidebar 用 z-[101]、TitleBar
+            // z-[100],若开屏仅 z-40 会被它们盖住,重开(已登录免密)时 Workbench 立即挂载,
+            // 侧栏/顶栏从开屏插画里「戳」出来(只在 Windows 出现)。提到 z-[150] 让开屏完整
+            // 覆盖整窗,与 macOS 行为一致。代价仅是开屏那 2~3.5s 盖住窗口控件,可接受。
+            className={cn(
+              "absolute inset-0 z-[150]",
+              shouldFade && "pointer-events-none opacity-0",
+            )}
             style={{
               // 与 SPLASH_FADE_MS 一致 + standard easing(Material/Apple 通用曲线);
               // duration 用 inline style 精确指定,避免依赖 Tailwind arbitrary value JIT。
