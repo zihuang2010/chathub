@@ -139,6 +139,8 @@ fn decode_message_row(ev: &serde_json::Value, employee_id: &str) -> Option<Messa
         sort_key: sort_key.to_string(),
         message_time_ms: freshness,
         message_direction: to_local_direction(direction),
+        // 持久化上游原始方向(1/2/3,含 MULTI_DEVICE_SYNC=3),供读路径派生方向 + 多端同步标记。
+        source_direction: direction as i32,
         message_type,
         content_text: str_or_empty(msg, "contentText"),
         send_status,
@@ -274,6 +276,28 @@ impl MessageEventApplier {
                 }
             };
             if !has_window {
+                // 冷会话:不建孤儿气泡,但**已落库**的行(如转存中→成功)仍要就地刷新 + 通知。
+                // 只 UPDATE 已存在行(绝不 INSERT);真有变化(且非回退)才计入通知集合,避免空通知。
+                // 这修复「转存完成事件到达时会话非热 → 整条被跳过 → 永久卡在转存中」的根因。
+                if let Some(row) = decode_message_row(ev, &employee_id) {
+                    match self
+                        .store
+                        .update_message_attachments_if_exists(
+                            &employee_id,
+                            &row.local_message_id,
+                            &row.attachments_json,
+                        )
+                        .await
+                    {
+                        Ok(true) => {
+                            applied_convs.insert(conv_id);
+                        }
+                        Ok(false) => {}
+                        Err(e) => {
+                            warn!(target: "chathub_net::message_event", ?e, conv_id, "cold-conv attachment update failed");
+                        }
+                    }
+                }
                 continue;
             }
 
@@ -466,6 +490,21 @@ mod tests {
                 .message_direction,
             2,
             "3=多端同步方 → 本地 2(out)"
+        );
+        // 源方向原样持久化:多端同步(3)据此在读路径派生 synced_from_other_device。
+        assert_eq!(
+            decode_message_row(&full_event("2060260503288029184", 3), "42")
+                .unwrap()
+                .source_direction,
+            3,
+            "MULTI_DEVICE_SYNC 源方向 3 落库"
+        );
+        assert_eq!(
+            decode_message_row(&full_event("2060260503288029184", 1), "42")
+                .unwrap()
+                .source_direction,
+            1,
+            "发送方源方向 1 落库"
         );
     }
 
@@ -708,6 +747,47 @@ mod tests {
             "不建孤儿窗口"
         );
         assert!(rx.try_recv().is_err(), "无通知");
+    }
+
+    #[tokio::test]
+    async fn cold_conversation_updates_existing_attachments_and_notifies() {
+        // 冷会话(无 window)但消息行已存在(此前转存中已落库):转存完成事件应就地刷新
+        // 该行附件并发通知,不建孤儿气泡。覆盖「卡在转存中、切回/重启才更新」的根因。
+        let (applier, store, _quarantine, mut rx) = applier_with_store().await;
+
+        // 预置一条「转存中(1)」行,但**不**建窗口 → 冷会话。
+        let mut pending_ev = full_event(CONV, 2);
+        pending_ev["message"]["attachments"] =
+            serde_json::json!([{ "attachmentType": 3, "transferStatus": 1 }]);
+        let pending_row = decode_message_row(&pending_ev, "42").expect("pending 行可解码");
+        store.upsert_messages(&[pending_row]).await.unwrap();
+        assert!(
+            store.get_window("42", CONV).await.unwrap().is_none(),
+            "前提:冷会话无窗口"
+        );
+
+        // 转存完成事件(transferStatus=2),同 localMessageId。
+        let mut changed = full_event(CONV, 2);
+        changed["eventReason"] = serde_json::json!("ATTACHMENT_TRANSFER_CHANGED");
+        changed["message"]["attachments"] =
+            serde_json::json!([{ "attachmentType": 3, "transferStatus": 2 }]);
+        applier
+            .apply_push_batch(&batch(serde_json::json!([changed]), 42, 11))
+            .await;
+
+        let rows = store.list_recent("42", CONV, 10).await.unwrap();
+        assert_eq!(rows.len(), 1, "不新增第二条");
+        assert!(
+            rows[0].attachments_json.contains("\"transferStatus\":2"),
+            "冷会话已存在行被刷成成功(2);实得 {}",
+            rows[0].attachments_json
+        );
+        let notice = rx
+            .try_recv()
+            .expect("冷会话就地更新也要发 ConversationMessages 通知");
+        assert_eq!(notice.topic, ChangeTopic::ConversationMessages);
+        assert_eq!(notice.scope.conversation_id.as_deref(), Some(CONV));
+        assert_eq!(notice.scope.employee_id, "42");
     }
 
     #[tokio::test]

@@ -64,6 +64,8 @@ export default {
           "bubble-in-border": "hsl(var(--wb-bubble-in-border))",
           "bubble-out": "hsl(var(--wb-bubble-out))",
           "bubble-out-border": "hsl(var(--wb-bubble-out-border))",
+          "bubble-sync": "hsl(var(--wb-bubble-sync))",
+          "bubble-sync-border": "hsl(var(--wb-bubble-sync-border))",
           line: "hsl(var(--wb-line))",
           "line-subtle": "hsl(var(--wb-line-subtle))",
           "line-strong": "hsl(var(--wb-line-strong))",

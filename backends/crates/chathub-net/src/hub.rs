@@ -778,6 +778,12 @@ pub struct HistoryMessage {
     /// 服务端去重用的客户端请求键(=`requestMessageId`/`client_msg_id`);乐观气泡确定性配对兜底。
     #[serde(default)]
     pub request_message_id: String,
+    /// 是否为多端同步消息(上游源方向 3:已在他端发出的成品消息,经多端同步进入本端)。
+    /// 由 `row_to_history` 从持久化的 `source_direction`==3 派生(落库列,读时显式布尔下发,
+    /// 不解析对客户端 opaque 的 `sort_key`);出站气泡据此渲染「企业微信来源」差异化样式。
+    /// 本端直发/入站一律 false。
+    #[serde(default)]
+    pub synced_from_other_device: bool,
 }
 
 /// 兼容数字与字符串两种 `fileSize`(上游历史/推送可能给字符串如 "176098");

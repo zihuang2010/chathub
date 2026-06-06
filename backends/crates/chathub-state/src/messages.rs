@@ -28,6 +28,10 @@ pub struct MessageRow {
     pub sort_key: String,
     pub message_time_ms: i64,
     pub message_direction: i32,
+    /// 上游原始方向(1=发送方 / 2=客户·接收方 / 3=多端同步方);0=未知(老库迁移默认)。
+    /// 落库时由 push/history 入口写入,读时(`row_to_history`)据此派生本地方向与「多端同步」标记,
+    /// 不再从 opaque 的 `sort_key` 反推。0(老行)时读路径回退到 `message_direction`(V20 已修正)。
+    pub source_direction: i32,
     pub message_type: i32,
     pub content_text: String,
     pub send_status: i32,
@@ -88,10 +92,11 @@ impl MessagesStore {
                        local_message_id, conversation_id, employee_id, wecom_account_id, sort_key, \
                        message_time_ms, message_direction, message_type, content_text, send_status, \
                        attachments_json, gmt_modified_time, revoked, fail_reason, request_message_id, \
-                       updated_at_ms \
-                     ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16) \
+                       updated_at_ms, source_direction \
+                     ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17) \
                      ON CONFLICT(local_message_id) DO UPDATE SET \
                        message_direction = excluded.message_direction, \
+                       source_direction = excluded.source_direction, \
                        content_text      = excluded.content_text, \
                        send_status = CASE \
                            WHEN send_status <= 1 THEN excluded.send_status \
@@ -99,7 +104,12 @@ impl MessagesStore {
                            WHEN send_status = 4 AND excluded.send_status = 3 THEN 3 \
                            ELSE send_status \
                        END, \
-                       attachments_json  = excluded.attachments_json, \
+                       attachments_json  = CASE \
+                           WHEN attachments_json          NOT LIKE '%\"transferStatus\":1%' \
+                            AND excluded.attachments_json     LIKE '%\"transferStatus\":1%' \
+                           THEN attachments_json \
+                           ELSE excluded.attachments_json \
+                       END, \
                        gmt_modified_time = excluded.gmt_modified_time, \
                        revoked           = revoked OR excluded.revoked, \
                        fail_reason = CASE \
@@ -126,6 +136,7 @@ impl MessagesStore {
                         r.fail_reason,
                         r.request_message_id,
                         now,
+                        r.source_direction as i64,
                     ],
                 )?;
                 // 去重:把同一逻辑消息(request_message_id 相同)的「client 键失败行」塌缩进刚入库的
@@ -146,6 +157,40 @@ impl MessagesStore {
         })
         .await??;
         Ok(())
+    }
+
+    /// 仅更新「已存在」消息行的附件 JSON,绝不 INSERT(冷会话转存完成时用:无 window 不建孤儿气泡,
+    /// 但已落库的「转存中」行仍要刷成终态)。遵守同 `upsert_messages` 的不降级守卫:不把「不再含
+    /// 待转存(1)」的行覆盖回「含待转存(1)」。返回是否**真的发生了更新**(行存在 + 内容确有变化 +
+    /// 非回退)——调用方据此决定是否发 ChangeNotice,避免无变化空通知。
+    pub async fn update_message_attachments_if_exists(
+        &self,
+        employee_id: &str,
+        local_message_id: &str,
+        attachments_json: &str,
+    ) -> Result<bool, StateError> {
+        let employee_id = employee_id.to_string();
+        let local_message_id = local_message_id.to_string();
+        let attachments_json = attachments_json.to_string();
+        let now = now_unix_ms();
+        let conn = self.pool.pool().get().await?;
+        let changed = conn
+            .interact(move |c| -> Result<bool, StateError> {
+                // 只更已存在行(不 INSERT);WHERE 内联「真有变化 + 非回退」两条件,
+                // 故 affected>0 ⟺ 确实刷新了内容 → 调用方据此精准通知,无空通知。
+                let affected = c.execute(
+                    "UPDATE hub_conversation_messages \
+                        SET attachments_json = ?1, updated_at_ms = ?2 \
+                      WHERE employee_id = ?3 AND local_message_id = ?4 \
+                        AND attachments_json <> ?1 \
+                        AND NOT (attachments_json     NOT LIKE '%\"transferStatus\":1%' \
+                                 AND ?1                    LIKE '%\"transferStatus\":1%')",
+                    rusqlite::params![attachments_json, now, employee_id, local_message_id],
+                )?;
+                Ok(affected > 0)
+            })
+            .await??;
+        Ok(changed)
     }
 
     /// 写一条出站失败气泡行(send_status=4)。client_msg_id 同时作 local_message_id 与
@@ -181,6 +226,8 @@ impl MessagesStore {
             sort_key: format!("{:013}_{:020}_{}", sent_at_ms, 0, client_msg_id),
             message_time_ms: sent_at_ms,
             message_direction: 2,
+            // 失败气泡是本端直发(源方向 1=发送方)→ to_local_direction=2(out)、非多端同步。
+            source_direction: 1,
             message_type,
             content_text: content_text.to_string(),
             send_status: 4,
@@ -213,7 +260,7 @@ impl MessagesStore {
                     "SELECT local_message_id, conversation_id, employee_id, wecom_account_id, sort_key, \
                             message_time_ms, message_direction, message_type, content_text, send_status, \
                             attachments_json, gmt_modified_time, revoked, fail_reason, request_message_id, \
-                            updated_at_ms \
+                            updated_at_ms, source_direction \
                      FROM hub_conversation_messages \
                      WHERE employee_id = ?1 AND conversation_id = ?2 \
                      ORDER BY sort_key DESC LIMIT ?3",
@@ -245,7 +292,7 @@ impl MessagesStore {
                     "SELECT local_message_id, conversation_id, employee_id, wecom_account_id, sort_key, \
                             message_time_ms, message_direction, message_type, content_text, send_status, \
                             attachments_json, gmt_modified_time, revoked, fail_reason, request_message_id, \
-                            updated_at_ms \
+                            updated_at_ms, source_direction \
                      FROM hub_conversation_messages \
                      WHERE employee_id = ?1 AND conversation_id = ?2 \
                      ORDER BY sort_key ASC",
@@ -504,7 +551,7 @@ impl MessagesStore {
                     "SELECT local_message_id, conversation_id, employee_id, wecom_account_id, \
                             sort_key, message_time_ms, message_direction, message_type, \
                             content_text, send_status, attachments_json, gmt_modified_time, \
-                            revoked, fail_reason, request_message_id, updated_at_ms \
+                            revoked, fail_reason, request_message_id, updated_at_ms, source_direction \
                      FROM hub_conversation_messages \
                      WHERE employee_id = ?1 AND conversation_id = ?2 \
                        AND send_status = 4 AND request_message_id <> ''",
@@ -560,6 +607,7 @@ fn map_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<MessageRow> {
         sort_key: row.get(4)?,
         message_time_ms: row.get(5)?,
         message_direction: row.get::<_, i64>(6)? as i32,
+        source_direction: row.get::<_, i64>(16)? as i32,
         message_type: row.get::<_, i64>(7)? as i32,
         content_text: row.get(8)?,
         send_status: row.get::<_, i64>(9)? as i32,
@@ -610,6 +658,7 @@ mod tests {
             sort_key: sk.into(),
             message_time_ms: ts,
             message_direction: 1,
+            source_direction: 2,
             message_type: 1,
             content_text: "hi".into(),
             send_status: 3,
@@ -706,6 +755,178 @@ mod tests {
         assert_eq!(got[0].content_text, "edited", "可变内容列被刷新");
         assert_eq!(got[0].sort_key, "sort_0001", "位置列 sort_key 不动");
         assert_eq!(got[0].message_time_ms, 100, "位置列 message_time_ms 不动");
+    }
+
+    #[tokio::test]
+    async fn upsert_attachments_no_downgrade_keeps_terminal() {
+        // 已成功(transferStatus=2)的附件,不得被「含待转存(1)」的后到载荷覆盖回去
+        // (reconcile 重拉上游历史可能滞后仍返回 1 → 否则永久卡死「转存中」)。
+        let pool = SqlitePool::in_memory().await.unwrap();
+        let store = MessagesStore::new(pool);
+        let mut done = sample_row("c1", "m1", "sort_0001", 100);
+        done.attachments_json = r#"[{"attachmentType":3,"transferStatus":2}]"#.into();
+        store.upsert_messages(&[done]).await.unwrap();
+
+        let mut stale_pending = sample_row("c1", "m1", "sort_0001", 100);
+        stale_pending.attachments_json = r#"[{"attachmentType":3,"transferStatus":1}]"#.into();
+        store.upsert_messages(&[stale_pending]).await.unwrap();
+
+        let got = store.list_recent("u-1", "c1", 10).await.unwrap();
+        assert!(
+            got[0].attachments_json.contains("\"transferStatus\":2"),
+            "已成功(2)必须保住,不被回退;实得 {}",
+            got[0].attachments_json
+        );
+        assert!(
+            !got[0].attachments_json.contains("\"transferStatus\":1"),
+            "不得被打回待转存(1);实得 {}",
+            got[0].attachments_json
+        );
+    }
+
+    #[tokio::test]
+    async fn upsert_attachments_normal_upgrade_pending_to_success() {
+        // 待转存(1) → 成功(2) 是正常升级,必须写入(守卫只拦「回退到 1」)。
+        let pool = SqlitePool::in_memory().await.unwrap();
+        let store = MessagesStore::new(pool);
+        let mut pending = sample_row("c1", "m1", "sort_0001", 100);
+        pending.attachments_json = r#"[{"attachmentType":3,"transferStatus":1}]"#.into();
+        store.upsert_messages(&[pending]).await.unwrap();
+
+        let mut done = sample_row("c1", "m1", "sort_0001", 100);
+        done.attachments_json = r#"[{"attachmentType":3,"transferStatus":2}]"#.into();
+        store.upsert_messages(&[done]).await.unwrap();
+
+        let got = store.list_recent("u-1", "c1", 10).await.unwrap();
+        assert!(
+            got[0].attachments_json.contains("\"transferStatus\":2"),
+            "正常升级 1→2 必须写入;实得 {}",
+            got[0].attachments_json
+        );
+    }
+
+    #[tokio::test]
+    async fn upsert_attachments_guard_only_blocks_pending_not_other_changes() {
+        // 守卫只拦「→ 待转存(1)」;两个非 pending 状态之间的内容变化照常覆盖。
+        let pool = SqlitePool::in_memory().await.unwrap();
+        let store = MessagesStore::new(pool);
+        let mut v1 = sample_row("c1", "m1", "sort_0001", 100);
+        v1.attachments_json =
+            r#"[{"attachmentType":3,"transferStatus":2,"ossPreviewFilePath":"A"}]"#.into();
+        store.upsert_messages(&[v1]).await.unwrap();
+
+        let mut v2 = sample_row("c1", "m1", "sort_0001", 100);
+        v2.attachments_json =
+            r#"[{"attachmentType":3,"transferStatus":2,"ossPreviewFilePath":"B"}]"#.into();
+        store.upsert_messages(&[v2]).await.unwrap();
+
+        let got = store.list_recent("u-1", "c1", 10).await.unwrap();
+        assert!(
+            got[0]
+                .attachments_json
+                .contains("\"ossPreviewFilePath\":\"B\""),
+            "非 pending 之间的更新照常覆盖;实得 {}",
+            got[0].attachments_json
+        );
+    }
+
+    #[tokio::test]
+    async fn update_attachments_if_exists_updates_existing_returns_true() {
+        // 已存在的「转存中(1)」行 → 刷成成功(2),返回 true。
+        let pool = SqlitePool::in_memory().await.unwrap();
+        let store = MessagesStore::new(pool);
+        let mut pending = sample_row("c1", "m1", "sort_0001", 100);
+        pending.attachments_json = r#"[{"attachmentType":3,"transferStatus":1}]"#.into();
+        store.upsert_messages(&[pending]).await.unwrap();
+
+        let changed = store
+            .update_message_attachments_if_exists(
+                "u-1",
+                "m1",
+                r#"[{"attachmentType":3,"transferStatus":2}]"#,
+            )
+            .await
+            .unwrap();
+        assert!(changed, "已存在行被更新应返回 true");
+
+        let got = store.list_recent("u-1", "c1", 10).await.unwrap();
+        assert!(got[0].attachments_json.contains("\"transferStatus\":2"));
+    }
+
+    #[tokio::test]
+    async fn update_attachments_if_exists_missing_row_returns_false_no_insert() {
+        // 行不存在 → 返回 false 且绝不 INSERT(冷会话不建孤儿气泡)。
+        let pool = SqlitePool::in_memory().await.unwrap();
+        let store = MessagesStore::new(pool);
+        let changed = store
+            .update_message_attachments_if_exists(
+                "u-1",
+                "ghost",
+                r#"[{"attachmentType":3,"transferStatus":2}]"#,
+            )
+            .await
+            .unwrap();
+        assert!(!changed, "行不存在应返回 false");
+        assert!(
+            store
+                .list_conversation_asc("u-1", "c1")
+                .await
+                .unwrap()
+                .is_empty(),
+            "绝不 INSERT 孤儿行"
+        );
+    }
+
+    #[tokio::test]
+    async fn update_attachments_if_exists_respects_no_downgrade() {
+        // 已成功(2)行不得被「含待转存(1)」覆盖回去;返回 false(无真实变更)。
+        let pool = SqlitePool::in_memory().await.unwrap();
+        let store = MessagesStore::new(pool);
+        let mut done = sample_row("c1", "m1", "sort_0001", 100);
+        done.attachments_json = r#"[{"attachmentType":3,"transferStatus":2}]"#.into();
+        store.upsert_messages(&[done]).await.unwrap();
+
+        let changed = store
+            .update_message_attachments_if_exists(
+                "u-1",
+                "m1",
+                r#"[{"attachmentType":3,"transferStatus":1}]"#,
+            )
+            .await
+            .unwrap();
+        assert!(!changed, "回退被守卫拦下,无真实变更应返回 false");
+        let got = store.list_recent("u-1", "c1", 10).await.unwrap();
+        assert!(
+            got[0].attachments_json.contains("\"transferStatus\":2"),
+            "已成功(2)必须保住;实得 {}",
+            got[0].attachments_json
+        );
+    }
+
+    #[tokio::test]
+    async fn upsert_persists_and_heals_source_direction() {
+        // source_direction 落库可读回;同一消息 re-upsert 经 ON CONFLICT 回填(老行 0 → 真实 3)。
+        // 这是「存量多端同步气泡下次 reconcile 重拉历史后自愈差异化样式」的数据层保证。
+        let pool = SqlitePool::in_memory().await.unwrap();
+        let store = MessagesStore::new(pool);
+
+        let mut legacy = sample_row("c1", "m1", "sort_0001", 100);
+        legacy.source_direction = 0; // 模拟 V29 迁移前老行(未知源方向)
+        store.upsert_messages(&[legacy]).await.unwrap();
+        assert_eq!(
+            store.list_recent("u-1", "c1", 10).await.unwrap()[0].source_direction,
+            0,
+            "source_direction 落库读回"
+        );
+
+        let mut synced = sample_row("c1", "m1", "sort_0001", 100);
+        synced.source_direction = 3; // 重拉历史回填真实源方向(多端同步)
+        store.upsert_messages(&[synced]).await.unwrap();
+        assert_eq!(
+            store.list_recent("u-1", "c1", 10).await.unwrap()[0].source_direction,
+            3,
+            "ON CONFLICT 回填 source_direction → 存量行自愈"
+        );
     }
 
     #[tokio::test]
@@ -862,6 +1083,7 @@ mod tests {
             sort_key: format!("1780000000000:1:0:{lmid}"),
             message_time_ms: 1780000000000,
             message_direction: 2,
+            source_direction: 1,
             message_type: 1,
             content_text: "hi".into(),
             send_status: status,
@@ -967,6 +1189,7 @@ mod tests {
             sort_key: format!("1780000000000_00000000000000000000_{local}"),
             message_time_ms: 1_780_000_000_000,
             message_direction: 2,
+            source_direction: 1,
             message_type: 1,
             content_text: "hi".into(),
             send_status: status,

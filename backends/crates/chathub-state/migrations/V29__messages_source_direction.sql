@@ -1,0 +1,12 @@
+-- V29__messages_source_direction.sql — 消息行新增「上游源方向」列。
+--
+-- 背景:多端同步消息(上游 messageDirection=3「已在他端发出的成品」)需要差异化出站样式,
+-- 但落库时 to_local_direction(3→2) 把源方向抹平成本地 out,与本端直发(1→2)再不可分。
+-- 旧实现想从 sort_key 第 2 段反推源方向 —— 然而真实 sort_key 是「13位ms_20位序列_id」下划线三段、
+-- 不含方向段(见 V20 注释与 split_sort_key_ms),反推恒失败 → 样式永不生效。
+-- 改为落库时持久化上游原始方向(1=发送方 / 2=客户·接收方 / 3=多端同步),读时直接派生方向与同步标记。
+--
+-- 老库已有行:NOT NULL DEFAULT 0(未知)平滑迁移。0 时 row_to_history 回退到既有 message_direction
+-- 列(V20 已修正其本地方向),方向显示不受影响;下次 reconcile 重拉历史经 upsert ON CONFLICT
+-- 回填真实源方向 → 存量多端同步气泡的差异化样式随之自愈。
+ALTER TABLE hub_conversation_messages ADD COLUMN source_direction INTEGER NOT NULL DEFAULT 0;

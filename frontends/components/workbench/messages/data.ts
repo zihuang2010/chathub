@@ -279,6 +279,12 @@ export interface Message {
   fileSize?: number;
   /** 语音时长(秒,整数);仅语音(messageType=4)出站气泡写,供发送/重发携带 durationSeconds。 */
   durationSeconds?: number;
+  /**
+   * 多端同步标记:true=该出站消息由客服在他端(企业微信手机/电脑端)发出后同步进入本端
+   * (后端源方向 3,见 row_to_history)。仅出站消息可能为 true;入站/本端直发为 undefined。
+   * 气泡据此渲染「企业微信来源」差异化样式(中性底色 + 来源徽章 + 头像角标)。
+   */
+  syncedFromOtherDevice?: boolean;
 }
 
 // `Customer` is now defined in `@/lib/types/customer` so the customers page and

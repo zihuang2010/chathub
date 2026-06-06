@@ -75,6 +75,8 @@ export const STRINGS = {
     loadingHistory: "加载更早的消息",
     recalledByMe: "你撤回了一条消息",
     recalledByPeer: "对方撤回了一条消息",
+    /** 多端同步出站消息的来源标识:客服在企业微信(手机/电脑端)发出后同步进入本端。 */
+    syncedSource: "企业微信",
   },
   contextMenu: {
     copy: "复制",
@@ -169,7 +171,7 @@ export const STRINGS = {
   },
   // 前端不识别的消息类型(如 messageType=99):气泡正文与会话列表预览的兜底文案。
   unknown: {
-    bubble: "当前版本暂不支持该消息类型，请在官方客户端查看",
+    bubble: "当前版本暂不支持该消息类型，请前往官方客户端查看详情",
     preview: "[未知消息]",
   },
   composer: {

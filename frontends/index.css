@@ -59,13 +59,17 @@
     --wb-bubble-in-border: 220 18% 90%;
     --wb-bubble-out: 213 65% 91%;
     --wb-bubble-out-border: 213 55% 84%;
+    /* 多端同步出站气泡:中性「纸感」暖灰底,与 in 灰 / out 蓝都拉开,传达"非本端直发"。
+       仅 synced_from_other_device=true 的出站气泡使用(见 MessageBubble)。 */
+    --wb-bubble-sync: 40 18% 95%;
+    --wb-bubble-sync-border: 40 16% 86%;
     --wb-line: 220 18% 90%;
     --wb-line-subtle: 220 18% 94%;
     --wb-line-strong: 220 16% 80%;
-    /* WeChat brand green (#07C160 ≈ hsl(153, 93%, 39%)) — matches the
-       official badge color so the @微信 tag reads as authentic. */
-    --wb-wechat: 153 93% 39%;
-    --wb-wechat-bg: 150 54% 96%;
+    /* 微信标签配色 — 文字 #18A058 (hsl 148 74% 36.1%) + 浅绿底 #E8F7EF
+       (hsl 148 48% 94%)，全局统一,见 @微信 tag。 */
+    --wb-wechat: 148 74% 36.1%;
+    --wb-wechat-bg: 148 48% 94%;
     --wb-online: 161 84% 35%;
     /* Softer unread red — coral-leaning so the indicator reads as
        informative rather than alarming. Used for the small dot +
@@ -140,6 +144,8 @@
     --wb-bubble-in-border: 220 12% 26%;
     --wb-bubble-out: 216 35% 30%;
     --wb-bubble-out-border: 216 35% 38%;
+    --wb-bubble-sync: 222 16% 22%;
+    --wb-bubble-sync-border: 222 14% 30%;
     --wb-line: 220 12% 26%;
     --wb-line-subtle: 220 12% 22%;
     --wb-line-strong: 220 12% 36%;

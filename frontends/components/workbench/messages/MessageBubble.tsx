@@ -29,6 +29,10 @@ interface MessageBubbleProps {
 
 const COMPACT_TEXT_LIMIT = 8;
 
+// 多端同步来源 logo(企业微信),随应用打包于 public/。气泡来源徽章 + 头像角标共用。
+// 加载失败不阻塞(alt 空、aria-hidden);生产建议替换为官方品牌矢量资源。
+const WECOM_SOURCE_LOGO = "/wecom-logo.png";
+
 function messageAriaText(message: Message): string {
   // 未知消息(占位 part、无文本):读屏回退到「暂不支持」提示,避免空 aria-label。
   if (!message.text.trim() && message.parts.some((p) => p.kind === "unknown")) {
@@ -201,22 +205,30 @@ function OutgoingBubble({
   const fullLabel = formatMessageDateTime(message.sentAt);
   const compact = isCompactText(message.text);
   const mediaOnly = isMediaOnly(message) && !replyTarget;
+  // 多端同步出站消息(他端经企业微信发出后同步进本端):中性底色 + 来源徽章 + 头像角标,
+  // 与本端直发的蓝色出站气泡区分,便于质检/溯源。仅出站消息可能为 true。
+  const synced = message.syncedFromOtherDevice === true;
   return (
     <div className="flex w-full flex-row-reverse items-start gap-2 self-end">
-      <AgentAvatar account={account} />
+      <AgentAvatar account={account} badge={synced ? <WecomAvatarBadge /> : undefined} />
       <div className="relative flex min-w-0 max-w-[min(76%,560px)] flex-col items-end">
         <MessageContextMenu message={message} onAction={onAction}>
           <article
             tabIndex={0}
             role="article"
             onKeyDown={openContextMenuFromKeyboard}
-            aria-label={`我：${messageAriaText(message)}，发送时间 ${fullLabel}`}
+            aria-label={`我：${messageAriaText(message)}，发送时间 ${fullLabel}${
+              synced ? `，来自${STRINGS.status.syncedSource}` : ""
+            }`}
             className={cn(
               "group relative flex min-w-0 max-w-full flex-col gap-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-workbench-accent/40",
               mediaOnly
                 ? "rounded-lg"
                 : cn(
-                    "rounded-lg rounded-tr-sm bg-workbench-bubble-out text-[13.5px] font-[450] leading-[1.65] text-workbench-text shadow-wb-bubble ring-1 ring-workbench-bubble-out-border/50",
+                    "rounded-lg rounded-tr-sm text-[13.5px] font-[450] leading-[1.65] text-workbench-text shadow-wb-bubble ring-1",
+                    synced
+                      ? "bg-workbench-bubble-sync ring-workbench-bubble-sync-border/60"
+                      : "bg-workbench-bubble-out ring-workbench-bubble-out-border/50",
                     compact ? "px-3.5 py-1.5" : "px-4 py-2",
                   ),
             )}
@@ -228,9 +240,37 @@ function OutgoingBubble({
             </span>
           </article>
         </MessageContextMenu>
+        {synced && <SyncedSourceBadge />}
         <StatusLine status={message.status} onResend={() => onAction("resend", message)} />
       </div>
     </div>
+  );
+}
+
+// 多端同步来源徽章:气泡下方一行「[企微 logo] 企业微信」,溯源/质检一眼可辨。
+function SyncedSourceBadge() {
+  return (
+    <div className="text-wb-3xs mt-1 flex items-center gap-1 font-medium text-workbench-text-muted">
+      <img
+        src={WECOM_SOURCE_LOGO}
+        alt=""
+        aria-hidden
+        className="size-3 rounded-[2px] object-contain"
+      />
+      <span>{STRINGS.status.syncedSource}</span>
+    </div>
+  );
+}
+
+// 头像右下角来源角标:多端同步消息的多通道冗余标识(白底圆 + 企微 logo)。
+function WecomAvatarBadge() {
+  return (
+    <span
+      aria-hidden
+      className="absolute -bottom-1 -right-1 grid size-4 place-items-center rounded-full bg-workbench-surface-elevated shadow-[0_0_0_1.5px_hsl(var(--wb-surface))]"
+    >
+      <img src={WECOM_SOURCE_LOGO} alt="" className="size-3 rounded-[2px] object-contain" />
+    </span>
   );
 }
 

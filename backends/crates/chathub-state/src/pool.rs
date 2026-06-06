@@ -84,6 +84,9 @@ impl SqlitePool {
                 M::up(include_str!(
                     "../migrations/V28__purge_dirty_unknown_out_bubbles.sql"
                 )),
+                M::up(include_str!(
+                    "../migrations/V29__messages_source_direction.sql"
+                )),
             ]);
             migrations
                 .to_latest(c)

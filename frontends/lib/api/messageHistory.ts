@@ -68,6 +68,8 @@ export interface HistoryMessage {
   failReason?: string;
   /** 等于前端发送时生成的 clientMsgId(local-<uuid>);用于乐观↔权威确定性配对。 */
   requestMessageId?: string;
+  /** 多端同步标记(后端由持久化的 source_direction=3 派生);出站气泡据此渲染「企业微信来源」差异化样式。 */
+  syncedFromOtherDevice?: boolean;
 }
 
 export interface HistoryAttachment {
@@ -331,6 +333,8 @@ function historyToMessage(
     requestMessageId: h.requestMessageId,
     // 失败原因(sendStatus=4 时);供失败气泡展示具体原因。
     failReason: h.failReason,
+    // 多端同步标记:后端据持久化的 source_direction=3 派生;出站气泡据此渲染「企业微信来源」样式。
+    syncedFromOtherDevice: h.syncedFromOtherDevice,
   };
 }
 

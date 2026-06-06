@@ -87,13 +87,13 @@ export function CustomerAvatar({ name, color, avatarUrl, size }: CustomerAvatarP
   );
 }
 
-export function AgentAvatar({ account }: { account: string }) {
+export function AgentAvatar({ account, badge }: { account: string; badge?: ReactNode }) {
   // 归属账号在数据模型里没有真实头像(Account 无头像 URL 字段),故出向气泡头像统一回退到
   // 首字色块:账号名首字 + 按账号名 hash 的 wb-avatar 配色,与账号下拉(AccountDropdown)、
   // 客户头像 fallback(AvatarTile)同一套 letter-tile 视觉。后续接入企微员工真实头像后,
   // 改用 AvatarTile 传 avatarUrl 即可。
   const initial = account.trim().slice(0, 1) || "?";
-  return (
+  const tile = (
     <div
       role="img"
       aria-label={account}
@@ -101,6 +101,14 @@ export function AgentAvatar({ account }: { account: string }) {
       style={{ background: pickAvatarColor(account) }}
     >
       {initial}
+    </div>
+  );
+  // 多端同步消息:在头像右下角叠加来源角标(badge 由调用方传入,logo 资源引用集中在 MessageBubble)。
+  if (!badge) return tile;
+  return (
+    <div className="relative shrink-0">
+      {tile}
+      {badge}
     </div>
   );
 }

@@ -1,0 +1,842 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>多端同步消息(dir=3)样式方案对比 · ChatHub</title>
+    <style>
+      /* ───────── 直接引用 frontends/index.css 的真实 token(明/暗两套) ───────── */
+      :root {
+        --wb-accent: 215 85% 50%;
+        --wb-accent-hover: 215 85% 44%;
+        --wb-text: 222 18% 18%;
+        --wb-text-secondary: 218 12% 42%;
+        --wb-text-muted: 218 10% 56%;
+        --wb-surface: 220 20% 99%;
+        --wb-surface-elevated: 0 0% 100%;
+        --wb-surface-subtle: 220 22% 97%;
+        --wb-surface-soft: 218 30% 96%;
+        --wb-surface-active: 216 70% 96%;
+        --wb-bubble-in: 220 20% 96%;
+        --wb-bubble-in-border: 220 18% 90%;
+        --wb-bubble-out: 213 65% 91%;
+        --wb-bubble-out-border: 213 55% 84%;
+        --wb-line: 220 18% 90%;
+        --wb-line-subtle: 220 18% 94%;
+        --wb-wechat: 153 93% 39%;
+        --wb-success: 158 64% 30%;
+        --wb-warning: 38 92% 50%;
+        --wb-avatar-2: 217 92% 92%;
+        --wb-avatar-7: 199 95% 86%;
+        --wb-shadow-bubble:
+          0 1px 2px rgba(15, 23, 42, 0.04), 0 8px 24px -12px rgba(15, 23, 42, 0.08);
+        /* 同步消息专用:中性纸感底色 + 来源色(取 accent 的去饱和暖灰，避免和 in 蓝/out 蓝撞) */
+        --wb-sync-fill: 40 18% 95%;
+        --wb-sync-border: 40 16% 86%;
+        --wb-sync-rail: 215 60% 62%;
+        --wb-sync-label: 218 14% 46%;
+      }
+      .dark {
+        --wb-accent: 213 70% 62%;
+        --wb-text: 210 30% 92%;
+        --wb-text-secondary: 215 16% 70%;
+        --wb-text-muted: 215 14% 58%;
+        --wb-surface: 222 28% 11%;
+        --wb-surface-elevated: 222 28% 14%;
+        --wb-surface-subtle: 222 26% 13%;
+        --wb-surface-soft: 222 24% 16%;
+        --wb-surface-active: 216 40% 22%;
+        --wb-bubble-in: 220 14% 19%;
+        --wb-bubble-in-border: 220 12% 26%;
+        --wb-bubble-out: 216 35% 30%;
+        --wb-bubble-out-border: 216 35% 38%;
+        --wb-line: 220 12% 24%;
+        --wb-line-subtle: 220 12% 20%;
+        --wb-wechat: 153 60% 46%;
+        --wb-success: 158 50% 50%;
+        --wb-shadow-bubble: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 24px -12px rgba(0, 0, 0, 0.5);
+        --wb-sync-fill: 222 16% 22%;
+        --wb-sync-border: 222 14% 30%;
+        --wb-sync-rail: 213 60% 58%;
+        --wb-sync-label: 215 16% 64%;
+      }
+
+      * {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+      body {
+        font-family:
+          -apple-system, "PingFang SC", "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+        background: hsl(var(--wb-surface-subtle));
+        color: hsl(var(--wb-text));
+        line-height: 1.6;
+        -webkit-font-smoothing: antialiased;
+        padding: 32px 24px 80px;
+      }
+
+      /* ── 顶部说明 ── */
+      .page-head {
+        max-width: 1280px;
+        margin: 0 auto 28px;
+      }
+      .page-head h1 {
+        font-size: 20px;
+        font-weight: 650;
+        letter-spacing: -0.01em;
+      }
+      .page-head p {
+        color: hsl(var(--wb-text-secondary));
+        font-size: 13.5px;
+        margin-top: 8px;
+        max-width: 760px;
+      }
+      .note {
+        margin-top: 14px;
+        padding: 12px 14px;
+        font-size: 12.5px;
+        line-height: 1.7;
+        background: hsl(var(--wb-surface-active));
+        border: 1px solid hsl(var(--wb-bubble-out-border));
+        border-radius: 10px;
+        color: hsl(var(--wb-text-secondary));
+        max-width: 860px;
+      }
+      .note b {
+        color: hsl(var(--wb-text));
+      }
+      .note code {
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 11.5px;
+        background: hsl(var(--wb-surface-elevated));
+        padding: 1px 5px;
+        border-radius: 4px;
+        border: 1px solid hsl(var(--wb-line));
+      }
+
+      .toolbar {
+        max-width: 1280px;
+        margin: 0 auto 22px;
+        display: flex;
+        gap: 10px;
+        align-items: center;
+      }
+      .toolbar button {
+        font: inherit;
+        font-size: 12.5px;
+        font-weight: 550;
+        cursor: pointer;
+        padding: 7px 14px;
+        border-radius: 8px;
+        border: 1px solid hsl(var(--wb-line));
+        background: hsl(var(--wb-surface-elevated));
+        color: hsl(var(--wb-text));
+        transition:
+          background 0.15s,
+          border-color 0.15s;
+      }
+      .toolbar button:hover {
+        background: hsl(var(--wb-surface-active));
+        border-color: hsl(var(--wb-bubble-out-border));
+      }
+
+      /* ── 卡片网格 ── */
+      .grid {
+        max-width: 1280px;
+        margin: 0 auto;
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
+        gap: 20px;
+      }
+      .card {
+        background: hsl(var(--wb-surface-elevated));
+        border: 1px solid hsl(var(--wb-line));
+        border-radius: 14px;
+        overflow: hidden;
+        display: flex;
+        flex-direction: column;
+      }
+      .card.recommend {
+        border-color: hsl(var(--wb-accent) / 0.55);
+        box-shadow: 0 0 0 3px hsl(var(--wb-accent) / 0.1);
+      }
+      .card-head {
+        padding: 14px 16px 10px;
+        border-bottom: 1px solid hsl(var(--wb-line-subtle));
+      }
+      .card-head .row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .card-head h2 {
+        font-size: 14px;
+        font-weight: 620;
+      }
+      .tag {
+        font-size: 10.5px;
+        font-weight: 600;
+        padding: 2px 7px;
+        border-radius: 999px;
+        letter-spacing: 0.02em;
+      }
+      .tag.rec {
+        background: hsl(var(--wb-accent) / 0.14);
+        color: hsl(var(--wb-accent-hover));
+      }
+      .tag.weak {
+        background: hsl(var(--wb-bubble-in));
+        color: hsl(var(--wb-text-muted));
+      }
+      .tag.mid {
+        background: hsl(var(--wb-surface-active));
+        color: hsl(var(--wb-accent-hover));
+      }
+      .tag.strong {
+        background: hsl(var(--wb-warning) / 0.18);
+        color: hsl(38 80% 34%);
+      }
+      .dark .tag.strong {
+        color: hsl(38 90% 62%);
+      }
+      .card-head .desc {
+        font-size: 11.5px;
+        color: hsl(var(--wb-text-secondary));
+        margin-top: 6px;
+      }
+      .card-head .tradeoff {
+        font-size: 11px;
+        color: hsl(var(--wb-text-muted));
+        margin-top: 5px;
+      }
+      .card-head .tradeoff b {
+        color: hsl(var(--wb-text-secondary));
+        font-weight: 600;
+      }
+
+      /* ── 聊天画布 ── */
+      .canvas {
+        padding: 18px 16px;
+        background: hsl(var(--wb-surface));
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+        flex: 1;
+      }
+
+      /* 行容器 */
+      .msg {
+        display: flex;
+        align-items: flex-start;
+        gap: 8px;
+        max-width: 100%;
+      }
+      .msg.in {
+        flex-direction: row;
+        align-self: flex-start;
+      }
+      .msg.out {
+        flex-direction: row-reverse;
+        align-self: flex-end;
+      }
+
+      .avatar {
+        width: 30px;
+        height: 30px;
+        border-radius: 8px;
+        flex-shrink: 0;
+        display: grid;
+        place-items: center;
+        font-size: 12px;
+        font-weight: 600;
+        color: hsl(var(--wb-text));
+        position: relative;
+      }
+      .avatar.cust {
+        background: hsl(var(--wb-avatar-7));
+      }
+      .avatar.agent {
+        background: hsl(var(--wb-avatar-2));
+      }
+
+      .stack {
+        display: flex;
+        flex-direction: column;
+        min-width: 0;
+        max-width: 260px;
+      }
+      .out .stack {
+        align-items: flex-end;
+      }
+      .in .stack {
+        align-items: flex-start;
+      }
+
+      .bubble {
+        position: relative;
+        font-size: 13.5px;
+        font-weight: 450;
+        line-height: 1.6;
+        color: hsl(var(--wb-text));
+        padding: 8px 11px;
+        border-radius: 10px;
+        box-shadow: var(--wb-shadow-bubble);
+        max-width: 100%;
+        word-break: break-word;
+      }
+      .bubble.in {
+        background: hsl(var(--wb-bubble-in));
+        border-top-left-radius: 3px;
+        box-shadow:
+          inset 0 0 0 1px hsl(var(--wb-bubble-in-border) / 0.5),
+          var(--wb-shadow-bubble);
+      }
+      .bubble.out {
+        background: hsl(var(--wb-bubble-out));
+        border-top-right-radius: 3px;
+        box-shadow:
+          inset 0 0 0 1px hsl(var(--wb-bubble-out-border) / 0.5),
+          var(--wb-shadow-bubble);
+      }
+
+      /* 状态行(时间/已读) */
+      .meta {
+        font-size: 10.5px;
+        color: hsl(var(--wb-text-muted));
+        margin-top: 4px;
+        display: flex;
+        align-items: center;
+        gap: 5px;
+      }
+      .meta .ok {
+        color: hsl(var(--wb-success));
+      }
+
+      /* device 图标 */
+      .ph {
+        width: 11px;
+        height: 11px;
+        flex-shrink: 0;
+      }
+
+      /* ════════ 各方案专用样式 ════════ */
+
+      /* V1 来源徽章(底部 chip) */
+      .src-chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        font-size: 10.5px;
+        font-weight: 550;
+        color: hsl(var(--wb-sync-label));
+      }
+      .src-chip .ph {
+        color: hsl(var(--wb-sync-label));
+      }
+
+      /* V2 气泡内顶部细标 */
+      .bubble .inline-src {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        font-size: 10px;
+        font-weight: 600;
+        color: hsl(var(--wb-sync-label));
+        margin-bottom: 4px;
+        opacity: 0.9;
+        padding-bottom: 4px;
+        border-bottom: 1px dashed hsl(var(--wb-bubble-out-border));
+      }
+
+      /* V3 左侧来源色条 */
+      .rail-wrap {
+        display: flex;
+        align-items: stretch;
+        gap: 7px;
+      }
+      .out .rail-wrap {
+        flex-direction: row;
+      }
+      .rail {
+        width: 3px;
+        border-radius: 999px;
+        background: hsl(var(--wb-sync-rail));
+        flex-shrink: 0;
+      }
+
+      /* V4 中性纸感底色变体 */
+      .bubble.sync-fill {
+        background: hsl(var(--wb-sync-fill));
+        box-shadow:
+          inset 0 0 0 1px hsl(var(--wb-sync-border)),
+          var(--wb-shadow-bubble);
+      }
+
+      /* V5 虚线描边 */
+      .bubble.dashed {
+        background: hsl(var(--wb-bubble-out) / 0.55);
+        box-shadow: var(--wb-shadow-bubble);
+        border: 1px dashed hsl(var(--wb-sync-rail) / 0.7);
+      }
+
+      /* V6 头像角标 */
+      .avatar .badge {
+        position: absolute;
+        right: -3px;
+        bottom: -3px;
+        width: 15px;
+        height: 15px;
+        border-radius: 999px;
+        background: hsl(var(--wb-surface-elevated));
+        display: grid;
+        place-items: center;
+        box-shadow: 0 0 0 1.5px hsl(var(--wb-surface));
+        color: hsl(var(--wb-sync-rail));
+      }
+      .avatar .badge .ph {
+        width: 9px;
+        height: 9px;
+      }
+
+      /* V7 分组分隔条 */
+      .divider {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        align-self: stretch;
+        margin: 2px 0;
+        color: hsl(var(--wb-text-muted));
+        font-size: 10.5px;
+        font-weight: 550;
+      }
+      .divider::before,
+      .divider::after {
+        content: "";
+        height: 1px;
+        flex: 1;
+        background: hsl(var(--wb-line));
+      }
+      .divider .lbl {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        white-space: nowrap;
+      }
+      .divider .ph {
+        color: hsl(var(--wb-sync-label));
+      }
+
+      /* V8 组合:中性底色 + 来源徽章 + 头像角标(推荐落地形态) */
+
+      .legend {
+        font-size: 10px;
+        color: hsl(var(--wb-text-muted));
+        margin-top: 4px;
+        padding-left: 2px;
+      }
+
+      /* ── 文案对比区 ── */
+      .section-head {
+        max-width: 1280px;
+        margin: 6px auto 14px;
+      }
+      .section-head h3 {
+        font-size: 15px;
+        font-weight: 640;
+      }
+      .section-head p {
+        font-size: 12.5px;
+        color: hsl(var(--wb-text-secondary));
+        margin-top: 5px;
+        max-width: 760px;
+      }
+      .wcard .card-head .verdict {
+        font-size: 11px;
+        margin-top: 6px;
+        font-weight: 600;
+      }
+      .wcard .card-head .verdict.good {
+        color: hsl(var(--wb-success));
+      }
+      .wcard .card-head .verdict.bad {
+        color: hsl(var(--wb-warning));
+      }
+      .dark .wcard .card-head .verdict.bad {
+        color: hsl(38 90% 62%);
+      }
+      /* 文案变体里图标着色:企微绿 / 同步色 / 中性 */
+      .src-chip.green {
+        color: hsl(var(--wb-wechat));
+      }
+      .src-chip.green .ph {
+        color: hsl(var(--wb-wechat));
+      }
+      .avatar .badge.green {
+        color: hsl(var(--wb-wechat));
+      }
+      .divider-strong {
+        margin: 30px auto 6px;
+        max-width: 1280px;
+        height: 1px;
+        background: hsl(var(--wb-line));
+      }
+      /* 企业微信 logo:自带配色,不走 currentColor */
+      .wlogo {
+        width: 12px;
+        height: 12px;
+        flex-shrink: 0;
+        display: inline-block;
+        vertical-align: -2px;
+      }
+      .avatar .badge .wlogo {
+        width: 13px;
+        height: 13px;
+      }
+      .avatar .badge.logo {
+        background: transparent;
+        box-shadow: 0 0 0 1.5px hsl(var(--wb-surface));
+      }
+    </style>
+  </head>
+  <body>
+    <div class="page-head">
+      <h1>多端同步消息（messageDirection=3）差异化样式 · 方案对比</h1>
+      <p>
+        场景：客服在<strong>手机企微/微信端</strong>直接回复了客户，这条消息经多端同步进入本工作台。
+        它仍属「我方/出站」（右对齐），但来源不是本工作台 —— 质检/管理需要一眼可追溯。
+      </p>
+      <div class="note">
+        <b>前提（技术）：</b>当前前端模型只有 <code>direction: "in" | "out"</code>，源方向 3 在后端
+        <code>to_local_direction(3)→2</code>
+        被抹平两次，<b>前端目前收不到「3」</b>。原始信号完整保留在 <code>sort_key</code> 第 2
+        段，落地方式 = 后端派生 1 个布尔字段 <code>syncedFromOtherDevice</code> 透传 → 前端
+        <code>Message</code> 加可选字段 → <code>MessageBubble</code> 加渲染分支。<b
+          >不改 in/out 语义</b
+        >，纯加法、低风险。 下面每张卡都用你们真实的气泡 token 渲染。
+      </div>
+    </div>
+
+    <div class="toolbar">
+      <button onclick="document.documentElement.classList.toggle('dark')">
+        🌓 切换 明/暗 主题
+      </button>
+      <span style="font-size: 12px; color: hsl(var(--wb-text-muted))"
+        >同步气泡来源色已避开 in 蓝 / out 蓝，避免撞色</span
+      >
+    </div>
+
+    <div class="section-head">
+      <h3>📝 来源文案对比 —— 套用你认可的「中性底色 + 徽章 + 头像角标」样式，只换措辞</h3>
+      <p>
+        「手机端」不准：dir=3
+        的真实语义是「在他端发出的成品消息」，他端可能是企微<b>手机或电脑</b>客户端。下面按「命名来源
+        App / 命名机制 / 泛指 / 对比」四类给候选。
+      </p>
+      <div
+        id="logoShowcase"
+        style="
+          display: flex;
+          align-items: center;
+          gap: 18px;
+          margin-top: 14px;
+          padding: 12px 16px;
+          background: hsl(var(--wb-surface-elevated));
+          border: 1px solid hsl(var(--wb-line));
+          border-radius: 10px;
+          width: fit-content;
+        "
+      ></div>
+    </div>
+    <div class="grid" id="wording"></div>
+
+    <div class="divider-strong"></div>
+    <div class="section-head">
+      <h3>🎨 样式强度对比（沿用上一版，文案先占位为「手机端」）</h3>
+    </div>
+    <div class="grid" id="grid"></div>
+
+    <script>
+      // 图标集
+      const PH = `<svg class="ph" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="2" width="14" height="20" rx="2.5"/><line x1="12" y1="18" x2="12" y2="18"/></svg>`;
+      const SYNC = `<svg class="ph" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 0 1-9 9 9 9 0 0 1-6.7-3"/><path d="M3 12a9 9 0 0 1 9-9 9 9 0 0 1 6.7 3"/><polyline points="21 3 21 8 16 8"/><polyline points="3 21 3 16 8 16"/></svg>`;
+      const CHAT = `<svg class="ph" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8z"/></svg>`;
+      const MONITOR = `<svg class="ph" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>`;
+      const ARROW = `<svg class="ph" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 10 20 15 15 20"/><path d="M4 4v7a4 4 0 0 0 4 4h12"/></svg>`;
+      // 企业微信 logo:优先用官方原图文件 ./wecom-logo.png;加载不到则回退到手画 SVG(近似还原)。
+      // 生产落地请用官方品牌矢量,并自行确认商标使用合规。
+      // 回退占位:中性通用气泡(仅在 ./wecom-logo.png 缺失时显示),不仿造企微商标。
+      function wecomSvg(size) {
+        return `<svg viewBox="0 0 24 24" fill="none" stroke="#2C9BE0" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:${size}px;height:${size}px;display:block">
+      <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8z"/></svg>`;
+      }
+      function wecomLogo(size) {
+        const rad = Math.max(2, Math.round(size * 0.22));
+        return (
+          `<span style="display:inline-flex;width:${size}px;height:${size}px;flex:none;vertical-align:-2px">` +
+          `<img src="./wecom-logo.png" alt="企业微信" style="width:${size}px;height:${size}px;display:block;border-radius:${rad}px;object-fit:cover"` +
+          ` onerror="this.style.display='none';this.nextElementSibling.style.display='inline-flex'">` +
+          `<span style="display:none;width:${size}px;height:${size}px">${wecomSvg(size)}</span>` +
+          `</span>`
+        );
+      }
+      const WECOM = wecomLogo(13);
+
+      // 基准:客户来信 + 本端发送(out),所有卡片共用前两行,第三行换成各方案
+      function baseRows() {
+        return `
+      <div class="msg in">
+        <div class="avatar cust">客</div>
+        <div class="stack"><div class="bubble in">在吗？我那个订单想改下地址</div>
+          <div class="meta">14:29</div></div>
+      </div>
+      <div class="msg out">
+        <div class="avatar agent">服</div>
+        <div class="stack"><div class="bubble out">收到，稍等帮您改</div>
+          <div class="meta"><span>14:30</span><span class="ok">✓ 已读</span></div></div>
+      </div>`;
+      }
+
+      const variants = [
+        {
+          id: "V1",
+          title: "来源徽章（底部 chip）",
+          tag: "weak",
+          tagText: "轻",
+          desc: "气泡本身完全不动，只在底部状态行加「📱 手机端」。",
+          tradeoff: "<b>取舍：</b>最克制、零破坏现有体系；扫长会话时不如带色块的醒目。",
+          rows: `
+      <div class="msg out">
+        <div class="avatar agent">服</div>
+        <div class="stack">
+          <div class="bubble out">好的，已经帮您改成新地址了 👍</div>
+          <div class="meta"><span class="src-chip">${PH} 手机端</span><span>·</span><span>14:32</span></div>
+        </div>
+      </div>`,
+        },
+        {
+          id: "V2",
+          title: "气泡内顶部细标",
+          tag: "mid",
+          tagText: "中",
+          desc: "在气泡内部顶端加一行「来自手机端」细标，随气泡走、不占外部空间。",
+          tradeoff: "<b>取舍：</b>来源和内容绑定更紧；短消息气泡会被这行撑高一点。",
+          rows: `
+      <div class="msg out">
+        <div class="avatar agent">服</div>
+        <div class="stack">
+          <div class="bubble out"><span class="inline-src">${PH} 来自手机端</span>好的，已经帮您改成新地址了 👍</div>
+          <div class="meta">14:32</div>
+        </div>
+      </div>`,
+        },
+        {
+          id: "V3",
+          title: "左侧来源色条（rail）",
+          tag: "mid",
+          tagText: "中",
+          desc: "气泡外侧加一条竖色条 + 底部徽章，像引用块那样标注来源。",
+          tradeoff: "<b>取舍：</b>扫读时定位快；色条在右对齐侧略微挤压气泡宽度。",
+          rows: `
+      <div class="msg out">
+        <div class="avatar agent">服</div>
+        <div class="stack">
+          <div class="rail-wrap"><div class="rail"></div><div class="bubble out">好的，已经帮您改成新地址了 👍</div></div>
+          <div class="meta"><span class="src-chip">${PH} 手机端</span><span>·</span><span>14:32</span></div>
+        </div>
+      </div>`,
+        },
+        {
+          id: "V4",
+          title: "中性纸感底色变体",
+          tag: "mid",
+          tagText: "中",
+          desc: "同步气泡换成中性「纸感」底色（非 out 蓝），传达「不是本端发的」。",
+          tradeoff: "<b>取舍：</b>一眼区分最强、最直觉；引入了第三种气泡底色，需纳入设计规范。",
+          rows: `
+      <div class="msg out">
+        <div class="avatar agent">服</div>
+        <div class="stack">
+          <div class="bubble out sync-fill">好的，已经帮您改成新地址了 👍</div>
+          <div class="meta"><span class="src-chip">${PH} 手机端</span><span>·</span><span>14:32</span></div>
+        </div>
+      </div>`,
+        },
+        {
+          id: "V5",
+          title: "虚线描边",
+          tag: "mid",
+          tagText: "中",
+          desc: "同步气泡用虚线描边 + 半透明底，隐喻「非本端直发」。",
+          tradeoff: "<b>取舍：</b>语义有点「临时/草稿」味，未必精准对应「同步」；视觉新颖但偏弱。",
+          rows: `
+      <div class="msg out">
+        <div class="avatar agent">服</div>
+        <div class="stack">
+          <div class="bubble out dashed">好的，已经帮您改成新地址了 👍</div>
+          <div class="meta"><span class="src-chip">${PH} 手机端</span><span>·</span><span>14:32</span></div>
+        </div>
+      </div>`,
+        },
+        {
+          id: "V6",
+          title: "头像角标",
+          tag: "weak",
+          tagText: "轻",
+          desc: "气泡不动，只在发送者头像右下角叠一个小手机角标。",
+          tradeoff: "<b>取舍：</b>极克制、信息密度低；角标太小，质检快速扫读可能漏看。",
+          rows: `
+      <div class="msg out">
+        <div class="avatar agent">服<span class="badge">${PH}</span></div>
+        <div class="stack">
+          <div class="bubble out">好的，已经帮您改成新地址了 👍</div>
+          <div class="meta">14:32</div>
+        </div>
+      </div>`,
+        },
+        {
+          id: "V7",
+          title: "分组分隔条",
+          tag: "strong",
+          tagText: "重",
+          desc: "连续的同步消息用一条分隔带包起来，类似日期分隔。",
+          tradeoff: "<b>取舍：</b>成批同步时最干净；单条零散出现时会显得分隔条过重、噪声大。",
+          rows: `
+      <div class="divider"><span class="lbl">${PH} 以下来自手机端</span></div>
+      <div class="msg out">
+        <div class="avatar agent">服</div>
+        <div class="stack"><div class="bubble out">好的，已经帮您改成新地址了 👍</div></div>
+      </div>
+      <div class="msg out">
+        <div class="avatar agent">服</div>
+        <div class="stack"><div class="bubble out">单号 SF1234，已更新</div><div class="meta">14:32</div></div>
+      </div>
+      <div class="divider"></div>`,
+        },
+        {
+          id: "V8",
+          title: "组合推荐：中性底色 + 来源徽章 + 头像角标",
+          tag: "rec",
+          tagText: "推荐",
+          desc: "V4 的底色异化（一眼可分）+ V1 的来源徽章（明确文案）+ V6 头像角标（多通道冗余）。",
+          tradeoff:
+            "<b>为何推荐：</b>多层冗余 → 质检扫读 + 单条细看都成立；底色用中性纸感不喧宾夺主；纯加法、不动 in/out。",
+          rec: true,
+          rows: `
+      <div class="msg out">
+        <div class="avatar agent">服<span class="badge">${PH}</span></div>
+        <div class="stack">
+          <div class="bubble out sync-fill">好的，已经帮您改成新地址了 👍</div>
+          <div class="meta"><span class="src-chip">${PH} 手机端</span><span>·</span><span>14:32</span></div>
+        </div>
+      </div>`,
+        },
+      ];
+
+      // logo 放大预览
+      document.getElementById("logoShowcase").innerHTML =
+        `<span style="font-size:11.5px;color:hsl(var(--wb-text-muted))">企业微信 logo</span>` +
+        [56, 28, 16].map((s) => wecomLogo(s)).join("") +
+        `<span style="font-size:11px;color:hsl(var(--wb-text-muted));max-width:260px;line-height:1.5">优先加载 <code style="font-size:10px">./wecom-logo.png</code>；缺文件时回退到手画 SVG。生产请用官方矢量资源</span>`;
+
+      // ── 文案候选(套用「中性底色 + 徽章 + 头像角标」推荐样式,只换措辞/图标/着色) ──
+      function wbubble(icon, text, opts = {}) {
+        const green = opts.green ? " green" : "";
+        const badgeCls = opts.logo ? " logo" : green;
+        return `
+      ${baseRows()}
+      <div class="msg out">
+        <div class="avatar agent">服<span class="badge${badgeCls}">${icon}</span></div>
+        <div class="stack">
+          <div class="bubble out sync-fill">好的，已经帮您改成新地址了 👍</div>
+          <div class="meta"><span class="src-chip${green}">${icon} ${text}</span><span>·</span><span>14:32</span></div>
+        </div>
+      </div>`;
+      }
+      const wordings = [
+        {
+          cls: "命名来源 App",
+          title: "企业微信",
+          icon: WECOM,
+          logo: true,
+          verdict: "good",
+          vt: "✓ 推荐：客服一看就懂「这是在官方企微里回的，不是工作台」；与现有「企微」措辞一致。",
+          note: "前提=dir=3 确实来自官方企微端 · logo 为近似还原",
+        },
+        {
+          cls: "命名机制",
+          title: "同步消息",
+          icon: SYNC,
+          verdict: "good",
+          vt: "✓ 最稳：device-agnostic，不怕来源其实是电脑端；「同步」也是你们现有词。",
+          note: "不点明来源，强调「同步进来的」",
+        },
+        {
+          cls: "命名机制",
+          title: "多端同步",
+          icon: SYNC,
+          verdict: "",
+          vt: "· 准确但略术语化，客服未必秒懂「多端」。",
+          note: "后端原词，最贴技术语义",
+        },
+        {
+          cls: "泛指设备",
+          title: "其他端",
+          icon: MONITOR,
+          verdict: "",
+          vt: "· 诚实泛指(手机/电脑都涵盖)，但稍模糊、读着略生硬。",
+          note: "手机/电脑都不点名",
+        },
+        {
+          cls: "对比强调",
+          title: "非工作台",
+          icon: ARROW,
+          verdict: "",
+          vt: "· 强调「不是本端发的」，对比清晰；偏技术腔。",
+          note: "也可作「站外发送 / 外部发送」",
+        },
+        {
+          cls: "现状(不推荐)",
+          title: "手机端",
+          icon: PH,
+          verdict: "bad",
+          vt: "✗ 不准：把来源说窄成「手机」，dir=3 可能来自电脑端企微。",
+          note: "当前占位文案",
+        },
+      ];
+      document.getElementById("wording").innerHTML = wordings
+        .map(
+          (w) => `
+    <div class="card wcard ${w.verdict === "good" ? "recommend" : ""}">
+      <div class="card-head">
+        <div class="row"><span class="tag ${w.verdict === "good" ? "rec" : w.verdict === "bad" ? "strong" : "mid"}">${w.cls}</span><h2>「${w.title}」</h2></div>
+        <div class="verdict ${w.verdict}">${w.vt}</div>
+        <div class="tradeoff">${w.note}</div>
+      </div>
+      <div class="canvas">${wbubble(w.icon, w.title, { green: w.green, logo: w.logo })}</div>
+    </div>
+  `,
+        )
+        .join("");
+
+      const grid = document.getElementById("grid");
+      grid.innerHTML = variants
+        .map(
+          (v) => `
+    <div class="card ${v.rec ? "recommend" : ""}">
+      <div class="card-head">
+        <div class="row"><span class="tag ${v.tag}">${v.tagText}</span><h2>${v.id} · ${v.title}</h2></div>
+        <div class="desc">${v.desc}</div>
+        <div class="tradeoff">${v.tradeoff}</div>
+      </div>
+      <div class="canvas">
+        ${baseRows()}
+        ${v.rows}
+      </div>
+    </div>
+  `,
+        )
+        .join("");
+    </script>
+  </body>
+</html>

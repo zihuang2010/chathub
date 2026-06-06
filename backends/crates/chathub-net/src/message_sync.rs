@@ -53,6 +53,26 @@ pub fn classify_reconcile(
     }
 }
 
+/// 纯判定:本次首页是否把某条「本地原为待转存(transferStatus=1)」的消息推进到了非 pending
+/// (成功/失败终态)。转存状态变化不改 sortKey(同一条消息),故水位不推进、Stitch 默认不通知;
+/// 此判定让这类「就地升级」也能触发一次通知,杜绝「转存完成但页面不刷新」。
+/// 只认「pending → 非 pending」的升级,不认回退(回退已被 upsert 不降级守卫拦下),故不会误通知、
+/// 不破坏既有「notify→read→reconcile→notify 自激死循环」的防护。
+fn transfer_status_upgraded(existing: &[MessageRow], fetched: &[MessageRow]) -> bool {
+    let was_pending: std::collections::HashSet<&str> = existing
+        .iter()
+        .filter(|r| r.attachments_json.contains("\"transferStatus\":1"))
+        .map(|r| r.local_message_id.as_str())
+        .collect();
+    if was_pending.is_empty() {
+        return false;
+    }
+    fetched.iter().any(|r| {
+        was_pending.contains(r.local_message_id.as_str())
+            && !r.attachments_json.contains("\"transferStatus\":1")
+    })
+}
+
 /// 从未收敛失败行中筛出「服务端首页 reqid 集合不含」的那些 —— 它们是服务端尚不知情的本地失败,
 /// Replace 清库后必须补回。已被服务端回显(reqid 在页中)的不保活,由 server 行取代。
 /// 按 reqid(非 local_message_id)判定,确保补回行与 server 行不同 reqid → 去重 DELETE 不交叉。
@@ -83,6 +103,8 @@ pub fn history_to_row(
         sort_key: h.sort_key.clone(),
         message_time_ms: parse_server_time_to_ms(&h.message_time),
         message_direction: to_local_direction(h.message_direction as i64),
+        // 持久化上游原始方向(1/2/3),供读路径(row_to_history)派生本地方向 + 多端同步标记。
+        source_direction: h.message_direction,
         message_type: h.message_type,
         content_text: h.content_text.clone(),
         // 多端同步(源方向 3)历史行 send_status 上游同样可能为 0 → 归一为成功,与 push 路径一致,
@@ -108,17 +130,17 @@ pub fn history_to_row(
 
 /// `MessageRow`(行存)→ `HistoryMessage`(API 形态;读命令返给前端,复用既有适配器)。
 pub fn row_to_history(r: &MessageRow) -> HistoryMessage {
+    // 本地方向 + 多端同步标记均由持久化的 source_direction 派生,不解析 opaque 的 sort_key。
+    let (message_direction, synced_from_other_device) = local_direction_and_synced(r);
     HistoryMessage {
         local_message_id: r.local_message_id.clone(),
-        message_direction: normalize_local_direction_from_sort_key(
-            r.message_direction,
-            &r.sort_key,
-        ),
+        message_direction,
         message_type: r.message_type,
         content_text: r.content_text.clone(),
         send_status: r.send_status,
         message_time: ms_to_server_time(r.message_time_ms),
         sort_key: r.sort_key.clone(),
+        synced_from_other_device,
         attachments: serde_json::from_str::<Vec<HistoryAttachment>>(&r.attachments_json)
             .unwrap_or_default(),
         gmt_modified_time: r.gmt_modified_time.clone(),
@@ -128,14 +150,16 @@ pub fn row_to_history(r: &MessageRow) -> HistoryMessage {
     }
 }
 
-fn normalize_local_direction_from_sort_key(stored_direction: i32, sort_key: &str) -> i32 {
-    let source_direction = sort_key
-        .split(':')
-        .nth(1)
-        .and_then(|s| s.parse::<i64>().ok());
-    match source_direction {
-        Some(direction @ 1..=3) => to_local_direction(direction),
-        _ => normalize_stored_local_direction(stored_direction),
+/// 由持久化的上游源方向派生 (本地方向, 多端同步标记)。
+/// `source_direction`:1=发送方 / 2=客户·接收方 / 3=多端同步方;0=未知(V29 迁移前的老行)。
+/// - 已知(1..=3):本地方向 = `to_local_direction`;synced = (源方向==3,即「已在他端发出的成品」)。
+/// - 未知(0):回退既有 `message_direction` 列(V20 已修正其本地方向),按非多端同步处理;下次 reconcile
+///   重拉历史经 upsert 回填真实源方向后该行自愈。
+/// 不再从 opaque 的 `sort_key` 反推 —— 真实 sort_key 是「13位ms_20位序列_id」下划线三段、不含方向段。
+fn local_direction_and_synced(r: &MessageRow) -> (i32, bool) {
+    match r.source_direction {
+        direction @ 1..=3 => (to_local_direction(direction as i64), direction == 3),
+        _ => (normalize_stored_local_direction(r.message_direction), false),
     }
 }
 
@@ -308,12 +332,22 @@ impl MessageSync {
                 true
             }
             ReconcileMode::Stitch => {
+                // 升级检测须在覆盖前读到本地现状(转存态 1→终态)。limit 取本次首页条数,覆盖重叠区即可。
+                let existing_before = self
+                    .store
+                    .list_recent(employee_id, conversation_id, rows.len().max(1))
+                    .await
+                    .map_err(state_err)?;
                 self.store.upsert_messages(&rows).await.map_err(state_err)?;
                 // 首页最新 > 缓存原 newest 才算「有新消息到达」(sort_key 同构,字典序即时序)。
                 let advanced = matches!(
                     (prev_newest_sort_key.as_deref(), page_newest.as_deref()),
                     (Some(prev), Some(curr)) if curr > prev
                 );
+                // 转存「就地升级」(同一条消息、sortKey 不变 → 水位不推进)也要通知,否则会出现
+                // 「转存完成但页面不刷新」。只认 pending→终态,回退已被 upsert 不降级守卫拦下,
+                // 故不会误通知、不破坏既有自激死循环防护。
+                let transfer_upgraded = transfer_status_upgraded(&existing_before, &rows);
                 // 只扩 newest 上界,下界 / older_cursor / has_more_older 不动。
                 if let (Some(mut w), Some(newest)) = (window, page_newest) {
                     w.newest_sort_key = newest;
@@ -323,7 +357,7 @@ impl MessageSync {
                     w.last_accessed_ms = now;
                     self.store.upsert_window(w).await.map_err(state_err)?;
                 }
-                advanced
+                advanced || transfer_upgraded
             }
         };
 
@@ -721,6 +755,68 @@ mod tests {
         );
     }
 
+    fn att_row(local: &str, attachments_json: &str) -> MessageRow {
+        MessageRow {
+            local_message_id: local.into(),
+            conversation_id: "c1".into(),
+            employee_id: "u-1".into(),
+            wecom_account_id: "wa-1".into(),
+            sort_key: "sort_0001".into(),
+            message_time_ms: 1,
+            message_direction: 1,
+            source_direction: 2,
+            message_type: 4,
+            content_text: String::new(),
+            send_status: 3,
+            attachments_json: attachments_json.into(),
+            gmt_modified_time: String::new(),
+            revoked: false,
+            fail_reason: String::new(),
+            request_message_id: String::new(),
+            updated_at_ms: 0,
+        }
+    }
+
+    #[test]
+    fn transfer_upgrade_detected_pending_to_terminal() {
+        let existing = [att_row("m1", r#"[{"transferStatus":1}]"#)];
+        let fetched = [att_row("m1", r#"[{"transferStatus":2}]"#)];
+        assert!(
+            transfer_status_upgraded(&existing, &fetched),
+            "待转存(1)→成功(2) 即使水位未推进也应通知"
+        );
+    }
+
+    #[test]
+    fn transfer_upgrade_false_when_still_pending() {
+        let existing = [att_row("m1", r#"[{"transferStatus":1}]"#)];
+        let fetched = [att_row("m1", r#"[{"transferStatus":1}]"#)];
+        assert!(
+            !transfer_status_upgraded(&existing, &fetched),
+            "仍是待转存 → 无升级、不通知(防自激死循环)"
+        );
+    }
+
+    #[test]
+    fn transfer_upgrade_false_on_downgrade_and_no_pending() {
+        // 回退(2→1)不算升级(且会被 upsert 守卫拦下):不通知。
+        let existing = [att_row("m1", r#"[{"transferStatus":2}]"#)];
+        let fetched = [att_row("m1", r#"[{"transferStatus":1}]"#)];
+        assert!(!transfer_status_upgraded(&existing, &fetched), "回退不通知");
+        // 本地无任何 pending → 任何首页都不构成升级。
+        let existing2 = [att_row("m1", r#"[{"transferStatus":2}]"#)];
+        let fetched2 = [att_row("m1", r#"[{"transferStatus":2}]"#)];
+        assert!(!transfer_status_upgraded(&existing2, &fetched2));
+    }
+
+    #[test]
+    fn transfer_upgrade_false_when_other_message_changed() {
+        // 升级发生在另一条(m2),本地 pending 的是 m1 且首页里 m1 仍 pending → 不通知。
+        let existing = [att_row("m1", r#"[{"transferStatus":1}]"#)];
+        let fetched = [att_row("m2", r#"[{"transferStatus":2}]"#)];
+        assert!(!transfer_status_upgraded(&existing, &fetched));
+    }
+
     #[test]
     fn parse_server_time_known() {
         let got = parse_server_time_to_ms("2026-05-17 10:01:23");
@@ -784,6 +880,7 @@ mod tests {
             send_status: 3,
             message_time: "2020-01-01 00:00:00".into(),
             sort_key: "1715836200000:abc".into(),
+            synced_from_other_device: false,
             attachments: vec![],
             gmt_modified_time: "".into(),
             revoked: false,
@@ -806,6 +903,7 @@ mod tests {
             send_status: 3,
             message_time: t.into(),
             sort_key: sk.into(),
+            synced_from_other_device: false,
             attachments: vec![],
             gmt_modified_time: "".into(),
             revoked: false,
@@ -906,6 +1004,7 @@ mod tests {
             sort_key: "1780571140000_00000000000011975805_2062490980266803200".into(),
             message_time_ms: 1_780_571_140_000,
             message_direction: 1,
+            source_direction: 2,
             message_type: 2,
             content_text: "".into(),
             send_status: 0,
@@ -945,6 +1044,7 @@ mod tests {
             send_status: 3,
             message_time: "2026-05-30 10:00:00".into(),
             sort_key: "1780000000000_x_m1".into(),
+            synced_from_other_device: false,
             attachments: vec![],
             gmt_modified_time: "".into(),
             revoked: false,
@@ -966,6 +1066,19 @@ mod tests {
             2,
             "3=多端同步方 → 本地 2(out)"
         );
+        // 源方向原样持久化(供 row_to_history 派生本地方向 + 多端同步标记,不再靠 sort_key)。
+        assert_eq!(
+            history_to_row(&mk(1), "c1", "u1", "wa1").source_direction,
+            1
+        );
+        assert_eq!(
+            history_to_row(&mk(2), "c1", "u1", "wa1").source_direction,
+            2
+        );
+        assert_eq!(
+            history_to_row(&mk(3), "c1", "u1", "wa1").source_direction,
+            3
+        );
     }
 
     #[test]
@@ -980,6 +1093,7 @@ mod tests {
             send_status: status,
             message_time: "2026-06-06 14:48:21".into(),
             sort_key: "1780728501000_00000000000005336575_2063150995537395712".into(),
+            synced_from_other_device: false,
             attachments: vec![],
             gmt_modified_time: "".into(),
             revoked: false,
@@ -998,15 +1112,19 @@ mod tests {
     }
 
     #[test]
-    fn row_to_history_normalizes_cached_source_direction_from_sort_key() {
+    fn row_to_history_derives_direction_and_synced_from_source_direction() {
+        // 真实 sort_key 是「13位ms_20位序列_id」下划线三段、不含方向段:故本地方向与「多端同步」
+        // 标记一律由持久化的 source_direction 派生,绝不解析 opaque 的 sort_key(用真实下划线 key
+        // 作样本,反向证明读路径不依赖它)。
         let mut row = MessageRow {
             local_message_id: "m1".into(),
             conversation_id: "c1".into(),
             employee_id: "u1".into(),
             wecom_account_id: "wa1".into(),
-            sort_key: "1770000000000:2:00000000000000009001:m1".into(),
+            sort_key: "1770000000000_00000000000000009001_m1".into(),
             message_time_ms: parse_server_time_to_ms("2026-05-30 10:00:00"),
-            message_direction: 2,
+            message_direction: 0,
+            source_direction: 2,
             message_type: 1,
             content_text: "hi".into(),
             send_status: 3,
@@ -1018,34 +1136,59 @@ mod tests {
             updated_at_ms: 0,
         };
 
+        // 源方向 2=客户/接收方 → 本地 in,非多端同步。
         assert_eq!(
             row_to_history(&row).message_direction,
             1,
-            "sort_key 第二段 2=客户/接收方,应返回本地 in"
+            "源方向 2 → 本地 in"
+        );
+        assert!(
+            !row_to_history(&row).synced_from_other_device,
+            "源方向 2(客户/接收方)非多端同步"
         );
 
-        row.sort_key = "1770000000000:1:00000000000000009001:m1".into();
-        row.message_direction = 1;
+        // 源方向 1=发送方(本端直发)→ 本地 out,非多端同步。
+        row.source_direction = 1;
         assert_eq!(
             row_to_history(&row).message_direction,
             2,
-            "sort_key 第二段 1=发送方,应返回本地 out"
+            "源方向 1 → 本地 out"
+        );
+        assert!(
+            !row_to_history(&row).synced_from_other_device,
+            "源方向 1(本端发送)非多端同步"
         );
 
-        row.sort_key = "1770000000000:3:00000000000000009001:m1".into();
-        row.message_direction = 1;
+        // 源方向 3=多端同步方 → 本地 out + synced_from_other_device=true(差异化样式据此触发)。
+        row.source_direction = 3;
         assert_eq!(
             row_to_history(&row).message_direction,
             2,
-            "sort_key 第二段 3=多端同步方,应返回本地 out"
+            "源方向 3 → 本地 out"
+        );
+        assert!(
+            row_to_history(&row).synced_from_other_device,
+            "源方向 3 → 多端同步,synced_from_other_device=true"
         );
 
-        row.sort_key = "legacy_sort_key_without_direction".into();
+        // 老库行(source_direction=0,V29 迁移前):回退到既有 message_direction 列(V20 已修正),
+        // 方向不受影响;无从判定多端同步 → false(下次 reconcile 经 upsert 回填源方向后自愈)。
+        row.source_direction = 0;
         row.message_direction = 2;
         assert_eq!(
             row_to_history(&row).message_direction,
             2,
-            "不可解析 sort_key 时保留本地 out,不能再按源方向把 2 翻成 in"
+            "老行 source_direction=0 → 回退 message_direction(out)"
+        );
+        assert!(
+            !row_to_history(&row).synced_from_other_device,
+            "老行无法判定多端同步 → false"
+        );
+        row.message_direction = 1;
+        assert_eq!(
+            row_to_history(&row).message_direction,
+            1,
+            "老行 source_direction=0 → 回退 message_direction(in)"
         );
     }
 
@@ -1059,6 +1202,7 @@ mod tests {
             send_status: 3,
             message_time: "2026-05-30 10:00:00".into(),
             sort_key: sort_key.into(),
+            synced_from_other_device: false,
             attachments: vec![],
             gmt_modified_time: "".into(),
             revoked: false,
@@ -1151,6 +1295,7 @@ mod tests {
             sort_key: format!("1780000000000_00000000000000000000_{local}"),
             message_time_ms: 1_780_000_000_000,
             message_direction: 2,
+            source_direction: 1,
             message_type: 1,
             content_text: "x".into(),
             send_status: 4,
@@ -1183,6 +1328,7 @@ mod tests {
             sort_key: "1780000000000_00000000000000000000_m1".into(), // 下划线三段,无冒号
             message_time_ms: 1_780_000_000_000,
             message_direction: 2,
+            source_direction: 0, // 老行(V29 迁移前):未知源方向 → 读路径回退 stored direction
             message_type: 1,
             content_text: "x".into(),
             send_status: 4,
@@ -1193,7 +1339,8 @@ mod tests {
             request_message_id: "m1".into(),
             updated_at_ms: 0,
         };
-        // split(':') 失效 → 回落 stored direction=2(out)。HistoryMessage.message_direction=2 即出站。
+        // 老行 source_direction=0 → 回落 stored direction=2(out)。HistoryMessage.message_direction=2 即出站。
+        // (sort_key 是真实下划线三段,不含方向段;读路径不再解析它。)
         assert_eq!(row_to_history(&r).message_direction, 2);
     }
 
@@ -1206,6 +1353,7 @@ mod tests {
             sort_key: format!("1780000000100_00000000000000000001_{local}"),
             message_time_ms: 1_780_000_000_100,
             message_direction: 1,
+            source_direction: 2,
             message_type: 1,
             content_text: "s".into(),
             send_status: status,
