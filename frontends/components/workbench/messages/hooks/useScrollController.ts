@@ -156,6 +156,10 @@ export function useScrollController({
   const historyPrependAppliedMessageCountRef = useRef<number | null>(null);
   // prepend 后有限重断言锚点的 rAF 句柄(见锚点恢复 layout effect)。
   const reassertRafRef = useRef<number | null>(null);
+  // 首屏 snap-to-latest 的有界重断言 rAF 句柄(虚拟化下 measureElement 实测会在随后若干帧改变
+  // getTotalSize → scrollHeight,单次 snap 会停在"估高底",故逐帧重钉到底直到测量稳定)。与 prepend
+  // 重断言互斥(首屏 pendingInitialScrollToLatest 期间 loadOlder 被守卫挡住),用独立句柄避免互相取消。
+  const snapReassertRafRef = useRef<number | null>(null);
   // 记录当前活动会话,给定时器/异步回调判断"我所属的会话是否还活着"。
   const activeConversationIdRef = useRef(conversation.id);
 
@@ -424,6 +428,8 @@ export function useScrollController({
     // 取消上个会话悬挂的重断言 rAF,防跨会话野回调改新会话 scrollTop。
     if (reassertRafRef.current != null) cancelAnimationFrame(reassertRafRef.current);
     reassertRafRef.current = null;
+    if (snapReassertRafRef.current != null) cancelAnimationFrame(snapReassertRafRef.current);
+    snapReassertRafRef.current = null;
     // 切会话也镜像写外部 atBottomRef:新会话首屏走 snap 到底,贴底真相重置为 true,
     // 使 useMessageHistory 首屏 readCache 走整窗塌缩(collapseToLatest=true)。
     newerLoadInFlightRef.current = false;
@@ -452,12 +458,42 @@ export function useScrollController({
       return true;
     };
 
+    // paint 前先到位一次。
     snap();
-    const rafId = requestAnimationFrame(() => {
-      if (!snap()) return;
-      pendingInitialScrollToLatestRef.current = false;
-    });
-    return () => cancelAnimationFrame(rafId);
+
+    // 有界重断言贴底:虚拟化下首屏按估高渲染,measureElement 实测会在随后若干帧把 getTotalSize
+    // (= spacer 高 = scrollHeight)改大/改小,单次 snap 会停在"估高底"而非"实测底"(表现为首开不在
+    // 最底)。故逐帧把 scrollTop 重钉到 scrollHeight,直到连续 REASSERT_STABLE_FRAMES 帧 scrollHeight
+    // 不再变(测量稳定)或达 REASSERT_MAX_FRAMES 硬停 —— 与 prepend 锚点重断言同款双上限,仅首开 ~100ms
+    // 窗口生效、窗口外静默。会话切换/卸载取消本 rAF(见上下 cleanup)。
+    if (snapReassertRafRef.current != null) cancelAnimationFrame(snapReassertRafRef.current);
+    let frames = 0;
+    let stable = 0;
+    let lastHeight = node.scrollHeight;
+    const reassertBottom = () => {
+      const current = scrollRef.current;
+      if (!current || activeConversationIdRef.current !== conversation.id) {
+        snapReassertRafRef.current = null;
+        pendingInitialScrollToLatestRef.current = false;
+        return;
+      }
+      frames += 1;
+      const h = current.scrollHeight;
+      stable = Math.abs(h - lastHeight) <= SETTLE_SCROLLTOP_EPSILON ? stable + 1 : 0;
+      lastHeight = h;
+      current.scrollTop = h; // 始终重钉到底,吸收 measureElement 晚到的高度变化
+      if (stable >= REASSERT_STABLE_FRAMES || frames >= REASSERT_MAX_FRAMES) {
+        snapReassertRafRef.current = null;
+        pendingInitialScrollToLatestRef.current = false;
+        return;
+      }
+      snapReassertRafRef.current = requestAnimationFrame(reassertBottom);
+    };
+    snapReassertRafRef.current = requestAnimationFrame(reassertBottom);
+    return () => {
+      if (snapReassertRafRef.current != null) cancelAnimationFrame(snapReassertRafRef.current);
+      snapReassertRafRef.current = null;
+    };
   }, [conversation.id, error, loading, localMessages.length, setWasAtBottom]);
 
   useLayoutEffect(() => {
@@ -592,6 +628,8 @@ export function useScrollController({
     () => () => {
       if (reassertRafRef.current != null) cancelAnimationFrame(reassertRafRef.current);
       reassertRafRef.current = null;
+      if (snapReassertRafRef.current != null) cancelAnimationFrame(snapReassertRafRef.current);
+      snapReassertRafRef.current = null;
     },
     [],
   );
