@@ -117,6 +117,11 @@ export async function fetchMessageHistory(
 export interface CachedMessagesResp {
   records: HistoryMessage[];
   hasMoreOlder: boolean;
+  /**
+   * 本窗最新之后缓存里是否仍有更新行(窗口化往更新翻能力)。仅 `loadCachedWindow` 会返回真;
+   * 整窗读 / 往旧翻恒为 false。可选字段:老命令不返回时按 undefined(falsy)处理,向后兼容。
+   */
+  hasMoreNewer?: boolean;
 }
 
 /**
@@ -154,6 +159,29 @@ export async function loadOlderMessages(params: {
     {
       conversationId: params.conversationId,
       pageSize: params.pageSize,
+    },
+    HISTORY_TIMEOUT_MS,
+  );
+}
+
+/**
+ * 窗口化读:围绕锚点 `anchorSortKey` 取一段连续本地缓存(纯本地,不触发 reconcile、不走网络)。
+ * `after>0` 取锚点更新方向 N 条;`before>0` 取更旧方向 N 条;`anchorSortKey=""` 取最新尾窗。
+ * 返回升序 records + `hasMoreOlder`/`hasMoreNewer` 两端边界标志。
+ */
+export async function loadCachedWindow(params: {
+  conversationId: string;
+  anchorSortKey: string;
+  before?: number;
+  after?: number;
+}): Promise<CachedMessagesResp> {
+  return invokeWithTimeout<CachedMessagesResp>(
+    "load_cached_window",
+    {
+      conversationId: params.conversationId,
+      anchorSortKey: params.anchorSortKey,
+      before: params.before,
+      after: params.after,
     },
     HISTORY_TIMEOUT_MS,
   );

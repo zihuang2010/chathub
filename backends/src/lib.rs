@@ -386,12 +386,15 @@ async fn fetch_message_history(
 
 // ============================== message 本地缓存(秒开 + 会话水位门)==============================
 
-/// 缓存优先的消息读取响应:升序 records(早→晚,前端直接渲染)+ 是否还有更老。
+/// 缓存优先的消息读取响应:升序 records(早→晚,前端直接渲染)+ 是否还有更老/更新。
+/// `has_more_newer` 仅窗口化读(`load_cached_window`)会置真;整窗读(`load_conversation_messages`)
+/// 与往旧翻(`load_older_messages`)恒为 false(整窗已含到缓存最新,无更新可翻),前端可选字段向后兼容。
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct CachedMessagesResp {
     records: Vec<HistoryMessage>,
     has_more_older: bool,
+    has_more_newer: bool,
 }
 
 /// 缓存优先读一条会话首屏 + 会话水位门(决定是否后台重对齐)。
@@ -435,6 +438,7 @@ async fn load_conversation_messages(
             return Ok(CachedMessagesResp {
                 records: Vec::new(),
                 has_more_older: false,
+                has_more_newer: false,
             })
         }
     };
@@ -580,6 +584,8 @@ async fn load_conversation_messages(
     Ok(CachedMessagesResp {
         records,
         has_more_older,
+        // 整窗读已含到缓存最新,无「更新可翻」;窗口化往更新翻是 load_cached_window 的职责。
+        has_more_newer: false,
     })
 }
 
@@ -599,6 +605,7 @@ async fn load_older_messages(
             return Ok(CachedMessagesResp {
                 records: Vec::new(),
                 has_more_older: false,
+                has_more_newer: false,
             })
         }
     };
@@ -614,6 +621,109 @@ async fn load_older_messages(
     Ok(CachedMessagesResp {
         records,
         has_more_older: result.has_more_older,
+        // 往旧翻不涉及「更新方向」,恒 false。
+        has_more_newer: false,
+    })
+}
+
+/// 窗口化读:围绕锚点 `anchor_sort_key` 取一段连续本地缓存(纯本地,**不触发 reconcile、不走网络**)。
+///
+/// 参数语义(对称、单命令带方向):
+///   - `after>0`:取锚点更新方向 `after` 条(`list_newer`,升序);
+///   - `before>0`:取锚点更旧方向 `before` 条(`list_older_than`,反转升序);
+///   - `anchor_sort_key=""`:无锚点 = 取最新尾窗,复用 `list_conversation_asc` 取尾 N
+///     (N=after>0 ? after : before),贴底首屏窗。
+///
+/// 边界标志(供前端判定是否还能继续翻):
+///   - `has_more_older`:本窗最旧 sort_key 之前缓存里仍有更旧行,**或** window.has_more_older
+///     (后者表示缓存底之下服务端还有可网络扩缓存的更旧页)。
+///   - `has_more_newer`:本窗最新 sort_key 之后缓存里仍有更新行(纯本地,不涉服务端)。
+/// 未登录返回空结果。
+#[tauri::command]
+async fn load_cached_window(
+    messages_store: State<'_, MessagesStore>,
+    auth_api: State<'_, Arc<AuthApi>>,
+    image_prefetcher: State<'_, image_prefetch::ImagePrefetcher>,
+    conversation_id: String,
+    anchor_sort_key: String,
+    before: Option<u32>,
+    after: Option<u32>,
+) -> Result<CachedMessagesResp, AuthError> {
+    let employee_id = match auth_api.current_session().await? {
+        Some(p) => p.user_id,
+        None => {
+            return Ok(CachedMessagesResp {
+                records: Vec::new(),
+                has_more_older: false,
+                has_more_newer: false,
+            })
+        }
+    };
+    let before = before.unwrap_or(0).clamp(0, 200) as usize;
+    let after = after.unwrap_or(0).clamp(0, 200) as usize;
+
+    // 取一段升序行:无锚点 → 尾窗(取尾 N);after>0 → 更新方向;否则 before>0 → 更旧方向。
+    let rows = if anchor_sort_key.is_empty() {
+        // 尾窗:N=after>0 ? after : before(两者任一即可,默认兜底 1)。
+        let n = if after > 0 { after } else { before }.max(1);
+        let mut all = messages_store
+            .list_conversation_asc(&employee_id, &conversation_id)
+            .await
+            .map_err(messages_err)?;
+        // list_conversation_asc 已升序;取尾 N(不足则全取)。
+        if all.len() > n {
+            all.split_off(all.len() - n)
+        } else {
+            all
+        }
+    } else if after > 0 {
+        messages_store
+            .list_newer(&employee_id, &conversation_id, &anchor_sort_key, after)
+            .await
+            .map_err(messages_err)?
+    } else {
+        messages_store
+            .list_older_than(&employee_id, &conversation_id, &anchor_sort_key, before)
+            .await
+            .map_err(messages_err)?
+    };
+
+    // 边界探测:本窗为空时无从判断更旧/更新,均回退 false(让前端按需另行触底拉)。
+    let (mut has_more_older, mut has_more_newer) = (false, false);
+    if let (Some(first), Some(last)) = (rows.first(), rows.last()) {
+        // 本窗最旧之前缓存里是否仍有更旧行(取 1 条探存在性)。
+        has_more_older = !messages_store
+            .list_older_than(&employee_id, &conversation_id, &first.sort_key, 1)
+            .await
+            .map_err(messages_err)?
+            .is_empty();
+        // 本窗最新之后缓存里是否仍有更新行。
+        has_more_newer = !messages_store
+            .list_newer(&employee_id, &conversation_id, &last.sort_key, 1)
+            .await
+            .map_err(messages_err)?
+            .is_empty();
+    }
+    // 缓存底之下服务端是否还有更旧页(window.has_more_older)→ 也算「能继续往旧翻」。
+    if !has_more_older {
+        has_more_older = messages_store
+            .get_window(&employee_id, &conversation_id)
+            .await
+            .map_err(messages_err)?
+            .map(|w| w.has_more_older)
+            .unwrap_or(false);
+    }
+
+    let mut records: Vec<HistoryMessage> = rows.iter().map(row_to_history).collect();
+    // 注入图片元数据（本地宽高 + 缩略图路径）；缺失的后台预取（best-effort）。
+    image_prefetcher
+        .enrich_and_prefetch(&mut records, &conversation_id, &employee_id)
+        .await;
+
+    Ok(CachedMessagesResp {
+        records,
+        has_more_older,
+        has_more_newer,
     })
 }
 
@@ -1887,7 +1997,7 @@ pub fn run() {
             set_conversation_pinned, set_conversation_draft, set_conversation_removed,
             set_conversation_muted, mark_conversation_read,
             fetch_message_history,
-            load_conversation_messages, load_older_messages, clear_chat_messages,
+            load_conversation_messages, load_older_messages, load_cached_window, clear_chat_messages,
             send_message, upload_attachment, persist_outbox_failure, clear_outbox_row,
             list_quick_replies, create_quick_reply, update_quick_reply, delete_quick_reply,
             media::download_attachment, media::fetch_media_bytes, media::read_local_file,

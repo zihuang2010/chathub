@@ -306,6 +306,86 @@ impl MessagesStore {
         Ok(rows)
     }
 
+    /// 读「锚点更新」方向的本地缓存行:`sort_key > after_sort_key`,升序返回(早→晚),
+    /// 取最贴近锚点的 `limit` 条。窗口化「往更新翻」纯本地读(数据早已落库,不碰网络)。
+    /// `>` 为严格大于(不含等于锚点本身),命中现有索引 `idx_hub_msgs_conv_sort`。
+    /// `employee_id` 强制过滤。
+    pub async fn list_newer(
+        &self,
+        employee_id: &str,
+        conversation_id: &str,
+        after_sort_key: &str,
+        limit: usize,
+    ) -> Result<Vec<MessageRow>, StateError> {
+        let employee_id = employee_id.to_string();
+        let conversation_id = conversation_id.to_string();
+        let after_sort_key = after_sort_key.to_string();
+        let limit = limit as i64;
+        let conn = self.pool.pool().get().await?;
+        let rows = conn
+            .interact(move |c| -> Result<Vec<MessageRow>, StateError> {
+                let mut stmt = c.prepare(
+                    "SELECT local_message_id, conversation_id, employee_id, wecom_account_id, sort_key, \
+                            message_time_ms, message_direction, message_type, content_text, send_status, \
+                            attachments_json, gmt_modified_time, revoked, fail_reason, request_message_id, \
+                            updated_at_ms, source_direction \
+                     FROM hub_conversation_messages \
+                     WHERE employee_id = ?1 AND conversation_id = ?2 AND sort_key > ?3 \
+                     ORDER BY sort_key ASC LIMIT ?4",
+                )?;
+                let rows = stmt
+                    .query_map(
+                        rusqlite::params![employee_id, conversation_id, after_sort_key, limit],
+                        map_row,
+                    )?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                Ok(rows)
+            })
+            .await??;
+        Ok(rows)
+    }
+
+    /// 读「锚点更旧」方向的本地缓存行:`sort_key < before_sort_key`,取最贴近锚点的 `limit` 条。
+    /// SQL 用 `ORDER BY sort_key DESC LIMIT` 取近锚点的更旧 N 条,再**反转成升序**返回(早→晚),
+    /// 与 `list_conversation_asc`/前端渲染一致。`<` 为严格小于(不含等于锚点本身),命中现有索引
+    /// `idx_hub_msgs_conv_sort`。`employee_id` 强制过滤。
+    pub async fn list_older_than(
+        &self,
+        employee_id: &str,
+        conversation_id: &str,
+        before_sort_key: &str,
+        limit: usize,
+    ) -> Result<Vec<MessageRow>, StateError> {
+        let employee_id = employee_id.to_string();
+        let conversation_id = conversation_id.to_string();
+        let before_sort_key = before_sort_key.to_string();
+        let limit = limit as i64;
+        let conn = self.pool.pool().get().await?;
+        let rows = conn
+            .interact(move |c| -> Result<Vec<MessageRow>, StateError> {
+                let mut stmt = c.prepare(
+                    "SELECT local_message_id, conversation_id, employee_id, wecom_account_id, sort_key, \
+                            message_time_ms, message_direction, message_type, content_text, send_status, \
+                            attachments_json, gmt_modified_time, revoked, fail_reason, request_message_id, \
+                            updated_at_ms, source_direction \
+                     FROM hub_conversation_messages \
+                     WHERE employee_id = ?1 AND conversation_id = ?2 AND sort_key < ?3 \
+                     ORDER BY sort_key DESC LIMIT ?4",
+                )?;
+                let mut rows = stmt
+                    .query_map(
+                        rusqlite::params![employee_id, conversation_id, before_sort_key, limit],
+                        map_row,
+                    )?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                // DESC 取到的是「最贴近锚点的更旧 N 条(晚→早)」,反转成升序(早→晚)返回。
+                rows.reverse();
+                Ok(rows)
+            })
+            .await??;
+        Ok(rows)
+    }
+
     /// 发送路径引导:确保会话有一扇窗(bootstrap 热会话),使后续 push 气泡不被冷会话门控跳过。
     /// 已存在则不动;不存在则建空窗(newest/oldest/older_cursor 空串、has_more_older=true 保守、
     /// newest_message_time_ms=0、时间戳取 now)。INSERT OR IGNORE 幂等。
@@ -732,6 +812,136 @@ mod tests {
                 .is_empty(),
             "employee_id 隔离"
         );
+    }
+
+    #[tokio::test]
+    async fn list_newer_returns_ascending_strictly_greater() {
+        // 升序正确 + 边界:`>` 严格大于,等于锚点 sort_key 的行不返回。
+        let pool = SqlitePool::in_memory().await.unwrap();
+        let store = MessagesStore::new(pool);
+        store
+            .upsert_messages(&[
+                sample_row("c1", "m1", "sort_0001", 100),
+                sample_row("c1", "m2", "sort_0002", 200),
+                sample_row("c1", "m3", "sort_0003", 300),
+                sample_row("c1", "m4", "sort_0004", 400),
+            ])
+            .await
+            .unwrap();
+        // 锚点 sort_0002:严格大于 → 只含 m3、m4(不含等于锚点的 m2)。
+        let got = store
+            .list_newer("u-1", "c1", "sort_0002", 10)
+            .await
+            .unwrap();
+        let ids: Vec<_> = got.iter().map(|r| r.local_message_id.as_str()).collect();
+        assert_eq!(ids, ["m3", "m4"], "升序 + 严格大于(不含等于锚点)");
+    }
+
+    #[tokio::test]
+    async fn list_newer_limit_truncates_keeping_nearest_to_anchor() {
+        // limit 截断:取最贴近锚点的更新 N 条(升序中靠前者)。
+        let pool = SqlitePool::in_memory().await.unwrap();
+        let store = MessagesStore::new(pool);
+        store
+            .upsert_messages(&[
+                sample_row("c1", "m1", "sort_0001", 100),
+                sample_row("c1", "m2", "sort_0002", 200),
+                sample_row("c1", "m3", "sort_0003", 300),
+                sample_row("c1", "m4", "sort_0004", 400),
+            ])
+            .await
+            .unwrap();
+        let got = store.list_newer("u-1", "c1", "sort_0001", 2).await.unwrap();
+        let ids: Vec<_> = got.iter().map(|r| r.local_message_id.as_str()).collect();
+        assert_eq!(ids, ["m2", "m3"], "limit=2:取最贴近锚点的更新 2 条,升序");
+    }
+
+    #[tokio::test]
+    async fn list_newer_empty_when_anchor_at_top() {
+        // 空结果:锚点已是最新,无更新行。
+        let pool = SqlitePool::in_memory().await.unwrap();
+        let store = MessagesStore::new(pool);
+        store
+            .upsert_messages(&[
+                sample_row("c1", "m1", "sort_0001", 100),
+                sample_row("c1", "m2", "sort_0002", 200),
+            ])
+            .await
+            .unwrap();
+        let got = store
+            .list_newer("u-1", "c1", "sort_0002", 10)
+            .await
+            .unwrap();
+        assert!(got.is_empty(), "锚点已是最新 → 无更新行");
+    }
+
+    #[tokio::test]
+    async fn list_older_than_returns_ascending_strictly_less() {
+        // older_than 反转后确为升序 + 边界:`<` 严格小于,等于锚点的行不返回。
+        let pool = SqlitePool::in_memory().await.unwrap();
+        let store = MessagesStore::new(pool);
+        store
+            .upsert_messages(&[
+                sample_row("c1", "m1", "sort_0001", 100),
+                sample_row("c1", "m2", "sort_0002", 200),
+                sample_row("c1", "m3", "sort_0003", 300),
+                sample_row("c1", "m4", "sort_0004", 400),
+            ])
+            .await
+            .unwrap();
+        // 锚点 sort_0003:严格小于 → m1、m2,且 DESC 取后反转必须升序(m1 在前)。
+        let got = store
+            .list_older_than("u-1", "c1", "sort_0003", 10)
+            .await
+            .unwrap();
+        let ids: Vec<_> = got.iter().map(|r| r.local_message_id.as_str()).collect();
+        assert_eq!(ids, ["m1", "m2"], "反转后升序 + 严格小于(不含等于锚点)");
+    }
+
+    #[tokio::test]
+    async fn list_older_than_limit_truncates_keeping_nearest_to_anchor() {
+        // limit 截断:取最贴近锚点的更旧 N 条;反转后仍为升序。
+        let pool = SqlitePool::in_memory().await.unwrap();
+        let store = MessagesStore::new(pool);
+        store
+            .upsert_messages(&[
+                sample_row("c1", "m1", "sort_0001", 100),
+                sample_row("c1", "m2", "sort_0002", 200),
+                sample_row("c1", "m3", "sort_0003", 300),
+                sample_row("c1", "m4", "sort_0004", 400),
+            ])
+            .await
+            .unwrap();
+        // 锚点 sort_0004,limit=2:最贴近锚点的更旧 2 条是 m2、m3,反转升序 → [m2, m3]。
+        let got = store
+            .list_older_than("u-1", "c1", "sort_0004", 2)
+            .await
+            .unwrap();
+        let ids: Vec<_> = got.iter().map(|r| r.local_message_id.as_str()).collect();
+        assert_eq!(
+            ids,
+            ["m2", "m3"],
+            "limit=2:取最贴近锚点的更旧 2 条,反转升序"
+        );
+    }
+
+    #[tokio::test]
+    async fn list_older_than_empty_when_anchor_at_bottom() {
+        // 空结果:锚点已是最旧,无更旧行。
+        let pool = SqlitePool::in_memory().await.unwrap();
+        let store = MessagesStore::new(pool);
+        store
+            .upsert_messages(&[
+                sample_row("c1", "m1", "sort_0001", 100),
+                sample_row("c1", "m2", "sort_0002", 200),
+            ])
+            .await
+            .unwrap();
+        let got = store
+            .list_older_than("u-1", "c1", "sort_0001", 10)
+            .await
+            .unwrap();
+        assert!(got.is_empty(), "锚点已是最旧 → 无更旧行");
     }
 
     #[tokio::test]
