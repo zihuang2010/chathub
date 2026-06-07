@@ -36,11 +36,11 @@ import {
 
 const DEFAULT_PAGE_SIZE = 20;
 
-// Stage C 数据窗口化:JS store 只保留围绕锚点的有界窗口(约 3 屏),单会话上万条时对象数恒定。
-// 窗口翻页(loadNewer/loadMore)以小页 OLDER_PAGE_SIZE(=10)推进,撑到超此预算即从远端裁剪
-// (dropFromTop/dropFromBottom)。budget 留足滞回(裁到 budget 而非 budget-1),避免临界值反复
-// 抖动 drop/rehydrate。
-const WINDOW_BUDGET = 240;
+// Stage C 数据窗口化:JS store 只保留围绕锚点的有界窗口,单会话上万条时对象数恒定。窗口翻页
+// (loadNewer/loadMore)以 OLDER_PAGE_SIZE(=20)推进,撑到超此预算即从远端裁剪(dropFromTop/
+// dropFromBottom)。取 480(≈数屏 + 滞回):上滑翻历史时较少触发尾部裁剪(裁剪改 totalSize 易在上滑期
+// 制造可见跳),而 480 条轻量对象内存仍恒定有界;裁到 budget 而非 budget-1,避免临界反复抖动 drop。
+const WINDOW_BUDGET = 480;
 
 export interface UseMessageHistoryOptions {
   wecomAccountId: string;

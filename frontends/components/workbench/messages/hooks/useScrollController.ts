@@ -36,6 +36,12 @@ import type { ScrollMetrics } from "../WorkbenchScrollArea";
 const prefetchThreshold = (clientHeight: number): number =>
   Math.max(HISTORY_PREFETCH_MIN_PX, clientHeight);
 
+// 程序化 scrollTop 写后的自激抑制窗(ms):任何手动(snap/prepend 锚点)或 react-virtual scrollAdjustment
+// 对 scrollTop 的写都会派发原生 scroll 事件回灌 handleUserScroll,而 WorkbenchScrollArea 无法区分
+// user/programmatic。写后此窗内 handleUserScroll 跳过预取触发(只更新 pill),掐断「写→scroll→预取→
+// 再 prepend→再写」的自激环。~100ms 罩住一次 prepend 后手动写 + 库逐行补偿写的回声。
+const SUPPRESS_PREFETCH_MS = 100;
+
 interface PrependAnchor {
   conversationId: string;
   messageCount: number;
@@ -158,6 +164,12 @@ export function useScrollController({
   // getTotalSize → scrollHeight,单次 snap 会停在"估高底",故逐帧重钉到底直到测量稳定)。与 prepend
   // 重断言互斥(首屏 pendingInitialScrollToLatest 期间 loadOlder 被守卫挡住),用独立句柄避免互相取消。
   const snapReassertRafRef = useRef<number | null>(null);
+  // 上滑预取「边沿触发 + 消费门」:一次进入预取区只加载一页,直到 scrollTop 离开预取区(>阈值)再进入
+  // 才放下一页(微信式「滑到顶加载一页,需往回看再上滑才加载下一页」)。防 Stage C 本地瞬时读 + 程序化
+  // 自激导致的「一次上滑狂加载多页」。离开预取区 → 重新武装。切会话重置为 true。
+  const olderPrefetchArmedRef = useRef(true);
+  // 程序化写 scrollTop 后的自激抑制截止时刻(performance.now 基准);见 SUPPRESS_PREFETCH_MS。
+  const suppressPrefetchUntilRef = useRef(0);
   // 记录当前活动会话,给定时器/异步回调判断"我所属的会话是否还活着"。
   const activeConversationIdRef = useRef(conversation.id);
 
@@ -287,7 +299,14 @@ export function useScrollController({
   // + 有界重断言)即可让当前视口纹丝不动,无需再靠停稳门控规避边界处的惯性冲突。
   const maybeLoadOlderHistory = useCallback(
     (m: ScrollMetrics) => {
-      if (m.scrollTop > prefetchThreshold(m.clientHeight)) return;
+      // 边沿触发 + 消费门:离开预取区即重新武装;进区且已武装才加载一页并消耗武装;进区但未武装(本次进区
+      // 已加载过)→ 不再发。须先滚出预取区(>阈值)再滚回,才放下一页。
+      if (m.scrollTop > prefetchThreshold(m.clientHeight)) {
+        olderPrefetchArmedRef.current = true;
+        return;
+      }
+      if (!olderPrefetchArmedRef.current) return;
+      olderPrefetchArmedRef.current = false;
       loadOlderHistoryAtBoundary();
     },
     [loadOlderHistoryAtBoundary],
@@ -322,9 +341,16 @@ export function useScrollController({
       if (event.deltaY >= 0) return;
       const node = scrollRef.current;
       if (!node) return;
-      if (node.scrollTop > prefetchThreshold(node.clientHeight)) return;
+      // 同 maybeLoadOlderHistory 的边沿门(共用 olderPrefetchArmedRef):离开预取区重新武装,进区且已武装
+      // 才加载一页并消耗武装。防一次上滑(连续 wheel)在预取区内狂发多页。
+      if (node.scrollTop > prefetchThreshold(node.clientHeight)) {
+        olderPrefetchArmedRef.current = true;
+        return;
+      }
+      if (!olderPrefetchArmedRef.current) return;
+      olderPrefetchArmedRef.current = false;
       // 进入预取区即后台加载,但**不** preventDefault —— 提前预取要让原生滚动顺畅继续(用户
-      // 可一路上滚,数据在背后就位)。重复触发由 loadOlderHistoryAtBoundary 的守卫吸收。
+      // 可一路上滚,数据在背后就位)。
       loadOlderHistoryAtBoundary();
     },
     [loadOlderHistoryAtBoundary],
@@ -347,8 +373,13 @@ export function useScrollController({
       const divider = unreadDividerRef.current;
       const viewport = scrollRef.current;
       if (!viewport) return;
-      maybeLoadOlderHistory(m);
-      maybeLoadNewerHistory(m);
+      // 自激抑制:程序化写 scrollTop(snap/prepend 锚点/react-virtual 补偿)派发的 scroll 回声落在此窗内
+      // 时,只更新 pill、绝不触发预取 —— 否则「写→scroll→预取→prepend→再写」自激狂加载。用户真实滚动
+      // 不在此窗内,正常触发(边沿门再保证一次进区只一页)。
+      if (performance.now() >= suppressPrefetchUntilRef.current) {
+        maybeLoadOlderHistory(m);
+        maybeLoadNewerHistory(m);
+      }
 
       // 三态:true=在视口上方(用户还没看到),false=已可见/在下方,null=无从判定(等同无 divider)。
       let dividerAbove: boolean | null;
@@ -420,6 +451,8 @@ export function useScrollController({
   useLayoutEffect(() => {
     activeConversationIdRef.current = conversation.id;
     pendingInitialScrollToLatestRef.current = true;
+    // 切会话:预取边沿门重新武装(新会话首次进预取区可加载一页)。
+    olderPrefetchArmedRef.current = true;
     prependAnchorRef.current = null;
     historyLoadInFlightRef.current = false;
     historyPrependAppliedMessageCountRef.current = null;
@@ -477,6 +510,9 @@ export function useScrollController({
       const h = current.scrollHeight;
       stable = Math.abs(h - lastHeight) <= SETTLE_SCROLLTOP_EPSILON ? stable + 1 : 0;
       lastHeight = h;
+      // 首屏 snap 写在「底部区域」,其 scroll 回声落在底部:maybeLoadOlderHistory 因 scrollTop>阈值只
+      // 重新武装(不加载)、maybeLoadNewerHistory 在底部 atCacheBottom 守卫下 no-op,均无害,故**不**设
+      // suppress(否则会误抑制用户首开后立即上滑的真实预取)。suppress 只用于「顶部区域」的 prepend 写。
       current.scrollTop = h; // 始终重钉到底,吸收 measureElement 晚到的高度变化
       if (stable >= REASSERT_STABLE_FRAMES || frames >= REASSERT_MAX_FRAMES) {
         snapReassertRafRef.current = null;
@@ -529,6 +565,9 @@ export function useScrollController({
     // 随后那批新行被 measureElement 实测时的「估高→实测」差,交给 react-virtual 原生 scrollAdjustment
     // 自动补偿(见 ChatArea 注释)——单一 scrollTop 写者,不再用逐帧重断言与库对打(那正是上滑闪 + 翻页
     // 跳的根源)。jsdom/无虚拟器路径走 targetFor 闭式回退,prepend 单测断言 scrollTop 不变。
+    // 抑制本次手动写 + 随后 react-virtual 逐行补偿写的 scroll 回声触发预取(否则锚点恢复后 scrollTop 通常
+    // 仍在预取区内 → 自激狂加载)。窗口罩住整个 prepend 沉降。
+    suppressPrefetchUntilRef.current = performance.now() + SUPPRESS_PREFETCH_MS;
     node.scrollTop = targetFor(node);
 
     // 锚点清理 / prepend 标记 / atBottom 同步(不碰 scrollTop;"新消息贴底跟随"effect 仍靠

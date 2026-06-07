@@ -244,9 +244,9 @@ describe("useMessageHistory loadNewer(Stage C 往更新翻窗口)", () => {
       await result.current.loadNewer();
     });
 
-    // 以 windowNewestSortKey(=m3)为 after 锚点纯本地读。
+    // 以 windowNewestSortKey(=m3)为 after 锚点纯本地读(after=OLDER_PAGE_SIZE=20)。
     expect(cachedWindowMock).toHaveBeenCalledWith(
-      expect.objectContaining({ conversationId: "c-newer", anchorSortKey: "m3", after: 10 }),
+      expect.objectContaining({ conversationId: "c-newer", anchorSortKey: "m3", after: 20 }),
     );
     // m4 追加进窗口;hasMoreNewer=false → atCacheBottom 回 true(触底停)。
     expect(result.current.messages.map((m) => m.id)).toEqual(["m1", "m2", "m3", "m4"]);

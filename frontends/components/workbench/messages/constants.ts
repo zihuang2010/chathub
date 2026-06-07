@@ -37,10 +37,10 @@ export const TIME_BURST_GAP_MS = 5 * 60 * 1000;
 export const COMPOSER_MAX_CHARS = 2000;
 export const COMPOSER_WARN_CHARS = 1800;
 
-// 翻更旧页每次条数。页越小,单次 prepend 撑高越少 → 残余惯性覆盖锚点的概率与幅度都更低,
-// 网络也更快。首屏仍走 useMessageHistory 的 DEFAULT_PAGE_SIZE(=20),保证首屏撑满视口可滚;
-// 只有"上滑翻更旧"这一步用本值,二者解耦(见 useMessageHistory.loadMore)。
-export const OLDER_PAGE_SIZE = 10;
+// 翻更旧页每次条数。取 20(≈一屏行数):配合上滑预取「边沿门一次进区只一页」,一次预取正好补满即将
+// 滑入的区域,不会「滑两下又触顶」频繁加载。锚定已交单一权威(react-virtual scrollAdjustment + 一次性
+// targetFor),页大不再有「单次撑高大→锚点易飘」的顾虑。首屏仍走 DEFAULT_PAGE_SIZE(=20),二者解耦。
+export const OLDER_PAGE_SIZE = 20;
 
 // 上拉预取提前量(px)。实际阈值取 max(本值, 一个视口高度) ≈ 一屏:距顶 ≤ 该阈值即后台加载更旧页。
 // 提前预取的意义在于 —— 数据在用户滚到顶**之前**就位、prepend 在「远离顶部边界、下方仍有滚动
