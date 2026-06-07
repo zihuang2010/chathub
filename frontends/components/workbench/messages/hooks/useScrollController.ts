@@ -154,8 +154,6 @@ export function useScrollController({
   const hasMoreNewerRef = useRef(hasMoreNewer);
   const onLoadNewerRef = useRef(onLoadNewer);
   const historyPrependAppliedMessageCountRef = useRef<number | null>(null);
-  // prepend 后有限重断言锚点的 rAF 句柄(见锚点恢复 layout effect)。
-  const reassertRafRef = useRef<number | null>(null);
   // 首屏 snap-to-latest 的有界重断言 rAF 句柄(虚拟化下 measureElement 实测会在随后若干帧改变
   // getTotalSize → scrollHeight,单次 snap 会停在"估高底",故逐帧重钉到底直到测量稳定)。与 prepend
   // 重断言互斥(首屏 pendingInitialScrollToLatest 期间 loadOlder 被守卫挡住),用独立句柄避免互相取消。
@@ -425,9 +423,7 @@ export function useScrollController({
     prependAnchorRef.current = null;
     historyLoadInFlightRef.current = false;
     historyPrependAppliedMessageCountRef.current = null;
-    // 取消上个会话悬挂的重断言 rAF,防跨会话野回调改新会话 scrollTop。
-    if (reassertRafRef.current != null) cancelAnimationFrame(reassertRafRef.current);
-    reassertRafRef.current = null;
+    // 取消上个会话悬挂的首屏 snap 重断言 rAF,防跨会话野回调改新会话 scrollTop。
     if (snapReassertRafRef.current != null) cancelAnimationFrame(snapReassertRafRef.current);
     snapReassertRafRef.current = null;
     // 切会话也镜像写外部 atBottomRef:新会话首屏走 snap 到底,贴底真相重置为 true,
@@ -528,11 +524,15 @@ export function useScrollController({
       return Math.max(0, n.scrollHeight - anchor.scrollHeight + anchor.scrollTop);
     };
 
-    // 1) paint 前单次到位。
+    // paint 前**一次性**对齐参照行:这一帧只补偿「prepend 使 count 变化、上方新增行的估高把锚点行
+    // 整体下推」的基础位移(react-virtual 不锚定 count 变化,只锚定 item resize),故这次手动写不可省。
+    // 随后那批新行被 measureElement 实测时的「估高→实测」差,交给 react-virtual 原生 scrollAdjustment
+    // 自动补偿(见 ChatArea 注释)——单一 scrollTop 写者,不再用逐帧重断言与库对打(那正是上滑闪 + 翻页
+    // 跳的根源)。jsdom/无虚拟器路径走 targetFor 闭式回退,prepend 单测断言 scrollTop 不变。
     node.scrollTop = targetFor(node);
 
-    // 锚点清理 / prepend 标记 / atBottom 同步 —— 时机与原逻辑一致,不依赖下面的重断言结果,
-    // 故"新消息贴底跟随"effect 仍靠 historyPrependAppliedMessageCountRef 跳过本次增长,行为不变。
+    // 锚点清理 / prepend 标记 / atBottom 同步(不碰 scrollTop;"新消息贴底跟随"effect 仍靠
+    // historyPrependAppliedMessageCountRef 跳过本次增长,行为不变)。
     prependAnchorRef.current = null;
     historyLoadInFlightRef.current = false;
     historyPrependAppliedMessageCountRef.current = localMessages.length;
@@ -540,40 +540,6 @@ export function useScrollController({
       node.scrollHeight - node.scrollTop - node.clientHeight < AT_BOTTOM_THRESHOLD;
     setWasAtBottom(nextAtBottom);
     setAtBottom((prev) => (prev === nextAtBottom ? prev : nextAtBottom));
-
-    // 2) 有界重断言:逐帧重新对齐参照行(快滚残余惯性、边界处晚到的高度变化都扳回)。WebKit 无
-    //    overflow-anchor 兜底,全靠这里。连续 REASSERT_STABLE_FRAMES 帧已对齐即停,或最多
-    //    REASSERT_MAX_FRAMES 帧硬停 —— 双上限,只在 prepend 后 ~100ms 窗口生效、窗口外静默,
-    //    绝不退化成此前被删掉的"持续逐帧稳定器"。会话切换/卸载取消本 rAF(见上下两处 cleanup)。
-    if (reassertRafRef.current != null) cancelAnimationFrame(reassertRafRef.current);
-    let frames = 0;
-    let stable = 0;
-    const reassert = () => {
-      const n = scrollRef.current;
-      if (!n || activeConversationIdRef.current !== conversation.id) {
-        reassertRafRef.current = null;
-        return;
-      }
-      frames += 1;
-      const target = targetFor(n);
-      if (Math.abs(n.scrollTop - target) > SETTLE_SCROLLTOP_EPSILON) {
-        n.scrollTop = target;
-        stable = 0;
-      } else {
-        stable += 1;
-      }
-      if (stable >= REASSERT_STABLE_FRAMES || frames >= REASSERT_MAX_FRAMES) {
-        reassertRafRef.current = null;
-        return;
-      }
-      reassertRafRef.current = requestAnimationFrame(reassert);
-    };
-    reassertRafRef.current = requestAnimationFrame(reassert);
-
-    return () => {
-      if (reassertRafRef.current != null) cancelAnimationFrame(reassertRafRef.current);
-      reassertRafRef.current = null;
-    };
   }, [conversation.id, loading, localMessages.length, setWasAtBottom]);
 
   const scrollToUnread = useCallback(() => {
@@ -623,11 +589,9 @@ export function useScrollController({
     }
   }, [localMessages, setWasAtBottom]);
 
-  // 卸载时取消悬挂的重断言 rAF,防野回调。
+  // 卸载时取消悬挂的首屏 snap 重断言 rAF,防野回调。
   useEffect(
     () => () => {
-      if (reassertRafRef.current != null) cancelAnimationFrame(reassertRafRef.current);
-      reassertRafRef.current = null;
       if (snapReassertRafRef.current != null) cancelAnimationFrame(snapReassertRafRef.current);
       snapReassertRafRef.current = null;
     },

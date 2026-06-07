@@ -244,14 +244,11 @@ export const ChatArea = memo(function ChatArea({
     getItemKey: (index) => timelineRowKey(timelineItems[index]),
     initialOffset: () => scrollElementRef.current?.scrollHeight ?? 0,
   });
-  // 关掉 react-virtual 的自动 scrollTop 锚定:它在「视口上方行 measureElement 实测高 ≠ 估高」时会
-  // 自作主张改写 scrollTop(scrollAdjustments)以「上方变高页面不跳」。但本列表已显式 [overflow-anchor:none]
-  // 主动接管锚定,且 useScrollController 用基于 DOM 实测行位置的手动锚定(snap 重断言 / prepend 参照行锚 /
-  // 有界重断言)。三个锚定器抢同一个 scrollTop → 上滑同帧拉锯=闪、翻页 prepend 时与手动重断言对打=跳。
-  // 返回 false:尺寸校正(itemSizeCache + notify)照常,仅不再触发 _scrollToOffset 改 scrollTop,由手动
-  // 锚定独占、行为可预测。这是上滑闪 + 翻页不丝滑的对症根治。该开关是 Virtualizer 实例公有属性、不在
-  // options 接口里(virtual-core 3.14.0 从实例读、非 options),故直接设到实例上;每次 render 设置幂等。
-  virtualizer.shouldAdjustScrollPositionOnItemSizeChange = () => false;
+  // 保留 react-virtual 原生 scrollAdjustment(默认开):它在「视口上方行 measureElement 实测高 ≠ 估高」
+  // 时自动把 delta 累加进 scrollTop,使可见内容稳定不跳 —— 这正是「上滑不闪 + 翻页 prepend 冻住」需要的
+  // 唯一补偿机制(virtual-core resizeItem)。曾尝试关掉它改用手动逐帧重断言,反而因「手动 + 库」双写打架
+  // 致上滑闪、且 prepend 上方新行异步实测后无人补偿致跳。现让 scrollTop 单一写者=react-virtual;手动侧
+  // 只在「count 变化(prepend)的一次性对齐」和「首屏 snap 贴底」这两个 react-virtual 不覆盖的正交场景写。
   virtualizerRef.current = virtualizer;
   // Stale drafts from a prior conversation are ignored at render time rather
   // than cleared via effect — keeps state mutations off the conversation-switch
