@@ -36,12 +36,6 @@ import {
 
 const DEFAULT_PAGE_SIZE = 20;
 
-// Stage C 数据窗口化:JS store 只保留围绕锚点的有界窗口,单会话上万条时对象数恒定。窗口翻页
-// (loadNewer/loadMore)以 OLDER_PAGE_SIZE(=20)推进,撑到超此预算即从远端裁剪(dropFromTop/
-// dropFromBottom)。取 480(≈数屏 + 滞回):上滑翻历史时较少触发尾部裁剪(裁剪改 totalSize 易在上滑期
-// 制造可见跳),而 480 条轻量对象内存仍恒定有界;裁到 budget 而非 budget-1,避免临界反复抖动 drop。
-const WINDOW_BUDGET = 480;
-
 export interface UseMessageHistoryOptions {
   wecomAccountId: string;
   externalUserId: string;
@@ -51,7 +45,7 @@ export interface UseMessageHistoryOptions {
   enabled?: boolean;
   pageSize?: number;
   /**
-   * Stage C:用户是否贴底的实时 ref(由 useScrollController 经 ChatArea/MessagesPage 镜像写入)。
+   * Stage C:用户是否贴底的实时 ref(由 ChatArea 的 Virtuoso 贴底回调经 MessagesPage 镜像写入)。
    * readCache 据它 + slice.atCacheBottom 决定 replaceAuthoritative 是整窗塌缩还是缝合 UPSERT。
    * 未传时按「恒贴底」(true)处理 —— 退化为现状整窗塌缩,向后兼容。
    */
@@ -64,10 +58,6 @@ export interface UseMessageHistoryResult {
   error: string | null;
   hasMore: boolean;
   loadMore: () => Promise<void>;
-  /** Stage C:往更新方向翻一页(纯本地读窗口,不走网络/不触发 reconcile)。 */
-  loadNewer: () => Promise<void>;
-  /** Stage C:窗口底是否=缓存最新(无更新可翻);滚动控制器据 !atCacheBottom 决定是否 loadNewer。 */
-  atCacheBottom: boolean;
   /** Stage C:窗口顶是否=缓存最旧且服务端无更旧(真正到顶);更旧方向门控据 !atCacheTop 放行 loadMore。 */
   atCacheTop: boolean;
   retry: () => void;
@@ -118,8 +108,6 @@ export function useMessageHistory(opts: UseMessageHistoryOptions): UseMessageHis
   const slice = useChatStore((s) => s.conversations[activeTargetKey]);
   const messages = useMemo(() => selectTimeline(slice), [slice]);
   const hasMore = slice?.hasMore ?? false;
-  // 空窗默认贴底(emptySlice 同义);窗口底=本地缓存最新,无更新可翻 → 滚动控制器据此停 loadNewer。
-  const atCacheBottom = slice?.atCacheBottom ?? true;
   // 窗口顶=缓存最旧且服务端无更旧(真正到顶)。默认 false(未知/有更旧):更旧门控宁可多放行一次本地
   // 空读、也不漏掉「被 dropFromTop 裁走但仍在 SQLite 的更旧行」;首屏塌缩路径会据 !hasMore 校正它。
   const atCacheTop = slice?.atCacheTop ?? false;
@@ -149,11 +137,10 @@ export function useMessageHistory(opts: UseMessageHistoryOptions): UseMessageHis
 
   // 丢弃过期响应:切会话后旧请求若回来晚了,不要写进 store。
   const targetKeyRef = useRef<string>("");
-  // 防重入三锁,互斥:首屏读 / 重读(readingRef)、翻更旧页(loadingOlderRef)、翻更新页
-  // (loadingNewerRef)。三者互斥防整窗 REPLACE 覆盖 prepend/append 的窗口操作。
+  // 防重入双锁,互斥:首屏读 / 重读(readingRef)、翻更旧页(loadingOlderRef)。两者互斥防
+  // 整窗 REPLACE 覆盖 prepend 的窗口操作。
   const readingRef = useRef(false);
   const loadingOlderRef = useRef(false);
-  const loadingNewerRef = useRef(false);
 
   // 缓存优先读整窗(首屏 / 重读)。同时踢一次后端会话水位门:落后则后台 reconcile,
   // reconcile 完成后会发 conversation-messages ChangeNotice → 再触发本函数重读。
@@ -161,9 +148,9 @@ export function useMessageHistory(opts: UseMessageHistoryOptions): UseMessageHis
   const readCache = useCallback(
     async (showLoading: boolean, opts?: { force?: boolean }) => {
       if (!ready) return;
-      // 与窗口翻页互斥:loadMore/loadNewer in-flight 时跳过后台重读,
-      // 否则重读的整窗 REPLACE 会覆盖掉刚 prepend/append 的窗口页。
-      if (readingRef.current || loadingOlderRef.current || loadingNewerRef.current) return;
+      // 与翻页互斥:loadMore in-flight 时跳过后台重读,
+      // 否则重读的整窗 REPLACE 会覆盖掉刚 prepend 的窗口页。
+      if (readingRef.current || loadingOlderRef.current) return;
       readingRef.current = true;
       const requestKey = activeTargetKey;
       // Stage C 塌缩 vs 缝合判定:贴底**且**窗口在缓存底 → 整窗塌缩到最新尾窗(现状);否则(用户
@@ -250,17 +237,10 @@ export function useMessageHistory(opts: UseMessageHistoryOptions): UseMessageHis
     });
   }, [ready, employeeId, wecomAccountId, readCache]);
 
-  // 往更旧翻一页:本地优先 + 触底网络扩缓存。Stage C 窗口化下不再「到 500 即停」,改为
-  // 「本地命中先 prependOlderWindow;本地空且服务端 has_more_older 才网络扩缓存」+ 超预算
-  // dropFromBottom(仅裁远离视口的较新真实尾、不裁未收敛乐观)。
+  // 往更旧翻一页:本地优先 + 触底网络扩缓存。窗口只增不减(迁 react-virtuoso 后砍掉数据窗口
+  // 化裁剪):本地命中先 prependOlderWindow;本地空且服务端 has_more_older 才网络扩缓存。
   const loadMore = useCallback(async () => {
-    if (
-      !ready ||
-      loading ||
-      loadingOlderRef.current ||
-      loadingNewerRef.current ||
-      readingRef.current
-    ) {
+    if (!ready || loading || loadingOlderRef.current || readingRef.current) {
       return;
     }
     loadingOlderRef.current = true;
@@ -295,11 +275,6 @@ export function useMessageHistory(opts: UseMessageHistoryOptions): UseMessageHis
       }
       if (older.length > 0) {
         useChatStore.getState().prependOlderWindow(requestKey, older, { atCacheTop });
-        // 超预算:从尾部裁较新真实行(不裁未收敛乐观尾部)。
-        const len = useChatStore.getState().conversations[requestKey]?.order.length ?? 0;
-        if (len > WINDOW_BUDGET) {
-          useChatStore.getState().dropFromBottom(requestKey, len - WINDOW_BUDGET);
-        }
       } else if (atCacheTop) {
         // 本地 + 服务端均已到顶(无行可 prepend),仍把 atCacheTop 锁存进 slice ——
         // 否则更旧门控 !atCacheTop 恒 true,用户停在顶部时每次预取都重复发 no-op
@@ -317,47 +292,6 @@ export function useMessageHistory(opts: UseMessageHistoryOptions): UseMessageHis
     // pageSize 仅首屏 readCache 用,loadMore 走 OLDER_PAGE_SIZE,故不入本 deps。
   }, [ready, loading, activeTargetKey, conversationId]);
 
-  // 往更新翻一页(Stage C):纯本地读窗口,不走网络、不触发 reconcile。窗口已 drop 出缓存底时
-  // 用于把较新行重新拉回。超预算从头部裁最旧行(dropFromTop)。
-  const loadNewer = useCallback(async () => {
-    if (
-      !ready ||
-      loading ||
-      loadingNewerRef.current ||
-      loadingOlderRef.current ||
-      readingRef.current
-    ) {
-      return;
-    }
-    const sliceNow = useChatStore.getState().conversations[activeTargetKey];
-    // 已在缓存底:无更新可翻。锚点空串(全乐观窗 / 空窗):无有效锚点,后端会取尾窗,语义不符
-    // 「往更新翻」,直接跳过。
-    if (!sliceNow || sliceNow.atCacheBottom || !sliceNow.windowNewestSortKey) return;
-    loadingNewerRef.current = true;
-    const requestKey = activeTargetKey;
-    try {
-      const resp = await loadCachedWindow({
-        conversationId,
-        anchorSortKey: sliceNow.windowNewestSortKey,
-        after: OLDER_PAGE_SIZE,
-      });
-      if (targetKeyRef.current !== requestKey) return;
-      const newer = adaptHistoryRecords(resp.records, conversationId);
-      useChatStore
-        .getState()
-        .appendNewerWindow(requestKey, newer, { atCacheBottom: !resp.hasMoreNewer });
-      const len = useChatStore.getState().conversations[requestKey]?.order.length ?? 0;
-      if (len > WINDOW_BUDGET) {
-        useChatStore.getState().dropFromTop(requestKey, len - WINDOW_BUDGET);
-      }
-    } catch (e) {
-      if (targetKeyRef.current !== requestKey) return;
-      useChatStore.getState().setError(requestKey, errorMessage(e));
-    } finally {
-      loadingNewerRef.current = false;
-    }
-  }, [ready, loading, activeTargetKey, conversationId]);
-
   const retry = useCallback(() => {
     useChatStore.getState().setError(activeTargetKey, null);
     void readCache(true);
@@ -369,8 +303,6 @@ export function useMessageHistory(opts: UseMessageHistoryOptions): UseMessageHis
     error,
     hasMore,
     loadMore,
-    loadNewer,
-    atCacheBottom,
     atCacheTop,
     retry,
     storeKey: activeTargetKey,

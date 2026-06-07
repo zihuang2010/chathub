@@ -21,10 +21,6 @@ export interface UseChatMessagesResult {
   retry: () => void;
   hasMore: boolean;
   loadMore: () => Promise<void>;
-  /** Stage C:往更新方向翻一页(纯本地窗口读)。 */
-  loadNewer: () => Promise<void>;
-  /** Stage C:窗口底是否=缓存最新;ChatArea 据 !atCacheBottom 决定近底是否 loadNewer。 */
-  atCacheBottom: boolean;
   /** Stage C:窗口顶是否=缓存最旧且服务端无更旧;更旧门控据 !atCacheTop 放行 loadMore。 */
   atCacheTop: boolean;
   storeKey: string;
@@ -62,8 +58,6 @@ export function useChatMessages({
     retry: real.retry,
     hasMore: real.hasMore,
     loadMore: real.loadMore,
-    loadNewer: real.loadNewer,
-    atCacheBottom: real.atCacheBottom,
     atCacheTop: real.atCacheTop,
     storeKey: real.storeKey,
   };

@@ -327,8 +327,6 @@ export function MessagesPage({
     error: messagesError,
     hasMore: hasMoreMessages,
     loadMore: loadMoreMessages,
-    loadNewer: loadNewerMessages,
-    atCacheBottom: messagesAtCacheBottom,
     atCacheTop: messagesAtCacheTop,
     retry: retryMessages,
     storeKey: chatStoreKey,
@@ -713,8 +711,6 @@ export function MessagesPage({
               onRetry={retryMessages}
               hasMoreHistory={hasMoreMessages || !messagesAtCacheTop}
               onLoadMoreHistory={loadMoreMessages}
-              hasMoreNewer={!messagesAtCacheBottom}
-              onLoadNewer={loadNewerMessages}
               atBottomRef={atBottomRef}
               onSendMessage={handleSendMessage}
               onLeaveMarkRead={markReadRecent}

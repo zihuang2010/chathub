@@ -9,7 +9,6 @@ import { useMessageHistory } from "./useMessageHistory";
 import {
   adaptHistoryRecords,
   type HistoryMessage,
-  loadCachedWindow,
   loadConversationMessages,
 } from "./messageHistory";
 
@@ -29,7 +28,6 @@ vi.mock("./messageHistory", () => ({
 
 const loadMock = vi.mocked(loadConversationMessages);
 const adaptMock = vi.mocked(adaptHistoryRecords);
-const cachedWindowMock = vi.mocked(loadCachedWindow);
 
 const READY = { wecomAccountId: "acct-1", externalUserId: "user-1" } as const;
 
@@ -205,86 +203,5 @@ describe("useMessageHistory resync 强制绕水位门 reconcile", () => {
     // 普通重读:force 必须是 false(走常规水位门)。
     const lastCall = loadMock.mock.calls[loadMock.mock.calls.length - 1];
     expect(lastCall?.[0]).toEqual(expect.objectContaining({ force: false }));
-  });
-});
-
-describe("useMessageHistory loadNewer(Stage C 往更新翻窗口)", () => {
-  // 首屏 readCache 用空 records(slice 建立、atCacheBottom=true);随后用 store dropFromBottom
-  // 造出「非缓存底」窗口态(atCacheBottom=false + windowNewestSortKey),再驱动 loadNewer。
-  async function mountHook(conversationId: string) {
-    loadMock.mockResolvedValue({ records: [], hasMoreOlder: false });
-    const view = renderHook(() => useMessageHistory({ ...READY, conversationId }));
-    await flush();
-    return view;
-  }
-
-  // 直接把窗口塞成 [m1, m2, m3] 且非缓存底(模拟上滚后 dropFromBottom 过的窗口)。
-  function seedNonBottomWindow(storeKey: string) {
-    const store = useChatStore.getState();
-    store.replaceAuthoritative(storeKey, [msg("m1"), msg("m2"), msg("m3"), msg("m4")], {
-      collapseToLatest: true,
-    });
-    // dropFromBottom 把 m4 裁掉 → atCacheBottom=false、windowNewestSortKey=m3。
-    store.dropFromBottom(storeKey, 1);
-  }
-
-  it("loadNewer 调 loadCachedWindow(after) 并 appendNewerWindow:尾部追加更新页 + 触底停", async () => {
-    const { result } = await mountHook("c-newer");
-    const storeKey = result.current.storeKey;
-    act(() => seedNonBottomWindow(storeKey));
-    expect(result.current.atCacheBottom).toBe(false);
-
-    cachedWindowMock.mockResolvedValue({
-      records: [msg("m4")] as unknown as HistoryMessage[],
-      hasMoreOlder: false,
-      hasMoreNewer: false,
-    });
-
-    await act(async () => {
-      await result.current.loadNewer();
-    });
-
-    // 以 windowNewestSortKey(=m3)为 after 锚点纯本地读(after=OLDER_PAGE_SIZE=20)。
-    expect(cachedWindowMock).toHaveBeenCalledWith(
-      expect.objectContaining({ conversationId: "c-newer", anchorSortKey: "m3", after: 20 }),
-    );
-    // m4 追加进窗口;hasMoreNewer=false → atCacheBottom 回 true(触底停)。
-    expect(result.current.messages.map((m) => m.id)).toEqual(["m1", "m2", "m3", "m4"]);
-    expect(result.current.atCacheBottom).toBe(true);
-  });
-
-  it("已在缓存底(atCacheBottom=true)时 loadNewer 守卫 return,不调 loadCachedWindow", async () => {
-    const { result } = await mountHook("c-bottom");
-    // 首屏整窗塌缩后 atCacheBottom=true。
-    expect(result.current.atCacheBottom).toBe(true);
-    cachedWindowMock.mockClear();
-
-    await act(async () => {
-      await result.current.loadNewer();
-    });
-    expect(cachedWindowMock).not.toHaveBeenCalled();
-  });
-
-  it("三锁互斥:loadNewer 触底停后 atCacheBottom=true,后续再调直接守卫 return(幂等)", async () => {
-    const { result } = await mountHook("c-mutex");
-    const storeKey = result.current.storeKey;
-    act(() => seedNonBottomWindow(storeKey));
-
-    cachedWindowMock.mockResolvedValue({
-      records: [msg("m4")] as unknown as HistoryMessage[],
-      hasMoreOlder: false,
-      hasMoreNewer: false,
-    });
-    await act(async () => {
-      await result.current.loadNewer();
-    });
-    expect(result.current.atCacheBottom).toBe(true);
-
-    // 已触底:再调 loadNewer 守卫直接 return(不再发 IPC)。
-    const callsAfterFirst = cachedWindowMock.mock.calls.length;
-    await act(async () => {
-      await result.current.loadNewer();
-    });
-    expect(cachedWindowMock.mock.calls.length).toBe(callsAfterFirst);
   });
 });
