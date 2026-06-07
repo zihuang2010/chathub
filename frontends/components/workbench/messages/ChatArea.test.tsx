@@ -777,11 +777,11 @@ describe("ChatArea virtual list sizing", () => {
       isFirstInBurst: true,
     });
 
-    // 媒体独占图片行额外高已按 isMediaOnly 降为 +12(不再统一 +60):无 dims 回退
-    // 192 + 12 = 204;有真实 dims 的宽图按比例更矮,短于回退盒。
+    // 媒体独占图片行额外高已按 isMediaOnly 降为 +12(不再统一 +60):无 dims 回退 192 + 12,
+    // 再加 burst 首条行间距 pt-12=48(isFirstInBurst:true)= 252;有真实 dims 的宽图按比例更矮。
     expect(wideImage).toBeLessThan(unknownImage);
     expect(tallImage).toBeGreaterThan(wideImage);
-    expect(unknownImage).toBe(204);
+    expect(unknownImage).toBe(192 + 12 + 48);
   });
 
   it("uses a smaller overscan window for image-dense histories", () => {
