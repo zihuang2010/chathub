@@ -18,7 +18,7 @@ import { cn } from "@/lib/utils";
 import { ChatEmptyState, ChatErrorState, ChatLoadingState } from "./ChatStates";
 import { ChatHeader } from "./ChatHeader";
 import { buildPolishContext } from "./composer/polishContext";
-import { COMPOSER_DEFAULT_HEIGHT } from "./constants";
+import { AT_BOTTOM_THRESHOLD, COMPOSER_DEFAULT_HEIGHT } from "./constants";
 import type { Conversation, Message, QuickReply } from "./data";
 import { useChatActions, type SendMessageOptions } from "./hooks/useChatActions";
 import { useChatTimeline } from "./hooks/useChatTimeline";
@@ -228,14 +228,24 @@ export const ChatArea = memo(function ChatArea({
   //     经 setScrollNode 写入),不另建容器 → 保留 ScrollMetrics/ResizeObserver/overscroll 通道。
   //   - estimateSize 复用 virtualListSizing.estimateTimelineRowHeight(图片行接 dims 缓存、
   //     与渲染盒对齐),杜绝写死常数引起的首帧大幅校正「整列下沉」(上次回退主因)。
-  //   - getItemKey=clientMsgId??id(timelineRowKey),保乐观→权威收敛零 remount、发图不闪。
+  //   - getItemKey=clientMsgId??id(timelineRowKey,anchorTo 必需的稳定 key):保乐观→权威收敛零
+  //     remount、发图不闪;同时让锚点按 key 复用已测尺寸、prepend 后能据 key 找回锚点行。
   //   - 不做阈值门控:统一虚拟化,消除 49→50 跨阈值切换渲染结构的跳变。
-  //   - initialOffset=首挂时的 scrollHeight(到底):react-virtual v3 首次发现 scrollElement
-  //     (null→node)时 _willUpdate 会 _scrollToOffset(getScrollOffset());首挂 scrollOffset 为 null
-  //     → 退回 initialOffset。不传(默认 0)会把 useScrollController snap 的 scrollTop=scrollHeight
-  //     打回 0,只靠 snap 的 rAF 二次置底碰巧抢赢、脆弱。把初始 offset 目标本身设成"到底",从根上
-  //     消除与 snap 对打。initialOffset 只在虚拟器初始化(首挂)读一次,切会话不重读(实例持久),
-  //     故不影响后续切会话 snap(那走 useScrollController 的 layout effect)。
+  //   - initialOffset=首挂时的 scrollHeight(到底):virtual-core 首次发现 scrollElement(null→node)
+  //     时 _willUpdate 会 _scrollToOffset(getScrollOffset());首挂 scrollOffset 为 null → 退回
+  //     initialOffset。首挂不触发 anchorTo/follow(prevOptions undefined),首屏「滚到底」仍须我们做,
+  //     故把初始 offset 目标设成「到底」。只在虚拟器初始化(首挂)读一次,切会话不重读(实例持久)。
+  //
+  // 原生聊天滚动原语(virtual-core 3.17.0,经 setOptions/resizeItem 源码核证)接管手搓锚定:
+  //   - anchorTo:'end' —— count/边缘 key 变化时库捕获 [可见项 key, scrollOffset−item.start],变化后
+  //     恢复该项位置 → prepend 时可见内容自动稳定(等价原手搓参照行锚 targetFor)。
+  //   - followOnAppend:'auto' —— 贴底(isAtEnd,阈值 scrollEndThreshold)时尾部新增项(last key 变化)
+  //     → 自动 scrollToEnd 跟随贴底(等价原 new-message-follow 的 scrollTop=scrollHeight 写)。
+  //   - scrollEndThreshold:AT_BOTTOM_THRESHOLD(24) —— 距底 ≤24px 即判「贴底」,与控制器 atBottom
+  //     判定同阈值;resizeItem 里 wasAtEnd(贴底)时按 totalSize 差自动保持贴底 → 首开/新增内容
+  //     估高→实测漂移自动消除(等价原首屏 snap 重断言)。非贴底默认补偿改为「仅 scrollDirection!==
+  //     'backward' 才补」→ 原生修了「上滑跳」。这使 scrollTop 单一写者=virtual-core,控制器侧不再
+  //     与库对打(那正是上滑闪 + 翻页跳的根源)。
   const virtualizer = useVirtualizer({
     count: timelineItems.length,
     getScrollElement: () => scrollElementRef.current,
@@ -243,12 +253,10 @@ export const ChatArea = memo(function ChatArea({
     overscan: getVirtualOverscan(timelineItems),
     getItemKey: (index) => timelineRowKey(timelineItems[index]),
     initialOffset: () => scrollElementRef.current?.scrollHeight ?? 0,
+    anchorTo: "end",
+    followOnAppend: "auto",
+    scrollEndThreshold: AT_BOTTOM_THRESHOLD,
   });
-  // 保留 react-virtual 原生 scrollAdjustment(默认开):它在「视口上方行 measureElement 实测高 ≠ 估高」
-  // 时自动把 delta 累加进 scrollTop,使可见内容稳定不跳 —— 这正是「上滑不闪 + 翻页 prepend 冻住」需要的
-  // 唯一补偿机制(virtual-core resizeItem)。曾尝试关掉它改用手动逐帧重断言,反而因「手动 + 库」双写打架
-  // 致上滑闪、且 prepend 上方新行异步实测后无人补偿致跳。现让 scrollTop 单一写者=react-virtual;手动侧
-  // 只在「count 变化(prepend)的一次性对齐」和「首屏 snap 贴底」这两个 react-virtual 不覆盖的正交场景写。
   virtualizerRef.current = virtualizer;
   // Stale drafts from a prior conversation are ignored at render time rather
   // than cleared via effect — keeps state mutations off the conversation-switch

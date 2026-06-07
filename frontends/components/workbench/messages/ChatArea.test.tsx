@@ -361,8 +361,14 @@ describe("ChatArea history scrolling", () => {
     expect(messageBubbleMock.render.mock.calls.map(([id]) => id)).toEqual(["01", "02"]);
   });
 
-  it("scrolls to the latest message after the first real history page mounts", async () => {
-    const { rerender } = renderChatArea({ loading: true, messages: [] });
+  it("mounts the first real history page when it arrives after loading", async () => {
+    // 新契约:首屏「滚到底」由控制器写一次 scrollTop=scrollHeight,随后 virtual-core 接管 settle
+    // (anchorTo:'end' 的 wasAtEnd 补偿)。jsdom 无真实布局,库的 scrollToEnd/锚定恢复会按虚拟器内部
+    // 估高(行桩 60px)算出与 mock.scrollHeight 无关的 offset 并写回,故无法断言具体 scrollTop 像素值
+    // (真实滚动位置需真机验)。此处断言库不覆盖、jsdom 可观测的部分:loading 结束后首个真实历史页
+    // 的消息行确实挂载进 DOM(此前为空 → ChatLoadingState)。
+    const { container, rerender, queryByTestId } = renderChatArea({ loading: true, messages: [] });
+    expect(queryByTestId("loading")).not.toBeNull();
 
     scrollAreaMock.scrollHeight = 1200;
     rerender(
@@ -381,7 +387,8 @@ describe("ChatArea history scrolling", () => {
 
     await act(async () => undefined);
 
-    expect(scrollAreaMock.scrollTop).toBe(1200);
+    expect(queryByTestId("loading")).toBeNull();
+    expect(container.querySelectorAll('[data-testid="message"]').length).toBeGreaterThan(0);
   });
 
   it("prefetches older history once the viewport is within one screen of the top", () => {
@@ -436,9 +443,14 @@ describe("ChatArea history scrolling", () => {
     expect(downWheel).toBe(true);
   });
 
-  it("restores the scroll offset when older history is prepended", async () => {
+  it("prepends older history once per zone entry without re-loading after the page lands", async () => {
+    // 新契约:翻历史的「可见内容稳定」(原断言 scrollTop===420)已交 virtual-core anchorTo:'end',
+    // 控制器不再手写 scrollTop,jsdom 无布局测不了像素位置(需真机验)。此处断言控制器仍负责的部分:
+    //   ① 进入预取区(距顶 ≤ 一屏)只触发一次 loadMore(边沿门);
+    //   ② 旧页 prepend 落地后,即便再来滚动事件也不二次加载(边沿门已消耗、未滚出预取区);
+    //   ③ prepend 后旧行确实进入时间线(数据层正常合并)。
     const loadMore = vi.fn().mockResolvedValue(undefined);
-    const { rerender } = renderChatArea({
+    const { container, rerender } = renderChatArea({
       messages: [message("03"), message("04"), message("05")],
       hasMoreHistory: true,
       onLoadMoreHistory: loadMore,
@@ -467,7 +479,15 @@ describe("ChatArea history scrolling", () => {
 
     await act(async () => undefined);
 
-    expect(scrollAreaMock.scrollTop).toBe(420);
+    // 旧行进入时间线(顶部窗口含 "01")。
+    const ids = Array.from(container.querySelectorAll('[data-testid="message"]')).map(
+      (el) => el.textContent,
+    );
+    expect(ids).toContain("01");
+
+    // 仍在预取区内(未滚出 > 阈值再回)→ 边沿门已消耗,后续滚动不再二次加载。
+    fireEvent.scroll(scrollAreaMock.viewport!);
+    expect(loadMore).toHaveBeenCalledTimes(1);
   });
 
   it("keeps the current page anchored with no double-load while a prefetch is in flight", async () => {
@@ -487,7 +507,7 @@ describe("ChatArea history scrolling", () => {
     scrollAreaMock.scrollHeight = 1000;
 
     const viewport = scrollAreaMock.viewport!;
-    // 进入预取区上滑触发加载，锚点捕获于 {scrollHeight:1000, scrollTop:0}。
+    // 进入预取区上滑触发加载(in-flight 守卫期间不二次加载)。
     fireEvent.wheel(viewport, { deltaY: -40, cancelable: true });
     expect(loadMore).toHaveBeenCalledTimes(1);
 
@@ -497,7 +517,8 @@ describe("ChatArea history scrolling", () => {
     expect(loadMore).toHaveBeenCalledTimes(1);
     expect(scrollAreaMock.scrollTop).toBe(0);
 
-    // 下一页到达：prepend 后用 scrollHeight 差值在 paint 前一次性恢复。
+    // 下一页到达：prepend 落地，旧行进入时间线。可见内容稳定(原断言 scrollTop===420)已交
+    // virtual-core anchorTo:'end',控制器不再手写 scrollTop,jsdom 测不了像素位置(需真机验)。
     scrollAreaMock.scrollHeight = 1420;
     rerender(
       <ChatArea
@@ -522,11 +543,15 @@ describe("ChatArea history scrolling", () => {
     resolveLoadMore?.();
     await act(async () => undefined);
 
-    // T_new = max(0, scrollHeight_new − scrollHeight_old + scrollTop_old) = 1420 − 1000 + 0 = 420
-    expect(scrollAreaMock.scrollTop).toBe(420);
+    // in-flight 期间不二次加载(边沿门 + in-flight 守卫):全程仅一次 loadMore。
+    // (旧行是否进入 DOM 取决于虚拟窗口——顶部行被虚拟化卸载,故不在此断言渲染内容。)
+    expect(loadMore).toHaveBeenCalledTimes(1);
   });
 
-  it("does not retarget the prepend anchor from wheel movement while loading", async () => {
+  it("does not double-load from repeated wheel movement while a page is in flight", async () => {
+    // 原断言锚点不被滚轮重捕(手搓 prependAnchor)。锚点捕获已交 virtual-core(在 setOptions 时按
+    // 可见项 key 取一次,与滚轮无关),控制器侧只剩 in-flight + 已发标记两道守卫挡住二次加载。本测断言
+    // 这两道守卫:加载中连续上滑只加载一页、不吞滚轮、加载中不手写 scrollTop;落地后旧行进入时间线。
     let resolveLoadMore: (() => void) | undefined;
     const loadMore = vi.fn(
       () =>
@@ -543,11 +568,10 @@ describe("ChatArea history scrolling", () => {
     scrollAreaMock.scrollHeight = 1000;
 
     const viewport = scrollAreaMock.viewport!;
-    // 触发加载，锚点固定为 {scrollHeight:1000, scrollTop:0}。
     fireEvent.wheel(viewport, { deltaY: -40, cancelable: true });
     expect(loadMore).toHaveBeenCalledTimes(1);
 
-    // 加载中连续滚轮:不 preventDefault,但 in-flight/已有锚点守卫挡住——既不重捕锚点也不二次加载。
+    // 加载中连续滚轮:不 preventDefault,且 in-flight/已发标记守卫挡住二次加载;控制器不手写 scrollTop。
     fireEvent.wheel(viewport, { deltaY: -40, cancelable: true });
     fireEvent.wheel(viewport, { deltaY: -40, cancelable: true });
     expect(scrollAreaMock.preventedWheels).toBe(0);
@@ -578,11 +602,15 @@ describe("ChatArea history scrolling", () => {
     resolveLoadMore?.();
     await act(async () => undefined);
 
-    // 锚点未被滚轮重捕，仍用最初的 {1000,0}：T_new = 1420 − 1000 + 0 = 420。
-    expect(scrollAreaMock.scrollTop).toBe(420);
+    // 全程只加载一页(可见内容稳定交 anchorTo,需真机验像素位置;顶部旧行被虚拟化卸载,不断言渲染)。
+    expect(loadMore).toHaveBeenCalledTimes(1);
   });
 
-  it("restores the scroll offset by scrollHeight delta when image rows are prepended", async () => {
+  it("prepends image rows into the timeline after a top-zone prefetch", async () => {
+    // 原断言 scrollTop===420(手搓 scrollHeight 差值恢复)。图片行高冻结 + 差值恢复的「可见内容稳定」
+    // 已交 virtual-core anchorTo:'end'(按可见项 key 恢复,免疫图片行高),控制器不再手写 scrollTop,
+    // jsdom 测不了像素位置(需真机验)。此处断言控制器仍负责的:进区只触发一次 loadMore + 旧图片行
+    // 落地进时间线。
     const loadMore = vi.fn().mockResolvedValue(undefined);
     const baseProps = {
       conversation,
@@ -595,7 +623,7 @@ describe("ChatArea history scrolling", () => {
       hasMoreHistory: true,
       onLoadMoreHistory: loadMore,
     };
-    const { rerender } = renderChatArea({
+    const { container, rerender } = renderChatArea({
       messages: [message("03"), message("04"), message("05")],
       hasMoreHistory: true,
       onLoadMoreHistory: loadMore,
@@ -614,20 +642,25 @@ describe("ChatArea history scrolling", () => {
       message("05"),
     ];
 
-    // 图片行高在挂载首帧即冻结，prepend 后高度即终值 → 单次差值恢复到位：1420 − 1000 + 0 = 420。
     scrollAreaMock.scrollHeight = 1420;
     rerender(<ChatArea {...baseProps} messages={withOlderImages} />);
     await act(async () => undefined);
-    expect(scrollAreaMock.scrollTop).toBe(420);
+
+    // 旧图片行进入时间线(顶部窗口含 "01" 行盒)。
+    expect(container.querySelector('[data-message-row-id="01"]')).not.toBeNull();
   });
 
-  it("keeps the latest message pinned when image content increases scroll height", async () => {
-    const { rerender } = renderChatArea({
+  it("does not raise a false unread-below count when content height grows without new messages", async () => {
+    // 原断言贴底时手写 scrollTop 跟随到底(===900 / ===1240)。贴底跟随交 virtual-core followOnAppend、
+    // 贴底内容增高的补偿交 resizeItem 的 wasAtEnd,控制器不再手写 scrollTop,jsdom 无真实布局测不了
+    // 像素位置(库会按行桩估高把 scrollTop 写成与 mock.scrollHeight 无关的值),贴底跟随需真机验。
+    // 仍可观测、且不依赖真实几何的契约:仅内容增高、无新 INCOMING 消息时,不冒出未读 below 计数
+    // ("N 条新消息"角标)—— 这正是被保留的 new-message-follow「只数 INCOMING」逻辑要守的不变量。
+    const { queryByText, rerender } = renderChatArea({
       messages: [message("01"), message("02"), message("03")],
     });
 
     await act(async () => undefined);
-    expect(scrollAreaMock.scrollTop).toBe(900);
 
     scrollAreaMock.scrollHeight = 1240;
     rerender(
@@ -645,7 +678,8 @@ describe("ChatArea history scrolling", () => {
 
     await act(async () => undefined);
 
-    expect(scrollAreaMock.scrollTop).toBe(1240);
+    // 无新 INCOMING 消息 → 未读 below 计数为 0 → 不显示"N 条新消息"角标。
+    expect(queryByText(/条新消息/)).toBeNull();
   });
 
   it("does not force the viewport back to bottom after a user scrolls upward", async () => {

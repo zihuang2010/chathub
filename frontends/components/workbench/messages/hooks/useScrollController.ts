@@ -1,11 +1,19 @@
-// 消息区滚动控制器(Stage 4d:从 ChatArea 抽出)。
+// 消息区滚动控制器。
 //
-// 内聚一簇相互依赖的滚动状态:置底跟随、翻历史的 prepend 锚点恢复、未读「上方/下方」
-// 浮动 pill 的出现/消失、切会话 snap-to-latest、离开会话补 markRead。逻辑与原 ChatArea
-// 内联实现完全一致,仅做结构搬移。
+// 内聚一簇相互依赖的滚动状态:未读「上方/下方」浮动 pill 的出现/消失、切会话/首屏「滚到底」、
+// 翻页/近底预取触发(数据层职责)、离开会话补 markRead。
 //
-// ⚠️ 滚动位置/锚点行为依赖真实布局(scrollHeight / getBoundingClientRect),jsdom 无法
-// 复现,故本 hook 的滚动正确性需在运行的应用里手测;单测仅覆盖纯状态逻辑。
+// ⚠️ 锚定与贴底跟随已交给 virtual-core 3.17.0 原生原语(ChatArea 的 useVirtualizer 配 anchorTo:
+// 'end' / followOnAppend:'auto' / scrollEndThreshold):
+//   - prepend 时可见内容稳定 = anchorTo(库按 [可见项 key, scrollOffset−item.start] 捕获并恢复)。
+//   - 新消息贴底跟随 = followOnAppend(贴底时尾部新增项自动 scrollToEnd)。
+//   - 首开/新增内容估高→实测漂移 = resizeItem 的 wasAtEnd 补偿。
+// 本控制器不再手写 scrollTop 做锚点/跟随/逐帧重断言(那会与库双写打架,正是上滑闪 + 翻页跳的
+// 根源)。仅保留库不覆盖的两件正交事:① 首挂/切会话「一次性滚到底」(库首挂 prevOptions undefined
+// 不触发 anchorTo/follow),② 预取触发 + 未读 pill/计数(数据层与 UI 职责,库不管)。
+//
+// ⚠️ 滚动位置依赖真实布局(scrollHeight / getBoundingClientRect),jsdom 无法复现,故本 hook 的
+// 滚动正确性需在运行的应用里手测;单测仅覆盖纯状态逻辑(预取触发/未读计数/收敛零 remount)。
 
 import {
   useCallback,
@@ -19,13 +27,7 @@ import {
 
 import { showToast } from "@/components/ui/toast";
 
-import {
-  AT_BOTTOM_THRESHOLD,
-  HISTORY_PREFETCH_MIN_PX,
-  REASSERT_MAX_FRAMES,
-  REASSERT_STABLE_FRAMES,
-  SETTLE_SCROLLTOP_EPSILON,
-} from "../constants";
+import { HISTORY_PREFETCH_MIN_PX } from "../constants";
 import type { Conversation, Message } from "../data";
 import { STRINGS } from "../strings";
 import type { ScrollMetrics } from "../WorkbenchScrollArea";
@@ -36,24 +38,12 @@ import type { ScrollMetrics } from "../WorkbenchScrollArea";
 const prefetchThreshold = (clientHeight: number): number =>
   Math.max(HISTORY_PREFETCH_MIN_PX, clientHeight);
 
-// 程序化 scrollTop 写后的自激抑制窗(ms):任何手动(snap/prepend 锚点)或 react-virtual scrollAdjustment
-// 对 scrollTop 的写都会派发原生 scroll 事件回灌 handleUserScroll,而 WorkbenchScrollArea 无法区分
-// user/programmatic。写后此窗内 handleUserScroll 跳过预取触发(只更新 pill),掐断「写→scroll→预取→
-// 再 prepend→再写」的自激环。~100ms 罩住一次 prepend 后手动写 + 库逐行补偿写的回声。
-const SUPPRESS_PREFETCH_MS = 100;
-
-interface PrependAnchor {
+// prepend「in-flight 标记」:仅用于预取重入守卫 + 让「新消息贴底跟随」effect 跳过本次因 prepend
+// 引起的 count 增长(否则会把翻历史误当新消息)。锚点恢复本身已交 anchorTo,故不再记 scrollHeight/
+// scrollTop/参照行 —— 这里只保留判定「本次增长来自 prepend」所需的最小信息。
+interface PrependMarker {
   conversationId: string;
   messageCount: number;
-  // 闭式回退(jsdom 无布局 / 未捕获到参照行时用):prepend 前后 scrollHeight 差值。
-  scrollHeight: number;
-  scrollTop: number;
-  // 参照行锚(真实浏览器主路径):视口顶部第一条可见消息行的 id + 其相对视口顶的偏移。
-  // prepend 后把同一行恢复到同一偏移,**只看这一行的视觉位置、不依赖总高**,因此免疫:
-  // 边界处 burst 间距/日期分隔增减、占位盒、以及"加载窗口内底部来新消息撑高 scrollHeight"
-  // 等一切会让闭式差值偏的情况 —— 当前页面视觉真正不动。
-  refId: string | null;
-  refTopRel: number | null;
 }
 
 interface ConversationCount {
@@ -149,10 +139,9 @@ export function useScrollController({
     },
     [atBottomExternalRef],
   );
-  const metricsFromUserScrollRef = useRef(false);
   const previousMessageCountRef = useRef(localMessages.length);
   const pendingInitialScrollToLatestRef = useRef(true);
-  const prependAnchorRef = useRef<PrependAnchor | null>(null);
+  const prependMarkerRef = useRef<PrependMarker | null>(null);
   const historyLoadInFlightRef = useRef(false);
   // Stage C:loadNewer 近底预取的 in-flight 守卫(对称 historyLoadInFlightRef)。
   const newerLoadInFlightRef = useRef(false);
@@ -160,16 +149,13 @@ export function useScrollController({
   const hasMoreNewerRef = useRef(hasMoreNewer);
   const onLoadNewerRef = useRef(onLoadNewer);
   const historyPrependAppliedMessageCountRef = useRef<number | null>(null);
-  // 首屏 snap-to-latest 的有界重断言 rAF 句柄(虚拟化下 measureElement 实测会在随后若干帧改变
-  // getTotalSize → scrollHeight,单次 snap 会停在"估高底",故逐帧重钉到底直到测量稳定)。与 prepend
-  // 重断言互斥(首屏 pendingInitialScrollToLatest 期间 loadOlder 被守卫挡住),用独立句柄避免互相取消。
-  const snapReassertRafRef = useRef<number | null>(null);
   // 上滑预取「边沿触发 + 消费门」:一次进入预取区只加载一页,直到 scrollTop 离开预取区(>阈值)再进入
-  // 才放下一页(微信式「滑到顶加载一页,需往回看再上滑才加载下一页」)。防 Stage C 本地瞬时读 + 程序化
-  // 自激导致的「一次上滑狂加载多页」。离开预取区 → 重新武装。切会话重置为 true。
+  // 才放下一页(微信式「滑到顶加载一页,需往回看再上滑才加载下一页」)。防 Stage C 本地瞬时读导致的
+  // 「一次上滑狂加载多页」。离开预取区 → 重新武装。切会话重置为 true。
+  // 注:删手搓 prepend/snap 的 scrollTop 写后,主要自激源(写→scroll→预取→再写)已消失;library 的
+  // anchorTo 恢复保持可见内容稳定(scrollTop 不会因 prepend 跳回顶部),故此边沿门已足以将翻页限为
+  // 「一次进区一页」,不再需要原 SUPPRESS_PREFETCH_MS 自激抑制窗。
   const olderPrefetchArmedRef = useRef(true);
-  // 程序化写 scrollTop 后的自激抑制截止时刻(performance.now 基准);见 SUPPRESS_PREFETCH_MS。
-  const suppressPrefetchUntilRef = useRef(0);
   // 记录当前活动会话,给定时器/异步回调判断"我所属的会话是否还活着"。
   const activeConversationIdRef = useRef(conversation.id);
 
@@ -217,20 +203,9 @@ export function useScrollController({
 
   const handleScrollMetrics = useCallback(
     (m: ScrollMetrics) => {
-      const fromUserScroll = metricsFromUserScrollRef.current;
-      metricsFromUserScrollRef.current = false;
-
-      if (!fromUserScroll && !m.atBottom && wasAtBottomRef.current) {
-        const node = scrollRef.current;
-        if (node) {
-          node.scrollTop = node.scrollHeight;
-          setWasAtBottom(true);
-          setAtBottom((prev) => (prev ? prev : true));
-          setUnreadBelow((prev) => (prev === 0 ? prev : 0));
-          return;
-        }
-      }
-
+      // 旧实现里「曾贴底但 metrics 报非贴底(内容增高/resize 撑出)」会手写 scrollTop=scrollHeight
+      // 强行拉回底。现交给 virtual-core:followOnAppend 接管尾部新增的贴底跟随、resizeItem 的
+      // wasAtEnd 接管「贴底时估高→实测漂移」的补偿,故此处不再手写 scrollTop,只同步状态。
       setWasAtBottom(m.atBottom);
       setAtBottom((prev) => (prev === m.atBottom ? prev : m.atBottom));
       if (m.atBottom) setUnreadBelow(0);
@@ -250,39 +225,23 @@ export function useScrollController({
     const node = scrollRef.current;
     if (!node) return false;
     if (historyLoadInFlightRef.current) return true;
-    if (prependAnchorRef.current?.conversationId === conversation.id) return true;
+    if (prependMarkerRef.current?.conversationId === conversation.id) return true;
     if (!hasMoreHistory || loading || !onLoadMoreHistory) return false;
     if (pendingInitialScrollToLatestRef.current) return false;
 
-    // 捕获视口顶部第一条可见行作参照锚:行 key=message.id 稳定,prepend 后不 remount,可按
-    // data-message-row-id 找回。比 scrollHeight 差值更稳——只盯这一行的视觉位置。
-    const vTop = node.getBoundingClientRect().top;
-    let refId: string | null = null;
-    let refTopRel: number | null = null;
-    const rows = node.querySelectorAll<HTMLElement>("[data-message-row-id]");
-    for (let i = 0; i < rows.length; i++) {
-      const rRect = rows[i].getBoundingClientRect();
-      if (rRect.bottom > vTop + 0.5) {
-        refId = rows[i].getAttribute("data-message-row-id");
-        refTopRel = rRect.top - vTop;
-        break;
-      }
-    }
-
-    prependAnchorRef.current = {
+    // 不再捕获参照行/总高锚点:prepend 后可见内容稳定由 virtual-core anchorTo:'end' 自动处理
+    // (库按 [可见项 key, scrollOffset−item.start] 捕获并恢复)。这里只记 in-flight 标记(重入守卫
+    // + 让「新消息贴底跟随」effect 跳过本次 prepend 增长)。
+    prependMarkerRef.current = {
       conversationId: conversation.id,
       messageCount: localMessagesLengthRef.current,
-      scrollHeight: node.scrollHeight,
-      scrollTop: node.scrollTop,
-      refId,
-      refTopRel,
     };
     historyLoadInFlightRef.current = true;
 
     Promise.resolve(onLoadMoreHistory())
       .catch(() => {
-        if (prependAnchorRef.current?.conversationId === conversation.id) {
-          prependAnchorRef.current = null;
+        if (prependMarkerRef.current?.conversationId === conversation.id) {
+          prependMarkerRef.current = null;
         }
         // A13: 失败时给出 toast 反馈,之前是静默清 ref。
         showToast(STRINGS.errors.loadFailed, { type: "error" });
@@ -369,17 +328,13 @@ export function useScrollController({
   // 行为完全不变,只换"在视口上方"的判定来源。
   const handleUserScroll = useCallback(
     (m: ScrollMetrics) => {
-      metricsFromUserScrollRef.current = true;
       const divider = unreadDividerRef.current;
       const viewport = scrollRef.current;
       if (!viewport) return;
-      // 自激抑制:程序化写 scrollTop(snap/prepend 锚点/react-virtual 补偿)派发的 scroll 回声落在此窗内
-      // 时,只更新 pill、绝不触发预取 —— 否则「写→scroll→预取→prepend→再写」自激狂加载。用户真实滚动
-      // 不在此窗内,正常触发(边沿门再保证一次进区只一页)。
-      if (performance.now() >= suppressPrefetchUntilRef.current) {
-        maybeLoadOlderHistory(m);
-        maybeLoadNewerHistory(m);
-      }
+      // 预取触发:进区即拉一页,重入由边沿门 olderPrefetchArmedRef + in-flight 守卫吸收。删手搓
+      // prepend/snap scrollTop 写后,程序化写已无(锚定/跟随归 virtual-core),不再需要自激抑制窗。
+      maybeLoadOlderHistory(m);
+      maybeLoadNewerHistory(m);
 
       // 三态:true=在视口上方(用户还没看到),false=已可见/在下方,null=无从判定(等同无 divider)。
       let dividerAbove: boolean | null;
@@ -447,19 +402,16 @@ export function useScrollController({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [conversation.id]);
 
-  // 切会话:标记需要 snap-to-latest,实际滚动由下面的 layout effect 在视口与首页都挂载后执行。
+  // 切会话:标记需要「滚到底一次」,实际滚动由下面的 layout effect 在视口与首页都挂载后执行。
   useLayoutEffect(() => {
     activeConversationIdRef.current = conversation.id;
     pendingInitialScrollToLatestRef.current = true;
     // 切会话:预取边沿门重新武装(新会话首次进预取区可加载一页)。
     olderPrefetchArmedRef.current = true;
-    prependAnchorRef.current = null;
+    prependMarkerRef.current = null;
     historyLoadInFlightRef.current = false;
     historyPrependAppliedMessageCountRef.current = null;
-    // 取消上个会话悬挂的首屏 snap 重断言 rAF,防跨会话野回调改新会话 scrollTop。
-    if (snapReassertRafRef.current != null) cancelAnimationFrame(snapReassertRafRef.current);
-    snapReassertRafRef.current = null;
-    // 切会话也镜像写外部 atBottomRef:新会话首屏走 snap 到底,贴底真相重置为 true,
+    // 切会话也镜像写外部 atBottomRef:新会话首屏滚到底,贴底真相重置为 true,
     // 使 useMessageHistory 首屏 readCache 走整窗塌缩(collapseToLatest=true)。
     newerLoadInFlightRef.current = false;
     setWasAtBottom(true);
@@ -471,115 +423,41 @@ export function useScrollController({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [conversation.id]);
 
+  // 首挂 / 切会话「滚到底一次」:virtual-core 首挂(prevOptions undefined)不触发 anchorTo/follow,
+  // 切会话是数据替换(整窗 REPLACE,非 prepend/append,边缘 key 全变但属「换内容」而非「续上下文」),
+  // 故首屏到底仍须我们显式做一次。只写一次 scrollTop=scrollHeight;随后 measureElement 实测带来的
+  // 估高→实测漂移由 virtual-core resizeItem 的 wasAtEnd 补偿自动 settle(不再逐帧重断言、不与库对打)。
   useLayoutEffect(() => {
     if (!pendingInitialScrollToLatestRef.current) return;
     if (localMessages.length === 0) return;
     const node = scrollRef.current;
-    if (!node) return;
+    if (!node || activeConversationIdRef.current !== conversation.id) return;
 
-    const snap = () => {
-      const current = scrollRef.current;
-      if (!current || activeConversationIdRef.current !== conversation.id) return false;
-      current.scrollTop = current.scrollHeight;
-      setWasAtBottom(true);
-      setAtBottom((prev) => (prev ? prev : true));
-      setUnreadBelow((prev) => (prev === 0 ? prev : 0));
-      return true;
-    };
-
-    // paint 前先到位一次。
-    snap();
-
-    // 有界重断言贴底:虚拟化下首屏按估高渲染,measureElement 实测会在随后若干帧把 getTotalSize
-    // (= spacer 高 = scrollHeight)改大/改小,单次 snap 会停在"估高底"而非"实测底"(表现为首开不在
-    // 最底)。故逐帧把 scrollTop 重钉到 scrollHeight,直到连续 REASSERT_STABLE_FRAMES 帧 scrollHeight
-    // 不再变(测量稳定)或达 REASSERT_MAX_FRAMES 硬停 —— 与 prepend 锚点重断言同款双上限,仅首开 ~100ms
-    // 窗口生效、窗口外静默。会话切换/卸载取消本 rAF(见上下 cleanup)。
-    if (snapReassertRafRef.current != null) cancelAnimationFrame(snapReassertRafRef.current);
-    let frames = 0;
-    let stable = 0;
-    let lastHeight = node.scrollHeight;
-    const reassertBottom = () => {
-      const current = scrollRef.current;
-      if (!current || activeConversationIdRef.current !== conversation.id) {
-        snapReassertRafRef.current = null;
-        pendingInitialScrollToLatestRef.current = false;
-        return;
-      }
-      frames += 1;
-      const h = current.scrollHeight;
-      stable = Math.abs(h - lastHeight) <= SETTLE_SCROLLTOP_EPSILON ? stable + 1 : 0;
-      lastHeight = h;
-      // 首屏 snap 写在「底部区域」,其 scroll 回声落在底部:maybeLoadOlderHistory 因 scrollTop>阈值只
-      // 重新武装(不加载)、maybeLoadNewerHistory 在底部 atCacheBottom 守卫下 no-op,均无害,故**不**设
-      // suppress(否则会误抑制用户首开后立即上滑的真实预取)。suppress 只用于「顶部区域」的 prepend 写。
-      current.scrollTop = h; // 始终重钉到底,吸收 measureElement 晚到的高度变化
-      if (stable >= REASSERT_STABLE_FRAMES || frames >= REASSERT_MAX_FRAMES) {
-        snapReassertRafRef.current = null;
-        pendingInitialScrollToLatestRef.current = false;
-        return;
-      }
-      snapReassertRafRef.current = requestAnimationFrame(reassertBottom);
-    };
-    snapReassertRafRef.current = requestAnimationFrame(reassertBottom);
-    return () => {
-      if (snapReassertRafRef.current != null) cancelAnimationFrame(snapReassertRafRef.current);
-      snapReassertRafRef.current = null;
-    };
+    node.scrollTop = node.scrollHeight;
+    setWasAtBottom(true);
+    setAtBottom((prev) => (prev ? prev : true));
+    setUnreadBelow((prev) => (prev === 0 ? prev : 0));
+    pendingInitialScrollToLatestRef.current = false;
   }, [conversation.id, error, loading, localMessages.length, setWasAtBottom]);
 
+  // prepend 落地:不再手写 scrollTop 锚定(anchorTo:'end' 已把可见内容稳住)。本 effect 只做收尾簿记:
+  // 清 in-flight 标记 + 记 historyPrependAppliedMessageCountRef(让「新消息贴底跟随」effect 跳过这次因
+  // prepend 引起的 count 增长,不误判为新消息)。不碰 scrollTop、不读 scrollHeight 差值。
   useLayoutEffect(() => {
-    const anchor = prependAnchorRef.current;
-    if (!anchor || anchor.conversationId !== conversation.id) return;
+    const marker = prependMarkerRef.current;
+    if (!marker || marker.conversationId !== conversation.id) return;
 
-    if (localMessages.length <= anchor.messageCount) {
+    if (localMessages.length <= marker.messageCount) {
       if (!loading && !historyLoadInFlightRef.current) {
-        prependAnchorRef.current = null;
+        prependMarkerRef.current = null;
       }
       return;
     }
 
-    const node = scrollRef.current;
-    if (!node) return;
-
-    // 目标 scrollTop:主路径=参照行锚 —— 把捕获到的那条可见行恢复到它原来的视口偏移,只依赖这
-    // 一行的实测位置,免疫 prepend 前后总高的任何变化(边界 burst 间距/日期分隔增减、占位盒、以及
-    // "加载窗口内底部来新消息撑高 scrollHeight"——后者正是闭式差值会偏的主因)。无布局(jsdom)或
-    // 找不到参照行时回退到 scrollHeight 差值闭式(单测走这条,行为同原逻辑)。
-    const targetFor = (n: HTMLDivElement): number => {
-      const vRect = n.getBoundingClientRect();
-      if (vRect.height > 0 && anchor.refId != null && anchor.refTopRel != null) {
-        const rows = n.querySelectorAll<HTMLElement>("[data-message-row-id]");
-        for (let i = 0; i < rows.length; i++) {
-          if (rows[i].getAttribute("data-message-row-id") === anchor.refId) {
-            const curRel = rows[i].getBoundingClientRect().top - vRect.top;
-            return Math.max(0, n.scrollTop + (curRel - anchor.refTopRel));
-          }
-        }
-      }
-      return Math.max(0, n.scrollHeight - anchor.scrollHeight + anchor.scrollTop);
-    };
-
-    // paint 前**一次性**对齐参照行:这一帧只补偿「prepend 使 count 变化、上方新增行的估高把锚点行
-    // 整体下推」的基础位移(react-virtual 不锚定 count 变化,只锚定 item resize),故这次手动写不可省。
-    // 随后那批新行被 measureElement 实测时的「估高→实测」差,交给 react-virtual 原生 scrollAdjustment
-    // 自动补偿(见 ChatArea 注释)——单一 scrollTop 写者,不再用逐帧重断言与库对打(那正是上滑闪 + 翻页
-    // 跳的根源)。jsdom/无虚拟器路径走 targetFor 闭式回退,prepend 单测断言 scrollTop 不变。
-    // 抑制本次手动写 + 随后 react-virtual 逐行补偿写的 scroll 回声触发预取(否则锚点恢复后 scrollTop 通常
-    // 仍在预取区内 → 自激狂加载)。窗口罩住整个 prepend 沉降。
-    suppressPrefetchUntilRef.current = performance.now() + SUPPRESS_PREFETCH_MS;
-    node.scrollTop = targetFor(node);
-
-    // 锚点清理 / prepend 标记 / atBottom 同步(不碰 scrollTop;"新消息贴底跟随"effect 仍靠
-    // historyPrependAppliedMessageCountRef 跳过本次增长,行为不变)。
-    prependAnchorRef.current = null;
+    prependMarkerRef.current = null;
     historyLoadInFlightRef.current = false;
     historyPrependAppliedMessageCountRef.current = localMessages.length;
-    const nextAtBottom =
-      node.scrollHeight - node.scrollTop - node.clientHeight < AT_BOTTOM_THRESHOLD;
-    setWasAtBottom(nextAtBottom);
-    setAtBottom((prev) => (prev === nextAtBottom ? prev : nextAtBottom));
-  }, [conversation.id, loading, localMessages.length, setWasAtBottom]);
+  }, [conversation.id, loading, localMessages.length]);
 
   const scrollToUnread = useCallback(() => {
     // Stage B:虚拟化后分隔条 DOM 可能被卸载,scrollIntoView 失效。优先用虚拟器
@@ -597,10 +475,11 @@ export function useScrollController({
   }, []);
 
   // New messages: auto-follow if at bottom, else bump the unread counter.
-  // 用 useLayoutEffect 而非 useEffect:贴底跟随必须在浏览器绘制前完成。打开会话后台
-  // reconcile 补齐历史、或实时新消息追加时,localMessages 增长会先撑高内容;若在绘制后
-  // (useEffect)才把 scrollTop 拉到底,用户会看到新气泡先冒在视口上方、再跳到底部的
-  // 一帧抖动。改 layout effect 后在同一帧绘制前贴底,新气泡直接落在底部,无跳帧。
+  // 新消息到达:贴底时的「滚到底跟随」交给 virtual-core followOnAppend:'auto'(贴底 + 尾部 last key
+  // 变化 → 自动 scrollToEnd),本 effect 不再手写 scrollTop。仅保留库不管的两件事:
+  //   ① 贴底时镜像 setWasAtBottom(true) 维持状态真相(外部 atBottomRef → 下次 readCache 整窗塌缩);
+  //   ② 非贴底时累计 INCOMING 未读 below 计数(给 scroll-to-bottom pill 用)。
+  // prepend 引起的 count 增长经 historyPrependAppliedMessageCountRef 跳过(不误判为新消息)。
   useLayoutEffect(() => {
     const previousCount = previousMessageCountRef.current;
     previousMessageCountRef.current = localMessages.length;
@@ -611,10 +490,8 @@ export function useScrollController({
     if (localMessages.length <= previousCount) return;
     const arrived = localMessages.length - previousCount;
     if (wasAtBottomRef.current) {
-      const node = scrollRef.current;
-      if (node) node.scrollTop = node.scrollHeight;
-      // 贴底跟随(含 useChatActions 发送后直接置 wasAtBottomRef=true 的路径)→ 镜像外部 atBottomRef,
-      // 使下次 readCache 走整窗塌缩(乐观气泡随塌缩进入尾窗、正常收敛)。
+      // 贴底跟随(含 useChatActions 发送后直接置 wasAtBottomRef=true 的路径)的实际滚动归 followOnAppend;
+      // 这里只镜像外部 atBottomRef,使下次 readCache 走整窗塌缩(乐观气泡随塌缩进入尾窗、正常收敛)。
       setWasAtBottom(true);
       return;
     }
@@ -627,15 +504,6 @@ export function useScrollController({
       setUnreadBelow((current) => current + incomingArrivals);
     }
   }, [localMessages, setWasAtBottom]);
-
-  // 卸载时取消悬挂的首屏 snap 重断言 rAF,防野回调。
-  useEffect(
-    () => () => {
-      if (snapReassertRafRef.current != null) cancelAnimationFrame(snapReassertRafRef.current);
-      snapReassertRafRef.current = null;
-    },
-    [],
-  );
 
   return {
     setScrollNode,
