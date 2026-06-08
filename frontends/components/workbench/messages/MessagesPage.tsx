@@ -245,10 +245,9 @@ export function MessagesPage({
     [displayEntries, markReadRecent],
   );
 
-  // 关窗(点 X / Cmd-Q,优雅退出)不跑 React cleanup,故显式监听 onCloseRequested:
-  // 关窗前对"当前打开且有未读"的会话补一次 markRead,让服务端收敛已读 ——
-  // 覆盖"开着会话直接关闭、期间消息下次重现未读"的场景(闪退/强杀仍兜不住,接受现状)。
-  // 闭包用 ref 读实时活动会话,避免 stale。
+  // 点关闭按钮 = 隐藏到托盘(后端拦截 CloseRequested → prevent_close + hide,应用常驻在线)。
+  // 隐藏前对"当前打开且有未读"的会话 best-effort 补一次 markRead,让服务端收敛已读 ——
+  // 覆盖"开着会话直接关闭、期间消息下次重现未读"的场景。闭包用 ref 读实时活动会话,避免 stale。
   const activeRef = useRef<{ id: string; unread: number }>({ id: "", unread: 0 });
   const activeEntryForClose = displayEntries.find((e) => e.conversationId === selectedId);
   const activeUnreadForClose =
@@ -263,15 +262,12 @@ export function MessagesPage({
     let unlisten: (() => void) | undefined;
     let disposed = false;
     void win
-      .onCloseRequested(async (event) => {
+      .onCloseRequested(() => {
         const { id, unread } = activeRef.current;
-        if (!id || unread <= 0) return; // 无未读直接放行默认关闭
-        event.preventDefault();
-        // markRead 失败/超时也无妨:关窗 best-effort,不让网络问题卡死关闭
-        const synced = markReadRecent(id).catch(() => undefined);
-        const timed = new Promise<void>((resolve) => setTimeout(resolve, 1500));
-        await Promise.race([synced, timed]);
-        await win.destroy();
+        if (!id || unread <= 0) return;
+        // 关闭=隐藏到托盘(后端 prevent_close + hide,应用仍在线),不再 preventDefault/destroy;
+        // 仅 best-effort 对当前有未读会话补一次 markRead,让服务端收敛已读。
+        void markReadRecent(id);
       })
       .then((u) => {
         if (disposed) u();

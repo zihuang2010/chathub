@@ -5,9 +5,12 @@ mod logging;
 mod media;
 
 use serde::Serialize;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use tauri::{Emitter, LogicalSize, Manager, State};
-use tracing::info;
+use tauri::menu::{Menu, MenuItem};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+use tauri::{Emitter, LogicalSize, Manager, State, WindowEvent};
+use tracing::{info, warn};
 
 use chathub_net::{
     record_to_remote, row_to_history, to_local_direction, AccountEventApplier, AuthApi, AuthError,
@@ -30,6 +33,9 @@ use chathub_state::{
 use std::time::Duration;
 use tokio::sync::broadcast as tokio_broadcast;
 use tokio::sync::broadcast::channel as broadcast_channel;
+
+/// 「关闭到托盘」开关:点关闭按钮只隐藏主窗口,只有托盘菜单「退出」置位后才放行真正关闭。
+static QUITTING: AtomicBool = AtomicBool::new(false);
 
 // ============================== 现有命令保留 ==============================
 
@@ -1747,6 +1753,21 @@ pub fn run() {
                 responder.respond(image_cache::serve(&app, request).await);
             });
         })
+        // 关闭到托盘:拦截主窗口关闭请求,只隐藏不退出;真正退出由托盘菜单置 QUITTING 后放行。
+        .on_window_event(|window, event| {
+            // 仅拦主窗口;图片/视频预览窗(image-preview/video-preview)的关闭照常放行。
+            if window.label() != "main" {
+                return;
+            }
+            if let WindowEvent::CloseRequested { api, .. } = event {
+                if !QUITTING.load(Ordering::SeqCst) {
+                    api.prevent_close();
+                    if let Err(e) = window.hide() {
+                        warn!(error = %e, "隐藏主窗口到托盘失败");
+                    }
+                }
+            }
+        })
         .setup(|app| {
             let log_dir = app.path().app_log_dir()?;
             let guard = logging::init(&log_dir)
@@ -1769,6 +1790,50 @@ pub fn run() {
                 }
                 let _ = window.show();
             }
+
+            // ---- 关闭到托盘:系统托盘图标 + 菜单(打开/退出) ----
+            // 左键单击切换主窗口显隐;右键弹菜单。退出走 app.exit(0)(经 ExitRequested,不被关闭拦截影响)。
+            let open_item = MenuItem::with_id(app, "open", "打开主窗口", true, None::<&str>)?;
+            let quit_item = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
+            let tray_menu = Menu::with_items(app, &[&open_item, &quit_item])?;
+            let _tray = TrayIconBuilder::with_id("main-tray")
+                .icon(app.default_window_icon().unwrap().clone())
+                .menu(&tray_menu)
+                .show_menu_on_left_click(false)
+                .tooltip("ChatHub")
+                .on_menu_event(|app, event| match event.id.as_ref() {
+                    "open" => {
+                        if let Some(w) = app.get_webview_window("main") {
+                            let _ = w.show();
+                            let _ = w.set_focus();
+                        }
+                    }
+                    "quit" => {
+                        QUITTING.store(true, Ordering::SeqCst);
+                        app.exit(0);
+                    }
+                    _ => {}
+                })
+                .on_tray_icon_event(|tray, event| {
+                    // 左键单击(松开)切换主窗口显隐。
+                    if let TrayIconEvent::Click {
+                        button: MouseButton::Left,
+                        button_state: MouseButtonState::Up,
+                        ..
+                    } = event
+                    {
+                        let app = tray.app_handle();
+                        if let Some(w) = app.get_webview_window("main") {
+                            if w.is_visible().unwrap_or(false) {
+                                let _ = w.hide();
+                            } else {
+                                let _ = w.show();
+                                let _ = w.set_focus();
+                            }
+                        }
+                    }
+                })
+                .build(app)?;
 
             // ---- Plan 2:接入 chathub-net auth 链路 ----
             let app_data = app.path().app_data_dir()?;
@@ -2024,8 +2089,25 @@ pub fn run() {
             media::download_attachment, media::fetch_media_bytes, media::read_local_file,
             ai_polish::ai_polish, ai_polish::cancel_ai_polish,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|_app_handle, _event| {
+            // macOS:点 Dock 图标(应用无可见窗口时)唤回隐藏的主窗口。
+            // RunEvent::Reopen 仅 macOS 存在,需 cfg 门控,否则 Windows/Linux 编译失败。
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Reopen {
+                has_visible_windows,
+                ..
+            } = &_event
+            {
+                if !*has_visible_windows {
+                    if let Some(w) = _app_handle.get_webview_window("main") {
+                        let _ = w.show();
+                        let _ = w.set_focus();
+                    }
+                }
+            }
+        });
 }
 
 // 编译期烟雾测试在 Plan 2 起被实际通信代码替代,删除占位。

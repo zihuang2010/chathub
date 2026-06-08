@@ -144,12 +144,24 @@ pub async fn ai_polish(
         )
         .await;
     });
+    let abort = handle.abort_handle();
+    let task_id = abort.id(); // 任务唯一 id,收尾时据此判断 state 里是否仍是本任务的 handle。
     if let Ok(mut guard) = state.0.lock() {
-        *guard = Some(handle.abort_handle());
+        *guard = Some(abort);
     }
 
     // join:被 abort 取消(JoinError)时安静返回,不发 Done(Done 已在任务内正常收尾时发出)。
-    match handle.await {
+    let result = handle.await;
+
+    // 任务结束后清理 state:仅当当前存的仍是本任务的 handle(未被新请求或 cancel 替换)时才 take(),
+    // 让"无在途流"时 state 真实为 None,语义干净;避免盲目 take 误删并发新请求存入的 handle。
+    if let Ok(mut guard) = state.0.lock() {
+        if guard.as_ref().map(|h| h.id()) == Some(task_id) {
+            guard.take();
+        }
+    }
+
+    match result {
         Ok(()) => Ok(()),
         Err(_) => Ok(()),
     }

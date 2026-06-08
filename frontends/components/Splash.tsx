@@ -3,13 +3,13 @@ import { ShieldCheck, Zap, Share2, Sparkles, type LucideProps } from "lucide-rea
 
 import {
   BubbleBlue,
-  BubbleGreen,
   BubblePurple,
   BubbleWhite,
   DriftingWave,
   buildWavePath,
   type Satellite,
 } from "@/components/illustrations";
+import { SatelliteRing } from "@/components/illustrations/satellites";
 import { isWindows } from "@/lib/platform";
 import { FONT_BODY } from "@/lib/theme";
 import { useFitScale } from "@/lib/useFitScale";
@@ -231,8 +231,69 @@ function Illustration() {
       {/* Stacking order — blue is on top */}
       <BubblePurple left={410} top={20} width={92} height={84} satellites={SATELLITES_PURPLE} />
       <BubbleWhite left={289.5} top={180} width={150} height={130} satellites={SATELLITES_WHITE} />
-      <BubbleGreen left={75} top={195} width={110} height={100} satellites={SATELLITES_GREEN} />
+      <SplashGreenBubble
+        left={75}
+        top={195}
+        width={110}
+        height={100}
+        satellites={SATELLITES_GREEN}
+      />
       <BubbleBlue left={120} top={65} width={280} height={240} satellites={SATELLITES_BLUE} />
+    </div>
+  );
+}
+
+function SplashGreenBubble({
+  left,
+  top,
+  width,
+  height,
+  satellites,
+}: {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+  satellites?: Satellite[];
+}) {
+  return (
+    <div
+      className="absolute"
+      style={{
+        left,
+        top,
+        width,
+        height,
+        animation: "chBubblePop 800ms 360ms backwards cubic-bezier(.2,.7,.2,1)",
+      }}
+    >
+      <svg
+        width={width}
+        height={height}
+        viewBox="0 0 110 100"
+        style={{
+          overflow: "visible",
+          filter: "drop-shadow(0 8px 22px #15182A18) drop-shadow(0 1px 2px rgba(21,24,42,.06))",
+        }}
+      >
+        <defs>
+          <linearGradient id="chSplashBubbleGreenGrad" x1="0%" y1="0%" x2="60%" y2="100%">
+            <stop offset="0%" stopColor="#86EBB7" />
+            <stop offset="100%" stopColor="#3DCB8A" />
+          </linearGradient>
+        </defs>
+        <path
+          d="M 55 0 A 55 40 0 0 1 59 80 L 45 92 L 40 78 A 55 40 0 0 1 55 0 Z"
+          fill="url(#chSplashBubbleGreenGrad)"
+        />
+        <g transform="translate(36 18)" fill="#FFFFFF">
+          <circle cx="14" cy="18" r="5" />
+          <path d="M5 35 q0 -12 9 -12 q9 0 9 12 z" />
+          <circle cx="28" cy="21" r="4" />
+          <path d="M21 35 q0 -10 7 -10 q7 0 7 10 z" />
+        </g>
+      </svg>
+      {satellites && <SatelliteRing items={satellites} />}
     </div>
   );
 }

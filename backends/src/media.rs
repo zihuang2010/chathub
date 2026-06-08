@@ -8,6 +8,13 @@
 
 use std::time::Duration;
 
+/// 下载到本地的附件字节上限(视频量级)。超限直接拒绝,避免整包读进后端内存把内存读爆;
+/// 与 image_cache 的 MAX_DOWNLOAD_BYTES 同口径(先 content-length 廉价预拒,再 body 长度兜底)。
+const MAX_DOWNLOAD_BYTES: u64 = 120 * 1024 * 1024;
+/// 取回内存交前端解码的媒体字节上限(语音 amr/silk)。比下载更紧:Vec<u8> 经 IPC 序列化为
+/// number[] 会膨胀约 6~10x,语音本就只有 KB 级,小上限既挡异常超大 body 又不影响正常语音。
+const MAX_FETCH_BYTES: u64 = 10 * 1024 * 1024;
+
 /// 媒体 HTTP 客户端。仅持有一个复用的 reqwest::Client(连接池 / 超时复用)。
 pub struct MediaHttp {
     http: reqwest::Client,
@@ -24,7 +31,9 @@ impl MediaHttp {
     }
 
     /// 取远程媒体原始字节。先做 SSRF/https 校验,再 GET;非 2xx 返回 `http {status}`。
-    async fn get_bytes(&self, url: &str) -> Result<Vec<u8>, String> {
+    /// `max`:字节上限,超限返回 `too large`——先用 content-length 廉价预拒,再用实际 body 长度兜底
+    /// (content-length 可能缺失或被伪造,故两道都查),避免被诱导返回超大 body 把内存读爆。
+    async fn get_bytes(&self, url: &str, max: u64) -> Result<Vec<u8>, String> {
         crate::image_cache::validate_url(url)?;
         let resp = self
             .http
@@ -36,7 +45,15 @@ impl MediaHttp {
         if !status.is_success() {
             return Err(format!("http {status}"));
         }
+        if let Some(len) = resp.content_length() {
+            if len > max {
+                return Err("too large".into());
+            }
+        }
         let bytes = resp.bytes().await.map_err(|e| format!("body: {e}"))?;
+        if bytes.len() as u64 > max {
+            return Err("too large".into());
+        }
         Ok(bytes.to_vec())
     }
 }
@@ -55,7 +72,7 @@ pub async fn download_attachment(
     url: String,
     dest_path: String,
 ) -> Result<(), String> {
-    let bytes = media.get_bytes(&url).await?;
+    let bytes = media.get_bytes(&url, MAX_DOWNLOAD_BYTES).await?;
     // 写盘是阻塞 IO,放 blocking 线程,别堵 async runtime。
     let dest = dest_path;
     tauri::async_runtime::spawn_blocking(move || std::fs::write(&dest, &bytes))
@@ -71,7 +88,7 @@ pub async fn fetch_media_bytes(
     media: tauri::State<'_, MediaHttp>,
     url: String,
 ) -> Result<Vec<u8>, String> {
-    media.get_bytes(&url).await
+    media.get_bytes(&url, MAX_FETCH_BYTES).await
 }
 
 /// 读取本地文件原始字节,以 ArrayBuffer 经 IPC 返回前端。
