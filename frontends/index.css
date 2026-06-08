@@ -327,14 +327,17 @@ html[data-os="mac"] #app-shell {
 
 *::-webkit-scrollbar-thumb {
   background: hsl(var(--wb-thumb));
+  background-clip: content-box;
   border-radius: 999px;
 }
 
-/* 滑块最小长度:内容很长时(如长会话历史)thumb 会被压得过短、难看也难抓。给竖向滚动条
- * 设最小高度,缩到此值后不再继续变短。只约束 :vertical —— 横向滚动条高度仅 6px,套
- * min-height 会把横向滑块顶高、压坏布局。 */
+/* 滑块长度约束:内容很长时不缩成小点,内容很短/测量收敛时也别拉成一整条。
+ * max-height 在部分 WebKit 版本会被原生比例覆盖,因此再用 border-block + background-clip
+ * 做视觉压短;只约束 :vertical,避免压坏 6px 横向滚动条。 */
 *::-webkit-scrollbar-thumb:vertical {
-  min-height: 40px;
+  min-height: 44px;
+  max-height: 112px;
+  border-block: 6px solid transparent;
 }
 
 *::-webkit-scrollbar-thumb:hover {

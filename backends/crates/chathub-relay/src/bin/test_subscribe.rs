@@ -57,6 +57,7 @@ async fn main() -> anyhow::Result<()> {
             since_notify_seq: since,
             device_id,
             client_version: "test-client".into(),
+            terminal_id: "test-terminal".into(),
         })
         .await?
         .into_inner();

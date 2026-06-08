@@ -13,6 +13,9 @@ message UserProfile {
   string tenant_id    = 5;
   string username     = 6;   // 登录用户名(JddTokenVO.username)
   string mobile       = 7;   // 手机号(JddTokenVO.mobile)
+  // 本(设备×账号)终端标识 = relay OAuth 时 terminal_id_for(device_id, username) 的 UUIDv5。
+  // 非展示字段:由客户端持久化(随会话)、subscribe 上行回带,供 relay 做 force_close 终端粒度路由。
+  string terminal_id  = 8;
 }
 
 message WecomAccount {

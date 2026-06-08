@@ -257,6 +257,7 @@ async fn push_idempotent_on_retry() {
             since_notify_seq: 99,
             device_id: "dev-A".into(),
             client_version: "1.0.0".into(),
+            terminal_id: "term-test".into(),
         })
         .await
         .unwrap()
@@ -318,6 +319,7 @@ async fn subscribe_with_no_since_returns_ack_then_realtime_push() {
             since_notify_seq: 0,
             device_id: "dev-A".into(),
             client_version: "1.0.0".into(),
+            terminal_id: "term-test".into(),
         })
         .await
         .unwrap()
@@ -358,6 +360,91 @@ async fn subscribe_with_no_since_returns_ack_then_realtime_push() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn force_close_exclusive_login_spares_survivor_terminal() {
+    // 方案 B 端到端:同 employee 两个终端(不同 terminalId)真实订阅;推 EXCLUSIVE_LOGIN
+    // (forceClose.terminalId=保留端)→ 被踢端收到 force_close、保留端被豁免(收不到)。
+    let h = spawn_relay().await;
+    mount_verify_token(&h.downstream, "tok-survivor", 42, "dev-new").await;
+    mount_verify_token(&h.downstream, "tok-old", 42, "dev-old").await;
+
+    let ch1 = raw_channel(h.grpc_addr).await;
+    let mut hub1 = hub_client(ch1, "tok-survivor".into());
+    let mut s_keep = hub1
+        .subscribe(SubscribeRequest {
+            since_notify_seq: 0,
+            device_id: "dev-new".into(),
+            client_version: "1.0.0".into(),
+            terminal_id: "term-survivor".into(),
+        })
+        .await
+        .unwrap()
+        .into_inner();
+
+    let ch2 = raw_channel(h.grpc_addr).await;
+    let mut hub2 = hub_client(ch2, "tok-old".into());
+    let mut s_old = hub2
+        .subscribe(SubscribeRequest {
+            since_notify_seq: 0,
+            device_id: "dev-old".into(),
+            client_version: "1.0.0".into(),
+            terminal_id: "term-old".into(),
+        })
+        .await
+        .unwrap()
+        .into_inner();
+
+    // 消费两端首帧 SubscribeAck。
+    assert!(matches!(
+        s_keep.next().await.unwrap().unwrap().body,
+        Some(Body::SubscribeAck(_))
+    ));
+    assert!(matches!(
+        s_old.next().await.unwrap().unwrap().body,
+        Some(Body::SubscribeAck(_))
+    ));
+
+    // 推排他登录 force_close,保留端 = term-survivor。
+    let body = push_body(
+        200,
+        42,
+        serde_json::json!([{
+            "eventType": "CONNECTION_FORCE_CLOSE",
+            "eventReason": "EXCLUSIVE_LOGIN",
+            "forceClose": {
+                "closeScope": "EMPLOYEE",
+                "reasonCode": "EXCLUSIVE_LOGIN",
+                "terminalId": "term-survivor"
+            }
+        }]),
+    );
+    assert_eq!(
+        do_push(&h.push_url, &h.push_secret, &body).await.status(),
+        200
+    );
+
+    // 被踢端收到 force_close 帧。
+    let f = tokio::time::timeout(std::time::Duration::from_secs(1), s_old.next())
+        .await
+        .expect("old terminal should receive force_close")
+        .unwrap()
+        .unwrap();
+    match f.body {
+        Some(Body::PushBatch(pb)) => {
+            let arr: serde_json::Value = serde_json::from_slice(&pb.events_json).unwrap();
+            assert_eq!(arr[0]["eventType"], "CONNECTION_FORCE_CLOSE");
+        }
+        other => panic!("expected force_close PushBatch on old terminal, got {other:?}"),
+    }
+
+    // 保留端不应收到 force_close(超时无帧 = 被豁免、不自登出)。
+    let none = tokio::time::timeout(std::time::Duration::from_millis(400), s_keep.next()).await;
+    assert!(
+        none.is_err(),
+        "survivor terminal must NOT receive force_close"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn subscribe_with_since_replays_persisted_events() {
     let h = spawn_relay().await;
     mount_verify_token(&h.downstream, "tok-v2", 55, "dev-A").await;
@@ -381,6 +468,7 @@ async fn subscribe_with_since_replays_persisted_events() {
             since_notify_seq: 10,
             device_id: "dev-A".into(),
             client_version: "1.0.0".into(),
+            terminal_id: "term-test".into(),
         })
         .await
         .unwrap()
@@ -450,6 +538,7 @@ async fn subscribe_backfills_from_outbox_after_event_log_loss() {
             since_notify_seq: 2,
             device_id: "dev-A".into(),
             client_version: "1.0.0".into(),
+            terminal_id: "term-test".into(),
         })
         .await
         .unwrap()
@@ -490,6 +579,7 @@ async fn subscribe_resync_required_when_notify_pull_fails() {
             since_notify_seq: 10,
             device_id: "dev-A".into(),
             client_version: "1.0.0".into(),
+            terminal_id: "term-test".into(),
         })
         .await
         .unwrap()
@@ -523,6 +613,7 @@ async fn subscribe_resync_required_when_notify_pull_disabled() {
             since_notify_seq: 3,
             device_id: "dev-A".into(),
             client_version: "1.0.0".into(),
+            terminal_id: "term-test".into(),
         })
         .await
         .unwrap()
@@ -650,6 +741,7 @@ async fn login_prepopulates_cache_subscribe_skips_verify_token() {
             since_notify_seq: 0,
             device_id: "dev-A".into(),
             client_version: "1.0.0".into(),
+            terminal_id: "term-test".into(),
         })
         .await
         .expect("subscribe should succeed via cache prepopulate (no verify_token call)")
@@ -785,6 +877,7 @@ async fn subscribe_resync_truncation_skips_replay_and_acks_head() {
             since_notify_seq: 0,
             device_id: "dev-A".into(),
             client_version: "1.0.0".into(),
+            terminal_id: "term-test".into(),
         }),
     )
     .await
@@ -819,6 +912,7 @@ async fn subscribe_resync_truncation_skips_replay_and_acks_head() {
             since_notify_seq: 1001,
             device_id: "dev-A".into(),
             client_version: "1.0.0".into(),
+            terminal_id: "term-test".into(),
         })
         .await
         .unwrap()

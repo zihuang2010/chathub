@@ -72,6 +72,15 @@ if ! command -v lld-link >/dev/null 2>&1; then
 fi
 
 # ── 编译期环境变量 ─────────────────────────────────────────────────────────
+# 客户端编译期共享配置(AI 润色密钥等),与 run-tauri-local 同源,存在即 source。
+# 模板见 scripts/.env.client.example。
+ENV_CLIENT="${SCRIPT_DIR}/.env.client"
+if [ -f "${ENV_CLIENT}" ]; then
+  echo "[build-windows] 载入 ${ENV_CLIENT}"
+  # shellcheck disable=SC1090
+  set -a; . "${ENV_CLIENT}"; set +a
+fi
+
 # 可选的本地配置(地址/附件域名等),存在才 source。
 ENV_FILE="${SCRIPT_DIR}/.env.windows"
 if [ -f "${ENV_FILE}" ]; then
@@ -96,6 +105,11 @@ if [ -n "${CHATHUB_ATTACHMENT_BASE_URL}" ]; then
   echo "[build-windows] CHATHUB_ATTACHMENT_BASE_URL=${CHATHUB_ATTACHMENT_BASE_URL}"
 else
   echo "[build-windows] CHATHUB_ATTACHMENT_BASE_URL 未设置 -> 回落 filet.jdd51.com"
+fi
+if [ -n "${CHATHUB_AI_API_KEY:-}" ]; then
+  echo "[build-windows] CHATHUB_AI_API_KEY 已设置 (打包客户端 AI 润色可用)"
+else
+  echo "[build-windows] CHATHUB_AI_API_KEY 未设置 -> 打出的包 AI 润色显示「AI 未配置」(见 scripts/.env.client.example)"
 fi
 echo "[build-windows] target=${TARGET}  (无签名包: createUpdaterArtifacts=false)"
 echo "[build-windows] cwd=${REPO_ROOT}"

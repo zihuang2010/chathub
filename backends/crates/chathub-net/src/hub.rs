@@ -391,12 +391,14 @@ impl HubClient {
         since_notify_seq: u64,
         device_id: String,
         client_version: String,
+        terminal_id: String,
     ) -> Result<tonic::Streaming<ServerEvent>, AuthError> {
         let mut client = self.inner.clone();
         let req = SubscribeRequest {
             since_notify_seq,
             device_id,
             client_version,
+            terminal_id,
         };
         let resp = client.subscribe(tonic::Request::new(req)).await?;
         Ok(resp.into_inner())
@@ -1104,9 +1106,17 @@ impl Inner {
                 "run_loop connecting; subscribing"
             );
 
+            // terminalId 随会话身份(TokenStore),每次重连都读最新值上行,
+            // 供 relay 做 force_close 终端粒度路由。未登录/旧会话未带 → 空串(relay 视为可踢端)。
+            let terminal_id = self.token_store.current_terminal_id().unwrap_or_default();
             let mut stream = match self
                 .hub
-                .subscribe(since, self.device_id.clone(), self.client_version.clone())
+                .subscribe(
+                    since,
+                    self.device_id.clone(),
+                    self.client_version.clone(),
+                    terminal_id,
+                )
                 .await
             {
                 Ok(s) => s,

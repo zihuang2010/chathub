@@ -145,3 +145,23 @@ describe("MessageBubble — failed status line out of flow (no resend flicker)",
     expect(statusLine.className).toContain("whitespace-nowrap");
   });
 });
+
+describe("MessageBubble — synced source marker", () => {
+  it("keeps the avatar marker and removes the below-bubble source badge", () => {
+    const { container } = render(
+      <MessageBubble
+        message={makeMessage({
+          direction: "out",
+          text: "hi",
+          syncedFromOtherDevice: true,
+        })}
+        avatarName="小美"
+        account="me"
+      />,
+    );
+
+    expect(container.textContent).not.toContain("企业微信");
+    const marker = container.querySelector('span img[src="/wecom-logo.png"]');
+    expect(marker).not.toBeNull();
+  });
+});

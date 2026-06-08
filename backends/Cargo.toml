@@ -40,4 +40,6 @@ reqwest = { workspace = true }
 sha2 = { workspace = true }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif"] }
 tauri-plugin-dialog = "2.7.1"
+# 跨平台抓屏(窗口/显示器),底层 xcap。Windows 区域截图走「插件抓整屏 + 前端框选裁剪」。
+tauri-plugin-screenshots = "2"
 

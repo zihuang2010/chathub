@@ -31,11 +31,6 @@ import { buildPolishContext } from "./composer/polishContext";
 import { COMPOSER_DEFAULT_HEIGHT } from "./constants";
 import type { Conversation, Message, QuickReply } from "./data";
 import { resolvePrependShift, type FirstItemIndexAnchor } from "./hooks/firstItemIndexAnchor";
-import {
-  initialRevealGateState,
-  REVEAL_AT_BOTTOM_EPSILON,
-  stepRevealGate,
-} from "./hooks/scrollRevealGate";
 import { useChatActions, type SendMessageOptions } from "./hooks/useChatActions";
 import { useChatTimeline } from "./hooks/useChatTimeline";
 import { EnlargeReader } from "./EnlargeReader";
@@ -76,7 +71,7 @@ const Scroller = forwardRef<HTMLDivElement, ScrollerProps>(function Scroller(pro
     <div
       ref={ref}
       {...props}
-      className="overflow-x-hidden overscroll-contain bg-workbench-surface [overflow-anchor:none]"
+      className="overflow-x-hidden overscroll-contain bg-workbench-surface [overflow-anchor:none] [scrollbar-gutter:stable]"
     />
   );
 });
@@ -117,6 +112,21 @@ interface MessageTimelineRowProps {
   avatarUrl?: string;
   account: string;
   onAction: (action: MessageActionType, message: Message) => void;
+}
+
+interface TimelineSnapshot {
+  key: string;
+  conversation: Conversation;
+  messages: Message[];
+  firstItemIndex: number;
+}
+
+type TimelinePlaneName = "a" | "b";
+
+interface TimelineSlots {
+  active: TimelinePlaneName;
+  a: TimelineSnapshot | null;
+  b: TimelineSnapshot | null;
 }
 
 interface ChatAreaProps {
@@ -245,52 +255,39 @@ export const ChatArea = memo(function ChatArea({
     [atBottomRef],
   );
 
-  // ── 切会话首屏定位遮罩 ────────────────────────────────────────────────────────
-  // Virtuoso 重挂后用 initialTopMostItemIndex 定位到底:这期间内容由其自带 visibility 遮罩盖住,但
-  // Scroller 的滚动条不被盖 → 能看到「空白 + 滚动条从上滑到下」再出内容的闪。用一层 opacity 门把整个
-  // 滚动区(连同滚动条)在「落到底」前藏掉,atBottomStateChange(true)(落到底)再揭开 → 直接呈现贴底
-  // 内容、无滚动条行程。按 chatStoreKey(Virtuoso 重挂键)重置(渲染期存上一帧 key,收敛不死循环)。
-  const [reveal, setReveal] = useState({ key: chatStoreKey, shown: false });
-  if (reveal.key !== chatStoreKey) setReveal({ key: chatStoreKey, shown: false });
-  // 揭开时机:必须等 Virtuoso 的「测量收敛」后再揭开。重挂后 Virtuoso 按扁平 DEFAULT_ROW_HEIGHT 估高把
-  // 列表定位到「估算的底部」,真实行高测出后列表撑大、再向下滚一段贴底 —— 这段「滚轮从上滑到下」正是要
-  // 遮住的闪。若按估高那帧就判「已贴底」揭开,修正滚动就暴露。故 gate 据 totalListHeightChanged 版本号判
-  // 收敛(估高→真实高度的修正会刷新版本),版本连续 N 帧不变且真实 scrollTop 贴底(或内容不足一屏)才揭开;
-  // 不用 Virtuoso 的 atBottom 回调(实测它在真正落位前就报 true)。仅 Scroller 已挂且有高度的帧计入兜底额度,
-  // 冷加载等数据期间不空耗。真实贴底是所有揭开路径(含兜底)的硬前提 —— 否则会露出 react-virtuoso 在
-  // scrollTop:0 渲染周期里「行浮在底部、视口空白」的那一帧(MAX_FRAMES 放宽收敛但仍要求贴底,HARD_MAX
-  // 仅防极端卡死永久隐藏)。判定逻辑见纯函数 stepRevealGate(带单测)。
-  const scrollerElRef = useRef<HTMLElement | null>(null);
-  // totalListHeightChanged 版本号:Virtuoso 每测得新总高 +1。ref 跨会话常驻,gate 以「与上一帧比对」工作,
-  // 绝对值无所谓(切会话重挂后 Virtuoso 重新 emit、gate 也随 effect 重置)。
-  const heightVersionRef = useRef(0);
-  const handleTotalListHeightChanged = useCallback(() => {
-    heightVersionRef.current += 1;
-  }, []);
-  useEffect(() => {
-    let raf = 0;
-    let gate = initialRevealGateState();
-    const tick = () => {
-      const el = scrollerElRef.current;
-      const scrollHeight = el?.scrollHeight ?? 0;
-      const clientHeight = el?.clientHeight ?? 0;
-      const scrollTop = el?.scrollTop ?? 0;
-      const stepped = stepRevealGate(gate, {
-        heightVersion: heightVersionRef.current,
-        measured: scrollHeight > 0,
-        atBottom: scrollHeight - clientHeight - scrollTop <= REVEAL_AT_BOTTOM_EPSILON,
-        fitsNoScroll: scrollHeight <= clientHeight + REVEAL_AT_BOTTOM_EPSILON,
-      });
-      gate = stepped.state;
-      if (stepped.reveal) {
-        setReveal((r) => (r.shown ? r : { ...r, shown: true }));
-        return;
-      }
-      raf = requestAnimationFrame(tick);
-    };
-    raf = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(raf);
+  // ── 切会话浮层门 / 稳定舞台 ─────────────────────────────────────────────────
+  // Virtuoso 重挂后用 initialTopMostItemIndex 定位到底:估高→真实行高收敛期间,scrollTop / atBottom
+  // 会短暂抖动。真实列表先隐身落位,尾部 range ready 后再揭开;「回到底部/未读」只在用户对
+  // 当前消息区产生滚动意图后解锁,程序定位造成的 atBottom=false 不能让按钮先闪出来。
+  const [timelineGate, setTimelineGate] = useState({
+    key: chatStoreKey,
+    userScrolled: false,
+  });
+  useLayoutEffect(() => {
+    // 切会话必须重新等待用户滚动,否则旧会话曾触发过的 userScrolled 会让「回到底部」
+    // 在新会话程序贴底期间闪现。
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setTimelineGate((gate) =>
+      gate.key === chatStoreKey ? gate : { key: chatStoreKey, userScrolled: false },
+    );
   }, [chatStoreKey]);
+  const timelineReadyForOverlays =
+    localMessages.length > 0 && timelineGate.key === chatStoreKey && timelineGate.userScrolled;
+  const timelineReadyRafRef = useRef(0);
+  const [timelineStage, setTimelineStage] = useState({
+    key: chatStoreKey,
+    ready: true,
+  });
+  const timelineReady =
+    localMessages.length > 0 && timelineStage.key === chatStoreKey && timelineStage.ready;
+  useEffect(() => {
+    return () => {
+      if (timelineReadyRafRef.current) {
+        cancelAnimationFrame(timelineReadyRafRef.current);
+        timelineReadyRafRef.current = 0;
+      }
+    };
+  }, []);
 
   // ── 上方未读 pill ──────────────────────────────────────────────────────────
   // 用户从底部上滚、未读分隔条仍在视口上方(未看到)时点亮。看到(rangeChanged 越过分隔条)即清。
@@ -346,6 +343,88 @@ export const ChatArea = memo(function ChatArea({
       });
     }
   }
+
+  const currentTimelineSnapshot = useMemo<TimelineSnapshot>(
+    () => ({
+      key: chatStoreKey,
+      conversation,
+      messages: localMessages,
+      firstItemIndex,
+    }),
+    [chatStoreKey, conversation, localMessages, firstItemIndex],
+  );
+  const [timelineSlots, setTimelineSlots] = useState<TimelineSlots>(() => ({
+    active: "a",
+    a: currentTimelineSnapshot,
+    b: null,
+  }));
+  const activePlaneName = timelineSlots.active;
+  const inactivePlaneName: TimelinePlaneName = activePlaneName === "a" ? "b" : "a";
+  const committedActiveSnapshot = timelineSlots[activePlaneName] ?? currentTimelineSnapshot;
+  const switchingTimeline = committedActiveSnapshot.key !== chatStoreKey;
+  const preservingCurrentTimeline =
+    !switchingTimeline &&
+    loading === true &&
+    localMessages.length === 0 &&
+    committedActiveSnapshot.messages.length > 0;
+  // 切会话放行闸门。第三个分支是「逃生出口」:切到一个**加载已落定(loading=false)却为空**的
+  // 会话(新加客户的冷会话无历史 / 首读 records 为空)时,也算 settle —— 否则 timelineReady 因
+  // `localMessages>0` 前提永远为 false,switchingTimeline 永久停在 true,displayConversation/
+  // displayMessages 长期回退到旧快照,造成「列表已切新人、聊天区却冻在上一个会话」。放行后提交到
+  // 新(空)平面:标题切到新客户、正文走 ChatEmptyState;历史若晚到则随后 ChangeNotice 重读补气泡。
+  const currentTimelineSettled =
+    timelineReady ||
+    (!switchingTimeline && localMessages.length === 0) ||
+    (switchingTimeline && !loading && localMessages.length === 0);
+  const activeRenderSnapshot = switchingTimeline
+    ? committedActiveSnapshot
+    : preservingCurrentTimeline
+      ? committedActiveSnapshot
+      : currentTimelineSnapshot;
+  const stagingSnapshot =
+    switchingTimeline && localMessages.length > 0 ? currentTimelineSnapshot : null;
+  const visiblePlaneName =
+    switchingTimeline && currentTimelineSettled ? inactivePlaneName : activePlaneName;
+  const planeASnapshot = activePlaneName === "a" ? activeRenderSnapshot : stagingSnapshot;
+  const planeBSnapshot = activePlaneName === "b" ? activeRenderSnapshot : stagingSnapshot;
+  const planeAItems = useChatTimeline({
+    localMessages: planeASnapshot?.messages ?? [],
+    conversation: planeASnapshot?.conversation ?? conversation,
+  });
+  const planeBItems = useChatTimeline({
+    localMessages: planeBSnapshot?.messages ?? [],
+    conversation: planeBSnapshot?.conversation ?? conversation,
+  });
+  const displayConversation =
+    switchingTimeline && !currentTimelineSettled
+      ? committedActiveSnapshot.conversation
+      : conversation;
+  const displayMessages =
+    switchingTimeline && !currentTimelineSettled
+      ? committedActiveSnapshot.messages
+      : preservingCurrentTimeline
+        ? committedActiveSnapshot.messages
+        : localMessages;
+  const hasTimelineSurface =
+    Boolean(planeASnapshot?.messages.length) || Boolean(planeBSnapshot?.messages.length);
+
+  useLayoutEffect(() => {
+    if (!currentTimelineSettled || preservingCurrentTimeline) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setTimelineSlots((slots) => {
+      const currentActive = slots[slots.active];
+      if (currentActive?.key === chatStoreKey) {
+        return {
+          ...slots,
+          [slots.active]: currentTimelineSnapshot,
+        };
+      }
+      const nextActive: TimelinePlaneName = slots.active === "a" ? "b" : "a";
+      return nextActive === "a"
+        ? { active: "a", a: currentTimelineSnapshot, b: null }
+        : { active: "b", a: null, b: currentTimelineSnapshot };
+    });
+  }, [currentTimelineSettled, preservingCurrentTimeline, chatStoreKey, currentTimelineSnapshot]);
 
   // 切会话:重置贴底/已看分隔条相关的 ref(渲染期禁写 ref,故放 layout effect)。外部 atBottomRef
   // 同步置 true → 新会话首屏 readCache 走整窗塌缩。只写 ref、不 setState,故无 set-state-in-effect。
@@ -474,6 +553,19 @@ export const ChatArea = memo(function ChatArea({
   //   - range.startIndex < 绝对dividerIndex 且未 seen 且有未读 → 点亮 pill。
   const handleRangeChanged = useCallback(
     (range: ListRange) => {
+      if (
+        timelineItems.length > 0 &&
+        (timelineStage.key !== chatStoreKey || !timelineStage.ready) &&
+        range.endIndex >= firstItemIndex + timelineItems.length - 1
+      ) {
+        if (timelineReadyRafRef.current) cancelAnimationFrame(timelineReadyRafRef.current);
+        timelineReadyRafRef.current = requestAnimationFrame(() => {
+          timelineReadyRafRef.current = 0;
+          setTimelineStage((stage) =>
+            stage.key === chatStoreKey && stage.ready ? stage : { key: chatStoreKey, ready: true },
+          );
+        });
+      }
       if (unreadDividerIndex < 0) return;
       const absDivider = firstItemIndex + unreadDividerIndex;
       if (range.startIndex > absDivider) {
@@ -486,7 +578,15 @@ export const ChatArea = memo(function ChatArea({
       if (unread <= 0) return;
       setUnreadAbove((prev) => (prev === unread ? prev : unread));
     },
-    [unreadDividerIndex, firstItemIndex, conversation.unread],
+    [
+      chatStoreKey,
+      timelineItems.length,
+      timelineStage.key,
+      timelineStage.ready,
+      unreadDividerIndex,
+      firstItemIndex,
+      conversation.unread,
+    ],
   );
 
   const scrollToUnread = useCallback(() => {
@@ -503,10 +603,41 @@ export const ChatArea = memo(function ChatArea({
     virtuosoRef.current?.scrollToIndex({ index: "LAST", align: "end", behavior: "smooth" });
   }, []);
 
-  // Scroller DOM 节点(react-virtuoso 经 scrollerRef 回填):首屏遮罩据其真实 scrollTop 判到底。
-  const handleScrollerRef = useCallback((el: HTMLElement | Window | null) => {
-    scrollerElRef.current = el instanceof HTMLElement ? el : null;
-  }, []);
+  const scrollerUserScrollCleanupRef = useRef<(() => void) | null>(null);
+  const markTimelineUserScrolled = useCallback(() => {
+    setTimelineGate((r) =>
+      r.key === chatStoreKey && !r.userScrolled ? { ...r, userScrolled: true } : r,
+    );
+  }, [chatStoreKey]);
+
+  // Scroller DOM 节点(react-virtuoso 经 scrollerRef 回填):首屏定位门据其真实 scrollTop 判到底;
+  // 同时只监听真实用户输入来解锁浮层,避免程序滚动状态误触发「回到底部」。
+  const handleScrollerRef = useCallback(
+    (el: HTMLElement | Window | null) => {
+      scrollerUserScrollCleanupRef.current?.();
+      scrollerUserScrollCleanupRef.current = null;
+      const node = el instanceof HTMLElement ? el : null;
+      if (!node) return;
+
+      node.addEventListener("wheel", markTimelineUserScrolled, { passive: true });
+      node.addEventListener("touchmove", markTimelineUserScrolled, { passive: true });
+      node.addEventListener("keydown", markTimelineUserScrolled);
+      scrollerUserScrollCleanupRef.current = () => {
+        node.removeEventListener("wheel", markTimelineUserScrolled);
+        node.removeEventListener("touchmove", markTimelineUserScrolled);
+        node.removeEventListener("keydown", markTimelineUserScrolled);
+      };
+    },
+    [markTimelineUserScrolled],
+  );
+
+  useEffect(
+    () => () => {
+      scrollerUserScrollCleanupRef.current?.();
+      scrollerUserScrollCleanupRef.current = null;
+    },
+    [],
+  );
 
   const handleAtBottomStateChange = useCallback(
     (next: boolean) => {
@@ -518,27 +649,6 @@ export const ChatArea = memo(function ChatArea({
   const followOutput = useCallback(
     (isAtBottom: boolean): "auto" | false => (isAtBottom ? "auto" : false),
     [],
-  );
-
-  const itemContent = useCallback(
-    (index: number, item: MessageTimelineItem) => (
-      <MessageTimelineRow
-        item={item}
-        index={index}
-        avatarName={conversation.name}
-        avatarColor={conversation.avatarColor}
-        avatarUrl={conversation.avatar}
-        account={conversation.account}
-        onAction={handleMessageAction}
-      />
-    ),
-    [
-      conversation.name,
-      conversation.avatarColor,
-      conversation.avatar,
-      conversation.account,
-      handleMessageAction,
-    ],
   );
 
   // hub 连接断开时禁用发送并在 composer 顶部提示离线(E①)。连接态由 useHubSyncStatus 经
@@ -561,74 +671,80 @@ export const ChatArea = memo(function ChatArea({
     setOffline((prev) => nextOfflineSticky(prev, connectionState));
   }, [connectionState]);
 
-  // 切会话即时切换(无 crossfade):标题与消息区随 conversation 直接重渲,同步硬切,
-  // 无淡入淡出延迟、无双倍 DOM —— 跟手丝滑(IM 桌面端标准)。
+  // 切会话采用 IM 常见的稳定舞台:新 Virtuoso 先隐身落位,尾部 range ready 后再切入。
+  // 用户只看到无滚动条的聊天骨架过渡,看不到原生 scrollbar 从上方跳到底部的中间态。
   return (
     <div className="relative flex h-full min-w-0 flex-1 flex-col overflow-hidden bg-workbench-surface">
-      <ChatHeader conversation={conversation} />
+      <ChatHeader conversation={displayConversation} />
       <RangePill
         accounts={accounts}
         selectedAccountId={selectedAccountId}
         onAccountChange={onAccountChange}
       />
       <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
-        {loading && localMessages.length === 0 ? (
+        {loading && localMessages.length === 0 && !hasTimelineSurface ? (
           <ChatLoadingState />
         ) : error ? (
           <ChatErrorState error={error} onRetry={onRetry ?? (() => undefined)} />
-        ) : localMessages.length === 0 ? (
+        ) : localMessages.length === 0 && !hasTimelineSurface ? (
           <ChatEmptyState />
         ) : (
-          // 首屏定位遮罩:落到底前 opacity-0 藏掉整个滚动区(连滚动条),揭开后呈现贴底内容、无滚动条行程。
-          <div
-            className={cn(
-              "flex min-h-0 flex-1 flex-col",
-              reveal.shown ? "opacity-100" : "opacity-0",
+          <div className="relative min-h-0 flex-1 overflow-hidden bg-workbench-surface">
+            {planeASnapshot && (
+              <TimelinePlane
+                testId={
+                  switchingTimeline && activePlaneName !== "a"
+                    ? "timeline-staging-plane"
+                    : "timeline-visible-plane"
+                }
+                snapshot={planeASnapshot}
+                items={planeAItems}
+                visible={visiblePlaneName === "a"}
+                current={planeASnapshot.key === chatStoreKey}
+                virtuosoRef={virtuosoRef}
+                onAction={handleMessageAction}
+                scrollerRef={handleScrollerRef}
+                startReached={handleStartReached}
+                followOutput={followOutput}
+                atBottomStateChange={handleAtBottomStateChange}
+                rangeChanged={handleRangeChanged}
+              />
             )}
-          >
-            <Virtuoso<MessageTimelineItem>
-              // 切会话重挂 → initialTopMostItemIndex 重新生效贴底、firstItemIndex 基值重置。
-              key={chatStoreKey}
-              ref={virtuosoRef}
-              scrollerRef={handleScrollerRef}
-              data={timelineItems}
-              computeItemKey={(_index, item) => timelineRowKey(item)}
-              itemContent={itemContent}
-              firstItemIndex={firstItemIndex}
-              initialTopMostItemIndex={{ index: "LAST", align: "end" }}
-              defaultItemHeight={DEFAULT_ROW_HEIGHT}
-              totalListHeightChanged={handleTotalListHeightChanged}
-              increaseViewportBy={INCREASE_VIEWPORT_BY}
-              components={VIRTUOSO_COMPONENTS}
-              startReached={handleStartReached}
-              followOutput={followOutput}
-              atBottomStateChange={handleAtBottomStateChange}
-              rangeChanged={handleRangeChanged}
-              className="flex-1"
-              // a11y:消息流容器,与原 role=log 一致。
-              role="log"
-              aria-live="polite"
-              aria-atomic="false"
-            />
+            {planeBSnapshot && (
+              <TimelinePlane
+                testId={
+                  switchingTimeline && activePlaneName !== "b"
+                    ? "timeline-staging-plane"
+                    : "timeline-visible-plane"
+                }
+                snapshot={planeBSnapshot}
+                items={planeBItems}
+                visible={visiblePlaneName === "b"}
+                current={planeBSnapshot.key === chatStoreKey}
+                virtuosoRef={virtuosoRef}
+                onAction={handleMessageAction}
+                scrollerRef={handleScrollerRef}
+                startReached={handleStartReached}
+                followOutput={followOutput}
+                atBottomStateChange={handleAtBottomStateChange}
+                rangeChanged={handleRangeChanged}
+              />
+            )}
           </div>
         )}
       </div>
-      {!loading && !error && localMessages.length > 0 && !atBottom && (
+      {!loading && !error && timelineReadyForOverlays && !atBottom && (
         <ScrollToBottomButton
           count={unreadBelow}
           bottomOffset={composerHeight + 12}
           onClick={scrollToBottom}
         />
       )}
-      {!loading && !error && localMessages.length > 0 && unreadAbove > 0 && (
+      {!loading && !error && timelineReadyForOverlays && unreadAbove > 0 && (
         <UnreadAbovePill count={unreadAbove} onClick={scrollToUnread} />
       )}
-      {/* 不加 key:原先 key={conversation.id} 会在每次切会话整块重挂 MessageComposer →
-          重建整个 TipTap/ProseMirror 编辑器(本 UI 单次开销最大的对象),是频繁切换接待列表时
-          JS 堆锯齿上涨与切换卡顿的主因。改为持久化:编辑器跨会话常驻,切会话由 MessageComposer
-          内部 layout effect 载入新会话草稿 + 重聚焦,行为等价但零编辑器重建。 */}
       <MessageComposer
-        conversationId={conversation.id}
+        conversationId={displayConversation.id}
         height={composerHeight}
         onHeightChange={setComposerHeight}
         detailsOpen={detailsOpen}
@@ -639,9 +755,9 @@ export const ChatArea = memo(function ChatArea({
         onUpdateQuickReply={onUpdateQuickReply}
         onDeleteQuickReply={onDeleteQuickReply}
         mentionCandidates={mentionCandidates}
-        replyDraft={activeReplyDraft}
+        replyDraft={displayConversation.id === conversation.id ? activeReplyDraft : null}
         onCancelReply={() => setReplyDraft(null)}
-        getPolishContext={() => buildPolishContext(localMessages)}
+        getPolishContext={() => buildPolishContext(displayMessages)}
         offline={offline}
       />
       {enlargeMessage && (
@@ -735,6 +851,90 @@ function areTimelineRowPropsEqual(
     prev.onAction === next.onAction
   );
 }
+
+const TimelinePlane = memo(function TimelinePlane({
+  testId,
+  snapshot,
+  items,
+  visible,
+  current,
+  virtuosoRef,
+  onAction,
+  scrollerRef,
+  startReached,
+  followOutput,
+  atBottomStateChange,
+  rangeChanged,
+}: {
+  testId: string;
+  snapshot: TimelineSnapshot;
+  items: MessageTimelineItem[];
+  visible: boolean;
+  current: boolean;
+  virtuosoRef: MutableRefObject<VirtuosoHandle | null>;
+  onAction: (action: MessageActionType, message: Message) => void;
+  scrollerRef: (el: HTMLElement | Window | null) => void;
+  startReached: () => void;
+  followOutput: (isAtBottom: boolean) => "auto" | false;
+  atBottomStateChange: (atBottom: boolean) => void;
+  rangeChanged: (range: ListRange) => void;
+}) {
+  const itemContent = useCallback(
+    (index: number, item: MessageTimelineItem) => (
+      <MessageTimelineRow
+        item={item}
+        index={index}
+        avatarName={snapshot.conversation.name}
+        avatarColor={snapshot.conversation.avatarColor}
+        avatarUrl={snapshot.conversation.avatar}
+        account={snapshot.conversation.account}
+        onAction={onAction}
+      />
+    ),
+    [
+      snapshot.conversation.name,
+      snapshot.conversation.avatarColor,
+      snapshot.conversation.avatar,
+      snapshot.conversation.account,
+      onAction,
+    ],
+  );
+
+  return (
+    <div
+      data-testid={testId}
+      aria-hidden={!visible}
+      className={cn(
+        "absolute inset-0 flex min-h-0 flex-1 flex-col overflow-hidden bg-workbench-surface transition-opacity duration-75 ease-out",
+        visible ? "z-10 opacity-100" : "pointer-events-none z-0 opacity-0",
+      )}
+    >
+      <Virtuoso<MessageTimelineItem>
+        // key 固定在 plane snapshot 上:旧 plane 在切换期间不重挂、不重排;新 plane 在隐藏层单独落位。
+        key={snapshot.key}
+        ref={current ? virtuosoRef : undefined}
+        scrollerRef={current ? scrollerRef : undefined}
+        data={items}
+        computeItemKey={(_index, item) => timelineRowKey(item)}
+        itemContent={itemContent}
+        firstItemIndex={snapshot.firstItemIndex}
+        initialTopMostItemIndex={{ index: "LAST", align: "end" }}
+        defaultItemHeight={DEFAULT_ROW_HEIGHT}
+        increaseViewportBy={INCREASE_VIEWPORT_BY}
+        components={VIRTUOSO_COMPONENTS}
+        startReached={current ? startReached : undefined}
+        followOutput={current ? followOutput : undefined}
+        atBottomStateChange={current ? atBottomStateChange : undefined}
+        rangeChanged={current ? rangeChanged : undefined}
+        className="flex-1"
+        // a11y:消息流容器,与原 role=log 一致。
+        role="log"
+        aria-live={visible ? "polite" : "off"}
+        aria-atomic="false"
+      />
+    </div>
+  );
+});
 
 // ─── Floating scroll-to-bottom pill ─────────────────────────────────────────
 

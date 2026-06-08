@@ -24,6 +24,10 @@ message SubscribeRequest {
   string device_id        = 2;
   // 客户端业务版本(协议版本仍由 metadata `chathub-client-version` 传)。
   string client_version   = 3;
+  // 客户端登录后从 LoginResponse 拿到、持久化的 terminalId(= relay OAuth 时按
+  // terminal_id_for(device_id, username) 派生的 UUIDv5)。每次 subscribe 回带,
+  // relay 据此做 force_close 终端粒度路由(排他登录只踢旧端、保留新端)。
+  string terminal_id      = 4;
 }
 
 // 客户端处理完一批事件后上报已处理水位。仅 relay 内部观测;事件日志清理走 TTL,不依赖此值。

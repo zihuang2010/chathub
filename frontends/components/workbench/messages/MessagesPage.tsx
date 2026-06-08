@@ -200,9 +200,6 @@ export function MessagesPage({
   // 顶部账号选择器直接输出 wecomAccountId(= account.id),原样传给 useRecentFriends;
   // null = 全部账号。展示名在 RangePill/ConversationList 内按 id 反查 accounts。
 
-  // SyncStatusBadge 现已搬到 Sidebar 用户名下方(全局可见),这里只消费数据相关字段。
-  // resyncing / connectionState / lastEventAt / lastRefreshAt / error 由 Sidebar 的
-  // useHubSyncStatus 单独管,不再从这里透传。
   const {
     items: recentEntries,
     filtered,

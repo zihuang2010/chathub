@@ -41,10 +41,3 @@ export const COMPOSER_WARN_CHARS = 1800;
 // 滑入的区域,不会「滑两下又触顶」频繁加载。锚定已交 virtual-core anchorTo:'end'(按可见项 key 恢复
 // 位置),页大不再有「单次撑高大→锚点易飘」的顾虑。首屏仍走 DEFAULT_PAGE_SIZE(=20),二者解耦。
 export const OLDER_PAGE_SIZE = 20;
-
-// 上拉预取提前量(px)。实际阈值取 max(本值, 一个视口高度) ≈ 一屏:距顶 ≤ 该阈值即后台加载更旧页。
-// 提前预取的意义在于 —— 数据在用户滚到顶**之前**就位、prepend 在「远离顶部边界、下方仍有滚动
-// 余量」时落地,锚定补偿(virtual-core anchorTo:'end')不被 scrollTop=0 钳制、也不与边界惯性相争,
-// 当前视口内容真正不动(消除「下一页最后一条挤压当前页」的跳帧),同时大幅提升触发灵敏度。取 max
-// 给极小视口兜底一个下限提前量。
-export const HISTORY_PREFETCH_MIN_PX = 400;

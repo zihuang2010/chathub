@@ -210,6 +210,11 @@ export const STRINGS = {
     collapseRight: "收起右栏",
     emoji: "表情",
     screenshot: "截图",
+    // 区域截图框选遮罩(Windows/Linux:插件抓整屏后在应用内裁剪)。
+    screenshotCropHint: "拖动框选要发送的区域 · Enter 确认 · Esc 取消",
+    screenshotCropConfirm: "确认",
+    screenshotCropCancel: "取消",
+    screenshotCropSize: (w: number, h: number) => `${w} × ${h}`,
     image: "图片",
     file: "文件",
     voice: "语音",

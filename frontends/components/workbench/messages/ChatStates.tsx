@@ -25,28 +25,36 @@ export function ChatLoadingState() {
       role="status"
       aria-busy="true"
       aria-label={STRINGS.empty.loading}
-      className="flex flex-1 flex-col gap-3 bg-workbench-surface px-4 py-5"
+      className="flex flex-1 flex-col justify-end gap-4 bg-workbench-surface px-4 py-5 pr-6"
     >
-      <SkeletonRow side="left" />
+      <SkeletonRow side="right" compact />
+      <SkeletonRow side="right" wide />
       <SkeletonRow side="right" />
-      <SkeletonRow side="left" wide />
-      <SkeletonRow side="right" />
+      <SkeletonRow side="right" compact />
       <span className="sr-only">{STRINGS.empty.loading}</span>
     </motion.div>
   );
 }
 
-function SkeletonRow({ side, wide }: { side: "left" | "right"; wide?: boolean }) {
+function SkeletonRow({
+  side,
+  compact,
+  wide,
+}: {
+  side: "left" | "right";
+  compact?: boolean;
+  wide?: boolean;
+}) {
   return (
     <motion.div
       variants={SKELETON_ROW_VARIANTS}
       className={cn("flex items-center gap-2", side === "right" && "flex-row-reverse")}
     >
-      <div className="size-9 shrink-0 animate-pulse rounded-lg bg-workbench-line-subtle" />
+      <div className="size-8 shrink-0 animate-pulse rounded-lg bg-workbench-line-subtle" />
       <div
         className={cn(
           "h-9 animate-pulse rounded-md bg-workbench-line-subtle",
-          wide ? "w-[60%]" : "w-[40%]",
+          compact ? "w-[15%]" : wide ? "w-[32%]" : "w-[22%]",
         )}
       />
     </motion.div>

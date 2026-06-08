@@ -12,11 +12,14 @@ use parking_lot::RwLock;
 use std::sync::Arc;
 use tokio::sync::broadcast;
 
-/// 进程内的 token 当前值。过期判断不在客户端,故只存 token + user_id。
+/// 进程内的 token 当前值。过期判断不在客户端,故只存 token + user_id + terminal_id。
+/// `terminal_id`:relay 登录权威回传的本终端标识(UUIDv5),subscribe 上行回带,
+/// 供 relay 做 force_close 终端粒度路由。冷启动 resume 从持久化 profile 还原。
 #[derive(Clone, Debug, PartialEq)]
 pub struct TokenState {
     pub access_token: String,
     pub user_id: String,
+    pub terminal_id: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -65,6 +68,12 @@ impl TokenStore {
 
     pub fn current_user_id(&self) -> Option<String> {
         self.state.read().as_ref().map(|s| s.user_id.clone())
+    }
+
+    /// 本终端标识(relay 登录回传的 UUIDv5)。run_loop 在 subscribe 时读取后上行。
+    /// 未登录 / 旧会话未带 → None / 空串。
+    pub fn current_terminal_id(&self) -> Option<String> {
+        self.state.read().as_ref().map(|s| s.terminal_id.clone())
     }
 
     pub fn logged_out_subscribe(&self) -> broadcast::Receiver<LoggedOutReason> {
@@ -126,9 +135,15 @@ impl TokenStore {
             .as_ref()
             .map(|p| p.user_id.clone())
             .unwrap_or_default();
+        let terminal_id = resp
+            .user
+            .as_ref()
+            .map(|p| p.terminal_id.clone())
+            .unwrap_or_default();
         *self.state.write() = Some(TokenState {
             access_token: resp.access_token.clone(),
             user_id: user_id.clone(),
+            terminal_id,
         });
 
         tracing::info!(
@@ -182,10 +197,13 @@ impl TokenStore {
     }
 
     /// 直接设置已登录 state(resume 用:本地有 token + SessionStore 有 profile)。
-    pub fn set_session(&self, access_token: String, user_id: String) {
+    /// `terminal_id` 取自持久化 profile,保证 resume 后 subscribe 上行的 terminalId
+    /// 与登录时 relay 派生值一致(见 force_close 终端粒度路由)。
+    pub fn set_session(&self, access_token: String, user_id: String, terminal_id: String) {
         *self.state.write() = Some(TokenState {
             access_token,
             user_id,
+            terminal_id,
         });
     }
 
@@ -237,7 +255,7 @@ mod tests {
         let local = fresh_local().await;
         let ep = tonic::transport::Endpoint::from_static("http://127.0.0.1:1");
         let store = TokenStore::new(ep, local, "dev".into());
-        store.set_session("tok-1".into(), "u-1".into());
+        store.set_session("tok-1".into(), "u-1".into(), "term-1".into());
         assert!(store.is_logged_in());
         assert_eq!(store.current_access_token().as_deref(), Some("tok-1"));
         assert_eq!(store.current_user_id().as_deref(), Some("u-1"));
@@ -262,7 +280,7 @@ mod tests {
         let ep = tonic::transport::Endpoint::from_static("http://127.0.0.1:1");
         let store = TokenStore::new(ep, local, "dev".into());
         store.seed_token_for_test("tok-x").await;
-        store.set_session("tok-x".into(), "u-1".into());
+        store.set_session("tok-x".into(), "u-1".into(), "term-x".into());
         let mut rx = store.logged_out_subscribe();
 
         store.mark_token_invalid().await;
@@ -278,7 +296,7 @@ mod tests {
         let ep = tonic::transport::Endpoint::from_static("http://127.0.0.1:1");
         let store = TokenStore::new(ep, local, "dev".into());
         store.seed_token_for_test("tok-x").await;
-        store.set_session("tok-x".into(), "u-1".into());
+        store.set_session("tok-x".into(), "u-1".into(), "term-x".into());
         let mut rx = store.logged_out_subscribe();
 
         store.mark_kicked(true).await;
@@ -294,7 +312,7 @@ mod tests {
         let ep = tonic::transport::Endpoint::from_static("http://127.0.0.1:1");
         let store = TokenStore::new(ep, local, "dev".into());
         store.seed_token_for_test("tok-x").await;
-        store.set_session("tok-x".into(), "u-1".into());
+        store.set_session("tok-x".into(), "u-1".into(), "term-x".into());
         let mut rx = store.logged_out_subscribe();
 
         store.mark_kicked(false).await;

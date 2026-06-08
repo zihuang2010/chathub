@@ -27,8 +27,8 @@ impl SessionStore {
         let conn = self.pool.pool().get().await?;
         conn.interact(move |c| -> Result<(), StateError> {
             c.execute(
-                "INSERT INTO hub_current_session (id, user_id, display_name, avatar_url, role, tenant_id, username, mobile, logged_in_at_ms) \
-                 VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) \
+                "INSERT INTO hub_current_session (id, user_id, display_name, avatar_url, role, tenant_id, username, mobile, terminal_id, logged_in_at_ms) \
+                 VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9) \
                  ON CONFLICT(id) DO UPDATE SET \
                    user_id = excluded.user_id, \
                    display_name = excluded.display_name, \
@@ -37,10 +37,12 @@ impl SessionStore {
                    tenant_id = excluded.tenant_id, \
                    username = excluded.username, \
                    mobile = excluded.mobile, \
+                   terminal_id = excluded.terminal_id, \
                    logged_in_at_ms = excluded.logged_in_at_ms",
                 rusqlite::params![
                     profile.user_id, profile.display_name, profile.avatar_url,
-                    profile.role, profile.tenant_id, profile.username, profile.mobile, now,
+                    profile.role, profile.tenant_id, profile.username, profile.mobile,
+                    profile.terminal_id, now,
                 ],
             )?;
             Ok(())
@@ -53,7 +55,7 @@ impl SessionStore {
         let conn = self.pool.pool().get().await?;
         let profile: Option<UserProfile> = conn.interact(move |c| -> Result<Option<UserProfile>, StateError> {
             c.query_row(
-                "SELECT user_id, display_name, avatar_url, role, tenant_id, username, mobile FROM hub_current_session WHERE id = 1",
+                "SELECT user_id, display_name, avatar_url, role, tenant_id, username, mobile, terminal_id FROM hub_current_session WHERE id = 1",
                 [],
                 |row| {
                     Ok(UserProfile {
@@ -64,6 +66,7 @@ impl SessionStore {
                         tenant_id:    row.get(4)?,
                         username:     row.get(5)?,
                         mobile:       row.get(6)?,
+                        terminal_id:  row.get(7)?,
                     })
                 },
             )
@@ -111,6 +114,7 @@ mod tests {
             tenant_id: "t-42".into(),
             username: "alice".into(),
             mobile: "13800000000".into(),
+            terminal_id: "term-alice-devA".into(),
         }
     }
 

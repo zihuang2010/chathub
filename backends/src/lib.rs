@@ -102,6 +102,26 @@ fn take_screenshot_impl() -> Result<ScreenshotResult, String> {
     Err("当前平台暂不支持区域截图，请使用系统截图后粘贴".to_string())
 }
 
+/// 读取 tauri-plugin-screenshots 抓屏后落盘的 PNG,返回 base64 供前端框选裁剪。
+/// 抓屏全程在原生插件(xcap)完成;这里只把整屏图喂回 webview——避免 asset 协议
+/// scope/canvas 跨域污染等运行时坑,直接走 data URL 最稳。
+/// 防越权:仅允许读插件产出目录下的 png(路径须含 "tauri-plugin-screenshots" 且以 ".png" 结尾)。
+#[tauri::command]
+async fn read_screenshot_file(path: String) -> Result<String, String> {
+    use base64::engine::general_purpose::STANDARD as BASE64;
+    use base64::Engine;
+
+    let lower = path.to_lowercase();
+    if !path.contains("tauri-plugin-screenshots") || !lower.ends_with(".png") {
+        return Err("非法的截图路径".to_string());
+    }
+    let bytes = std::fs::read(&path).map_err(|e| format!("读取截图失败: {e}"))?;
+    if bytes.is_empty() {
+        return Err("截图结果为空".to_string());
+    }
+    Ok(BASE64.encode(bytes))
+}
+
 // ============================== Plan 2:Auth 命令 ==============================
 
 #[tauri::command]
@@ -1714,6 +1734,7 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_screenshots::init())
         // 媒体附件 HTTP 客户端(下载附件 / 取语音字节)。无需 app handle,builder 直接托管。
         .manage(media::MediaHttp::new())
         // AI 润色全局单条在途流的取消句柄。无需 app handle,builder 直接托管。
@@ -1989,7 +2010,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            take_screenshot,
+            take_screenshot, read_screenshot_file,
             login, logout, current_session,
             hub_forward, hub_ack, hub_state, list_accounts, list_friends, friend_detail,
             list_recent_friends, list_recent_friends_remote_page, prefill_recent_friends,

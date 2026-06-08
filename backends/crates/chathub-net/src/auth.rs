@@ -73,8 +73,9 @@ impl AuthApi {
             }
         };
 
-        // 3. 装回内存 state,会话复活。
-        self.token_store.set_session(token, profile.user_id.clone());
+        // 3. 装回内存 state,会话复活。terminal_id 随持久化 profile 还原 → subscribe 上行一致。
+        self.token_store
+            .set_session(token, profile.user_id.clone(), profile.terminal_id.clone());
         Ok(Some(profile))
     }
 }

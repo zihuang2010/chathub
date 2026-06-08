@@ -96,6 +96,10 @@ jobs:
           # 同为 repo Variable、非 secret;缺它则两侧都回落 filet.jdd51.com(当前真实值)。
           CHATHUB_ATTACHMENT_BASE_URL: ${{ vars.CHATHUB_ATTACHMENT_BASE_URL }}
           VITE_CHATHUB_ATTACHMENT_BASE_URL: ${{ vars.CHATHUB_ATTACHMENT_BASE_URL }}
+          # 编译期烘进客户端的 AI 润色密钥(backends/build.rs)。是密钥 → 用 Secret,不能用 Variable。
+          # 缺它不阻断构建(与 build.rs 一致,仅 AI 润色功能禁用),只在下方打印提示。
+          # 端点/模型走 build.rs 默认值(通义千问 + qwen-flash);换厂商再加对应 env。
+          CHATHUB_AI_API_KEY: ${{ secrets.CHATHUB_AI_API_KEY }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         shell: bash
@@ -104,6 +108,9 @@ jobs:
           if [ -z "${CHATHUB_RELAY_URL:-}" ]; then
             echo "::error::CHATHUB_RELAY_URL 未设置（缺 repo Variable）— 否则客户端烘进占位地址 relay.example.com，发出去的包连不上 relay。请在仓库 Settings → Variables 新建 CHATHUB_RELAY_URL"
             exit 1
+          fi
+          if [ -z "${CHATHUB_AI_API_KEY:-}" ]; then
+            echo "::warning::CHATHUB_AI_API_KEY 未设置（缺 repo Secret）— 出包后客户端「AI 润色」会显示「AI 未配置」。如需启用：Settings → Secrets and variables → Actions → Secrets 新建 CHATHUB_AI_API_KEY（通义千问 sk- 密钥）。"
           fi
           pnpm tauri build --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
 

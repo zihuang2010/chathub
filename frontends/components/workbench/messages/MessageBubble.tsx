@@ -29,7 +29,7 @@ interface MessageBubbleProps {
 
 const COMPACT_TEXT_LIMIT = 8;
 
-// 多端同步来源 logo(企业微信),随应用打包于 public/。气泡来源徽章 + 头像角标共用。
+// 多端同步来源 logo(企业微信),随应用打包于 public/。仅用于头像角标。
 // 加载失败不阻塞(alt 空、aria-hidden);生产建议替换为官方品牌矢量资源。
 const WECOM_SOURCE_LOGO = "/wecom-logo.png";
 
@@ -205,7 +205,7 @@ function OutgoingBubble({
   const fullLabel = formatMessageDateTime(message.sentAt);
   const compact = isCompactText(message.text);
   const mediaOnly = isMediaOnly(message) && !replyTarget;
-  // 多端同步出站消息(他端经企业微信发出后同步进本端):中性底色 + 来源徽章 + 头像角标,
+  // 多端同步出站消息(他端经企业微信发出后同步进本端):中性底色 + 头像角标,
   // 与本端直发的蓝色出站气泡区分,便于质检/溯源。仅出站消息可能为 true。
   const synced = message.syncedFromOtherDevice === true;
   return (
@@ -240,32 +240,8 @@ function OutgoingBubble({
             </span>
           </article>
         </MessageContextMenu>
-        {synced && <SyncedSourceBadge />}
         <StatusLine status={message.status} onResend={() => onAction("resend", message)} />
       </div>
-    </div>
-  );
-}
-
-// 多端同步来源徽章:气泡下方一行「[企微 logo] 企业微信」,溯源/质检一眼可辨。
-// 与 StatusLine 同款:一律脱离文档流(absolute + top-full),浮在气泡下方的行间距里,
-// 不占行高 —— 这样「同步气泡」与「普通气泡」的列高完全一致,消息行间距才统一(否则
-// 这一行 ~18px 会把下一条气泡额外顶下去,同步气泡之间的间距看起来比普通气泡大)。
-// 同步消息状态恒为 sent → StatusLine 返回 null,二者不会同时争抢 top-full 位置。
-// 用 right-0 锚右缘:出站气泡一律右对齐,右缘共线于「父宽 − 头像 36px − gap 8px」这条
-// 恒定竖线(AgentAvatar 固定 size-9 + shrink-0)。徽章也锚右缘 + whitespace-nowrap 等宽 →
-// 所有同步徽章右缘共线、左缘亦共线 → 跨消息纵向对齐成同一列(本意)。窄气泡(如「369」)
-// 的徽章比气泡宽时会略探出气泡左缘,是为「徽章纵向一致」而接受的取舍。
-function SyncedSourceBadge() {
-  return (
-    <div className="text-wb-3xs pointer-events-none absolute right-0 top-full mt-1 flex items-center gap-1 whitespace-nowrap font-medium text-workbench-text-muted">
-      <img
-        src={WECOM_SOURCE_LOGO}
-        alt=""
-        aria-hidden
-        className="size-3 rounded-[2px] object-contain"
-      />
-      <span>{STRINGS.status.syncedSource}</span>
     </div>
   );
 }

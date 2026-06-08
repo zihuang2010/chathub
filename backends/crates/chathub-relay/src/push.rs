@@ -242,6 +242,7 @@ async fn handle_push(
         control_count,
         unknown_count,
         has_force_close,
+        force_close_keep_terminal,
     } = match convert_batch_to_rows(&body, now_ms) {
         Ok(c) => c,
         Err(index) => {
@@ -275,7 +276,17 @@ async fn handle_push(
     let persist_fut = state.events_log.insert_batch(rows);
     let employee_id = body.employee_id;
     let router_for_fanout = state.router.clone();
-    let fanout_fut = async move { router_for_fanout.fanout_employee(employee_id, event) };
+    // force_close 终端粒度(方案 B):有保留端时 force_close 帧只投"被踢端"(保留端收不到 → 不自登出);
+    // 普通推送 / 全员踢 → 照常投全 employee。
+    let keep_for_fanout = force_close_keep_terminal.clone();
+    let fanout_fut = async move {
+        match keep_for_fanout.as_deref() {
+            Some(keep) => {
+                router_for_fanout.fanout_employee_except_terminal(employee_id, keep, event)
+            }
+            None => router_for_fanout.fanout_employee(employee_id, event),
+        }
+    };
 
     let (insert_result, fanout) = tokio::join!(persist_fut, fanout_fut);
 
@@ -295,25 +306,35 @@ async fn handle_push(
         state.router.drop_employee_stream(body.employee_id, conn_id);
     }
 
-    // P0-3:CONNECTION_FORCE_CLOSE grace 流程
-    //   1. force_close 事件已经包在上面 fanout 的 events_json 里送达客户端
-    //   2. 立即失效该 employee 的鉴权缓存 → 旧 token 重连时不再命中缓存、强制回源 verify_token
-    //   3. 等 grace,让客户端读完帧并显示提示
-    //   4. 然后摘除该 employee 的所有路由 → gRPC stream 自然关闭
-    //   5. 客户端旧 token 之后再 Subscribe 由缓存失效 + 后台 verify_token 双重拒(不再只靠 TTL 自然过期)
+    // P0-3:CONNECTION_FORCE_CLOSE grace 流程(方案 B:终端粒度)
+    //   1. force_close 事件已在上面 fanout:全员踢→投全员;终端粒度→只投被踢端(保留端收不到)。
+    //   2. 立即失效该 employee 的鉴权缓存 → 旧 token 重连强制回源 verify_token。
+    //      (终端粒度下:被踢端 verify_token 应 allowed=false、保留端仍 allowed=true,见后台契约 Q4;
+    //       保留端连接不重连、不受缓存失效影响。)
+    //   3. 等 grace,让被踢端读完帧、自行 mark_kicked 主动断流。
+    //      注意:摘 router 仅"停止继续 fanout",并不直接关 socket(spawn 仍持 tx 至 tx.closed);
+    //      真正关流的是被踢端客户端收到 force_close 后主动断开 → tx.closed → cleanup。grace 摘 router 是兜底。
+    //   4. grace 到期摘 router:全员踢→drop_all;终端粒度→drop_except(保留端),绝不摘保留端。
     if has_force_close {
         // 失效缓存:不依赖 grace timer,踢人即刻生效。
         state.auth.invalidate_employee(body.employee_id).await;
         let router = state.router.clone();
         let emp_id = body.employee_id;
         let grace = state.force_close_grace_ms;
+        let keep_terminal = force_close_keep_terminal;
         tokio::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_millis(grace)).await;
-            let dropped = router.drop_all_employee_streams(emp_id);
+            let dropped = match keep_terminal.as_deref() {
+                // 终端粒度:摘除"被踢端"(保留端 terminalId 命中者不摘)。
+                Some(keep) => router.drop_employee_streams_except_terminal(emp_id, keep),
+                // 全员踢:摘除该 employee 全部流(旧行为)。
+                None => router.drop_all_employee_streams(emp_id),
+            };
             tracing::info!(
                 target: "chathub_relay::push",
                 employee_id = emp_id,
                 connections_dropped = dropped.len(),
+                terminal_scoped = keep_terminal.is_some(),
                 grace_ms = grace,
                 "force_close grace expired; streams evicted"
             );
@@ -356,6 +377,11 @@ pub struct BatchConversion {
     pub control_count: usize,
     pub unknown_count: usize,
     pub has_force_close: bool,
+    /// force_close 终端粒度"保留端" terminalId(方案 B):
+    /// `Some(survivor)` = 终端粒度(豁免该 terminalId、踢其余),仅当
+    ///   reasonCode==EXCLUSIVE_LOGIN(或 closeScope==TERMINAL)且 forceClose.terminalId 非空;
+    /// `None` = 无 force_close 或全员踢(走 fanout 全投 + drop_all,维持旧行为)。
+    pub force_close_keep_terminal: Option<String>,
 }
 
 /// 把一个 batch(push 入站 / notify_pull 拉回 共用同一 `PushBatchIn` 结构)分类转换为
@@ -368,6 +394,7 @@ pub fn convert_batch_to_rows(b: &PushBatchIn, now_ms: i64) -> Result<BatchConver
     let mut control_count = 0usize;
     let mut unknown_count = 0usize;
     let mut has_force_close = false;
+    let mut force_close_keep_terminal: Option<String> = None;
 
     for (index, event_value) in b.events.iter().enumerate() {
         let event_type = event_value
@@ -383,6 +410,7 @@ pub fn convert_batch_to_rows(b: &PushBatchIn, now_ms: i64) -> Result<BatchConver
                 control_count += 1;
                 if event_type == "CONNECTION_FORCE_CLOSE" {
                     has_force_close = true;
+                    force_close_keep_terminal = force_close_keep_terminal_of(event_value);
                 }
             }
             EventPolicy::Persist => {
@@ -421,7 +449,24 @@ pub fn convert_batch_to_rows(b: &PushBatchIn, now_ms: i64) -> Result<BatchConver
         control_count,
         unknown_count,
         has_force_close,
+        force_close_keep_terminal,
     })
+}
+
+/// 解析 CONNECTION_FORCE_CLOSE 事件,判定"终端粒度"(豁免保留端、踢其余)还是"全员踢"。
+/// 防御性双条件:`reasonCode==EXCLUSIVE_LOGIN`(或 `closeScope==TERMINAL`)**且** `forceClose.terminalId` 非空
+///   → `Some(保留端 terminalId)`(终端粒度);
+/// 其余(已知全员踢 reason / terminalId 缺失 / closeScope==EMPLOYEE 且非排他 / 任何不确定)
+///   → `None`(全员踢)。
+/// 过渡期注意:现网排他仍发 `closeScope==EMPLOYEE` + `terminalId` 非空,故不能只看 closeScope。
+fn force_close_keep_terminal_of(event_value: &serde_json::Value) -> Option<String> {
+    let fc = event_value.get("forceClose")?;
+    let reason = fc.get("reasonCode").and_then(|v| v.as_str()).unwrap_or("");
+    let scope = fc.get("closeScope").and_then(|v| v.as_str()).unwrap_or("");
+    let terminal = fc.get("terminalId").and_then(|v| v.as_str()).unwrap_or("");
+    let terminal_scoped =
+        (reason == "EXCLUSIVE_LOGIN" || scope == "TERMINAL") && !terminal.is_empty();
+    terminal_scoped.then(|| terminal.to_string())
 }
 
 fn extract_str(value: &serde_json::Value, key: &str) -> Option<String> {
@@ -615,7 +660,8 @@ mod tests {
     async fn push_force_close_evicts_streams_after_grace() {
         let st = make_state().await;
         let (tx, mut rx) = tokio::sync::mpsc::channel(8);
-        st.router.register_employee(42, "dev-A".into(), tx);
+        st.router
+            .register_employee(42, "dev-A".into(), "term-A".into(), tx);
 
         let b = body(
             500,
@@ -651,6 +697,89 @@ mod tests {
         // grace 后被摘除(make_state 用 50ms grace)
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         assert_eq!(st.router.employee_connection_count(42), 0);
+    }
+
+    #[tokio::test]
+    async fn push_force_close_exclusive_login_keeps_survivor_kicks_others() {
+        // 方案 B:EXCLUSIVE_LOGIN + forceClose.terminalId=保留端 → 只踢"非保留端",保留端不投不摘。
+        let st = make_state().await;
+        let (tx_keep, mut rx_keep) = tokio::sync::mpsc::channel(8);
+        let (tx_old, mut rx_old) = tokio::sync::mpsc::channel(8);
+        st.router
+            .register_employee(42, "dev-new".into(), "term-survivor".into(), tx_keep);
+        st.router
+            .register_employee(42, "dev-old".into(), "term-old".into(), tx_old);
+
+        let b = body(
+            501,
+            42,
+            serde_json::json!([{
+                "eventType": "CONNECTION_FORCE_CLOSE",
+                "eventReason": "EXCLUSIVE_LOGIN",
+                "forceClose": {
+                    "closeScope": "EMPLOYEE",
+                    "reasonCode": "EXCLUSIVE_LOGIN",
+                    "terminalId": "term-survivor"
+                }
+            }]),
+        );
+        let (status, ack) = post(app(st.clone()), b, "ps").await;
+        assert_eq!(status, StatusCode::OK);
+        // force_close 只投"被踢端"一路(保留端不投)。
+        assert_eq!(ack["data"]["onlineConnectionCount"], 1);
+
+        // 被踢端收到 force_close。
+        use chathub_proto::v1::server_event::Body;
+        let frame = tokio::time::timeout(std::time::Duration::from_millis(200), rx_old.recv())
+            .await
+            .expect("old frame timeout")
+            .expect("channel closed")
+            .expect("status err");
+        assert!(matches!(frame.body, Some(Body::PushBatch(_))));
+        // 保留端收不到任何帧(不会自登出)。
+        assert!(rx_keep.try_recv().is_err());
+
+        // grace 后:只摘被踢端,保留端仍在。
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        assert_eq!(st.router.employee_connection_count(42), 1);
+    }
+
+    #[test]
+    fn force_close_keep_terminal_of_classifies() {
+        use serde_json::json;
+        // 排他 + terminalId 非空 → 终端粒度(返回保留端)。
+        assert_eq!(
+            force_close_keep_terminal_of(&json!({
+                "forceClose": { "reasonCode": "EXCLUSIVE_LOGIN", "closeScope": "EMPLOYEE", "terminalId": "term-x" }
+            })),
+            Some("term-x".to_string())
+        );
+        // closeScope==TERMINAL + terminalId 非空 → 终端粒度。
+        assert_eq!(
+            force_close_keep_terminal_of(&json!({
+                "forceClose": { "reasonCode": "WHATEVER", "closeScope": "TERMINAL", "terminalId": "term-y" }
+            })),
+            Some("term-y".to_string())
+        );
+        // 全员踢 reason 即便带 terminalId → None(防漏踢=安全回归)。
+        assert_eq!(
+            force_close_keep_terminal_of(&json!({
+                "forceClose": { "reasonCode": "EMPLOYEE_DISABLED", "closeScope": "EMPLOYEE", "terminalId": "term-z" }
+            })),
+            None
+        );
+        // 排他但 terminalId 空 → None(全员踢兜底)。
+        assert_eq!(
+            force_close_keep_terminal_of(&json!({
+                "forceClose": { "reasonCode": "EXCLUSIVE_LOGIN", "closeScope": "EMPLOYEE", "terminalId": "" }
+            })),
+            None
+        );
+        // 无 forceClose 对象 → None。
+        assert_eq!(
+            force_close_keep_terminal_of(&json!({ "eventType": "X" })),
+            None
+        );
     }
 
     #[tokio::test]
@@ -697,7 +826,8 @@ mod tests {
     async fn push_fanout_delivers_to_registered_employee_stream() {
         let st = make_state().await;
         let (tx, mut rx) = tokio::sync::mpsc::channel(8);
-        st.router.register_employee(42, "dev-A".into(), tx);
+        st.router
+            .register_employee(42, "dev-A".into(), "term-A".into(), tx);
 
         let b = body(
             300,

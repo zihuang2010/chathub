@@ -1,4 +1,4 @@
-import { act, cleanup, render } from "@testing-library/react";
+import { act, cleanup, render, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { Account } from "@/lib/types/account";
@@ -36,14 +36,31 @@ interface MockVirtuosoProps {
   data?: unknown[];
   itemContent?: (index: number, item: unknown) => React.ReactNode;
   computeItemKey?: (index: number, item: unknown) => string | number;
+  firstItemIndex?: number;
+  rangeChanged?: (range: { startIndex: number; endIndex: number }) => void;
+  scrollerRef?: (el: HTMLElement | Window | null) => void;
   startReached?: () => void;
+  atBottomStateChange?: (atBottom: boolean) => void;
 }
 // scrollToIndex 间谍:验「切会话/首挂不命令式滚动(防上→下闪),同会话追加才滚」的接线契约。
-const virtuosoMock = vi.hoisted(() => ({ scrollToIndex: vi.fn() }));
+const virtuosoMock = vi.hoisted(() => ({
+  emitAtBottom: undefined as ((atBottom: boolean) => void) | undefined,
+  scroller: undefined as HTMLElement | undefined,
+  scrollToIndex: vi.fn(),
+}));
 vi.mock("react-virtuoso", async () => {
   const React = await import("react");
   const Virtuoso = React.forwardRef(function MockVirtuoso(props: MockVirtuosoProps, ref) {
-    const { data = [], itemContent, computeItemKey, startReached } = props;
+    const {
+      data = [],
+      itemContent,
+      computeItemKey,
+      firstItemIndex = 0,
+      rangeChanged,
+      scrollerRef,
+      startReached,
+      atBottomStateChange,
+    } = props;
     React.useImperativeHandle(ref, () => ({
       scrollToIndex: virtuosoMock.scrollToIndex,
       scrollTo: () => undefined,
@@ -59,8 +76,39 @@ vi.mock("react-virtuoso", async () => {
       firedRef.current = true;
       startReached?.();
     }, [startReached]);
+    React.useLayoutEffect(() => {
+      const el = document.createElement("div");
+      el.tabIndex = 0;
+      Object.defineProperty(el, "scrollHeight", { configurable: true, value: 100 });
+      Object.defineProperty(el, "clientHeight", { configurable: true, value: 100 });
+      Object.defineProperty(el, "scrollTop", { configurable: true, value: 0 });
+      virtuosoMock.scroller = el;
+      scrollerRef?.(el);
+      return () => {
+        if (virtuosoMock.scroller === el) {
+          virtuosoMock.scroller = undefined;
+        }
+        scrollerRef?.(null);
+      };
+    }, [scrollerRef]);
+    React.useLayoutEffect(() => {
+      virtuosoMock.emitAtBottom = atBottomStateChange;
+      atBottomStateChange?.(false);
+      return () => {
+        if (virtuosoMock.emitAtBottom === atBottomStateChange) {
+          virtuosoMock.emitAtBottom = undefined;
+        }
+      };
+    }, [atBottomStateChange]);
     // 只渲染数据尾部窗口(贴底语义):start..end,渲染行数 < 总数即证明窗口化。
     const start = Math.max(0, data.length - VIRTUAL_WINDOW);
+    React.useLayoutEffect(() => {
+      if (data.length === 0) return;
+      rangeChanged?.({
+        startIndex: firstItemIndex + start,
+        endIndex: firstItemIndex + data.length - 1,
+      });
+    }, [data.length, firstItemIndex, rangeChanged, start]);
     const rows: React.ReactNode[] = [];
     for (let index = start; index < data.length; index++) {
       const item = data[index];
@@ -88,7 +136,8 @@ const messageBubbleMock = vi.hoisted(() => ({
 vi.mock("./ChatHeader", async () => {
   const React = await import("react");
   return {
-    ChatHeader: () => React.createElement("div", { "data-testid": "chat-header" }),
+    ChatHeader: ({ conversation }: { conversation: Conversation }) =>
+      React.createElement("div", { "data-testid": "chat-header" }, conversation.name),
   };
 });
 
@@ -195,6 +244,8 @@ function renderChatArea(
 
 afterEach(() => {
   messageBubbleMock.render.mockClear();
+  virtuosoMock.emitAtBottom = undefined;
+  virtuosoMock.scroller = undefined;
   virtuosoMock.scrollToIndex.mockClear();
   clearImageDimsCache();
   cleanup();
@@ -235,6 +286,230 @@ describe("ChatArea switch-to-bottom flash guard", () => {
       />,
     );
     expect(virtuosoMock.scrollToIndex).not.toHaveBeenCalled();
+  });
+
+  it("keeps the newly mounted timeline hidden until tail range is ready without showing a skeleton mask", async () => {
+    const { getByTestId, getAllByTestId, queryByRole, rerender } = render(
+      <ChatArea
+        {...base}
+        conversation={conversation}
+        chatStoreKey="A"
+        messages={[message("01"), message("02")]}
+      />,
+    );
+    await act(async () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())));
+    await act(async () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())));
+    await act(async () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())));
+    await act(async () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())));
+    expect(getByTestId("timeline-visible-plane").className).toContain("opacity-100");
+
+    rerender(
+      <ChatArea
+        {...base}
+        conversation={conv2}
+        chatStoreKey="B"
+        messages={[msg2("11"), msg2("12")]}
+      />,
+    );
+
+    expect(queryByRole("status", { name: "切换会话中" })).toBeNull();
+    expect(getAllByTestId("virtuoso")).toHaveLength(2);
+    const settlingClassName = getByTestId("timeline-staging-plane").className;
+    expect(settlingClassName).toContain("opacity-0");
+    expect(getByTestId("timeline-visible-plane").className).toContain("opacity-100");
+    expect(queryByRole("button", { name: "回到底部" })).toBeNull();
+
+    await act(async () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())));
+    await act(async () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())));
+    await waitFor(() => expect(queryByRole("status", { name: "切换会话中" })).toBeNull());
+    expect(getByTestId("timeline-visible-plane").className).toContain("opacity-100");
+  });
+
+  it("keeps the previous whole chat surface visible during the next conversation landing frame", async () => {
+    const { getAllByTestId, getByTestId, queryByTestId, rerender } = render(
+      <ChatArea
+        {...base}
+        conversation={conversation}
+        chatStoreKey="A"
+        messages={[message("01"), message("02")]}
+      />,
+    );
+    await act(async () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())));
+    await act(async () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())));
+    expect(getAllByTestId("message").map((node) => node.textContent)).toContain("01");
+
+    rerender(
+      <ChatArea
+        {...base}
+        conversation={{ ...conv2, name: "新会话" }}
+        chatStoreKey="B"
+        messages={[msg2("11"), msg2("12")]}
+      />,
+    );
+
+    expect(queryByTestId("timeline-switch-mask")).toBeNull();
+    expect(queryByTestId("timeline-static-frame")).toBeNull();
+    expect(getByTestId("chat-header").textContent).toBe("胡娟");
+    const visiblePlane = getByTestId("timeline-visible-plane");
+    const stagingPlane = getByTestId("timeline-staging-plane");
+    const messages = within(visiblePlane)
+      .getAllByTestId("message")
+      .map((node) => node.textContent);
+    expect(messages).toContain("01");
+    expect(messages).not.toContain("11");
+    expect(
+      within(stagingPlane)
+        .getAllByTestId("message")
+        .map((node) => node.textContent),
+    ).toContain("11");
+    expect(visiblePlane.className).toContain("opacity-100");
+    expect(stagingPlane.className).toContain("opacity-0");
+  });
+
+  it("keeps the previous timeline visible while the next conversation is still loading (in-flight switch)", async () => {
+    const { getByTestId, queryByTestId, rerender } = render(
+      <ChatArea
+        {...base}
+        conversation={conversation}
+        chatStoreKey="A"
+        messages={[message("01"), message("02")]}
+      />,
+    );
+    await act(async () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())));
+    await act(async () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())));
+
+    // 切到冷会话的首帧:store 分片尚未建立 → loading=true(见 useMessageHistory:121,
+    // 真实数据流里冷会话首帧 loading 必为 true)。crossfade 应在「在途」期间保持旧时间线可见,
+    // 避免「胡娟 → 空 → 新会话」的三段闪;放行的逃生出口只在 loading 落定后才生效。
+    rerender(
+      <ChatArea
+        {...base}
+        conversation={{ ...conv2, name: "新会话" }}
+        chatStoreKey="B"
+        messages={[]}
+        loading
+      />,
+    );
+
+    expect(queryByTestId("empty")).toBeNull();
+    expect(queryByTestId("loading")).toBeNull();
+    expect(queryByTestId("timeline-staging-plane")).toBeNull();
+    const visiblePlane = getByTestId("timeline-visible-plane");
+    expect(visiblePlane.className).toContain("opacity-100");
+    expect(
+      within(visiblePlane)
+        .getAllByTestId("message")
+        .map((node) => node.textContent),
+    ).toContain("01");
+    expect(getByTestId("chat-header").textContent).toBe("胡娟");
+  });
+
+  it("settles to the next conversation once its load completes empty (no stale previous timeline)", async () => {
+    const { getByTestId, queryByTestId, queryAllByTestId, rerender } = render(
+      <ChatArea
+        {...base}
+        conversation={conversation}
+        chatStoreKey="A"
+        messages={[message("01"), message("02")]}
+      />,
+    );
+    await act(async () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())));
+    await act(async () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())));
+
+    // 新加客户=冷会话,readCache 读完 records 为空 → loading=false 且 messages=[]。此时必须放行到
+    // 新会话(空态),不能冻在旧会话——否则就是线上「接待列表已切新人、聊天区却停在上一个人」的 bug。
+    rerender(
+      <ChatArea
+        {...base}
+        conversation={{ ...conv2, name: "新会话" }}
+        chatStoreKey="B"
+        messages={[]}
+        loading={false}
+      />,
+    );
+    await act(async () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())));
+
+    expect(getByTestId("chat-header").textContent).toBe("新会话");
+    expect(queryByTestId("empty")).not.toBeNull();
+    expect(queryByTestId("loading")).toBeNull();
+    expect(queryByTestId("timeline-visible-plane")).toBeNull();
+    expect(queryByTestId("timeline-staging-plane")).toBeNull();
+    expect(queryAllByTestId("message")).toHaveLength(0);
+  });
+
+  it("keeps the current visible timeline when same-conversation history briefly reports an empty window", async () => {
+    const { getByTestId, queryByTestId, rerender } = render(
+      <ChatArea
+        {...base}
+        conversation={conversation}
+        chatStoreKey="A"
+        messages={[message("01"), message("02")]}
+      />,
+    );
+    await act(async () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())));
+    await act(async () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())));
+
+    rerender(
+      <ChatArea {...base} conversation={conversation} chatStoreKey="A" messages={[]} loading />,
+    );
+
+    expect(queryByTestId("empty")).toBeNull();
+    expect(queryByTestId("loading")).toBeNull();
+    const visiblePlane = getByTestId("timeline-visible-plane");
+    expect(visiblePlane.className).toContain("opacity-100");
+    expect(
+      within(visiblePlane)
+        .getAllByTestId("message")
+        .map((node) => node.textContent),
+    ).toContain("01");
+  });
+
+  it("does not show scroll-to-bottom after reveal until Virtuoso confirms the new timeline is at bottom", async () => {
+    const { getByTestId, queryByRole } = render(
+      <ChatArea
+        {...base}
+        conversation={conversation}
+        chatStoreKey="A"
+        messages={[message("01"), message("02")]}
+      />,
+    );
+
+    await act(async () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())));
+    await act(async () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())));
+    await act(async () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())));
+
+    const className = getByTestId("timeline-visible-plane").className;
+    expect(className).not.toContain("opacity-0");
+    expect(queryByRole("button", { name: "回到底部" })).toBeNull();
+  });
+
+  it("shows scroll-to-bottom only after the user scrolls away from bottom", async () => {
+    const { queryByRole } = render(
+      <ChatArea
+        {...base}
+        conversation={conversation}
+        chatStoreKey="A"
+        messages={[message("01"), message("02")]}
+      />,
+    );
+
+    await act(async () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())));
+    await act(async () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())));
+    await act(async () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())));
+
+    expect(queryByRole("button", { name: "回到底部" })).toBeNull();
+
+    act(() => virtuosoMock.emitAtBottom?.(true));
+    expect(queryByRole("button", { name: "回到底部" })).toBeNull();
+
+    act(() => virtuosoMock.emitAtBottom?.(false));
+    expect(queryByRole("button", { name: "回到底部" })).toBeNull();
+
+    act(() => {
+      virtuosoMock.scroller?.dispatchEvent(new WheelEvent("wheel", { bubbles: true }));
+    });
+    act(() => virtuosoMock.emitAtBottom?.(false));
+    expect(queryByRole("button", { name: "回到底部" })).not.toBeNull();
   });
 
   it("imperatively scrolls to bottom when new messages append within the same conversation", () => {
@@ -296,6 +571,17 @@ describe("ChatArea history scrolling", () => {
     // 翻历史不再显示"加载更早的消息"指示器,也无骨架动画 —— 旧消息静默插入。
     expect(queryByRole("status", { name: "加载更早的消息" })).toBeNull();
     expect(container.querySelector(".animate-pulse")).toBeNull();
+  });
+
+  it("keeps an already-populated timeline visible while older messages load", () => {
+    const { getByTestId } = renderChatArea({
+      messages: [message("03"), message("04"), message("05")],
+      loading: true,
+      hasMoreHistory: true,
+    });
+
+    const className = getByTestId("timeline-visible-plane").className;
+    expect(className).not.toContain("opacity-0");
   });
 
   it("does not re-render existing message bubbles when older rows are prepended", async () => {

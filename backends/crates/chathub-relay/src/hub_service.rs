@@ -498,6 +498,9 @@ impl Hub for HubSvc {
 
         let since = inner.since_notify_seq;
         let device_id = inner.device_id.clone();
+        // 客户端上行的本终端标识(可能为空:未登录/旧客户端/升级前会话)。
+        // 存入注册表,供 force_close 终端粒度路由(排他登录豁免保留端 = terminalId 匹配者)。
+        let terminal_id = inner.terminal_id.clone();
 
         // mpsc buffer 256(spec §每员工 burst 通常 <10/s,256 已足够)
         let (tx, rx) = mpsc::channel(256);
@@ -612,9 +615,12 @@ impl Hub for HubSvc {
         // ④ 注册 employee 路由 —— **同步**,先于 Response 返回。
         //    保证客户端可见 ack 时连接已注册:读到 ack 后立即 push 必达实时流,
         //    且既有 first_connection 测试断言连接数=1 确定成立(register 不在 spawn 内)。
-        let reg = self
-            .router
-            .register_employee(ctx.employee_id, device_id.clone(), tx.clone());
+        let reg = self.router.register_employee(
+            ctx.employee_id,
+            device_id.clone(),
+            terminal_id.clone(),
+            tx.clone(),
+        );
         let connection_id = reg.connection_id;
         tracing::info!(connection_id = %connection_id, "subscribe registered");
 
@@ -827,6 +833,7 @@ mod tests {
             since_notify_seq: since,
             device_id: device_id.into(),
             client_version: "1.0.0".into(),
+            terminal_id: "term-test".into(),
         });
         req.extensions_mut()
             .insert(BearerToken("tok-A".to_string()));
@@ -1476,6 +1483,7 @@ mod tests {
                 since_notify_seq: 0,
                 device_id: "dev-A".into(),
                 client_version: "1.0.0".into(),
+                terminal_id: "term-test".into(),
             })
             .await
             .unwrap();

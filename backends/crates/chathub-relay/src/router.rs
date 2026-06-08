@@ -33,6 +33,9 @@ pub struct EmployeeStream {
     /// Relay 内部 ID(UUID)。不暴露给客户端、不暴露给业务后台。
     pub connection_id: String,
     pub device_id: String,
+    /// 客户端上行的本终端标识(= terminal_id_for(device_id, username) UUIDv5);
+    /// 可能为空(旧客户端/未登录/升级前会话)。force_close 终端粒度路由按此匹配保留端。
+    pub terminal_id: String,
     pub tx: EventSender,
 }
 
@@ -77,12 +80,14 @@ impl Router {
         &self,
         employee_id: i64,
         device_id: String,
+        terminal_id: String,
         tx: EventSender,
     ) -> EmployeeRegisterOutcome {
         let connection_id = Uuid::new_v4().to_string();
         let stream = EmployeeStream {
             connection_id: connection_id.clone(),
             device_id,
+            terminal_id,
             tx,
         };
         // RCU:read → clone (O(1) refcount) → mutate copy → CAS swap;并发时自动重试
@@ -153,6 +158,85 @@ impl Router {
         self.employees.rcu(|cur| {
             let mut next: EmployeesMap = (**cur).clone();
             next.remove(&employee_id);
+            next
+        });
+        removed_ids
+    }
+
+    /// force_close 终端粒度 fanout:把事件投给该 employee 下 `terminal_id != keep_terminal`
+    /// 的所有连接(= 投给"被踢端",保留端收不到 → 不自登出)。
+    /// `keep_terminal` 为空串时不保留任何端 → 退化为投给全部(= 全员踢,等价 fanout_employee)。
+    /// 语义/返回同 [`fanout_employee`]。
+    pub fn fanout_employee_except_terminal(
+        &self,
+        employee_id: i64,
+        keep_terminal: &str,
+        event: ServerEvent,
+    ) -> FanoutOutcome {
+        let table = self.employees.load();
+        let mut delivered = 0;
+        let mut backpressure = Vec::new();
+        let mut closed = Vec::new();
+        if let Some(conns) = table.get(&employee_id) {
+            for c in conns {
+                // 保留端(terminalId 命中)跳过:不投 force_close,使其不自登出、连接照常存活。
+                if !keep_terminal.is_empty() && c.terminal_id == keep_terminal {
+                    continue;
+                }
+                match c.tx.try_send(Ok(event.clone())) {
+                    Ok(()) => delivered += 1,
+                    Err(mpsc::error::TrySendError::Full(_)) => {
+                        backpressure.push(c.connection_id.clone())
+                    }
+                    Err(mpsc::error::TrySendError::Closed(_)) => {
+                        closed.push(c.connection_id.clone())
+                    }
+                }
+            }
+        }
+        FanoutOutcome {
+            delivered,
+            backpressure,
+            closed,
+        }
+    }
+
+    /// CONNECTION_FORCE_CLOSE 终端粒度 grace 摘流:摘除该 employee 下
+    /// `terminal_id != keep_terminal` 的所有流(保留 `keep_terminal` 命中者 = 保留端)。
+    /// `keep_terminal` 为空串 → 不保留任何端,全摘(等价 [`drop_all_employee_streams`])。
+    /// 返回被摘的 connection_id 列表。
+    ///
+    /// 终端撞车安全性:terminalId 命中即保留(可能保留多条同 terminalId 连接),
+    /// 绝不误摘保留端;同设备同账号 relogin 不触发排他踢线(后台契约 Q5),故撞车不影响正确性。
+    pub fn drop_employee_streams_except_terminal(
+        &self,
+        employee_id: i64,
+        keep_terminal: &str,
+    ) -> Vec<String> {
+        // 先快照取出"将被摘"的 connection_id(rcu 闭包可能多次调用,不能在里面收集副作用)。
+        let cur = self.employees.load_full();
+        let removed_ids: Vec<String> = cur
+            .get(&employee_id)
+            .map(|streams| {
+                streams
+                    .iter()
+                    .filter(|s| keep_terminal.is_empty() || s.terminal_id != keep_terminal)
+                    .map(|s| s.connection_id.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        if removed_ids.is_empty() {
+            return Vec::new();
+        }
+        self.employees.rcu(|cur| {
+            let mut next: EmployeesMap = (**cur).clone();
+            if let Some(streams) = next.get_mut(&employee_id) {
+                // 保留:keep_terminal 非空且命中者。其余摘除。
+                streams.retain(|s| !keep_terminal.is_empty() && s.terminal_id == keep_terminal);
+                if streams.is_empty() {
+                    next.remove(&employee_id);
+                }
+            }
             next
         });
         removed_ids
@@ -229,8 +313,8 @@ mod tests {
         let r = Router::new();
         let (tx1, _rx1) = mpsc::channel(4);
         let (tx2, _rx2) = mpsc::channel(4);
-        let o1 = r.register_employee(42, "dev-A".into(), tx1);
-        let o2 = r.register_employee(42, "dev-B".into(), tx2);
+        let o1 = r.register_employee(42, "dev-A".into(), "term-A".into(), tx1);
+        let o2 = r.register_employee(42, "dev-B".into(), "term-B".into(), tx2);
         assert_ne!(o1.connection_id, o2.connection_id);
         assert_eq!(r.employee_connection_count(42), 2);
         assert_eq!(r.employee_connection_count(99), 0);
@@ -241,8 +325,8 @@ mod tests {
         let r = Router::new();
         let (tx1, mut rx1) = mpsc::channel(4);
         let (tx2, mut rx2) = mpsc::channel(4);
-        r.register_employee(42, "dev-A".into(), tx1);
-        r.register_employee(42, "dev-B".into(), tx2);
+        r.register_employee(42, "dev-A".into(), "term-A".into(), tx1);
+        r.register_employee(42, "dev-B".into(), "term-B".into(), tx2);
         let outcome = r.fanout_employee(42, empty_evt());
         assert_eq!(outcome.delivered, 2);
         assert!(outcome.backpressure.is_empty());
@@ -262,7 +346,7 @@ mod tests {
     async fn fanout_employee_full_channel_reports_backpressure() {
         let r = Router::new();
         let (tx, _rx) = mpsc::channel(1);
-        let o = r.register_employee(42, "dev-A".into(), tx);
+        let o = r.register_employee(42, "dev-A".into(), "term-A".into(), tx);
         r.fanout_employee(42, empty_evt());
         let outcome = r.fanout_employee(42, empty_evt());
         assert_eq!(outcome.delivered, 0);
@@ -273,7 +357,7 @@ mod tests {
     async fn fanout_employee_closed_channel_reports_closed() {
         let r = Router::new();
         let (tx, rx) = mpsc::channel(4);
-        let o = r.register_employee(42, "dev-A".into(), tx);
+        let o = r.register_employee(42, "dev-A".into(), "term-A".into(), tx);
         drop(rx);
         let outcome = r.fanout_employee(42, empty_evt());
         assert_eq!(outcome.delivered, 0);
@@ -285,8 +369,8 @@ mod tests {
         let r = Router::new();
         let (tx1, _rx1) = mpsc::channel(4);
         let (tx2, _rx2) = mpsc::channel(4);
-        let o1 = r.register_employee(42, "dev-A".into(), tx1);
-        let _o2 = r.register_employee(42, "dev-B".into(), tx2);
+        let o1 = r.register_employee(42, "dev-A".into(), "term-A".into(), tx1);
+        let _o2 = r.register_employee(42, "dev-B".into(), "term-B".into(), tx2);
         r.drop_employee_stream(42, &o1.connection_id);
         assert_eq!(r.employee_connection_count(42), 1);
         let outcome = r.fanout_employee(42, empty_evt());
@@ -297,7 +381,7 @@ mod tests {
     async fn drop_employee_stream_cleans_empty_vec_entry() {
         let r = Router::new();
         let (tx, _rx) = mpsc::channel(4);
-        let o = r.register_employee(42, "dev-A".into(), tx);
+        let o = r.register_employee(42, "dev-A".into(), "term-A".into(), tx);
         r.drop_employee_stream(42, &o.connection_id);
         assert_eq!(r.employee_connection_count(42), 0);
     }
@@ -307,8 +391,8 @@ mod tests {
         let r = Router::new();
         let (tx1, _rx1) = mpsc::channel(4);
         let (tx2, _rx2) = mpsc::channel(4);
-        let o1 = r.register_employee(42, "dev-A".into(), tx1);
-        let o2 = r.register_employee(42, "dev-B".into(), tx2);
+        let o1 = r.register_employee(42, "dev-A".into(), "term-A".into(), tx1);
+        let o2 = r.register_employee(42, "dev-B".into(), "term-B".into(), tx2);
         let dropped = r.drop_all_employee_streams(42);
         assert_eq!(dropped.len(), 2);
         assert!(dropped.contains(&o1.connection_id));
@@ -334,8 +418,8 @@ mod tests {
         let r = Router::new();
         let (tx1, mut rx1) = mpsc::channel(4);
         let (tx2, mut rx2) = mpsc::channel(4);
-        r.register_employee(42, "dev-A".into(), tx1);
-        r.register_employee(42, "dev-B".into(), tx2);
+        r.register_employee(42, "dev-A".into(), "term-A".into(), tx1);
+        r.register_employee(42, "dev-B".into(), "term-B".into(), tx2);
         let count = r.broadcast_server_drain("test-drain");
         assert_eq!(count, 2);
 
@@ -362,12 +446,85 @@ mod tests {
             let r = r.clone();
             handles.push(tokio::spawn(async move {
                 let (tx, _rx) = mpsc::channel(4);
-                r.register_employee(42, format!("dev-{i}"), tx);
+                r.register_employee(42, format!("dev-{i}"), format!("term-{i}"), tx);
             }));
         }
         for h in handles {
             h.await.unwrap();
         }
         assert_eq!(r.employee_connection_count(42), 100);
+    }
+
+    // ===== force_close 终端粒度(方案 B)=====
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn drop_except_terminal_keeps_survivor_kicks_rest() {
+        let r = Router::new();
+        let (txs, _rxs) = mpsc::channel(4);
+        let (tx1, _rx1) = mpsc::channel(4);
+        let (tx2, _rx2) = mpsc::channel(4);
+        let s = r.register_employee(42, "dev-new".into(), "term-survivor".into(), txs);
+        let o1 = r.register_employee(42, "dev-old1".into(), "term-old1".into(), tx1);
+        let o2 = r.register_employee(42, "dev-old2".into(), "term-old2".into(), tx2);
+        let removed = r.drop_employee_streams_except_terminal(42, "term-survivor");
+        assert_eq!(removed.len(), 2);
+        assert!(removed.contains(&o1.connection_id));
+        assert!(removed.contains(&o2.connection_id));
+        assert!(!removed.contains(&s.connection_id));
+        assert_eq!(r.employee_connection_count(42), 1); // 仅保留端在
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn drop_except_terminal_empty_keep_drops_all() {
+        // keep_terminal 为空 = 全员踢(等价 drop_all),用于非排他 reason / terminalId 缺失。
+        let r = Router::new();
+        let (tx1, _rx1) = mpsc::channel(4);
+        let (tx2, _rx2) = mpsc::channel(4);
+        r.register_employee(42, "dev-A".into(), "term-A".into(), tx1);
+        r.register_employee(42, "dev-B".into(), "term-B".into(), tx2);
+        let removed = r.drop_employee_streams_except_terminal(42, "");
+        assert_eq!(removed.len(), 2);
+        assert_eq!(r.employee_connection_count(42), 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn drop_except_terminal_collision_keeps_all_matching() {
+        // 防御:同 terminalId 多连接(relogin 撞车)时,terminalId 命中即保留,绝不误摘保留端。
+        let r = Router::new();
+        let (txa1, _ra1) = mpsc::channel(4);
+        let (txa2, _ra2) = mpsc::channel(4);
+        let (txb, _rb) = mpsc::channel(4);
+        r.register_employee(42, "dev-A".into(), "term-A".into(), txa1);
+        r.register_employee(42, "dev-A".into(), "term-A".into(), txa2);
+        let ob = r.register_employee(42, "dev-B".into(), "term-B".into(), txb);
+        let removed = r.drop_employee_streams_except_terminal(42, "term-A");
+        assert_eq!(removed, vec![ob.connection_id]);
+        assert_eq!(r.employee_connection_count(42), 2); // 两条 term-A 都保留
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn fanout_except_terminal_skips_survivor() {
+        let r = Router::new();
+        let (txs, mut rxs) = mpsc::channel(4);
+        let (tx1, mut rx1) = mpsc::channel(4);
+        r.register_employee(42, "dev-new".into(), "term-survivor".into(), txs);
+        r.register_employee(42, "dev-old".into(), "term-old".into(), tx1);
+        let out = r.fanout_employee_except_terminal(42, "term-survivor", empty_evt());
+        assert_eq!(out.delivered, 1);
+        assert!(rxs.try_recv().is_err()); // 保留端收不到 force_close
+        assert!(rx1.recv().await.is_some()); // 被踢端收到
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn fanout_except_terminal_empty_keep_delivers_all() {
+        let r = Router::new();
+        let (tx1, mut rx1) = mpsc::channel(4);
+        let (tx2, mut rx2) = mpsc::channel(4);
+        r.register_employee(42, "dev-A".into(), "term-A".into(), tx1);
+        r.register_employee(42, "dev-B".into(), "term-B".into(), tx2);
+        let out = r.fanout_employee_except_terminal(42, "", empty_evt());
+        assert_eq!(out.delivered, 2);
+        assert!(rx1.recv().await.is_some());
+        assert!(rx2.recv().await.is_some());
     }
 }

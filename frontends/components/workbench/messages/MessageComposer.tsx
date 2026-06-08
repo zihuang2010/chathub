@@ -2,7 +2,13 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import type { ChangeEvent, KeyboardEvent, PointerEvent as ReactPointerEvent } from "react";
 import * as Popover from "@radix-ui/react-popover";
 import { invoke, isTauri } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { Editor, JSONContent } from "@tiptap/react";
+import {
+  getMonitorScreenshot,
+  getScreenshotableMonitors,
+  removeMonitorScreenshot,
+} from "tauri-plugin-screenshots-api";
 import {
   FileText,
   FolderUp,
@@ -20,6 +26,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Modal } from "@/components/ui/Modal";
 import { showToast } from "@/components/ui/toast";
+import { isMac } from "@/lib/platform";
 import { useEscKey } from "@/lib/useEscKey";
 import { cn } from "@/lib/utils";
 
@@ -40,6 +47,7 @@ import { EmojiPicker } from "./EmojiPicker";
 import { readImageFileDimensions } from "./imageFileDimensions";
 import type { ReplyTarget } from "./MessageBubble";
 import { QuickRepliesPanel } from "./QuickRepliesPanel";
+import { ScreenshotCropOverlay } from "./ScreenshotCropOverlay";
 import { STRINGS } from "./strings";
 import {
   clearDraft,
@@ -207,6 +215,8 @@ export function MessageComposer({
   const [emojiOpen, setEmojiOpen] = useState(false);
   // 点语音按钮时若编辑器已有内容,先弹此确认框(避免误清空);确认后才切到语音独占态。
   const [voiceConfirmOpen, setVoiceConfirmOpen] = useState(false);
+  // 区域截图框选遮罩的整屏图(data URL):非空即打开遮罩。仅 Windows/Linux 走此路径。
+  const [screenshotCropSrc, setScreenshotCropSrc] = useState<string | null>(null);
   const editorRef = useRef<Editor | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const imageInputRef = useRef<HTMLInputElement | null>(null);
@@ -473,42 +483,62 @@ export function MessageComposer({
   // ─── Screenshot ───────────────────────────────────────────────────────────
 
   const handleScreenshot = useCallback(async () => {
-    // Tauri webviews don't expose getDisplayMedia, so screenshots go through a
-    // native Rust command. Outside Tauri (pure web preview), nudge the user to
-    // use the OS screenshot tool + paste into the editor instead.
+    // 非 Tauri(纯网页预览)无原生抓屏:提示走系统截图 + 粘贴。
     if (!isTauri()) {
       showToast(STRINGS.toast.screenshotPasteHint, { type: "info" });
       editorRef.current?.commands.focus();
       return;
     }
+
+    // macOS:沿用系统 screencapture -i 交互式框选,直接拿到裁好的 PNG。
+    if (isMac) {
+      try {
+        const result = await invoke<ScreenshotResult>("take_screenshot");
+        if (result.cancelled) {
+          editorRef.current?.commands.focus();
+          return;
+        }
+        const base64Png = result.base64 ?? "";
+        if (!base64Png.trim()) throw new Error(STRINGS.toast.screenshotEmpty);
+        const binary = atob(base64Png);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+        const blob = new Blob([bytes], { type: "image/png" });
+        const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+        insertImageFiles([new File([blob], `screenshot-${stamp}.png`, { type: "image/png" })]);
+      } catch (err) {
+        // macOS 最常见失败:尚未授予「录屏」权限。系统会弹授权框,授权后重试即可成功。
+        const reason = err instanceof Error ? err.message : String(err);
+        showToast(
+          `${STRINGS.toast.screenshotFailed}：${reason}。${STRINGS.toast.screenshotPermissionHint}`,
+          { type: "error" },
+        );
+      }
+      return;
+    }
+
+    // Windows/Linux:原生插件(xcap)只能抓整屏,故「隐藏本窗口 → 抓整屏 → 还原 → 应用内框选裁剪」。
+    const win = getCurrentWindow();
+    let monitorId: number | null = null;
     try {
-      const result = await invoke<ScreenshotResult>("take_screenshot");
-      if (result.cancelled) {
-        editorRef.current?.commands.focus();
-        return;
-      }
-
-      const base64Png = result.base64 ?? "";
-      if (!base64Png.trim()) {
-        throw new Error(STRINGS.toast.screenshotEmpty);
-      }
-
-      const binary = atob(base64Png);
-      const bytes = new Uint8Array(binary.length);
-      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-      const blob = new Blob([bytes], { type: "image/png" });
-      const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
-      const file = new File([blob], `screenshot-${stamp}.png`, { type: "image/png" });
-      insertImageFiles([file]);
+      const monitors = await getScreenshotableMonitors();
+      if (monitors.length === 0) throw new Error(STRINGS.toast.screenshotEmpty);
+      // 插件仅暴露 {id,name} 无主屏标志,v1 取第一块(单显示器场景 100% 正确)。
+      monitorId = monitors[0].id;
+      await win.hide();
+      // 等一帧让窗口真正从合成器移除,否则整屏图里可能残留本窗口。
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      const path = await getMonitorScreenshot(monitorId);
+      const base64 = await invoke<string>("read_screenshot_file", { path });
+      setScreenshotCropSrc(`data:image/png;base64,${base64}`);
     } catch (err) {
-      // Most common failure on macOS: user has not granted Screen Recording
-      // permission yet. The native dialog will surface from the OS; the next
-      // attempt after grant will succeed.
       const reason = err instanceof Error ? err.message : String(err);
-      showToast(
-        `${STRINGS.toast.screenshotFailed}：${reason}。${STRINGS.toast.screenshotPermissionHint}`,
-        { type: "error" },
-      );
+      showToast(`${STRINGS.toast.screenshotFailed}：${reason}`, { type: "error" });
+    } finally {
+      // 无论成败都必须还原窗口,绝不把应用永久隐藏;并清掉插件落盘的整屏临时文件。
+      await win.show().catch(() => {});
+      await win.setFocus().catch(() => {});
+      if (monitorId !== null) await removeMonitorScreenshot(monitorId).catch(() => {});
     }
   }, []);
 
@@ -974,6 +1004,21 @@ export function MessageComposer({
           </div>
         </div>
       </Modal>
+      {/* 区域截图框选遮罩(Windows/Linux):整屏图框选后裁出 PNG 插入编辑器。 */}
+      {screenshotCropSrc && (
+        <ScreenshotCropOverlay
+          src={screenshotCropSrc}
+          onConfirm={(file) => {
+            setScreenshotCropSrc(null);
+            insertImageFiles([file]);
+            editorRef.current?.commands.focus();
+          }}
+          onCancel={() => {
+            setScreenshotCropSrc(null);
+            editorRef.current?.commands.focus();
+          }}
+        />
+      )}
     </div>
   );
 }

@@ -98,6 +98,9 @@ importers:
       tailwind-merge:
         specifier: ^3.5.0
         version: 3.5.0
+      tauri-plugin-screenshots-api:
+        specifier: ^2.2.0
+        version: 2.2.0
       tippy.js:
         specifier: ^6.3.7
         version: 6.3.7
@@ -2519,6 +2522,9 @@ packages:
     resolution: {integrity: sha512-3ofp+LL8E+pK/JuPLPggVAIaEuhvIz4qNcf3nA1Xn2o/7fb7s/TYpHhwGDv1ZU3PkBluUVaF8PyCHcm48cKLWQ==}
     engines: {node: '>=14.0.0'}
     hasBin: true
+
+  tauri-plugin-screenshots-api@2.2.0:
+    resolution: {integrity: sha512-xNG5yH6kl+Mk/969tFimIxZa6y6eVgarbsEVAJIpERYBlYoNfWCDdI3nW111UOQjWi6zG/RkGjUMLlVy12a3Sg==}
 
   thenify-all@1.6.0:
     resolution: {integrity: sha512-RNxQH/qI8/t3thXJDwcstUO4zeqo64+Uy/+sNVRBx4Xn2OX+OZ9oP+iJnNFqplFra2ZUVeKCSa2oVWi3T4uVmA==}
@@ -4999,6 +5005,10 @@ snapshots:
     transitivePeerDependencies:
       - tsx
       - yaml
+
+  tauri-plugin-screenshots-api@2.2.0:
+    dependencies:
+      '@tauri-apps/api': 2.11.0
 
   thenify-all@1.6.0:
     dependencies:

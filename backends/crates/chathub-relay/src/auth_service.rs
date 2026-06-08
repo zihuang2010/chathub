@@ -74,6 +74,7 @@ impl Auth for AuthSvc {
                 tenant_id: resp.tenant_id,
                 username: resp.username,
                 mobile: resp.mobile,
+                terminal_id: resp.terminal_id,
             }),
             wecom_accounts: resp
                 .wecom_accounts

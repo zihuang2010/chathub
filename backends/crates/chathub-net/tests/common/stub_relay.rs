@@ -243,6 +243,7 @@ fn default_profile() -> UserProfile {
         tenant_id: "t-stub".into(),
         username: "stub".into(),
         mobile: "13800000000".into(),
+        terminal_id: "term-stub".into(),
     }
 }
 

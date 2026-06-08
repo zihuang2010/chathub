@@ -91,7 +91,7 @@ mod tests {
     #[tokio::test]
     async fn injects_bearer_and_headers_when_logged_in() {
         let store = fresh_store().await;
-        store.set_session("biz-tok-1".into(), "u-1".into());
+        store.set_session("biz-tok-1".into(), "u-1".into(), "term-biz".into());
         let mut interceptor = AuthInterceptor::new(store);
 
         let out = interceptor.call(Request::new(())).expect("should pass");

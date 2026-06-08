@@ -87,6 +87,7 @@ impl SqlitePool {
                 M::up(include_str!(
                     "../migrations/V29__messages_source_direction.sql"
                 )),
+                M::up(include_str!("../migrations/V30__session_terminal_id.sql")),
             ]);
             migrations
                 .to_latest(c)

@@ -179,6 +179,10 @@ pub struct LoginResp {
     pub username: String,
     /// 手机号(JddTokenVO.mobile),供个人信息卡片展示。
     pub mobile: String,
+    /// 本次登录派生的 terminalId(= terminal_id_for(device_id, username) 的 UUIDv5,
+    /// 与传给业务后台 OAuth 的 terminalId 一致)。回传客户端持久化 + subscribe 上行,
+    /// 供 force_close 终端粒度路由。
+    pub terminal_id: String,
     pub wecom_accounts: Vec<WecomAccount>,
 }
 
@@ -689,6 +693,7 @@ impl DownstreamClient {
             tenant_id: String::new(),
             username: jdd.username.unwrap_or_default(),
             mobile: jdd.mobile.unwrap_or_default(),
+            terminal_id, // 上方 terminal_id_for(device_id, username) 派生,move 进响应回传客户端
             wecom_accounts: Vec::new(),
         })
     }
