@@ -282,6 +282,44 @@ impl Router {
         count
     }
 
+    /// 周期性向所有已注册连接下发一帧 `HEARTBEAT`(流保活,供客户端静默看门狗判活)。
+    /// 返回成功送达的连接数。fanout 段**完全无锁**(原子 load Arc),`try_send` 非阻塞、无 await。
+    /// 被摘注册的连接不在表里 → 自然收不到心跳,正是客户端看门狗的触发源。
+    ///
+    /// 投不动(`Closed`=客户端已断 / `Full`=反压落后)的连接收集后 `drop_employee_stream` 摘除,
+    /// 与 push 路径(push.rs 对 closed+backpressure 同样摘除)一致,顺手清理僵尸连接。
+    pub fn heartbeat_sweep(&self) -> usize {
+        use chathub_proto::v1::server_event::Body;
+        use chathub_proto::v1::system_signal::Kind;
+        use chathub_proto::v1::SystemSignal;
+
+        let event = ServerEvent {
+            body: Some(Body::System(SystemSignal {
+                kind: Kind::Heartbeat as i32,
+                detail: String::new(),
+            })),
+        };
+
+        let mut delivered = 0;
+        let mut dead: Vec<(i64, String)> = Vec::new();
+        {
+            let table = self.employees.load();
+            for (emp_id, streams) in table.iter() {
+                for s in streams {
+                    match s.tx.try_send(Ok(event.clone())) {
+                        Ok(()) => delivered += 1,
+                        Err(_) => dead.push((*emp_id, s.connection_id.clone())),
+                    }
+                }
+            }
+        }
+        // load guard 已释放,再走 rcu 摘除(drop_employee_stream 内部各自 rcu)。
+        for (emp_id, conn_id) in dead {
+            self.drop_employee_stream(emp_id, &conn_id);
+        }
+        delivered
+    }
+
     /// Hub.Ack 处理:更新该 employee 已确认的最高 notify_seq(monotonic,不退)。
     pub fn update_ack_mark(&self, employee_id: i64, notify_seq: u64) {
         let entry = self
@@ -435,6 +473,40 @@ mod tests {
                 other => panic!("expected SERVER_DRAIN, got {other:?}"),
             }
         }
+    }
+
+    // ===== 心跳 sweep(流保活,供客户端静默看门狗)=====
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn heartbeat_sweep_delivers_to_all_registered_connections() {
+        use chathub_proto::v1::server_event::Body;
+        use chathub_proto::v1::system_signal::Kind;
+        let r = Router::new();
+        let (tx1, mut rx1) = mpsc::channel(4);
+        let (tx2, mut rx2) = mpsc::channel(4);
+        r.register_employee(42, "dev-A".into(), "term-A".into(), tx1);
+        r.register_employee(7, "dev-B".into(), "term-B".into(), tx2);
+        let delivered = r.heartbeat_sweep();
+        assert_eq!(delivered, 2);
+        for rx in [&mut rx1, &mut rx2] {
+            let frame = rx.recv().await.unwrap().unwrap();
+            match frame.body {
+                Some(Body::System(sig)) => assert_eq!(sig.kind, Kind::Heartbeat as i32),
+                other => panic!("expected HEARTBEAT, got {other:?}"),
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn heartbeat_sweep_drops_closed_connection() {
+        // 心跳投不动(rx 已 drop = 客户端已断)→ 顺手摘注册,避免僵尸连接长期占表。
+        let r = Router::new();
+        let (tx, rx) = mpsc::channel(4);
+        r.register_employee(42, "dev-A".into(), "term-A".into(), tx);
+        drop(rx);
+        let delivered = r.heartbeat_sweep();
+        assert_eq!(delivered, 0);
+        assert_eq!(r.employee_connection_count(42), 0);
     }
 
     #[tokio::test(flavor = "multi_thread")]

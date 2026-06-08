@@ -38,6 +38,16 @@ export interface UserProfile {
 /** 后端 broadcast 的登出原因(LoggedOutReason),emit 时序列化为 {"reason": "manual" | "token-invalid" | "kicked"}。 */
 export type LoggedOutReason = "manual" | "token-invalid" | "kicked";
 
+/** 新消息提醒挂载点:仅在登录后渲染,把 useNewMessageFlash(及其内部 useRecentFriends)的
+ *  挂载时机推迟到登录之后。这些 hook 经 useCurrentEmployeeId 只在 mount 读一次 current_session、
+ *  不监听登录,若在登录前(App 顶层)挂载会永久卡 employeeId=null —— 内部 useRecentFriends 的
+ *  useResource(enabled:!!employeeId)从不拉取 → totalUnread 恒 0 → 托盘闪烁/任务栏提醒全程失效、
+ *  必须重启客户端才生效。登录后挂载即与消息页同一时机,正常工作。 */
+function NewMessageFlash({ employeeId }: { employeeId: string }) {
+  useNewMessageFlash(employeeId);
+  return null;
+}
+
 function App() {
   // Splash 自身计时到达后置 true(handleSplashReady 回调,不在 effect 内)
   const [splashReady, setSplashReady] = useState(false);
@@ -48,8 +58,6 @@ function App() {
   const [loginNotice, setLoginNotice] = useState<string | null>(null);
 
   useWindowMaxSize();
-  // 新消息进来且窗口失焦时闪任务栏(Windows)/ 跳 Dock(macOS)。
-  useNewMessageFlash();
 
   useEffect(() => {
     void checkForAppUpdates({ silent: true });
@@ -183,6 +191,9 @@ function App() {
             )}
           </Suspense>
         )}
+
+        {/* 新消息提醒(托盘图标闪烁 + 任务栏闪烁):仅登录后挂载,见 NewMessageFlash 注释。 */}
+        {profile && <NewMessageFlash employeeId={profile.user_id} />}
 
         {!splashHidden && (
           <div

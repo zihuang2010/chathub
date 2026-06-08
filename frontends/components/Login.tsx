@@ -122,9 +122,9 @@ const LOGIN_WAVES = [
 // ─── Login (entry) ──────────────────────────────────────────────────────────
 
 // 小屏 / Windows 高 DPI 显示缩放下整体等比缩小的设计基准。卡片自然高约 620 + 余量
-// → 高度基准 660;宽度基准取 900 —— ≥1024 的双列由 grid 自身响应式压缩处理(宽度不
-// 参与缩放),仅 <900 的窄屏单列卡片才按宽度温和缩放。height 是矮屏裁切的主因。
-const LOGIN_FIT_W = 900;
+// → 高度基准 660;宽度基准取 1180 —— 双列网格固定 1080 + 两侧 padding 余量,视口窄于此
+// 即整体等比缩小,保证左侧品牌画面始终在、且品牌插画(内部固定像素绝对定位)不被压窄变形。
+const LOGIN_FIT_W = 1180;
 const LOGIN_FIT_H = 660;
 
 export function Login({ onSuccess, notice }: LoginProps) {
@@ -186,7 +186,9 @@ export function Login({ onSuccess, notice }: LoginProps) {
 
       <main className="relative flex h-full w-full items-center justify-center px-6 md:px-10 lg:px-12">
         <div
-          className="grid w-full max-w-[1080px] grid-cols-1 items-center gap-10 lg:grid-cols-[1fr_460px] lg:gap-16"
+          // 始终双列(左品牌画面 + 右表单卡):内部固定 1080px 排版,品牌插画列不会被压窄
+          // 错位;窄/矮视口靠下方 transform 整体等比缩小,而非靠 grid 收窄(那会撕裂插画)。
+          className="grid w-[1080px] grid-cols-[1fr_460px] items-center gap-16"
           // 矮/窄视口整体等比缩小,避免登录卡片竖向被裁;origin 居中保持视觉居中。
           // scale=1 时不写 transform,维持原始观感与排版。
           style={
@@ -257,7 +259,7 @@ function Backdrop() {
 function BrandPanel() {
   return (
     <div
-      className="relative hidden flex-col gap-8 lg:flex"
+      className="relative flex flex-col gap-8"
       style={{ animation: "chFadeUpSmall 800ms 200ms backwards ease-out" }}
     >
       <div className="flex flex-col gap-3">

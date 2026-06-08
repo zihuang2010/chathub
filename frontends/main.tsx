@@ -4,6 +4,7 @@ import App from "./App";
 import { ImagePreviewWindow } from "@/components/workbench/messages/ImagePreviewWindow";
 import { VideoPreviewWindow } from "@/components/workbench/messages/VideoPreviewWindow";
 import { isMac, isWindows } from "./lib/platform";
+import "./fonts.css";
 import "./index.css";
 
 // Tag the document so CSS can branch on platform without JS roundtrips.

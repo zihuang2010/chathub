@@ -190,6 +190,22 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
+    // 周期心跳:每 heartbeat_interval_ms 向所有已注册连接下发一帧 HEARTBEAT(流保活)。
+    // 客户端静默看门狗据此判活;被路由表摘除的连接自然收不到心跳 → 客户端到点静默重连。
+    // 投不动的死连接由 heartbeat_sweep 内部顺手摘除(与 push 路径一致)。glue 同 GC task,
+    // 不单独 e2e:底层 heartbeat_sweep 已单测,客户端处理由 chathub-net 看门狗测试覆盖。
+    let router_for_heartbeat = router.clone();
+    let heartbeat_interval = Duration::from_millis(cfg.heartbeat_interval_ms);
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(heartbeat_interval);
+        tick.tick().await; // 第一 tick 立即返回,跳过
+        loop {
+            tick.tick().await;
+            let delivered = router_for_heartbeat.heartbeat_sweep();
+            tracing::trace!(delivered, "heartbeat sweep");
+        }
+    });
+
     // P0-6 Graceful shutdown:
     //   1. 收到 Ctrl-C / SIGTERM 后,先广播 SERVER_DRAIN 给所有连接
     //   2. 等 grace 让客户端读完帧并主动断

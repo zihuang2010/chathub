@@ -24,8 +24,11 @@ const UPLOAD_TIMEOUT_MS = 60_000;
 // 附件预览域名前缀:落库的 objectName 拼此前缀得到可访问 URL。
 // 构建期由 CI 注入(VITE_CHATHUB_ATTACHMENT_BASE_URL,与 Rust 侧 CHATHUB_ATTACHMENT_BASE_URL 同源);
 // dev/test 无注入时回落 filet.jdd51.com。
+// 注意必须用 `|| 默认`(配 ?.trim()):构建脚本可能把该 env 导成空串 "",而 `?? 默认` 只兜
+// undefined、兜不住空串 → ATTACHMENT_BASE_URL 变空 → 拼出相对路径(如 `/t/dev/...png`)→
+// 图片/语音 URL 缺域名全挂(Windows 实测根因)。
 const ATTACHMENT_BASE_URL =
-  import.meta.env.VITE_CHATHUB_ATTACHMENT_BASE_URL ?? "https://filet.jdd51.com";
+  import.meta.env.VITE_CHATHUB_ATTACHMENT_BASE_URL?.trim() || "https://filet.jdd51.com";
 
 /**
  * 把后端返回的相对 objectName 拼成完整预览 URL;已是完整 http(s) URL 则原样返回。

@@ -92,20 +92,17 @@ fi
 # relay 地址:默认测试 relay,可被上面的 env / .env.windows 覆盖。
 export CHATHUB_RELAY_URL="${CHATHUB_RELAY_URL:-http://47.92.169.112:30003}"
 
-# 附件预览域名:不设则后端 build.rs 与前端 Vite 各自回落 filet.jdd51.com(当前真实值),
-# 此处仅在外部已设置时透传,不强制注入。
-export CHATHUB_ATTACHMENT_BASE_URL="${CHATHUB_ATTACHMENT_BASE_URL:-}"
+# 附件预览域名:默认填真实值 filet.jdd51.com,供前端 Vite 与后端 build.rs 同源拼附件 URL。
+# 必须给【非空】默认值 —— 若导出空串 "",前端 `?? 默认` 兜不住空串(只兜 undefined)会拼出相对
+# 路径(如 `/t/dev/...png`),图片/语音 URL 缺域名全挂(Windows 实测根因);后端 host 也会变空。
+export CHATHUB_ATTACHMENT_BASE_URL="${CHATHUB_ATTACHMENT_BASE_URL:-https://filet.jdd51.com}"
 export VITE_CHATHUB_ATTACHMENT_BASE_URL="${VITE_CHATHUB_ATTACHMENT_BASE_URL:-${CHATHUB_ATTACHMENT_BASE_URL}}"
 
 # 首次需联网下载 MSVC CRT/SDK(xwin)时自动接受微软许可,避免交互卡住。
 export XWIN_ACCEPT_LICENSE="${XWIN_ACCEPT_LICENSE:-1}"
 
 echo "[build-windows] CHATHUB_RELAY_URL=${CHATHUB_RELAY_URL}"
-if [ -n "${CHATHUB_ATTACHMENT_BASE_URL}" ]; then
-  echo "[build-windows] CHATHUB_ATTACHMENT_BASE_URL=${CHATHUB_ATTACHMENT_BASE_URL}"
-else
-  echo "[build-windows] CHATHUB_ATTACHMENT_BASE_URL 未设置 -> 回落 filet.jdd51.com"
-fi
+echo "[build-windows] CHATHUB_ATTACHMENT_BASE_URL=${CHATHUB_ATTACHMENT_BASE_URL}"
 if [ -n "${CHATHUB_AI_API_KEY:-}" ]; then
   echo "[build-windows] CHATHUB_AI_API_KEY 已设置 (打包客户端 AI 润色可用)"
 else

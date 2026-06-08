@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent, PointerEvent as ReactPointerEvent } from "react";
-import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { showToast } from "@/components/ui/toast";
@@ -244,40 +243,6 @@ export function MessagesPage({
     },
     [displayEntries, markReadRecent],
   );
-
-  // 点关闭按钮 = 隐藏到托盘(后端拦截 CloseRequested → prevent_close + hide,应用常驻在线)。
-  // 隐藏前对"当前打开且有未读"的会话 best-effort 补一次 markRead,让服务端收敛已读 ——
-  // 覆盖"开着会话直接关闭、期间消息下次重现未读"的场景。闭包用 ref 读实时活动会话,避免 stale。
-  const activeRef = useRef<{ id: string; unread: number }>({ id: "", unread: 0 });
-  const activeEntryForClose = displayEntries.find((e) => e.conversationId === selectedId);
-  const activeUnreadForClose =
-    activeEntryForClose && (activeEntryForClose.hasUnread || activeEntryForClose.unreadCount > 0)
-      ? Math.max(activeEntryForClose.unreadCount, 1)
-      : 0;
-  useEffect(() => {
-    activeRef.current = { id: selectedId, unread: activeUnreadForClose };
-  }, [selectedId, activeUnreadForClose]);
-  useEffect(() => {
-    const win = getCurrentWindow();
-    let unlisten: (() => void) | undefined;
-    let disposed = false;
-    void win
-      .onCloseRequested(() => {
-        const { id, unread } = activeRef.current;
-        if (!id || unread <= 0) return;
-        // 关闭=隐藏到托盘(后端 prevent_close + hide,应用仍在线),不再 preventDefault/destroy;
-        // 仅 best-effort 对当前有未读会话补一次 markRead,让服务端收敛已读。
-        void markReadRecent(id);
-      })
-      .then((u) => {
-        if (disposed) u();
-        else unlisten = u;
-      });
-    return () => {
-      disposed = true;
-      unlisten?.();
-    };
-  }, [markReadRecent]);
 
   // 首次本地 cache 读出后通知 App 的 splash gate;splash 退场前数据已就绪,常规场景
   // 不再出现"splash → Skeleton → 真组件"的二次闪。极慢路径仍由 MessagesSkeleton 兜底。

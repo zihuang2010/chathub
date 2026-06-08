@@ -63,6 +63,9 @@ pub struct Config {
     pub oauth_client_secret: String,
     /// CONNECTION_FORCE_CLOSE 收到后等多久才摘除连接。env `RELAY_FORCE_CLOSE_GRACE_MS`,默认 2000。
     pub force_close_grace_ms: u64,
+    /// 心跳 sweep 周期(ms)。env `RELAY_HEARTBEAT_INTERVAL_MS`,默认 15000。
+    /// 周期向所有已注册连接下发 HEARTBEAT 帧供客户端静默看门狗判活;客户端 SILENCE_TIMEOUT 须 > 2×此值。
+    pub heartbeat_interval_ms: u64,
     /// Push v2 接收的 clientId 白名单。env `RELAY_ALLOWED_CLIENT_IDS`(逗号分隔),默认 `rh_wxchat`。
     pub allowed_client_ids: Vec<String>,
     /// TokenAuthenticator moka cache 最大条目数。env `RELAY_AUTH_CACHE_MAX_ENTRIES`,默认 10000。
@@ -294,8 +297,8 @@ pub struct LogConfig {
     pub dir: PathBuf,
     pub file_prefix: String,
     pub stdout: StdoutFormat,
-    /// push 原始入站 body 旁路到独立按日轮转文件(上线后 diff/jq 比对)。
-    /// env `RELAY_SOURCE_JSON_LOG`("true"|"1"),默认 false(opt-in,避免默认把业务事件原文落第二份盘)。
+    /// push 原始入站 body 旁路到独立按日轮转文件(上线后 diff/jq 比对 / 排障留底)。
+    /// env `RELAY_SOURCE_JSON_LOG`,默认 true(把事件原文落盘备查);设 `"false"`|`"0"` 关闭。
     pub source_json: bool,
     /// 按日轮转日志的保留份数上限(超出删最旧),防止日志文件无限累积。
     /// env `RELAY_LOG_MAX_FILES`,默认 7(约一周)。validate() 拒 0
@@ -376,7 +379,7 @@ impl Config {
                 stdout: parse_stdout_format("RELAY_LOG_STDOUT")?,
                 source_json: std::env::var("RELAY_SOURCE_JSON_LOG")
                     .map(|v| v == "true" || v == "1")
-                    .unwrap_or(false),
+                    .unwrap_or(true),
                 max_files: std::env::var("RELAY_LOG_MAX_FILES")
                     .ok()
                     .and_then(|s| s.parse().ok())
@@ -387,6 +390,10 @@ impl Config {
                 .ok()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(2000),
+            heartbeat_interval_ms: std::env::var("RELAY_HEARTBEAT_INTERVAL_MS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(15000),
             allowed_client_ids: std::env::var("RELAY_ALLOWED_CLIENT_IDS")
                 .ok()
                 .filter(|s| !s.is_empty())
@@ -567,6 +574,7 @@ impl Config {
              \x20  push_max_body_bytes   = {}\n\
              \x20  event_retention_days  = {}\n\
              \x20  force_close_grace_ms  = {}\n\
+             \x20  heartbeat_interval_ms = {}\n\
              \x20  allowed_client_ids    = {:?}\n\
              \x20  auth_cache_max_entries= {}\n\
              \x20  notify_pull_enabled   = {}\n\
@@ -596,6 +604,7 @@ impl Config {
             self.push_max_body_bytes,
             self.event_retention_days,
             self.force_close_grace_ms,
+            self.heartbeat_interval_ms,
             self.allowed_client_ids,
             self.auth_cache_max_entries,
             self.notify_pull_enabled,
@@ -929,6 +938,7 @@ mod tests {
             "RELAY_OAUTH_CLIENT_SECRET",
             "RELAY_OAUTH_CLIENT_SECRET_FILE",
             "RELAY_FORCE_CLOSE_GRACE_MS",
+            "RELAY_HEARTBEAT_INTERVAL_MS",
             "RELAY_ALLOWED_CLIENT_IDS",
             "RELAY_ALLOW_HTTP",
             "RELAY_TLS_CERT_PATH",
@@ -988,6 +998,21 @@ mod tests {
     }
 
     #[test]
+    fn from_env_heartbeat_interval_default_and_override() {
+        let _g = ENV_LOCK.lock();
+        clear_all();
+        set_required();
+        // 默认 15000ms
+        let cfg = Config::from_env().expect("config");
+        assert_eq!(cfg.heartbeat_interval_ms, 15000);
+        // env 覆盖
+        std::env::set_var("RELAY_HEARTBEAT_INTERVAL_MS", "3000");
+        let cfg = Config::from_env().expect("config");
+        assert_eq!(cfg.heartbeat_interval_ms, 3000);
+        clear_all();
+    }
+
+    #[test]
     fn from_env_missing_push_secret_errors() {
         let _g = ENV_LOCK.lock();
         clear_all();
@@ -1021,7 +1046,7 @@ mod tests {
         assert_eq!(cfg.log.dir.to_string_lossy(), "./logs");
         assert_eq!(cfg.log.file_prefix, "relay");
         assert_eq!(cfg.log.stdout, StdoutFormat::Compact);
-        assert!(!cfg.log.source_json); // 默认关(opt-in)
+        assert!(cfg.log.source_json); // 默认开(事件原文落盘备查)
         assert_eq!(cfg.log.max_files, 7); // 默认保留 7 份
         clear_all();
     }
@@ -1040,6 +1065,18 @@ mod tests {
         assert_eq!(cfg.log.file_prefix, "relay-prod");
         assert_eq!(cfg.log.stdout, StdoutFormat::Json);
         assert!(cfg.log.source_json); // 显式开
+        clear_all();
+    }
+
+    #[test]
+    fn from_env_source_json_can_be_disabled() {
+        // 默认已改为开,显式 RELAY_SOURCE_JSON_LOG=false 须能关闭。
+        let _g = ENV_LOCK.lock();
+        clear_all();
+        set_required();
+        std::env::set_var("RELAY_SOURCE_JSON_LOG", "false");
+        let cfg = Config::from_env().expect("config");
+        assert!(!cfg.log.source_json);
         clear_all();
     }
 

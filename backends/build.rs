@@ -7,12 +7,17 @@ fn main() {
     println!("cargo:rerun-if-env-changed=CHATHUB_ATTACHMENT_BASE_URL");
     println!("cargo:rerun-if-env-changed=PROFILE");
 
-    let base = std::env::var("CHATHUB_ATTACHMENT_BASE_URL").unwrap_or_else(|_| {
-        if std::env::var("PROFILE").as_deref() == Ok("release") {
-            println!("cargo:warning=CHATHUB_ATTACHMENT_BASE_URL not set; falling back to https://filet.jdd51.com (placeholder)");
-        }
-        "https://filet.jdd51.com".to_string()
-    });
+    // 空串也当未设(构建脚本可能 export 空串);否则 host 解析为空 → SSRF 白名单含空项、
+    // 附件域一律被拒。filter 掉空白即回落真实默认值。
+    let base = std::env::var("CHATHUB_ATTACHMENT_BASE_URL")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| {
+            if std::env::var("PROFILE").as_deref() == Ok("release") {
+                println!("cargo:warning=CHATHUB_ATTACHMENT_BASE_URL not set; falling back to https://filet.jdd51.com (placeholder)");
+            }
+            "https://filet.jdd51.com".to_string()
+        });
     let base = base.trim_end_matches('/').to_string();
     // 取 host:去 scheme(://)、去路径(第一个 /),用于白名单精确匹配。
     let host = base

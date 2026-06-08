@@ -37,6 +37,70 @@ use tokio::sync::broadcast::channel as broadcast_channel;
 /// 「关闭到托盘」开关:点关闭按钮只隐藏主窗口,只有托盘菜单「退出」置位后才放行真正关闭。
 static QUITTING: AtomicBool = AtomicBool::new(false);
 
+/// 托盘图标闪烁开关:有未读且窗口未获焦时为 true,闪烁线程据此在 normal↔dim 间交替。
+/// 由 set_tray_unread 命令启停,前端在收消息/失焦/获焦时驱动。
+static BLINKING: AtomicBool = AtomicBool::new(false);
+
+/// 托盘图标闪烁周期(毫秒)。
+const TRAY_BLINK_INTERVAL_MS: u64 = 500;
+
+/// 托盘图标的两态:正常 + 暗淡(闪烁用)。暗淡版 = 正常图整体 alpha 降到 ~25% 的「呼吸」帧,
+/// 闪烁线程在两态间交替。不用全透明帧——Windows 托盘对「整帧 alpha 全 0」会忽略 alpha、渲染成黑块。
+struct TrayIcons {
+    normal: tauri::image::Image<'static>,
+    dim: tauri::image::Image<'static>,
+}
+
+/// 解码打包的 128x128 托盘图标,合成「正常」与「暗淡」两态(供闪烁线程交替)。
+/// 用 128 而非 32:Mac 菜单栏 Retina 按 ~44px(@2x) 渲染、Win 高 DPI 托盘亦 >32px,
+/// 喂 32px 会被放大发糊;128 留足余量由系统下采样,清晰且体积可忽略。
+/// 暗淡版 = 正常图保持 alpha 轮廓不变、仅整体 alpha 缩到 ~25%,呈「淡入淡出」式呼吸闪烁;
+/// 既不用全透明(Windows 托盘对全 0 alpha 帧渲染成黑块),也不压暗 RGB(同样发黑)。
+/// 注意:tauri 的 Image::from_bytes 受 image-png feature 门控(本项目未开),故直接用 image crate 解码,
+/// 再走 Image::new_owned(RGBA) 构造,绕开该 feature 依赖。
+fn build_tray_icons() -> TrayIcons {
+    const RAW: &[u8] = include_bytes!("../icons/128x128.png");
+    let base = image::load_from_memory(RAW)
+        .expect("decode tray icon 128x128.png")
+        .to_rgba8();
+    let (w, h) = base.dimensions();
+    let normal = tauri::image::Image::new_owned(base.clone().into_raw(), w, h);
+    // 暗淡帧:仅把每个像素的 alpha 缩到 25%(RGB 不动 → 不会发黑;透明区仍透明)。
+    // 与 normal 交替即「呼吸」式闪烁;0.25 可按观感微调。
+    let mut dimmed = base;
+    for px in dimmed.pixels_mut() {
+        px[3] = (px[3] as f32 * 0.25) as u8;
+    }
+    let dim = tauri::image::Image::new_owned(dimmed.into_raw(), w, h);
+    TrayIcons { normal, dim }
+}
+
+/// 从托盘恢复主窗口:先 unminimize(Windows 上最小化窗口 is_visible 仍为 true,只 show 不够),
+/// 再 show + set_focus。托盘左键与「打开主窗口」菜单共用。
+fn restore_main_window<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.unminimize();
+        let _ = w.show();
+        let _ = w.set_focus();
+    }
+}
+
+/// 前端按未读总数启停托盘图标闪烁 + 同步 tooltip。count>0 启动闪烁,count<=0 停闪复原。
+/// 关到托盘后无任务栏按钮可闪,托盘图标闪烁是唯一可见提醒,故由前端在收消息/失焦/获焦时调用。
+/// 图标视觉由闪烁线程负责(见 setup),本命令只翻转 BLINKING 开关并设 tooltip。
+#[tauri::command]
+fn set_tray_unread(tray: State<'_, tauri::tray::TrayIcon>, count: i64) -> Result<(), String> {
+    let tip = if count > 0 {
+        BLINKING.store(true, Ordering::SeqCst);
+        format!("ChatHub · {count} 条新消息")
+    } else {
+        BLINKING.store(false, Ordering::SeqCst);
+        "ChatHub".to_string()
+    };
+    tray.set_tooltip(Some(tip)).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 // ============================== 现有命令保留 ==============================
 
 #[derive(Serialize)]
@@ -1783,7 +1847,7 @@ pub fn run() {
                     let screen = monitor.size(); // 物理像素
                     let sw = screen.width as f64 / scale; // → 逻辑像素
                     let sh = screen.height as f64 / scale;
-                    let w = (sw * 0.7).clamp(860.0, 1360.0);
+                    let w = (sw * 0.8).clamp(860.0, 1380.0);
                     let h = (sh * 0.9).clamp(600.0, 900.0);
                     let _ = window.set_size(LogicalSize::new(w, h));
                     let _ = window.center();
@@ -1796,17 +1860,15 @@ pub fn run() {
             let open_item = MenuItem::with_id(app, "open", "打开主窗口", true, None::<&str>)?;
             let quit_item = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
             let tray_menu = Menu::with_items(app, &[&open_item, &quit_item])?;
+            let tray_icons = build_tray_icons();
             let tray = TrayIconBuilder::with_id("main-tray")
-                .icon(app.default_window_icon().unwrap().clone())
+                .icon(tray_icons.normal.clone())
                 .menu(&tray_menu)
                 .show_menu_on_left_click(false)
                 .tooltip("ChatHub")
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "open" => {
-                        if let Some(w) = app.get_webview_window("main") {
-                            let _ = w.show();
-                            let _ = w.set_focus();
-                        }
+                        restore_main_window(app);
                     }
                     "quit" => {
                         QUITTING.store(true, Ordering::SeqCst);
@@ -1824,16 +1886,40 @@ pub fn run() {
                     {
                         let app = tray.app_handle();
                         if let Some(w) = app.get_webview_window("main") {
-                            if w.is_visible().unwrap_or(false) {
+                            let visible = w.is_visible().unwrap_or(false);
+                            let minimized = w.is_minimized().unwrap_or(false);
+                            // 仅「真正可见且未最小化」才隐藏;最小化(Windows 上 is_visible 仍为 true)
+                            // 或已隐藏一律走恢复,避免点托盘把窗口弄没。
+                            if visible && !minimized {
                                 let _ = w.hide();
                             } else {
-                                let _ = w.show();
-                                let _ = w.set_focus();
+                                restore_main_window(app);
                             }
                         }
                     }
                 })
                 .build(app)?;
+
+            // 托盘图标闪烁线程:每 TRAY_BLINK_INTERVAL_MS 一拍,BLINKING 为真时在 normal↔dim
+            // 间交替(呼吸式);转假且停在 dim 帧时补一次 normal 复原。独立 std 线程、不依赖 webview,
+            // 故关到托盘也能闪。set_icon 在 Tauri v2 可跨线程调用(与命令同源)。
+            let blink_tray = tray.clone();
+            let TrayIcons { normal, dim } = tray_icons;
+            std::thread::spawn(move || {
+                let mut showing_dim = false;
+                loop {
+                    std::thread::sleep(std::time::Duration::from_millis(TRAY_BLINK_INTERVAL_MS));
+                    if BLINKING.load(Ordering::SeqCst) {
+                        showing_dim = !showing_dim;
+                        let img = if showing_dim { dim.clone() } else { normal.clone() };
+                        let _ = blink_tray.set_icon(Some(img));
+                    } else if showing_dim {
+                        showing_dim = false;
+                        let _ = blink_tray.set_icon(Some(normal.clone()));
+                    }
+                }
+            });
+
             app.manage(tray);
 
             // ---- Plan 2:接入 chathub-net auth 链路 ----
@@ -2077,6 +2163,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             take_screenshot, read_screenshot_file,
+            set_tray_unread,
             login, logout, current_session,
             hub_forward, hub_ack, hub_state, list_accounts, list_friends, friend_detail,
             list_recent_friends, list_recent_friends_remote_page, prefill_recent_friends,

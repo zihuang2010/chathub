@@ -50,6 +50,9 @@ message SystemSignal {
     //      (不得要求客户端重连重锚水位)——否则不断连的客户端会丢失 notify_seq 水位重锚点,
     //      未打开会话/温缓存的 head−old 残余缺口将失去收敛点(见解耦设计 D3)。
     KIND_RESYNC_REQUIRED  = 2;
+    // relay 周期下发的流保活帧;客户端仅用于重置静默看门狗(判活),不入库/不动水位/不触发 resync。
+    // 被路由表摘除的连接自然收不到心跳 → 客户端看门狗到点 → 静默重连。
+    KIND_HEARTBEAT        = 3;
   }
   Kind   kind   = 1;
   string detail = 2;

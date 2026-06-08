@@ -35,6 +35,11 @@ pub struct BackoffConfig {
     pub base: Duration,
     pub factor: f64,
     pub cap: Duration,
+    /// 流静默看门狗超时:收到过 relay 心跳后,若 `silence_timeout` 内再无任何帧到达,
+    /// 判定流静默死亡 → 静默重连(不打断用户)。须 > 2× relay 心跳间隔(relay 默认 15s → 此处默认 45s)。
+    /// 注:本字段属连接层时序配置,与退避无直接关系,搭车此结构统一注入,避免 ConnectionManager::new
+    /// 增参(免动 backends/src/lib.rs 等调用点)。
+    pub silence_timeout: Duration,
 }
 
 impl Default for BackoffConfig {
@@ -43,6 +48,7 @@ impl Default for BackoffConfig {
             base: Duration::from_secs(1),
             factor: 2.0,
             cap: Duration::from_secs(15),
+            silence_timeout: Duration::from_secs(45),
         }
     }
 }
@@ -1175,6 +1181,13 @@ impl Inner {
             ack_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             ack_interval.tick().await;
 
+            // 流静默看门狗:②自协商 —— 收到过 relay 心跳后才武装;武装后若 silence_timeout 内
+            // 再无任何帧到达 → 判定流静默死亡 → 静默重连(不打断用户)。每条新流重置(随本作用域)。
+            let mut heartbeat_seen = false;
+            let silence_timeout = self.backoff.silence_timeout;
+            let silence = tokio::time::sleep(silence_timeout);
+            tokio::pin!(silence);
+
             loop {
                 tokio::select! {
                     biased;
@@ -1217,11 +1230,35 @@ impl Inner {
                             }
                         }
                     }
+                    // 流静默看门狗臂:仅"见过心跳"后武装。超时 = 流静默死亡 → 静默重连。
+                    // 置于 stream 臂前:biased 下二者极难同时就绪(静默即无帧),即便竞合也只多一次
+                    // 重连 + resync 续点,无数据损失。
+                    _ = &mut silence, if heartbeat_seen => {
+                        self.state_tx
+                            .send_replace(ConnectionState::Disconnected { last_error: None });
+                        tracing::warn!(
+                            target: "chathub_net::hub",
+                            silence_secs = silence_timeout.as_secs(),
+                            "stream silent past timeout (no heartbeat frames); reconnecting"
+                        );
+                        tokio::time::sleep(backoff.next()).await;
+                        continue 'reconnect;
+                    }
                     msg = stream.message() => match msg {
                         Ok(Some(event)) => {
                             // 处理 v2 三件套。
                             use chathub_proto::v1::server_event::Body;
                             use chathub_proto::v1::system_signal::Kind;
+                            // 任意帧到达即证明流活 → 重置静默看门狗 deadline。
+                            silence
+                                .as_mut()
+                                .reset(tokio::time::Instant::now() + silence_timeout);
+                            // 心跳帧:②自协商武装看门狗 + 纯保活(不入 handle_frame、不动水位/不发 ack)。
+                            if matches!(&event.body, Some(Body::System(s)) if s.kind == Kind::Heartbeat as i32)
+                            {
+                                heartbeat_seen = true;
+                                continue;
+                            }
                             // DEBUG:打印收到的 relay 下发帧「元信息」,便于排查推送链路。
                             // 不打印 events_json 原文 —— 它含聊天正文/手机号/externalUserId 等 PII,
                             // 而默认 filter 即开 chathub_net=debug,打全文等于把业务明文落盘;此处仅记录
@@ -1371,6 +1408,7 @@ mod tests {
             base: Duration::from_millis(10),
             factor: 2.0,
             cap: Duration::from_millis(150),
+            silence_timeout: Duration::from_secs(45),
         }
     }
 
