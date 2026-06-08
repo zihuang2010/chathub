@@ -286,11 +286,11 @@ function SplashGreenBubble({
           d="M 55 0 A 55 40 0 0 1 59 80 L 45 92 L 40 78 A 55 40 0 0 1 55 0 Z"
           fill="url(#chSplashBubbleGreenGrad)"
         />
-        <g transform="translate(36 18)" fill="#FFFFFF">
-          <circle cx="14" cy="18" r="5" />
-          <path d="M5 35 q0 -12 9 -12 q9 0 9 12 z" />
-          <circle cx="28" cy="21" r="4" />
-          <path d="M21 35 q0 -10 7 -10 q7 0 7 10 z" />
+        <g fill="#FFFFFF">
+          <circle cx="47" cy="31" r="5" />
+          <path d="M38 48 q0 -14 9 -14 q9 0 9 14 z" />
+          <circle cx="64" cy="35" r="4.5" />
+          <path d="M56 48 q0 -11 8 -11 q8 0 8 11 z" />
         </g>
       </svg>
       {satellites && <SatelliteRing items={satellites} />}

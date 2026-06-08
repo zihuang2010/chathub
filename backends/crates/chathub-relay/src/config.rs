@@ -297,6 +297,11 @@ pub struct LogConfig {
     /// push 原始入站 body 旁路到独立按日轮转文件(上线后 diff/jq 比对)。
     /// env `RELAY_SOURCE_JSON_LOG`("true"|"1"),默认 false(opt-in,避免默认把业务事件原文落第二份盘)。
     pub source_json: bool,
+    /// 按日轮转日志的保留份数上限(超出删最旧),防止日志文件无限累积。
+    /// env `RELAY_LOG_MAX_FILES`,默认 7(约一周)。validate() 拒 0
+    /// (tracing-appender 的 max_log_files(0) 会在清理时 usize 下溢 panic)。
+    /// 主日志与 source-json 旁路共用此上限。
+    pub max_files: usize,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -372,6 +377,10 @@ impl Config {
                 source_json: std::env::var("RELAY_SOURCE_JSON_LOG")
                     .map(|v| v == "true" || v == "1")
                     .unwrap_or(false),
+                max_files: std::env::var("RELAY_LOG_MAX_FILES")
+                    .ok()
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(7),
             },
             routes: DownstreamRoutes::from_env(),
             force_close_grace_ms: std::env::var("RELAY_FORCE_CLOSE_GRACE_MS")
@@ -440,6 +449,12 @@ impl Config {
         }
         if self.event_retention_days == 0 {
             errors.push("RELAY_EVENT_RETENTION_DAYS 不能为 0(否则 GC 启动即清空所有事件)".into());
+        }
+        if self.log.max_files == 0 {
+            errors.push(
+                "RELAY_LOG_MAX_FILES 不能为 0(tracing-appender max_log_files(0) 清理时会下溢 panic)"
+                    .into(),
+            );
         }
         if self.notify_pull_budget_ms == 0 {
             errors.push(
@@ -563,6 +578,7 @@ impl Config {
              \x20  log.file_prefix       = {}\n\
              \x20  log.stdout            = {:?}\n\
              \x20  log.source_json       = {}\n\
+             \x20  log.max_files         = {}\n\
              \x20  routes                = {:?}\n\
              }}",
             self.grpc_addr,
@@ -591,6 +607,7 @@ impl Config {
             self.log.file_prefix,
             self.log.stdout,
             self.log.source_json,
+            self.log.max_files,
             routes,
         )
     }
@@ -895,6 +912,7 @@ mod tests {
             "RELAY_LOG_FILE_PREFIX",
             "RELAY_LOG_STDOUT",
             "RELAY_SOURCE_JSON_LOG",
+            "RELAY_LOG_MAX_FILES",
             "RELAY_PATH_SEND",
             "RELAY_PATH_RECALL",
             "RELAY_PATH_ACK_READ",
@@ -1004,6 +1022,7 @@ mod tests {
         assert_eq!(cfg.log.file_prefix, "relay");
         assert_eq!(cfg.log.stdout, StdoutFormat::Compact);
         assert!(!cfg.log.source_json); // 默认关(opt-in)
+        assert_eq!(cfg.log.max_files, 7); // 默认保留 7 份
         clear_all();
     }
 
@@ -1021,6 +1040,31 @@ mod tests {
         assert_eq!(cfg.log.file_prefix, "relay-prod");
         assert_eq!(cfg.log.stdout, StdoutFormat::Json);
         assert!(cfg.log.source_json); // 显式开
+        clear_all();
+    }
+
+    #[test]
+    fn from_env_log_max_files_override() {
+        let _g = ENV_LOCK.lock();
+        clear_all();
+        set_required();
+        std::env::set_var("RELAY_LOG_MAX_FILES", "3");
+        let cfg = Config::from_env().expect("config");
+        assert_eq!(cfg.log.max_files, 3);
+        clear_all();
+    }
+
+    #[test]
+    fn validate_rejects_zero_log_max_files() {
+        let _g = ENV_LOCK.lock();
+        clear_all();
+        set_required();
+        std::env::set_var("RELAY_LOG_MAX_FILES", "0");
+        let err = Config::from_env().unwrap_err();
+        match err {
+            ConfigError::ValidationFailed(m) => assert!(m.contains("RELAY_LOG_MAX_FILES")),
+            other => panic!("wrong: {other:?}"),
+        }
         clear_all();
     }
 

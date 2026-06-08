@@ -1796,7 +1796,7 @@ pub fn run() {
             let open_item = MenuItem::with_id(app, "open", "打开主窗口", true, None::<&str>)?;
             let quit_item = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
             let tray_menu = Menu::with_items(app, &[&open_item, &quit_item])?;
-            let _tray = TrayIconBuilder::with_id("main-tray")
+            let tray = TrayIconBuilder::with_id("main-tray")
                 .icon(app.default_window_icon().unwrap().clone())
                 .menu(&tray_menu)
                 .show_menu_on_left_click(false)
@@ -1834,6 +1834,7 @@ pub fn run() {
                     }
                 })
                 .build(app)?;
+            app.manage(tray);
 
             // ---- Plan 2:接入 chathub-net auth 链路 ----
             let app_data = app.path().app_data_dir()?;

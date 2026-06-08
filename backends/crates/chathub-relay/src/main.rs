@@ -19,6 +19,7 @@ use std::time::Duration;
 use tokio::net::TcpListener;
 use tonic::transport::{Identity, Server, ServerTlsConfig};
 use tracing_appender::non_blocking::WorkerGuard;
+use tracing_appender::rolling::{RollingFileAppender, Rotation};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
 #[tokio::main(flavor = "multi_thread")]
@@ -29,8 +30,15 @@ async fn main() -> anyhow::Result<()> {
     // push 原始入站 body 旁路落盘(env RELAY_SOURCE_JSON_LOG,默认开):独立按日轮转文件,
     // 每行一条原样 body,供上线初期 diff/jq 比对。复用 cfg.log.dir(init_tracing 已建)。
     // _source_json_guard 必须活到进程退出,否则丢未刷盘的行。
+    // 按日轮转 + 保留 max_files 份(防无限膨胀);后缀 `jsonl` 把清理范围锁死在本旁路文件,
+    // 不波及主日志(`.log`)与 relay.db。
     let (source_json_writer, _source_json_guard) = if cfg.log.source_json {
-        let appender = tracing_appender::rolling::daily(&cfg.log.dir, "relay-source-json");
+        let appender = RollingFileAppender::builder()
+            .rotation(Rotation::DAILY)
+            .filename_prefix("relay-source-json")
+            .filename_suffix("jsonl")
+            .max_log_files(cfg.log.max_files)
+            .build(&cfg.log.dir)?;
         let (writer, guard) = tracing_appender::non_blocking(appender);
         (Some(writer), Some(guard))
     } else {
@@ -307,12 +315,21 @@ async fn wait_for_shutdown_signal() {
     }
 }
 
-/// 初始化 tracing:文件 JSON(按日轮转,非阻塞) + 可选 stdout。
+/// 初始化 tracing:文件 JSON(按日轮转 + 保留 max_files 份,非阻塞) + 可选 stdout。
 /// 返回 WorkerGuard 必须由 main 持有到进程退出,否则 drop 时会丢未刷盘的日志。
+///
+/// 文件名 `<prefix>.<date>.log`;后缀 `log` 把保留清理(max_log_files)的删除范围锁死在
+/// 真正的日志文件上 —— tracing-appender 清理只按文件名前缀匹配、不校验日期,若不加后缀,
+/// 前缀 `relay` 会误匹配同目录的 `relay.db`/`relay-source-json.*` 并按时间删最旧(可能误删事件库)。
 fn init_tracing(cfg: &Config) -> anyhow::Result<WorkerGuard> {
     std::fs::create_dir_all(&cfg.log.dir)?;
 
-    let file_appender = tracing_appender::rolling::daily(&cfg.log.dir, &cfg.log.file_prefix);
+    let file_appender = RollingFileAppender::builder()
+        .rotation(Rotation::DAILY)
+        .filename_prefix(cfg.log.file_prefix.as_str())
+        .filename_suffix("log")
+        .max_log_files(cfg.log.max_files)
+        .build(&cfg.log.dir)?;
     let (file_writer, guard) = tracing_appender::non_blocking(file_appender);
 
     // 默认过滤:压掉 nacos-sdk gRPC 健康检查的启动期噪声(connection 未注册 / 转换失败,
@@ -349,6 +366,7 @@ fn init_tracing(cfg: &Config) -> anyhow::Result<WorkerGuard> {
         log_dir = %cfg.log.dir.display(),
         log_file_prefix = %cfg.log.file_prefix,
         log_stdout = ?cfg.log.stdout,
+        log_max_files = cfg.log.max_files,
         "logging initialized"
     );
 

@@ -68,11 +68,33 @@ describe("useNewMessageFlash", () => {
     expect(h.requestUserAttention).toHaveBeenCalledWith(1); // UserAttentionType.Critical
   });
 
+  it("接待列表收到服务端新消息更新 + 窗口失焦 → 闪烁(Critical)", async () => {
+    renderHook(() => useNewMessageFlash());
+    await dispatchAndFlush(notice({ topic: "recent-sessions" }));
+    expect(h.requestUserAttention).toHaveBeenCalledTimes(1);
+    expect(h.requestUserAttention).toHaveBeenCalledWith(1); // UserAttentionType.Critical
+  });
+
+  it("短时间重复服务端通知 → 只请求一次注意", async () => {
+    renderHook(() => useNewMessageFlash());
+    await dispatchAndFlush(notice());
+    await dispatchAndFlush(notice());
+    expect(h.requestUserAttention).toHaveBeenCalledTimes(1);
+  });
+
   it("窗口已聚焦 → 不闪", async () => {
     h.isFocused.mockResolvedValue(true);
     renderHook(() => useNewMessageFlash());
     await dispatchAndFlush(notice());
     expect(h.requestUserAttention).not.toHaveBeenCalled();
+  });
+
+  it("窗口已聚焦的通知不会占用后续失焦闪烁冷却", async () => {
+    h.isFocused.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+    renderHook(() => useNewMessageFlash());
+    await dispatchAndFlush(notice());
+    await dispatchAndFlush(notice({ occurredAtMs: 1 }));
+    expect(h.requestUserAttention).toHaveBeenCalledTimes(1);
   });
 
   it("自己发的消息(local-command) → 不闪", async () => {

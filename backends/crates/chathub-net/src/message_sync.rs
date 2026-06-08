@@ -155,6 +155,7 @@ pub fn row_to_history(r: &MessageRow) -> HistoryMessage {
 /// - 已知(1..=3):本地方向 = `to_local_direction`;synced = (源方向==3,即「已在他端发出的成品」)。
 /// - 未知(0):回退既有 `message_direction` 列(V20 已修正其本地方向),按非多端同步处理;下次 reconcile
 ///   重拉历史经 upsert 回填真实源方向后该行自愈。
+///
 /// 不再从 opaque 的 `sort_key` 反推 —— 真实 sort_key 是「13位ms_20位序列_id」下划线三段、不含方向段。
 fn local_direction_and_synced(r: &MessageRow) -> (i32, bool) {
     match r.source_direction {
