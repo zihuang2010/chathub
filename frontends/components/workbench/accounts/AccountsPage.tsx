@@ -2,7 +2,7 @@ import { useCallback } from "react";
 import { Plus, RefreshCw } from "lucide-react";
 
 import { ErrorBoundary } from "@/components/ErrorBoundary";
-import { ToastViewport, showToast } from "@/components/ui/toast";
+import { showToast } from "@/components/ui/toast";
 import { WorkbenchPanel } from "@/components/workbench/WorkbenchPanel";
 import { downloadCsv } from "@/components/workbench/customers/utils";
 import type { UseAccountsResult } from "@/lib/api/useAccounts";
@@ -116,7 +116,6 @@ export function AccountsPage({ accountsState, onOpenInCustomers }: AccountsPageP
             )}
           </div>
         </div>
-        <ToastViewport />
       </WorkbenchPanel>
     </ErrorBoundary>
   );

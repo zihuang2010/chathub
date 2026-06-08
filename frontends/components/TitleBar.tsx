@@ -28,10 +28,16 @@ export function TitleBar({ tone = "transparent" }: TitleBarProps) {
       const win = getCurrentWindow();
       const initial = await win.isMaximized();
       if (!cancelled) setMaximized(initial);
-      unlisten = await win.onResized(async () => {
+      if (cancelled) return;
+      const un = await win.onResized(async () => {
         const next = await win.isMaximized();
         if (!cancelled) setMaximized(next);
       });
+      if (cancelled) {
+        un();
+        return;
+      }
+      unlisten = un;
     };
     setup().catch(() => {
       // Outside a Tauri runtime (plain Vite dev server) the API throws —
@@ -144,7 +150,6 @@ function MacTitleBar({ controls, tone }: { controls: WindowControls; tone: Tone 
           onClick={controls.onToggleMaximize}
         />
       </div>
-      {/* drag region — no app-name text, matches the DingTalk style */}
       <div data-tauri-drag-region className="h-full flex-1" aria-hidden />
     </header>
   );
@@ -209,7 +214,6 @@ function WindowsTitleBar({ controls, tone }: { controls: WindowControls; tone: T
       }}
     >
       <TitleBarBackdrop visible={blurred} />
-      {/* drag region — no app-name text */}
       <div data-tauri-drag-region className="relative z-10 h-full flex-1" aria-hidden />
       <div className="relative z-10 flex h-full items-stretch">
         <ControlButton onClick={controls.onMinimize} aria-label="最小化" title="最小化">

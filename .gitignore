@@ -45,6 +45,24 @@ Thumbs.db
 # Local push-message.sh runtime state (notifySeq / per-conversation unread counters)
 scripts/.push-*
 
+# Local debug scripts and scratch helpers
+scripts/debug/
+scripts/local/
+scripts/tmp/
+scripts/scratch/
+scripts/debug-*.*
+scripts/debug_*.*
+scripts/local-*.*
+scripts/local_*.*
+scripts/tmp-*.*
+scripts/tmp_*.*
+scripts/scratch-*.*
+scripts/scratch_*.*
+scripts/*.debug.*
+scripts/*.local.*
+scripts/*.tmp.*
+scripts/*.scratch.*
+
 # relay 运行时 SQLite 库(WAL 三件套:.db/.db-shm/.db-wal)。
 # 上线靠启动迁移自动建表,开发库不应提交。
 relay.db*

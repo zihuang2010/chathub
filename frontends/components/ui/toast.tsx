@@ -21,12 +21,18 @@ interface Toast {
 
 let toasts: Toast[] = [];
 const listeners = new Set<() => void>();
+const toastTimers = new Map<string, number>();
 
 function emit() {
   for (const listener of listeners) listener();
 }
 
 function dismiss(id: string) {
+  const timer = toastTimers.get(id);
+  if (timer !== undefined) {
+    window.clearTimeout(timer);
+    toastTimers.delete(id);
+  }
   toasts = toasts.filter((t) => t.id !== id);
   emit();
 }
@@ -40,11 +46,14 @@ export function showToast(
   const toast: Toast = { id, message, type };
   toasts = [...toasts, toast];
   emit();
-  // A10: error toast 默认 5s(用户更可能需要时间读),success/info 默认 3s。
   const defaultDuration = type === "error" ? 5000 : 3000;
   const duration = options.durationMs ?? defaultDuration;
   if (duration > 0) {
-    window.setTimeout(() => dismiss(id), duration);
+    const timer = window.setTimeout(() => {
+      toastTimers.delete(id);
+      dismiss(id);
+    }, duration);
+    toastTimers.set(id, timer);
   }
   return id;
 }

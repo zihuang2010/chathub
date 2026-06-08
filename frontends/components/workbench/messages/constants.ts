@@ -17,11 +17,10 @@ export const CONVERSATION_LIST_DEFAULT_WIDTH = 260;
 export const CONVERSATION_LIST_DEFAULT_RATIO = 0.21;
 export const CONVERSATION_LIST_MIN_WIDTH = 220;
 export const CONVERSATION_LIST_MAX_WIDTH = 460;
-export const CUSTOMER_DETAILS_WIDTH = 324;
+export const CUSTOMER_DETAILS_WIDTH = 288;
 export const CHAT_AREA_MIN_WIDTH = 360;
 export const RESIZE_HANDLE_WIDTH = 8;
 export const RESIZE_KEYBOARD_STEP = 16;
-export const DETAILS_RESIZE_TOLERANCE = 12;
 
 // AT_BOTTOM_THRESHOLD determines how many pixels from the foot still counts as
 // "parked at bottom" for auto-follow.

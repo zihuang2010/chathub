@@ -8,6 +8,7 @@ import { AvatarTile } from "./Avatar";
 import { QuickRepliesPanel } from "./QuickRepliesPanel";
 import { STRINGS } from "./strings";
 import { pickAvatarColor } from "./utils";
+import { CUSTOMER_DETAILS_WIDTH } from "./constants";
 
 type DetailsTab = "profile" | "trace";
 
@@ -35,7 +36,10 @@ export const CustomerDetails = memo(function CustomerDetails({
   const [tab, setTab] = useState<DetailsTab>("profile");
 
   return (
-    <aside className="flex h-full w-[324px] shrink-0 flex-col border-l border-workbench-line bg-workbench-surface">
+    <aside
+      className="flex h-full shrink-0 flex-col border-l border-workbench-line bg-workbench-surface"
+      style={{ width: CUSTOMER_DETAILS_WIDTH }}
+    >
       <Tabs value={tab} onChange={setTab} />
       <div
         role="tabpanel"

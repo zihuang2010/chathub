@@ -57,9 +57,13 @@ function AboutDialog({ open, onClose }: { open: boolean; onClose: () => void }) 
   // 版本号取自 tauri.conf.json(productName/version),运行时读,不硬编码。
   useEffect(() => {
     let cancelled = false;
-    void getVersion().then((v) => {
-      if (!cancelled) setVersion(v);
-    });
+    void getVersion()
+      .then((v) => {
+        if (!cancelled) setVersion(v);
+      })
+      .catch(() => {
+        // 非 Tauri 预览 / 单测环境没有 app API,保留占位版本即可。
+      });
     return () => {
       cancelled = true;
     };

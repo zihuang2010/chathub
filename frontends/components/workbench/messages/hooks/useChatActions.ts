@@ -369,13 +369,6 @@ export function useChatActions({
         // 收敛终态,绝不在此假「已发送」——回调不来时也不会假成功。
         if (resp) {
           if (resp.sendStatus === SEND_STATUS.failed) {
-            // 诊断:后端返回 send_status=4(受控失败,relay/企微拒收)时打印完整响应,
-            // 看是否带失败原因,用于定位"特定内容发不出去"。
-            console.error("[send] 后端返回 send_status=4 受控失败", {
-              clientMsgId,
-              textLen: text.length,
-              resp,
-            });
             showToast(STRINGS.errors.sendFailed, { type: "error" });
             failBubble(clientMsgId, STRINGS.errors.sendFailed);
             return false;
@@ -386,13 +379,6 @@ export function useChatActions({
         }
         return true;
       } catch (err) {
-        // 诊断:发送抛异常的真实原因过去被 catch{} 吞掉,这里显式打印(超时/传输/鉴权),
-        // 便于定位失败根因。
-        console.error("[send] deliverMessage 抛异常", {
-          clientMsgId,
-          textLen: text.length,
-          err,
-        });
         const reason = sendFailReason(err);
         showToast(reason, { type: "error" });
         failBubble(clientMsgId, reason);
@@ -413,9 +399,6 @@ export function useChatActions({
       const owningStoreKey = chatStoreKey;
       try {
         let bytes = await fetchBytes(unit.url);
-        // 临时 blob url(超长文本转 .txt)字节已取出,此后不再需要,立即释放避免泄漏。
-        // 仅对本函数临时造的 url 释放;归属气泡的图片/语音/文件附件 url 不带 transientUrl,不在此释放。
-        if (unit.transientUrl) URL.revokeObjectURL(unit.url);
         let fileSuf = inferFileSuf(unit.name, unit.url);
         let fileName = unit.name;
         let contentType = inferContentType(unit.name, unit.url);
@@ -455,10 +438,13 @@ export function useChatActions({
       } catch (err) {
         // 上传阶段抛错(取字节 / OSS 失败)→ 标失败并提示原因。
         const reason = sendFailReason(err);
-        console.error("[send] 附件上传失败", { clientMsgId, err });
         showToast(reason, { type: "error" });
         failBubble(clientMsgId, reason);
         return null;
+      } finally {
+        // 临时 blob url(超长文本转 .txt)只属于本次上传单元;成功、失败、早退都要释放。
+        // 归属气泡/草稿的附件 url 不带 transientUrl,绝不在此释放,避免误伤预览。
+        if (unit.transientUrl) URL.revokeObjectURL(unit.url);
       }
     },
     [chatStoreKey, failBubble],

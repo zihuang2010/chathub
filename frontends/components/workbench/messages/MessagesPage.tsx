@@ -3,7 +3,7 @@ import type { KeyboardEvent, PointerEvent as ReactPointerEvent } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import { ErrorBoundary } from "@/components/ErrorBoundary";
-import { ToastViewport, showToast } from "@/components/ui/toast";
+import { showToast } from "@/components/ui/toast";
 import { WorkbenchPanel } from "@/components/workbench/WorkbenchPanel";
 import type { PendingOpenConversation } from "@/components/workbench/nav";
 import type { Account } from "@/lib/types/account";
@@ -25,7 +25,6 @@ import {
   CONVERSATION_LIST_DEFAULT_WIDTH,
   CONVERSATION_LIST_MAX_WIDTH,
   CONVERSATION_LIST_MIN_WIDTH,
-  CUSTOMER_DETAILS_WIDTH,
   RESIZE_HANDLE_WIDTH,
   RESIZE_KEYBOARD_STEP,
 } from "./constants";
@@ -183,7 +182,6 @@ export function MessagesPage({
   );
   const [isResizing, setIsResizing] = useState(false);
   const pageRef = useRef<HTMLDivElement | null>(null);
-  const chatAreaRef = useRef<HTMLDivElement | null>(null);
   // Stage C:用户贴底实时 ref(单一真相)。useScrollController(ChatArea 内)在维护 wasAtBottomRef
   // 处镜像写入,useMessageHistory(本页内)readCache 经此读判塌缩/缝合 —— 打破跨组件读 ref 的环。
   // 初值 true(冷开首屏贴底)。
@@ -193,9 +191,7 @@ export function MessagesPage({
   // 窗口缩放时按此比例重算 → 平滑联动;用户拖拽/键盘调宽后回写此比例 → 偏好被记住。
   const listWidthRatioRef = useRef(CONVERSATION_LIST_DEFAULT_RATIO);
 
-  const { detailsOpen, chatWidthLock, toggleDetails } = useDetailsWindow({
-    chatAreaRef,
-  });
+  const { detailsOpen, toggleDetails } = useDetailsWindow();
 
   // 顶部账号选择器直接输出 wecomAccountId(= account.id),原样传给 useRecentFriends;
   // null = 全部账号。展示名在 RangePill/ConversationList 内按 id 反查 accounts。
@@ -432,22 +428,20 @@ export function MessagesPage({
     });
   }, []);
 
-  const clampConversationListWidth = useCallback(
-    (nextWidth: number) => {
-      const pageWidth = pageRef.current?.clientWidth ?? 0;
-      const detailsWidth = detailsOpen ? CUSTOMER_DETAILS_WIDTH : 0;
-      const layoutMaxWidth =
-        pageWidth > 0
-          ? Math.max(
-              CONVERSATION_LIST_MIN_WIDTH,
-              pageWidth - detailsWidth - CHAT_AREA_MIN_WIDTH - RESIZE_HANDLE_WIDTH,
-            )
-          : CONVERSATION_LIST_MAX_WIDTH;
-      const maxWidth = Math.min(CONVERSATION_LIST_MAX_WIDTH, layoutMaxWidth);
-      return Math.min(Math.max(nextWidth, CONVERSATION_LIST_MIN_WIDTH), maxWidth);
-    },
-    [detailsOpen],
-  );
+  // 列表宽与 detailsOpen 解耦:钳制上界只为「会话列表 + 手柄 + 聊天区最小宽」预留空间,
+  // 不再因开/关详情而变动 —— 开详情只让聊天区(flex-1)收窄、接待区(列表)宽度保持不变。
+  const clampConversationListWidth = useCallback((nextWidth: number) => {
+    const pageWidth = pageRef.current?.clientWidth ?? 0;
+    const layoutMaxWidth =
+      pageWidth > 0
+        ? Math.max(
+            CONVERSATION_LIST_MIN_WIDTH,
+            pageWidth - CHAT_AREA_MIN_WIDTH - RESIZE_HANDLE_WIDTH,
+          )
+        : CONVERSATION_LIST_MAX_WIDTH;
+    const maxWidth = Math.min(CONVERSATION_LIST_MAX_WIDTH, layoutMaxWidth);
+    return Math.min(Math.max(nextWidth, CONVERSATION_LIST_MIN_WIDTH), maxWidth);
+  }, []);
 
   // 把一个(已钳制的)像素宽换算成相对窗口宽的比例回写记忆 —— 用户拖拽/键盘手动调宽后
   // 调用,之后窗口缩放就按这个新比例联动。innerWidth 不可用时不动旧比例。
@@ -456,9 +450,9 @@ export function MessagesPage({
     listWidthRatioRef.current = width / window.innerWidth;
   }, []);
 
-  // 「丝滑比例联动」核心:窗口缩放(及 detailsOpen 切换使 clampConversationListWidth
-  // 身份变化)时,按记忆的比例重算列表宽并钳制 —— 宽度始终 = clamp(ratio × innerWidth, MIN, MAX)。
-  // 首次提交即跑一次,把初始 px 校正到当前窗口宽对应的比例宽。
+  // 「丝滑比例联动」核心:窗口缩放时按记忆的比例重算列表宽并钳制 —— 宽度始终 =
+  // clamp(ratio × innerWidth, MIN, MAX)。列表宽不依赖 detailsOpen,故开/关详情不会触发
+  // 此 effect 重算(接待区稳定)。首次提交即跑一次,把初始 px 校正到当前窗口宽对应的比例宽。
   useEffect(() => {
     const applyRatioWidth = () => {
       if (typeof window === "undefined") return;
@@ -678,19 +672,10 @@ export function MessagesPage({
         />
       </div>
       <div
-        ref={chatAreaRef}
         className="flex h-full min-w-0 flex-1"
-        // 聊天区最小宽护栏:窗口装不下更宽尺寸(squeeze)时,聊天列只缩到此宽度,
-        // 再不够由最右内容裁切,而非把聊天压塌成不可用窄条。
-        style={
-          chatWidthLock
-            ? {
-                flex: `0 0 ${chatWidthLock}px`,
-                width: chatWidthLock,
-                minWidth: CHAT_AREA_MIN_WIDTH,
-              }
-            : { minWidth: CHAT_AREA_MIN_WIDTH }
-        }
+        // 聊天区最小宽护栏:开详情面板(右栏)时,聊天列(flex-1)自动收窄让出空间,
+        // 只缩到此宽度;再不够由最右内容裁切,而非把聊天压塌成不可用窄条。窗口尺寸/位置不变。
+        style={{ minWidth: CHAT_AREA_MIN_WIDTH }}
       >
         {conversation ? (
           <ErrorBoundary {...ERROR_BOUNDARY_PROPS}>
@@ -750,7 +735,6 @@ export function MessagesPage({
           </ErrorBoundary>
         </div>
       )}
-      <ToastViewport />
     </WorkbenchPanel>
   );
 }

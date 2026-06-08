@@ -7,6 +7,7 @@ import { type PendingOpenConversation, type Section } from "@/components/workben
 import { AccountsPage } from "@/components/workbench/accounts/AccountsPage";
 import { CustomersPage } from "@/components/workbench/customers/CustomersPage";
 import { MessagesPage } from "@/components/workbench/messages/MessagesPage";
+import { ToastViewport } from "@/components/ui/toast";
 import { useAccounts } from "@/lib/api/useAccounts";
 import { isWindows } from "@/lib/platform";
 import { FONT_BODY } from "@/lib/theme";
@@ -93,6 +94,7 @@ export function Workbench() {
           </SectionLayer>
         )}
       </div>
+      <ToastViewport />
     </div>
   );
 }

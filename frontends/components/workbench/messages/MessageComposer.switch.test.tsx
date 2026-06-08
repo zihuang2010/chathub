@@ -210,11 +210,6 @@ describe("MessageComposer 持久化编辑器:切会话不重建", () => {
     const oldWay = await run(true);
     const newWay = await run(false);
 
-    console.log(
-      `[churn] 旧key方案: 不同编辑器实例=${oldWay.distinctEditors}, 切换期间销毁=${oldWay.destroyDuringSwitch}` +
-        ` | 新持久方案: 不同编辑器实例=${newWay.distinctEditors}, 切换期间销毁=${newWay.destroyDuringSwitch}`,
-    );
-
     // 旧方案:~101 个不同编辑器 + ~100 次销毁 = 截图里随切换累积的堆 churn。
     expect(oldWay.distinctEditors).toBeGreaterThan(50);
     expect(oldWay.destroyDuringSwitch).toBeGreaterThan(50);
@@ -250,10 +245,6 @@ describe("MessageComposer 持久化编辑器:切会话不重建", () => {
     const after = process.memoryUsage().heapUsed;
 
     const perSwitch = (after - before) / rounds;
-    console.log(
-      `[heap] ${rounds} 次切换 heapUsed Δ=${((after - before) / 1024).toFixed(1)}KB, ` +
-        `每次切换≈${perSwitch.toFixed(0)}B`,
-    );
     // 单个 ProseMirror 编辑器实例 + DOM 通常数十~上百 KB;持久化后每次切换的净保留应远小于此。
     expect(perSwitch).toBeLessThan(30_000); // < 30KB/switch
   });

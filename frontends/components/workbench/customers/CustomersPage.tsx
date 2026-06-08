@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { ErrorBoundary } from "@/components/ErrorBoundary";
-import { ToastViewport, showToast } from "@/components/ui/toast";
+import { showToast } from "@/components/ui/toast";
 import { WorkbenchPanel } from "@/components/workbench/WorkbenchPanel";
 import type { PendingOpenConversation } from "@/components/workbench/nav";
 import { adaptFriendDetailToCustomer, adaptFriendToCustomer } from "@/lib/api/customers";
@@ -441,7 +441,6 @@ export function CustomersPage({
             </div>
           </div>
         </div>
-        <ToastViewport />
       </WorkbenchPanel>
     </ErrorBoundary>
   );

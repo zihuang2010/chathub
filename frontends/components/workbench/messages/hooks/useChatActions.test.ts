@@ -1,10 +1,11 @@
-import { act, renderHook } from "@testing-library/react";
+import { act, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { clearOutboxRow, persistOutboxFailure, uploadAttachment } from "@/lib/api/messageHistory";
 import { showToast } from "@/components/ui/toast";
 
 import type { Conversation, Message } from "../data";
+import { COMPOSER_MAX_CHARS } from "../constants";
 import { selectTimeline, useChatStore } from "../store/chatStore";
 import { STRINGS } from "../strings";
 import {
@@ -213,6 +214,21 @@ describe("useChatActions", () => {
       // 放行后:发送严格按编辑器顺序 a → b。
       await vi.waitFor(() => expect(sendFilePaths).toEqual(["obj/a.bin", "obj/b.bin"]));
     });
+  });
+
+  it("超长文本转临时文件上传失败时释放 blob URL", async () => {
+    const blobUrl = "blob:long-text";
+    vi.spyOn(URL, "createObjectURL").mockReturnValue(blobUrl);
+    const revokeSpy = vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => undefined);
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("blob fetch failed")));
+    const { result } = setup(vi.fn());
+
+    await act(async () => {
+      result.current.handleSend("长".repeat(COMPOSER_MAX_CHARS));
+    });
+
+    await waitFor(() => expect(revokeSpy).toHaveBeenCalledWith(blobUrl));
+    expect(timeline()[0].status).toBe("failed");
   });
 
   it('handleAction "delete" 确认后从 store 移除该条', () => {

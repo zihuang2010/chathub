@@ -160,6 +160,17 @@ impl RecentSessionEventApplier {
                     ),
                 }
             } else {
+                // 静默消息(clientSilent=true)且该会话尚不在接待列表 → 不创建会话。
+                // 规范:静默仅抑制「新建接待行」,其余数据操作与普通消息一致——已在接待列表的
+                // 会话走上面 exists 分支照常 apply_summary。clientSilent 在 sessionSummary{} 内部,
+                // 缺省 false(旧推送无此字段 → 行为不变)。
+                if ss
+                    .get("clientSilent")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false)
+                {
+                    continue;
+                }
                 // 新会话:事件顶层身份 + 账号缓存补企微展示字段 → 整行 INSERT。
                 if accounts_cache.is_none() {
                     accounts_cache = Some(
@@ -682,6 +693,67 @@ mod tests {
         assert!(rx.try_recv().is_err(), "瘦 payload 不应发 ChangeNotice");
         let rows = store.list_top(EMP, None, 50).await.unwrap();
         assert!(rows.is_empty(), "瘦 payload 不应入库");
+    }
+
+    #[tokio::test]
+    async fn silent_unknown_conversation_is_not_created() {
+        let (applier, store, accounts, mut rx) = applier_with_stores().await;
+        // 账号缓存有 wa-1(若误建会据此补展示名),用于反证「确实没建」。
+        accounts
+            .replace_all_for_employee(EMP, &[account_row("wa-1", "客服A")])
+            .await
+            .unwrap();
+
+        // 静默消息(clientSilent=true)且会话不在接待列表 → 不应创建接待行。
+        let mut ev = full_session_summary_event("cv-silent", "wa-1");
+        ev["sessionSummary"]
+            .as_object_mut()
+            .unwrap()
+            .insert("clientSilent".into(), serde_json::json!(true));
+
+        applier
+            .apply_push_batch(&batch(serde_json::json!([ev])))
+            .await;
+
+        assert!(
+            !store.exists(EMP, "cv-silent").await.unwrap(),
+            "静默消息且会话不在接待列表 → 不应创建会话"
+        );
+        let rows = store.list_top(EMP, None, 50).await.unwrap();
+        assert!(rows.is_empty(), "静默未知会话不应入库");
+        assert!(rx.try_recv().is_err(), "未创建任何行 → 不应发 ChangeNotice");
+    }
+
+    #[tokio::test]
+    async fn silent_known_conversation_updates_normally() {
+        let (applier, store, _accounts, mut rx) = applier_with_stores().await;
+        // 预置已有行(低 sortKey,保证事件版本可更新)。
+        store
+            .upsert_remote_one(seed_remote("cv-1", "wa-1", 1_000_000_000_000))
+            .await
+            .unwrap();
+
+        // 静默消息命中已在接待列表的会话 → 与普通消息一致,照常 apply_summary 更新。
+        let mut ev = full_session_summary_event("cv-1", "wa-1");
+        ev["sessionSummary"]
+            .as_object_mut()
+            .unwrap()
+            .insert("clientSilent".into(), serde_json::json!(true));
+
+        applier
+            .apply_push_batch(&batch(serde_json::json!([ev])))
+            .await;
+
+        let rows = store.list_top(EMP, None, 50).await.unwrap();
+        let row = rows.iter().find(|r| r.conversation_id == "cv-1").unwrap();
+        assert_eq!(
+            row.last_message_summary, "你好",
+            "已在接待列表的会话,静默消息照常更新摘要"
+        );
+        assert_eq!(row.last_message_sort_key_ms, 1_900_000_000_000);
+
+        let notice = rx.try_recv().expect("已存在会话更新应发 ChangeNotice");
+        assert_eq!(notice.topic, ChangeTopic::RecentSessions);
     }
 
     #[test]

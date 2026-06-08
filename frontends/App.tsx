@@ -8,6 +8,7 @@ import { WindowResizeEdges } from "@/components/WindowResizeEdges";
 import { UpdateDialogViewport } from "@/components/ui/UpdateDialog";
 import { useMessagesReady } from "@/lib/data/appReady";
 import { changeBus } from "@/lib/data/changeBus";
+import { useNewMessageFlash } from "@/lib/data/useNewMessageFlash";
 import { checkForAppUpdates } from "@/lib/updater";
 import { cn } from "@/lib/utils";
 import { useWindowMaxSize } from "@/lib/useWindowMaxSize";
@@ -47,6 +48,8 @@ function App() {
   const [loginNotice, setLoginNotice] = useState<string | null>(null);
 
   useWindowMaxSize();
+  // 新消息进来且窗口失焦时闪任务栏(Windows)/ 跳 Dock(macOS)。
+  useNewMessageFlash();
 
   useEffect(() => {
     void checkForAppUpdates({ silent: true });
