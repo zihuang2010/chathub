@@ -974,7 +974,7 @@ const ScrollToBottomButton = memo(function ScrollToBottomButton({
       }
       style={{ bottom: bottomOffset }}
       className={cn(
-        "focus-ring absolute right-4 z-20 inline-flex items-center gap-1.5 rounded-full border border-workbench-line bg-workbench-surface px-2.5 py-1 text-wb-2xs font-medium text-workbench-text-secondary shadow-wb-popover transition-all hover:bg-workbench-surface-subtle hover:text-workbench-accent",
+        "focus-ring absolute right-[var(--wb-floating-pill-inset-inline-end)] z-20 inline-flex items-center gap-1.5 rounded-full border border-workbench-line bg-workbench-surface px-2.5 py-1 text-wb-2xs font-medium text-workbench-text-secondary shadow-wb-popover transition-all hover:bg-workbench-surface-subtle hover:text-workbench-accent",
         "animate-in fade-in slide-in-from-bottom-2",
       )}
     >
@@ -1010,7 +1010,7 @@ const UnreadAbovePill = memo(function UnreadAbovePill({
       onClick={onClick}
       aria-label={STRINGS.status.unreadAbove(count)}
       className={cn(
-        "focus-ring absolute right-4 top-3 z-20 inline-flex items-center gap-1.5 rounded-full border border-workbench-line bg-workbench-surface px-2.5 py-1 text-wb-2xs font-medium text-workbench-text-secondary shadow-wb-popover transition-all hover:bg-workbench-surface-subtle hover:text-workbench-accent",
+        "focus-ring absolute right-[var(--wb-floating-pill-inset-inline-end)] top-3 z-20 inline-flex items-center gap-1.5 rounded-full border border-workbench-line bg-workbench-surface px-2.5 py-1 text-wb-2xs font-medium text-workbench-text-secondary shadow-wb-popover transition-all hover:bg-workbench-surface-subtle hover:text-workbench-accent",
         "animate-in fade-in slide-in-from-top-2",
       )}
     >

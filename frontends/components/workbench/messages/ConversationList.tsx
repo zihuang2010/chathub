@@ -318,7 +318,7 @@ const FilterToolbar = memo(function FilterToolbar({
             className={cn(
               // min-w-0(替原 shrink-0):账号名过长时让账号按钮收缩截断,把宽度让给后面
               // 短而固定的状态 Tab(全部/未读/@我),避免 @我 被挤进 overflow 滚动区不可见。
-              "focus-ring inline-flex h-9 min-w-0 max-w-[96px] items-center gap-1 rounded-md px-2 transition-colors",
+              "focus-ring-inset inline-flex h-9 min-w-0 max-w-[96px] items-center gap-1 rounded-md px-2 transition-colors",
               selectedAccountId
                 ? "bg-workbench-surface-soft font-semibold text-[#5B7C99]"
                 : "hover:bg-workbench-surface-active hover:text-[#5B7C99]",
@@ -346,7 +346,7 @@ const FilterToolbar = memo(function FilterToolbar({
               tabIndex={active ? 0 : -1}
               onClick={() => onStatusChange(tab.value)}
               className={cn(
-                "focus-ring inline-flex h-9 shrink-0 items-center rounded-md px-2 transition-colors",
+                "focus-ring-inset inline-flex h-9 shrink-0 items-center rounded-md px-2 transition-colors",
                 active
                   ? "bg-workbench-surface-soft font-semibold text-[#5B7C99]"
                   : "hover:bg-workbench-surface-active hover:text-[#5B7C99]",
@@ -566,14 +566,9 @@ function WeChatSourceIcon() {
     <span
       aria-label={STRINGS.header.fromWeChat}
       title={STRINGS.header.fromWeChat}
-      className="grid size-5 shrink-0 place-items-center rounded-full bg-workbench-wechat-bg/80"
+      className="grid size-5 shrink-0 place-items-center rounded-full bg-[#DFF7E8]"
     >
-      <svg
-        aria-hidden
-        viewBox="0 0 16 16"
-        className="text-workbench-wechat-text/72 size-[15px]"
-        fill="none"
-      >
+      <svg aria-hidden viewBox="0 0 16 16" className="size-[15px] text-[#21A65B]" fill="none">
         <path
           d="M7.1 3.2C4.3 3.2 2 4.9 2 7c0 1.2.7 2.2 1.8 2.9l-.4 1.3 1.5-.7c.7.2 1.4.3 2.2.3 2.8 0 5.1-1.7 5.1-3.8S9.9 3.2 7.1 3.2Z"
           fill="currentColor"

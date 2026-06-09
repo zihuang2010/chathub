@@ -100,6 +100,7 @@
     --wb-shadow-badge: 0 1px 2px rgba(239, 68, 68, 0.24);
     --wb-shadow-card: 0 1px 2px rgba(15, 23, 42, 0.06);
     --wb-shadow-card-soft: 0 1px 3px rgba(15, 23, 42, 0.045);
+    --wb-floating-pill-inset-inline-end: 1rem;
   }
 
   .dark {
@@ -290,6 +291,10 @@ html[data-os="mac"] #app-shell {
   box-shadow:
     0 6px 24px hsl(220 40% 12% / 0.1),
     0 18px 40px -16px hsl(220 40% 12% / 0.14);
+}
+
+html[data-os="windows"] {
+  --wb-floating-pill-inset-inline-end: 2rem;
 }
 
 /* ─── TipTap placeholder ──────────────────────────────────────────────────
