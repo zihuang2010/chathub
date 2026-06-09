@@ -20,7 +20,7 @@
 
 # 0. 输出语言规则（最高优先级）
 
-- 除非用户明确要求其他语言，否则必须始终使用中文回复。
+- 除非用户明确要求其他语言，否则必须始终使用中文回复,强调是中文，不是日文和韩文。
 - 所有分析、解释、计划、风险说明、设计讨论必须使用中文。
 - 不允许默认切换英文。
 - 终端输出、日志、代码标识符保持原语言即可。
@@ -166,7 +166,7 @@
 
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **chathub** (7366 symbols, 13977 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **chathub** (7404 symbols, 14072 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 

@@ -51,15 +51,15 @@ struct TrayIcons {
     dim: tauri::image::Image<'static>,
 }
 
-/// 解码打包的 128x128 托盘图标,合成「正常」与「暗淡」两态(供闪烁线程交替)。
-/// 用 128 而非 32:Mac 菜单栏 Retina 按 ~44px(@2x) 渲染、Win 高 DPI 托盘亦 >32px,
-/// 喂 32px 会被放大发糊;128 留足余量由系统下采样,清晰且体积可忽略。
+/// 解码打包的托盘图标(icons/tray.png,256px、牛主体切抠透明底),合成「正常」与「暗淡」两态(供闪烁线程交替)。
+/// 用独立的 tray.png 而非 App 图标(icons/128x128.png 已是橙色方块整图):菜单栏/托盘空间小,
+/// 让牛主体铺满画布、去掉橙色边距,小尺寸下显著更大更清晰;256 给 Retina(@2x ~44px)留足下采样余量。
 /// 暗淡版 = 正常图保持 alpha 轮廓不变、仅整体 alpha 缩到 ~25%,呈「淡入淡出」式呼吸闪烁;
 /// 既不用全透明(Windows 托盘对全 0 alpha 帧渲染成黑块),也不压暗 RGB(同样发黑)。
 /// 注意:tauri 的 Image::from_bytes 受 image-png feature 门控(本项目未开),故直接用 image crate 解码,
 /// 再走 Image::new_owned(RGBA) 构造,绕开该 feature 依赖。
 fn build_tray_icons() -> TrayIcons {
-    const RAW: &[u8] = include_bytes!("../icons/128x128.png");
+    const RAW: &[u8] = include_bytes!("../icons/tray.png");
     let base = image::load_from_memory(RAW)
         .expect("decode tray icon 128x128.png")
         .to_rgba8();

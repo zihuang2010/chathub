@@ -357,14 +357,10 @@ export function DateDivider({ label }: { label: string }) {
   );
 }
 
-export function UnreadDivider({ count }: { count: number }) {
-  return (
-    <div className="flex items-center justify-center py-2" role="separator">
-      <span className="text-wb-3xs rounded-full bg-workbench-surface-active px-2.5 py-0.5 font-medium text-workbench-accent">
-        {STRINGS.status.unreadDivider(count)}
-      </span>
-    </div>
-  );
+export function UnreadDivider({ count: _count }: { count: number }) {
+  // 按需求不再显示"以下为未读消息"分隔条;保留时间线项以维持滚动锚点逻辑,仅去掉视觉呈现。
+  void _count;
+  return null;
 }
 
 function MessageTimeTooltip({ label, align }: { label: string; align: "left" | "right" }) {

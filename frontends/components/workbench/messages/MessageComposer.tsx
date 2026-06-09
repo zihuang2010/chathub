@@ -26,7 +26,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Modal } from "@/components/ui/Modal";
 import { showToast } from "@/components/ui/toast";
-import { isMac } from "@/lib/platform";
+import { isMac, isWindows } from "@/lib/platform";
 import { useEscKey } from "@/lib/useEscKey";
 import { cn } from "@/lib/utils";
 
@@ -829,12 +829,15 @@ export function MessageComposer({
               </Popover.Content>
             </Popover.Portal>
           </Popover.Root>
-          <ToolButton
-            icon={Scissors}
-            label={STRINGS.composer.screenshot}
-            onClick={handleScreenshot}
-            disabled={voiceMode}
-          />
+          {/* 截图按钮仅在非 Windows 显示：Windows 下隐藏，Mac 保留 */}
+          {!isWindows && (
+            <ToolButton
+              icon={Scissors}
+              label={STRINGS.composer.screenshot}
+              onClick={handleScreenshot}
+              disabled={voiceMode}
+            />
+          )}
           <ToolButton
             icon={Image}
             label={STRINGS.composer.image}
