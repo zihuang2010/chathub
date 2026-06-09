@@ -16,7 +16,9 @@ import { STRINGS } from "./strings";
 import { extractAccountOperator } from "./utils";
 import { WorkbenchScrollArea, type ScrollMetrics } from "./WorkbenchScrollArea";
 
-type StatusTab = "all" | "unread" | "mentioned";
+const WECOM_SOURCE_LOGO = "/wecom-logo.png";
+
+export type StatusTab = "all" | "unread" | "mentioned";
 
 interface ConversationListProps {
   conversations: Conversation[];
@@ -34,6 +36,10 @@ interface ConversationListProps {
   /** 选中账号的 `account.id`(= wecomAccountId),`null` = 全部。展示名按 id 反查 accounts。 */
   selectedAccountId: string | null;
   onAccountChange: (accountId: string | null) => void;
+  /** 会话状态筛选(全部/未读/@我)。状态提升到父级:从搜索框/客户页打开会话时父级一并重置回"全部",
+   *  避免停留在"未读"标签时,打开的(已读)会话被过滤掉而"看不见"。 */
+  statusTab: StatusTab;
+  onStatusChange: (value: StatusTab) => void;
   /** 滚动到底加载更老会话(默认列表续页 / 筛选态续页,由父级按当前态分派)。
    *  是否真的还有更多由父级 hook 内部 cursor/hasMore 自守(到底即 no-op),这里不再重复 gate。
    *  不传 = 不分页(退化为只展示传入的 conversations,与历史行为一致)。 */
@@ -60,13 +66,14 @@ export const ConversationList = memo(function ConversationList({
   accounts,
   selectedAccountId,
   onAccountChange,
+  statusTab,
+  onStatusChange,
   onLoadMore,
   loading,
   onOpenCustomer,
   onClearSearch,
   switching,
 }: ConversationListProps) {
-  const [statusTab, setStatusTab] = useState<StatusTab>("all");
   const [accountPickerOpen, setAccountPickerOpen] = useState(false);
 
   // 顶部搜索框已改为「搜客户 → 下拉 → 点击打开会话」(MessagesContactSearch),不再就地过滤会话
@@ -87,7 +94,7 @@ export const ConversationList = memo(function ConversationList({
         />
         <FilterToolbar
           statusTab={statusTab}
-          onStatusChange={setStatusTab}
+          onStatusChange={onStatusChange}
           accounts={accounts}
           selectedAccountId={selectedAccountId}
           onAccountChange={onAccountChange}
@@ -409,45 +416,44 @@ const ConversationItem = memo(function ConversationItem({
       className={cn(
         "focus-ring group relative grid w-full grid-cols-[44px_minmax(0,1fr)] items-start gap-3 overflow-hidden rounded-md px-3 py-1.5 text-left transition-colors duration-100",
         // 置顶视觉用右上角折角(corner-fold,见下方 isPinned 元素)表达;行本体
-        // 只保留选中/默认两态。overflow-hidden + rounded-xl 让折角外角顺着行圆角
-        // 被 clip,斜边保持锐利。ConversationAvatar.pinned prop 保留供搜索结果复用。
+        // 只保留选中/默认两态。折角内收绘制,不再贴住卡片圆角边缘。
+        // ConversationAvatar.pinned prop 保留供搜索结果复用。
         // hover 与 selected 共用 surface-active(浅蓝),只是 selected 常驻、hover 临时,
         // 视觉统一;duration-100 比默认 150ms 更跟手。
         selected ? "bg-workbench-surface-active" : "hover:bg-workbench-surface-active",
       )}
     >
-      {/* 置顶标记:右上角 18px 折角(G 方案)。背景用 --wb-pin-fold token(随
-          light/dark 切换);内层 span 沿斜边画 1px 折痕高光(等价 mockup ::after)。
-          top-0 right-0 与右下角 time/未读/mute 簇垂直错开,不撞布局。 */}
+      {/* 置顶标记:作为内容区右上角的小折角,与时间文字错位摆放。 */}
       {isPinned && (
-        <span
+        <svg
           aria-hidden
-          className="pointer-events-none absolute right-0 top-0 size-[18px]"
-          style={{
-            clipPath: "polygon(100% 0, 100% 100%, 0 0)",
-            background: "hsl(var(--wb-pin-fold))",
-          }}
+          className="pointer-events-none absolute right-2.5 top-2 size-2.5"
+          viewBox="0 0 10 10"
+          style={{ color: "hsl(var(--wb-accent-soft) / 0.52)" }}
         >
-          <span
-            className="absolute inset-0"
-            style={{
-              background:
-                "linear-gradient(225deg, transparent 49.5%, hsl(var(--wb-pin-fold-crease)) 50%, transparent 50.5%)",
-            }}
+          <path
+            d="M7.9 0Q10 0 10 2.1V7.3Q10 10 8.05 8.05L1.5 1.5Q0 0 2.15 0H7.9Z"
+            fill="currentColor"
           />
-        </span>
+        </svg>
       )}
       <div className="relative mt-1">
         <ConversationAvatar name={name} color={avatarColor} avatarUrl={avatar} online={online} />
-      </div>
-      <div className="min-w-0 pr-11 pt-px">
-        <div className="flex min-w-0 items-center gap-1.5">
-          <span className="truncate text-wb-xs font-medium text-workbench-text">{name}</span>
-          <span className="text-wb-3xs shrink-0 rounded px-1 py-px font-medium text-workbench-wechat-text">
-            {STRINGS.header.fromWeChat}
+        {isMuted && (
+          <span
+            aria-hidden
+            className="absolute -bottom-1 -right-1 grid size-[18px] place-items-center rounded-full border border-workbench-line-strong bg-workbench-surface-elevated text-workbench-text-secondary shadow-[0_1px_4px_rgba(15,23,42,0.16)]"
+          >
+            <BellOff size={11} strokeWidth={2.35} />
           </span>
+        )}
+      </div>
+      <div className="min-w-0 pt-px">
+        <div className="flex min-w-0 items-center gap-1.5 pr-20">
+          <span className="truncate text-wb-xs font-medium text-workbench-text">{name}</span>
+          <WeChatSourceIcon />
         </div>
-        <div className="mt-px truncate text-wb-2xs font-medium text-workbench-text-muted">
+        <div className="text-wb-3xs mt-px truncate pr-7 font-medium text-workbench-text-muted">
           {draftText ? (
             <>
               <span className="mr-1 font-medium text-amber-500">
@@ -471,44 +477,36 @@ const ConversationItem = memo(function ConversationItem({
           )}
         </div>
         <div className="mt-px flex min-w-0 items-center gap-1.5 text-wb-4xs">
-          <span className="shrink-0 font-semibold text-workbench-text-muted">
-            {STRINGS.conversationList.fromShort}
-          </span>
-          <span className="min-w-0 truncate font-medium text-workbench-text-secondary">
-            {account}
-          </span>
+          <img
+            src={WECOM_SOURCE_LOGO}
+            alt=""
+            aria-hidden
+            className="size-3 shrink-0 rounded-[2px] object-contain"
+          />
+          <span className="min-w-0 truncate font-medium text-workbench-text-muted">{account}</span>
         </div>
       </div>
-      {/* 时间槽位:w-11 右对齐。置顶信号已上移到行右上角折角(见上方 isPinned
-          元素),这里只剩时间文本。 */}
-      <span className="text-wb-3xs absolute right-3 top-2.5 w-11 text-right text-workbench-text-disabled">
+      {/* 右侧时间槽固定 48px,只显示时间;其它状态拆到头像/卡片中部。 */}
+      <span className="text-wb-3xs absolute right-6 top-2.5 w-12 text-right text-workbench-text-disabled">
         <span className="wb-time">{time}</span>
       </span>
-      {isMuted ? (
-        // 免打扰:右下角不喊量级。BellOff(muted 色)+ 有未读时并排一个 8px 红点
-        // (替代数字徽标),无未读时只剩 🔕。坐标沿用数字徽标的 bottom-5 right-3。
-        <span className="absolute bottom-5 right-3 flex items-center gap-1.5 text-workbench-text-disabled">
-          <BellOff size={10} strokeWidth={2} aria-hidden className="shrink-0" />
-          {showUnread && (
-            <span
-              aria-label={STRINGS.conversationList.unreadCount(unread)}
-              className="size-2 shrink-0 rounded-full bg-workbench-unread"
-            />
-          )}
+      {isMuted && showUnread && (
+        <span
+          aria-label={STRINGS.conversationList.unreadCount(unread)}
+          className="absolute right-4 top-1/2 size-2 -translate-y-1/2 rounded-full bg-workbench-unread"
+        />
+      )}
+      {!isMuted && showUnread && (
+        // 圆点 → 数字徽标:1-2 位居中圆形,3 位(99+)自动横向撑出胶囊形。
+        // 与 preview 前缀 [未读] 互补:文字表状态、数字表量级;尺寸刻意 14×14 (text-[9px])
+        // 让数字徽标"知趣",不与文本流抢眼。bottom-5 比原 bottom-3 微抬 8px,落在
+        // preview 行与 from 行之间,不贴底也不顶第二行。
+        <span
+          aria-label={STRINGS.conversationList.unreadCount(unread)}
+          className="wb-num absolute bottom-5 right-3 grid h-[14px] min-w-[14px] place-items-center rounded-full bg-workbench-unread px-1 text-[9px] font-semibold leading-none text-white"
+        >
+          {unread > 99 ? "99+" : unread}
         </span>
-      ) : (
-        showUnread && (
-          // 圆点 → 数字徽标:1-2 位居中圆形,3 位(99+)自动横向撑出胶囊形。
-          // 与 preview 前缀 [未读] 互补:文字表状态、数字表量级;尺寸刻意 14×14 (text-[9px])
-          // 让数字徽标"知趣",不与文本流抢眼。bottom-5 比原 bottom-3 微抬 8px,落在
-          // preview 行与 from 行之间,不贴底也不顶第二行。
-          <span
-            aria-label={STRINGS.conversationList.unreadCount(unread)}
-            className="wb-num absolute bottom-5 right-3 grid h-[14px] min-w-[14px] place-items-center rounded-full bg-workbench-unread px-1 text-[9px] font-semibold leading-none text-white"
-          >
-            {unread > 99 ? "99+" : unread}
-          </span>
-        )
       )}
     </button>
   );
@@ -562,3 +560,33 @@ const ConversationItem = memo(function ConversationItem({
     </ContextMenu.Root>
   );
 });
+
+function WeChatSourceIcon() {
+  return (
+    <span
+      aria-label={STRINGS.header.fromWeChat}
+      title={STRINGS.header.fromWeChat}
+      className="grid size-5 shrink-0 place-items-center rounded-full bg-workbench-wechat-bg/80"
+    >
+      <svg
+        aria-hidden
+        viewBox="0 0 16 16"
+        className="text-workbench-wechat-text/72 size-[15px]"
+        fill="none"
+      >
+        <path
+          d="M7.1 3.2C4.3 3.2 2 4.9 2 7c0 1.2.7 2.2 1.8 2.9l-.4 1.3 1.5-.7c.7.2 1.4.3 2.2.3 2.8 0 5.1-1.7 5.1-3.8S9.9 3.2 7.1 3.2Z"
+          fill="currentColor"
+          opacity="0.95"
+        />
+        <path
+          d="M10.5 6.3c2.1 0 3.7 1.3 3.7 2.9 0 .9-.5 1.7-1.4 2.2l.3 1-1.1-.5c-.5.2-1 .2-1.6.2-2.1 0-3.7-1.3-3.7-2.9s1.7-2.9 3.8-2.9Z"
+          fill="currentColor"
+          opacity="0.55"
+        />
+        <circle cx="5.5" cy="6.6" r="0.45" fill="hsl(var(--wb-wechat-bg))" />
+        <circle cx="8.4" cy="6.6" r="0.45" fill="hsl(var(--wb-wechat-bg))" />
+      </svg>
+    </span>
+  );
+}

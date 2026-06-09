@@ -1,6 +1,6 @@
 import { memo, useState, type ReactNode } from "react";
 import * as Popover from "@radix-ui/react-popover";
-import { ChevronLeft, ChevronRight, LogOut, Menu, Trash2 } from "lucide-react";
+import { ChevronLeft, ChevronRight, LogOut, Menu } from "lucide-react";
 
 import type { UserProfile } from "@/App";
 import { DriftingWave } from "@/components/illustrations";
@@ -8,10 +8,10 @@ import { useCurrentProfile } from "@/lib/data/useCurrentProfile";
 import { useHubSyncStatus } from "@/lib/data/useHubSyncStatus";
 import type { HubConnectionState } from "@/lib/data/useResource";
 import { isMac, isWindows } from "@/lib/platform";
+import { secureImageUrl } from "@/lib/secureImageUrl";
 import { FROSTED_GLASS_STYLE, WORKBENCH_BLUE, WORKBENCH_NAV_TEXT } from "@/lib/theme";
 import { cn } from "@/lib/utils";
 
-import { ClearHistoryConfirmDialog } from "./ClearHistoryConfirmDialog";
 import { LogoutConfirmDialog } from "./LogoutConfirmDialog";
 import { NAV_ITEMS, type NavItem, type Section } from "./nav";
 import { UserMenu } from "./UserMenu";
@@ -294,9 +294,9 @@ function UserBadge({ collapsed }: { collapsed: boolean }) {
 // ─── 个人信息卡片 ─────────────────────────────────────────────────────────────
 
 // 点头像在右侧弹出的个人信息卡。字段取自 UserProfile(标题=display_name 即 nickName;
-// 用户名/手机号/账号),在线状态复用 UserBadge 已派生的 status。底部「清除聊天记录」「退出
-// 登录」分别复用 ClearHistoryConfirmDialog / LogoutConfirmDialog —— 确认弹窗渲染在 Popover
-// 之外,避免点按钮时弹层关闭把弹窗一起卸载。
+// 用户名/手机号/账号),在线状态复用 UserBadge 已派生的 status。底部「退出登录」复用
+// LogoutConfirmDialog —— 确认弹窗渲染在 Popover 之外,避免点按钮时弹层关闭把弹窗一起卸载。
+// (「清除聊天记录」按钮因功能有问题已暂时隐藏,ClearHistoryConfirmDialog 文件保留待修复后恢复。)
 function ProfilePopover({
   profile,
   status,
@@ -308,7 +308,6 @@ function ProfilePopover({
 }) {
   const name = profile?.display_name ?? "";
   const [logoutOpen, setLogoutOpen] = useState(false);
-  const [clearOpen, setClearOpen] = useState(false);
 
   return (
     <>
@@ -349,14 +348,6 @@ function ProfilePopover({
             <div className="flex flex-col gap-2">
               <button
                 type="button"
-                onClick={() => setClearOpen(true)}
-                className="focus-ring flex w-full items-center justify-center gap-1.5 rounded-lg border border-workbench-line py-2 text-[13px] font-medium text-workbench-text-muted transition-colors hover:bg-workbench-surface-subtle"
-              >
-                <Trash2 size={14} />
-                清除聊天记录
-              </button>
-              <button
-                type="button"
                 onClick={() => setLogoutOpen(true)}
                 className="focus-ring flex w-full items-center justify-center gap-1.5 rounded-lg border border-workbench-line py-2 text-[13px] font-medium text-workbench-danger transition-colors hover:bg-workbench-danger/10"
               >
@@ -367,7 +358,6 @@ function ProfilePopover({
           </Popover.Content>
         </Popover.Portal>
       </Popover.Root>
-      <ClearHistoryConfirmDialog open={clearOpen} onClose={() => setClearOpen(false)} />
       <LogoutConfirmDialog open={logoutOpen} onClose={() => setLogoutOpen(false)} />
     </>
   );
@@ -390,7 +380,8 @@ function AvatarMark({ avatarUrl, displayName }: { avatarUrl?: string; displayNam
   if (showImg) {
     return (
       <img
-        src={avatarUrl}
+        // 渲染前 http://→https://，避免 macOS 正式包 secure context 的混合内容拦截。
+        src={secureImageUrl(avatarUrl)}
         alt=""
         onError={() => setFailedUrl(avatarUrl)}
         className="size-11 shrink-0 rounded-lg object-cover shadow-[0_4px_10px_rgba(62,123,214,0.28)]"

@@ -1,6 +1,6 @@
 import { memo, useState } from "react";
 import * as Popover from "@radix-ui/react-popover";
-import { CheckCheck, Download, Star, Tag, UserCheck, X } from "lucide-react";
+import { CheckCheck, Star, Tag, UserCheck, X } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 
@@ -34,7 +34,6 @@ export const BulkActionsBar = memo(function BulkActionsBar({
   onApplyTagDiff,
   onReassign,
   onToggleStar,
-  onExport,
   onCancel,
 }: BulkActionsBarProps) {
   return (
@@ -58,10 +57,6 @@ export const BulkActionsBar = memo(function BulkActionsBar({
 
       <ActionButton onClick={onToggleStar} icon={<Star size={13} />}>
         {STRINGS.bulk.starToggle(allStarred)}
-      </ActionButton>
-
-      <ActionButton onClick={onExport} icon={<Download size={13} />}>
-        {STRINGS.bulk.exportCsv}
       </ActionButton>
 
       <button

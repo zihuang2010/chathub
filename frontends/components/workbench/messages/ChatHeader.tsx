@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { FolderOpen, MoreHorizontal, Phone, UserPlus, Video } from "lucide-react";
+import { FolderOpen, MoreHorizontal } from "lucide-react";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 
 import { CustomerAvatar } from "./Avatar";
@@ -32,25 +32,9 @@ export function ChatHeader({ conversation }: { conversation: Conversation }) {
         </div>
       </div>
       <div className="flex shrink-0 items-center gap-1 text-workbench-text-secondary">
-        <HeaderIconButton icon={Phone} label={STRINGS.header.voiceCall} />
-        <HeaderIconButton icon={Video} label={STRINGS.header.videoCall} />
-        <HeaderIconButton icon={UserPlus} label={STRINGS.header.addToGroup} />
         <HeaderOverflowMenu />
       </div>
     </div>
-  );
-}
-
-function HeaderIconButton({ icon: Icon, label }: { icon: typeof Phone; label: string }) {
-  return (
-    <button
-      type="button"
-      title={label}
-      aria-label={label}
-      className="focus-ring grid size-9 place-items-center rounded-md text-workbench-text-secondary transition-colors hover:bg-workbench-surface-subtle hover:text-workbench-text"
-    >
-      <Icon size={16} />
-    </button>
   );
 }
 
@@ -80,7 +64,7 @@ function HeaderOverflowMenu() {
   );
 }
 
-function OverflowItem({ icon: Icon, children }: { icon: typeof Phone; children: ReactNode }) {
+function OverflowItem({ icon: Icon, children }: { icon: typeof FolderOpen; children: ReactNode }) {
   return (
     <DropdownMenu.Item className="flex cursor-default items-center gap-2 rounded px-2 py-1.5 text-wb-2xs text-workbench-text outline-none transition-colors data-[highlighted]:bg-workbench-surface-subtle">
       <Icon size={14} />

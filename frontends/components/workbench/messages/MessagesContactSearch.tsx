@@ -11,6 +11,7 @@ import { ConversationAvatar } from "./Avatar";
 import { STRINGS } from "./strings";
 
 const SEARCH_DEBOUNCE_MS = 300;
+const WECOM_SOURCE_LOGO = "/wecom-logo.png";
 
 interface MessagesContactSearchProps {
   accounts: readonly Account[];
@@ -242,16 +243,17 @@ function ContactRow({
   );
 }
 
-/** 结果行第三行的归属账号:「来自: 账号名」,样式对齐接待列表(ConversationList)的 from 行。 */
+/** 结果行第三行的归属账号:企微来源图标 + 账号名,样式对齐接待列表(ConversationList)。 */
 function AccountLine({ account }: { account: Account }) {
   return (
     <div className="mt-px flex min-w-0 items-center gap-1.5 text-wb-4xs">
-      <span className="shrink-0 font-semibold text-workbench-text-muted">
-        {STRINGS.conversationList.fromShort}
-      </span>
-      <span className="min-w-0 truncate font-medium text-workbench-text-secondary">
-        {account.name}
-      </span>
+      <img
+        src={WECOM_SOURCE_LOGO}
+        alt=""
+        aria-hidden
+        className="size-3 shrink-0 rounded-[2px] object-contain"
+      />
+      <span className="min-w-0 truncate font-medium text-workbench-text-muted">{account.name}</span>
     </div>
   );
 }

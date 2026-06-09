@@ -76,7 +76,7 @@
     /* Softer unread red — coral-leaning so the indicator reads as
        informative rather than alarming. Used for the small dot +
        [N条] preview prefix. */
-    --wb-unread: 6 75% 56%;
+    --wb-unread: 5 86% 60%;
     --wb-success: 158 64% 30%;
     --wb-warning: 38 92% 50%;
     --wb-danger: 4 70% 48%;
@@ -155,7 +155,7 @@
     --wb-wechat-bg: 158 30% 18%;
     --wb-online: 161 70% 45%;
     /* Dark mode: keep saturation gentle so the dot doesn't glow on dark. */
-    --wb-unread: 6 65% 60%;
+    --wb-unread: 5 76% 64%;
     --wb-success: 158 70% 50%;
     --wb-warning: 38 92% 60%;
     --wb-danger: 4 70% 56%;

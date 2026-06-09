@@ -2,6 +2,7 @@ import { useState, type ReactNode } from "react";
 import { Pin } from "lucide-react";
 
 import { cn } from "@/lib/utils";
+import { secureImageUrl } from "@/lib/secureImageUrl";
 
 import { STRINGS } from "./strings";
 import { cssUrlSafe, pickAvatarColor } from "./utils";
@@ -38,7 +39,9 @@ export function AvatarTile({
   // 若用 useState(false) 记失败,任一头像加载失败一次就会永久粘住、把后续有效头像也打回首字母。
   // 记 failedUrl 后,avatarUrl 一变旧失败记录自动失效,复用实例随之恢复 —— 无 effect、无额外重渲。
   const [failedUrl, setFailedUrl] = useState<string | null>(null);
-  const safe = failedUrl !== avatarUrl ? cssUrlSafe(avatarUrl, "image") : null;
+  // 渲染前把头像 http:// 升级为 https://，避免 macOS 正式包 secure context 的混合内容拦截。
+  // 失败态仍按原始 avatarUrl 记录（与 onError 一致），不受 scheme 升级影响。
+  const safe = failedUrl !== avatarUrl ? cssUrlSafe(secureImageUrl(avatarUrl), "image") : null;
   const boxClass = "rounded-lg shadow-[inset_0_0_0_1px_rgba(255,255,255,0.48)]";
   return (
     <div className="relative shrink-0" style={{ width: size, height: size }}>

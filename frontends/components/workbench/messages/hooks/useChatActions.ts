@@ -29,6 +29,16 @@ import {
 import type { ReplyTarget } from "../MessageBubble";
 import type { MessageActionType } from "../MessageContextMenu";
 import { useChatStore } from "../store/chatStore";
+import { markMessageDeleted } from "../store/deletedMessages";
+import {
+  getLaneIntervalMs,
+  isRetryableSendError,
+  MAX_SEND_RETRY,
+  noteSendOutcome,
+  runSerialSend,
+  sendRetryBackoffMs,
+  sleep,
+} from "../store/sendPacer";
 import { STRINGS } from "../strings";
 import { messageReplyPreview } from "../utils";
 
@@ -359,33 +369,68 @@ export function useChatActions({
       options?: SendMessageOptions,
     ) => {
       const owningStoreKey = chatStoreKey;
-      try {
-        const resp = options
-          ? await onSendMessage?.(text, clientMsgId, options)
-          : await onSendMessage?.(text, clientMsgId);
-        // 同步返回即携带 send_status:不能无脑 markSent。仅 3=成功 才钉 serverId、置 sent;
-        // 4=失败 立即 markFailed 并 return false 触发后续 fail-stop(与抛异常路径同构);
-        // 1 待发送 / 2 发送中 是未终态 → 保持乐观「发送中」,等回调(权威重读按 requestMessageId)
-        // 收敛终态,绝不在此假「已发送」——回调不来时也不会假成功。
-        if (resp) {
-          if (resp.sendStatus === SEND_STATUS.failed) {
-            showToast(STRINGS.errors.sendFailed, { type: "error" });
-            failBubble(clientMsgId, STRINGS.errors.sendFailed);
+      // 串行车道:按企微账号隔离。同账号任意时刻至多一条发送在途、发完再发下一条(FIFO),
+      // 一举根治频率限流(不会超频)与「同会话已有发送进行中」会话锁(同会话不并发);缺账号身份退默认车道。
+      const lane = wecomAccountId ?? "default";
+      // 把「整条发送(含限流重试)」作为一个任务投入串行队列:队列保证一条在途 + AIMD 自适应 gap。
+      return runSerialSend(lane, async () => {
+        // 命中「发送过快」限流时退避后重试同一 clientMsgId:后端按它幂等去重,绝不重复投递;
+        // 重试期间气泡保持「发送中」,仅重试耗尽才标失败。attempt 从 0 计,最多额外重试 MAX_SEND_RETRY 次。
+        for (let attempt = 0; ; attempt += 1) {
+          try {
+            const resp = options
+              ? await onSendMessage?.(text, clientMsgId, options)
+              : await onSendMessage?.(text, clientMsgId);
+            // 同步返回即携带 send_status:不能无脑 markSent。仅 3=成功 才钉 serverId、置 sent;
+            // 4=失败 立即 markFailed 并 return false 触发后续 fail-stop(与抛异常路径同构);
+            // 1 待发送 / 2 发送中 是未终态 → 保持乐观「发送中」,等回调(权威重读按 requestMessageId)
+            // 收敛终态,绝不在此假「已发送」——回调不来时也不会假成功。
+            if (resp) {
+              if (resp.sendStatus === SEND_STATUS.failed) {
+                showToast(STRINGS.errors.sendFailed, { type: "error" });
+                failBubble(clientMsgId, STRINGS.errors.sendFailed);
+                return false;
+              }
+              if (resp.sendStatus === SEND_STATUS.success) {
+                useChatStore.getState().markSent(owningStoreKey, clientMsgId, resp.localMessageId);
+              }
+            }
+            noteSendOutcome(lane, "ok"); // AIMD:顺畅 → 加性缩小 gap(提速)。
+            return true;
+          } catch (err) {
+            // 限流类错误且未达重试上限 → AIMD 乘性放大 gap、退避后重试(幂等安全,不会重复投递)。
+            if (isRetryableSendError(err) && attempt < MAX_SEND_RETRY) {
+              noteSendOutcome(lane, "rateLimited");
+              // 真机诊断:看清是否在退避重试、第几次、当前 AIMD gap、原始错误(devtools 展开 err 看 kind/msg)。
+              console.warn("[send] 命中限流,退避重试", {
+                lane,
+                attempt,
+                backoffMs: sendRetryBackoffMs(attempt),
+                aimdGapMs: getLaneIntervalMs(lane),
+                reason: sendFailReason(err),
+                err,
+              });
+              await sleep(sendRetryBackoffMs(attempt));
+              continue;
+            }
+            const reason = sendFailReason(err);
+            // 真机诊断:终态失败时打印原始错误 + 是否被判定为可重试 —— 用以区分「403 限流」
+            // 与「会话锁/其它业务错」等未被重试的失败。
+            console.warn("[send] 发送失败(终态)", {
+              lane,
+              attempt,
+              retryable: isRetryableSendError(err),
+              reason,
+              err,
+            });
+            showToast(reason, { type: "error" });
+            failBubble(clientMsgId, reason);
             return false;
           }
-          if (resp.sendStatus === SEND_STATUS.success) {
-            useChatStore.getState().markSent(owningStoreKey, clientMsgId, resp.localMessageId);
-          }
         }
-        return true;
-      } catch (err) {
-        const reason = sendFailReason(err);
-        showToast(reason, { type: "error" });
-        failBubble(clientMsgId, reason);
-        return false;
-      }
+      });
     },
-    [chatStoreKey, onSendMessage, failBubble],
+    [chatStoreKey, onSendMessage, failBubble, wecomAccountId],
   );
 
   // 上传一个附件单元(不发送):fetch 本地预览取字节 →(语音转码)→ uploadAttachment 拿
@@ -612,9 +657,18 @@ export function useChatActions({
         case "delete": {
           // 右键删除高误触(轨迹板右击、误选回车),删除即整条气泡消失,故加二次确认。
           // window.confirm 在本 Tauri WebView 可用(lib/updater.ts 同款用法)。
-          // TODO(接后端):删除应调 delete_message IPC + 失败回滚;当前仅本地 store 移除,
-          // 重读权威历史时服务端数据可能补回。
           if (!window.confirm(STRINGS.contextMenu.deleteConfirm)) break;
+          // 记本地删除墓碑:仅从 store 移除会被权威重读补回(切会话/贴底/新消息触发塌缩重建,
+          // 本地消息库仍有该行)。墓碑让所有权威数据入口过滤掉它(以本地为主),实现「删了不再
+          // 出现」。纯本地视图,不影响企业微信对端与服务端。记下全部 id 形态(覆盖权威 / 收敛后 /
+          // 在途乐观三态:权威回显 id 与原乐观 clientMsgId 不同,故 requestMessageId 也要记)。
+          const entity = useChatStore.getState().conversations[chatStoreKey]?.byId[message.id];
+          markMessageDeleted(chatStoreKey, [
+            message.id,
+            entity?.clientMsgId,
+            entity?.serverId,
+            entity?.requestMessageId,
+          ]);
           useChatStore.getState().removeMessage(chatStoreKey, message.id);
           // 若引用预览正指向被删消息,发送时 replyTo 会指向不存在的 id
           // → buildTimelineItems 解析不到 replyTarget 静默丢失。同步清空。

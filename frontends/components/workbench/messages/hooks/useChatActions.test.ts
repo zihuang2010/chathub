@@ -1,5 +1,5 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { clearOutboxRow, persistOutboxFailure, uploadAttachment } from "@/lib/api/messageHistory";
 import { showToast } from "@/components/ui/toast";
@@ -7,6 +7,7 @@ import { showToast } from "@/components/ui/toast";
 import type { Conversation, Message } from "../data";
 import { COMPOSER_MAX_CHARS } from "../constants";
 import { selectTimeline, useChatStore } from "../store/chatStore";
+import { resetSendPacing, setSendPacingConfig } from "../store/sendPacer";
 import { STRINGS } from "../strings";
 import {
   toAmrFileName,
@@ -65,10 +66,16 @@ function outMsg(id: string): Message {
   };
 }
 
+beforeEach(() => {
+  // 关节流(间隔置 0):既有发送用例只验证编排/状态流转,不应被真实节流间隔拖住。
+  setSendPacingConfig({ minIntervalMs: 0 });
+});
+
 afterEach(() => {
   useChatStore.getState().reset();
   vi.clearAllMocks();
   vi.unstubAllGlobals();
+  resetSendPacing();
 });
 
 describe("useChatActions", () => {
@@ -146,6 +153,66 @@ describe("useChatActions", () => {
     expect(t).toHaveLength(1);
     expect(t[0].status).toBe("sending");
     expect(t[0].serverId).toBeUndefined();
+  });
+
+  it("发送命中限流(http 403)→ 退避自动重试,最终成功不标失败", async () => {
+    vi.useFakeTimers();
+    // 前两次抛 403 限流错(可重试),第三次成功 → 应自动恢复为已发送,期间不弹失败。
+    const onSendMessage = vi
+      .fn()
+      .mockRejectedValueOnce({ message: "send_message returned http 403" })
+      .mockRejectedValueOnce({ message: "send_message returned http 403" })
+      .mockResolvedValueOnce({ localMessageId: "srv-9", sendStatus: 3, messageTime: "" });
+    const { result } = setup(onSendMessage);
+
+    await act(async () => {
+      result.current.handleSend("快速连发");
+    });
+    // 推进定时器跑完两次退避(400 + 800ms)。
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1300);
+    });
+
+    expect(onSendMessage).toHaveBeenCalledTimes(3);
+    const t = timeline();
+    expect(t).toHaveLength(1);
+    expect(t[0].status).toBe("sent");
+    expect(t[0].serverId).toBe("srv-9");
+    vi.useRealTimers();
+  });
+
+  it("发送持续限流、重试耗尽 → markFailed,气泡保留供手动重发", async () => {
+    vi.useFakeTimers();
+    const onSendMessage = vi.fn().mockRejectedValue({ message: "send too fast" });
+    const { result } = setup(onSendMessage);
+
+    await act(async () => {
+      result.current.handleSend("一直被限流");
+    });
+    // 首发 1 次 + MAX_SEND_RETRY(3) 次重试,退避 400 + 800 + 1600ms。
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3000);
+    });
+
+    expect(onSendMessage).toHaveBeenCalledTimes(4);
+    const t = timeline();
+    expect(t).toHaveLength(1);
+    expect(t[0].status).toBe("failed");
+    vi.useRealTimers();
+  });
+
+  it("非限流错误(如 http 500)不重试,立即 markFailed", async () => {
+    const onSendMessage = vi.fn().mockRejectedValue({ message: "send_message returned http 500" });
+    const { result } = setup(onSendMessage);
+
+    await act(async () => {
+      result.current.handleSend("普通失败");
+    });
+    await flush();
+
+    expect(onSendMessage).toHaveBeenCalledTimes(1);
+    const t = timeline();
+    expect(t[0].status).toBe("failed");
   });
 
   it("handleSend 图片块乐观气泡保留本地宽高，避免发送后权威回读时变尺寸", () => {
@@ -244,6 +311,24 @@ describe("useChatActions", () => {
     });
     expect(confirmSpy).toHaveBeenCalled();
     expect(timeline()).toHaveLength(0);
+  });
+
+  it('handleAction "delete" 确认后记本地删除墓碑(权威补回据此过滤,删了不复活)', async () => {
+    // 用本文件独有 id,避免与其它 delete 用例共享的模块级墓碑单例互相污染。
+    const { isMessageDeleted } = await import("../store/deletedMessages");
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const { result } = setup(vi.fn());
+    act(() => {
+      useChatStore
+        .getState()
+        .enqueueOptimistic("c1", { ...outMsg("tomb-1"), clientMsgId: "tomb-1" });
+    });
+    expect(isMessageDeleted("c1", ["tomb-1"])).toBe(false);
+
+    act(() => {
+      result.current.handleAction("delete", outMsg("tomb-1"));
+    });
+    expect(isMessageDeleted("c1", ["tomb-1"])).toBe(true);
   });
 
   it('handleAction "delete" 取消则保留该条(防误触)', () => {

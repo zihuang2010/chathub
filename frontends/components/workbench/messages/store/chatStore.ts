@@ -15,6 +15,7 @@ import { create } from "zustand";
 import { attachmentPreviewUrl } from "@/lib/api/messageHistory";
 
 import type { Message, MessagePart } from "../data";
+import { filterDeletedMessages } from "./deletedMessages";
 
 export interface ChatMessageEntity extends Message {
   /** 乐观气泡幂等键(= 前端生成的 local id);权威收敛按它 / serverId 匹配。 */
@@ -311,56 +312,33 @@ export function replaceAuthoritative(
   const leftover = pendingOptimistic.filter((e) => !convergedByMatch.has(e));
   for (const e of leftover) byId[e.id] = e;
 
-  // ── 排序:real 消息构成 spine(已显示保位 + 新消息追底);failed 按 sentAt 插入整条时间线;
-  //          在途/待回显(sending/sent leftover)贴底 ────────────────────────────────────
-  // 三类:① real 权威消息 = spine,已显示的(knownAuth)按先前相对位置冻结、本批新出现的(newAuth)
-  // 按服务端序追加到底,real 之间不重排(保住「已显示保位/同毫秒不翻序/迟到入站追底」三测);
-  // ② status==='failed' 的条目(失败行,无论 leftover 还是已落库的权威失败行)按 sentAt 插进 spine ——
-  // 锚定在过去时刻的失败气泡落回正确位置,杜绝「先沉底→后发成功收敛→失败行被冻结在沉底位」竞态;
-  // ③ 其余 leftover(在途 sending / 已 markSent 待回显 sent)贴底。failed 用「插在第一个 sentAt 严格
-  // 大于它的 spine 元素之前」的稳定插入:同毫秒时排在 real 之后(与「失败文本不被同内容权威吞」测一致)。
-  // at():memo 消除 sort 中重复 Date 解析;NaN 兜底防非法 sentAt 让失败行漏到尾部沉底。
-  const atCache = new Map<string, number>();
-  const at = (id: string) => {
-    const cached = atCache.get(id);
-    if (cached !== undefined) return cached;
-    const t = new Date(byId[id]?.sentAt ?? 0).getTime();
-    const v = Number.isNaN(t) ? 0 : t;
-    atCache.set(id, v);
-    return v;
-  };
+  // ── 排序:统一「已显示位置保序 + 本批首次出现追底」(单调插入)──────────────────────────
+  // 对权威消息与未收敛乐观气泡(failed / sending / sent leftover)一视同仁,全按它们在上一帧 order
+  // 的位置(priorIndex)保序;本批首次出现的权威消息(newAuth,无 priorIndex)按服务端序追加到底。
+  // 不再用 sentAt 给失败/重发气泡重新定位 —— 乐观气泡 sentAt 是客户端时间、权威是服务端时间,时钟
+  // 偏差或序列非单调会让「按 sentAt 归位」在重发(失败→重发触发 reconcile)时把气泡跳位(上移/下移/
+  // 抖动)。按显示位置保序 → 重发及任何状态变化(failed↔sending↔sent)都零位移;失败气泡保持其 enqueue
+  // 显示位置、后发成功消息追底,天然不沉底(替代旧「failed 按 sentAt 归位」)。收敛的乐观气泡(echo 配对)
+  // 用其乐观来源的 priorIndex 占位,跨「乐观→权威」位置不变。
   const priorIndex = new Map<string, number>();
   slice.order.forEach((id, i) => priorIndex.set(id, i));
-  const knownAuth: { id: string; idx: number }[] = [];
+  const kept: { id: string; idx: number }[] = [];
   const newAuthIds: string[] = [];
   for (const m of messages) {
-    if (byId[m.id]?.status === "failed") continue; // 失败权威行不进 spine,稍后按 sentAt 插
     const echo = echoLookup.get(m.id) ?? matchedEcho.get(m.id);
     let idx = priorIndex.get(m.id);
     if (idx === undefined && echo) idx = priorIndex.get(echo.id);
     if (idx === undefined) newAuthIds.push(m.id);
-    else knownAuth.push({ id: m.id, idx });
+    else kept.push({ id: m.id, idx });
   }
-  knownAuth.sort((a, b) => a.idx - b.idx);
-  const spine = [...knownAuth.map((k) => k.id), ...newAuthIds];
-
-  // 所有 status==='failed' 实体(权威失败行 + leftover 失败气泡;byId 键唯一,无重复),按 sentAt 升序。
-  const failedIds = Object.keys(byId)
-    .filter((id) => byId[id]?.status === "failed")
-    .sort((a, b) => at(a) - at(b));
-  // 非失败 leftover(在途 sending / 待回显 sent)贴底,保持先前相对序。
-  const tailLeftover = leftover.filter((e) => e.status !== "failed").map((e) => e.id);
-
-  // failed 稳定插入 spine:在每个 spine 元素前,先吐出所有 sentAt 严格小于它的 failed。
-  const withFailed: string[] = [];
-  let fi = 0;
-  for (const id of spine) {
-    while (fi < failedIds.length && at(failedIds[fi]) < at(id)) withFailed.push(failedIds[fi++]);
-    withFailed.push(id);
+  // 未收敛乐观气泡(failed/sending/sent leftover)均来自 slice.order → 必有 priorIndex,按显示位置保序。
+  for (const e of leftover) {
+    const idx = priorIndex.get(e.id);
+    if (idx === undefined) newAuthIds.push(e.id);
+    else kept.push({ id: e.id, idx });
   }
-  while (fi < failedIds.length) withFailed.push(failedIds[fi++]);
-
-  const order = [...withFailed, ...tailLeftover];
+  kept.sort((a, b) => a.idx - b.idx);
+  const order = [...kept.map((k) => k.id), ...newAuthIds];
   // Stage C:塌缩路径返回新引用时顺带刷新窗口边界(整窗塌缩 = 取到了缓存最新尾窗 → atCacheBottom=true;
   // 两端边界从 order 两端有 sortKey 实体派生)。这些字段不进 sliceContentEqual,故内容等价短路仍按
   // order+byId 判定。内容等价时直接返回原 slice(其边界本就正确、无变化),不包新对象 → 保住
@@ -793,7 +771,12 @@ export const useChatStore = create<ChatStoreState>((set) => {
     replaceAuthoritative: (conversationId, messages, meta) =>
       update(conversationId, (slice) => {
         const collapseToLatest = meta?.collapseToLatest ?? true;
-        const next = replaceAuthoritative(slice, messages, collapseToLatest);
+        // 本地已删除墓碑优先:权威补回前过滤掉本端删过的条目(删了不再出现,以本地为主)。
+        const next = replaceAuthoritative(
+          slice,
+          filterDeletedMessages(conversationId, messages),
+          collapseToLatest,
+        );
         const hasMore = meta?.hasMore ?? next.hasMore;
         const error = meta?.error ?? null;
         // 纯函数判定内容无变化(next === slice)且 meta 未变 → 复用原引用,渲染端零 re-render。
@@ -807,13 +790,17 @@ export const useChatStore = create<ChatStoreState>((set) => {
       }),
     prependOlder: (conversationId, older, hasMore) =>
       update(conversationId, (slice) => {
-        const next = prependOlder(slice, older);
+        const next = prependOlder(slice, filterDeletedMessages(conversationId, older));
         return hasMore === undefined ? next : { ...next, hasMore };
       }),
     appendNewerWindow: (conversationId, newer, meta) =>
-      update(conversationId, (slice) => appendNewerWindow(slice, newer, meta)),
+      update(conversationId, (slice) =>
+        appendNewerWindow(slice, filterDeletedMessages(conversationId, newer), meta),
+      ),
     prependOlderWindow: (conversationId, older, meta) =>
-      update(conversationId, (slice) => prependOlderWindow(slice, older, meta)),
+      update(conversationId, (slice) =>
+        prependOlderWindow(slice, filterDeletedMessages(conversationId, older), meta),
+      ),
     dropFromTop: (conversationId, n) => update(conversationId, (slice) => dropFromTop(slice, n)),
     dropFromBottom: (conversationId, n) =>
       update(conversationId, (slice) => dropFromBottom(slice, n)),

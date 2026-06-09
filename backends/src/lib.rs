@@ -1432,6 +1432,84 @@ async fn open_friend_conversation(
         .ok_or(AuthError::Unauthenticated)?
         .user_id;
 
+    // 短路:本地已存在该 (账号, 客户) 的接待行时,conversation_id 本地即有 —— 直接 un-remove +
+    // 提顶 + 立即返回,免这次网络往返(打开"曾经聊过 / 库里有"的会话即时,含已划出渲染窗口的
+    // 老会话)。网络刷新(最新记录 + 首屏历史冷写)丢后台 spawn,完成后再发一次 ChangeNotice。
+    // 本地无记录(全新客户)才落到下方同步网络路径,拿服务端权威 conversation_id。
+    if let Some(conversation_id) = recents_store
+        .find_conversation_id(&employee_id, &wecom_account_id, &external_user_id)
+        .await
+        .map_err(|e| recents_internal_error("open_find_local", e))?
+    {
+        recents_store
+            .set_removed(&employee_id, &conversation_id, false)
+            .await
+            .map_err(|e| recents_internal_error("open_unremove", e))?;
+        recents_store
+            .set_opened(&employee_id, &conversation_id, now_unix_ms())
+            .await
+            .map_err(|e| recents_internal_error("set_opened", e))?;
+        let _ = change_tx.send(ChangeNotice::command_upsert(
+            ChangeTopic::RecentSessions,
+            ChangeScope::employee(&employee_id),
+        ));
+
+        // 后台刷新(stale-while-revalidate):网络拉该好友最新记录 + 首屏历史(冷会话冷写),
+        // 完成后再发一次 ChangeNotice 让前端收敛。best-effort —— 失败只记日志,不影响已即时
+        // 打开的会话(本地记录仍在,选中后 load_conversation_messages 兜底对齐)。
+        let hub_bg = hub.inner().clone();
+        let recents_bg = recents_store.inner().clone();
+        let sync_bg = message_sync.inner().clone();
+        let tx_bg = change_tx.inner().clone();
+        let emp = employee_id.clone();
+        let conv = conversation_id.clone();
+        let wa = wecom_account_id.clone();
+        let ext = external_user_id.clone();
+        tauri::async_runtime::spawn(async move {
+            let resp = match hub_bg
+                .list_recent_friends(ListRecentFriendsRequest {
+                    size: 1,
+                    cursor: String::new(),
+                    external_name: String::new(),
+                    external_mobile: String::new(),
+                    wecom_account_id: wa.clone(),
+                    only_unread: false,
+                    external_user_id: ext.clone(),
+                    include_first_history: true,
+                })
+                .await
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::warn!(target: "chathub::recents", error = %e, "open bg refresh: list_recent_friends failed; ignoring");
+                    return;
+                }
+            };
+            // 刷新接待行(沿用本地已知 conversation_id);记录缺失则不动本地行。
+            if let Some(mut r) = resp.records.into_iter().next() {
+                r.conversation_id = conv.clone();
+                if let Err(e) = recents_bg
+                    .upsert_remote_one(record_to_remote(r, &emp))
+                    .await
+                {
+                    tracing::warn!(target: "chathub::recents", error = %e, "open bg refresh: upsert failed; ignoring");
+                }
+            }
+            // 首屏历史:seed_first_history 对温缓存幂等跳过(不覆盖本地更全历史),仅冷会话冷写。
+            if let Some(h) = &resp.first_conversation_history {
+                if let Err(e) = sync_bg.seed_first_history(&conv, &wa, &ext, &emp, h).await {
+                    tracing::warn!(target: "chathub::recents", error = %e, "open bg refresh: seed_first_history failed; ignoring");
+                }
+            }
+            let _ = tx_bg.send(ChangeNotice::command_upsert(
+                ChangeTopic::RecentSessions,
+                ChangeScope::employee(&emp),
+            ));
+        });
+
+        return Ok(OpenFriendConversationResp { conversation_id });
+    }
+
     // 单好友定位:externalUserId 过滤(size=1)+ 带回首屏历史。
     let resp = hub
         .list_recent_friends(ListRecentFriendsRequest {

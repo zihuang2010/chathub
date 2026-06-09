@@ -801,13 +801,28 @@ const MessageTimelineRow = memo(function MessageTimelineRow({
     );
   }
 
-  // 间距加大:容纳浮在气泡下方间距里的「重发」状态行(见 MessageBubble.StatusLine,单行
-  // 约 16px),并让上下两条气泡有充裕留白。续条 44px / 换发送者 48px。
+  // 行间距(下一行 pt)已为浮在气泡下方的「重发」状态行(MessageBubble.StatusLine,absolute
+  // top-full,约 24px)留足空间,无需额外撑高。续条 44px / 换发送者 48px。
   // containment 去掉 paint(仅留 layout)——失败/重发行与悬停时间戳是浮出行盒的绝对定位
   // 元素,paint 裁剪会把它们切掉。
   const spacing = index === 0 ? "" : item.isFirstInBurst ? "pt-12" : "pt-11";
+  // 出站「发送中/失败」气泡的状态行(MessageBubble.StatusLine)是 absolute 浮在气泡【下方】
+  // 间距(下一行 pt)里的。虚拟列表里下一行是 DOM 后续兄弟、默认画在上面,其透明 pt 命中区会
+  // 盖住浮出的「重发」按钮 → 点不动。这里给本行 relative + 抬升 z-index,让本行(连同浮出的
+  // 状态行)画在下一行之上 → 可点击;且不占额外高度(原先用 pb-6 预留会在下一行 pt 之上再叠
+  // ~24px,凭空多出一截间距,即截图反馈的问题)。z 随 index 递减:上一条失败行盖过下一条(也
+  // 可能失败的)行,连续失败也都点得到。基数取 2×INITIAL_FIRST_ITEM_INDEX 保证恒正(index 始终
+  // 远小于它);本行 z 被外层可见 plane 的 z-10 层叠上下文圈住,不会盖到右下角 z-20 的滚动按钮。
+  // 仅出站、未撤回、且确有状态行时抬升。
+  const m = item.message;
+  const liftStatusLine =
+    m.direction === "out" && !m.isRecalled && (m.status === "sending" || m.status === "failed");
   return (
-    <div data-message-row-id={item.id} className={cn("[contain:layout_style]", spacing)}>
+    <div
+      data-message-row-id={item.id}
+      className={cn("[contain:layout_style]", spacing, liftStatusLine && "relative")}
+      style={liftStatusLine ? { zIndex: 2 * INITIAL_FIRST_ITEM_INDEX - index } : undefined}
+    >
       <MessageBubble
         message={item.message}
         avatarName={avatarName}

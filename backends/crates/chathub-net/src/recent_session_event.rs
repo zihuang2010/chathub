@@ -348,6 +348,12 @@ fn decode_summary(ev: &serde_json::Value, employee_id: &str) -> Option<RecentSes
         external_name: str_or_empty(ss, "externalName"),
         external_avatar: str_or_empty(ss, "externalAvatar"),
         wecom_alias: str_or_empty(ss, "wecomAlias"),
+        // 静默标志:上游 `sessionSummary.clientSilent=true`。缺省 false(旧推送无此字段 → 行为不变)。
+        // apply_summary 据此对软删除会话只更新摘要、不取消隐藏(见 RecentSessionSummary::silent 注释)。
+        silent: ss
+            .get("clientSilent")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
     })
 }
 
@@ -754,6 +760,59 @@ mod tests {
 
         let notice = rx.try_recv().expect("已存在会话更新应发 ChangeNotice");
         assert_eq!(notice.topic, ChangeTopic::RecentSessions);
+    }
+
+    #[tokio::test]
+    async fn silent_does_not_revive_soft_deleted_conversation() {
+        // 核心场景:先从接待列表删除(软删除),再来静默消息 → 绝不复活、不在 list_top 出现。
+        let (applier, store, _accounts, _rx) = applier_with_stores().await;
+        store
+            .upsert_remote_one(seed_remote("cv-1", "wa-1", 1_000_000_000_000))
+            .await
+            .unwrap();
+        store.set_removed(EMP, "cv-1", true).await.unwrap();
+        assert!(
+            store.list_top(EMP, None, 50).await.unwrap().is_empty(),
+            "软删除后应从 list_top 消失"
+        );
+
+        // 静默 SESSION_SUMMARY_UPSERT(带 conversationId+sortKey+clientSilent,且 sortKey 时间晚于 removed_at_ms)。
+        let mut ev = full_session_summary_event("cv-1", "wa-1");
+        ev["sessionSummary"]
+            .as_object_mut()
+            .unwrap()
+            .insert("clientSilent".into(), serde_json::json!(true));
+
+        applier
+            .apply_push_batch(&batch(serde_json::json!([ev])))
+            .await;
+
+        assert!(
+            store.list_top(EMP, None, 50).await.unwrap().is_empty(),
+            "静默消息不得复活被删会话(仍不在接待列表)"
+        );
+    }
+
+    #[tokio::test]
+    async fn nonsilent_revives_soft_deleted_conversation() {
+        // 回归守卫:非静默消息(无 clientSilent)严格晚于 removed_at_ms 时,仍应复活会话(V11 自动恢复)。
+        let (applier, store, _accounts, _rx) = applier_with_stores().await;
+        store
+            .upsert_remote_one(seed_remote("cv-1", "wa-1", 1_000_000_000_000))
+            .await
+            .unwrap();
+        store.set_removed(EMP, "cv-1", true).await.unwrap();
+
+        // 普通(非静默)SESSION_SUMMARY_UPSERT,sortKey 时间(1.9e12)晚于 removed_at_ms(now)。
+        applier
+            .apply_push_batch(&batch(serde_json::json!([full_session_summary_event(
+                "cv-1", "wa-1"
+            )])))
+            .await;
+
+        let rows = store.list_top(EMP, None, 50).await.unwrap();
+        assert_eq!(rows.len(), 1, "非静默新消息应复活被删会话");
+        assert!(!rows[0].removed);
     }
 
     #[test]

@@ -143,6 +143,11 @@ pub struct RecentSessionSummary {
     pub external_name: String,
     pub external_avatar: String,
     pub wecom_alias: String,
+    /// 静默消息(上游 `sessionSummary.clientSilent=true`)。静默仅影响"是否取消隐藏":
+    /// `apply_summary` 对静默消息照常更新摘要,但**绝不**把软删除(`removed=1`)的会话取消隐藏,
+    /// 并把 `removed_at_ms` 抬到该消息时间(吸收静默水位)——使同一条静默消息日后即便经
+    /// "看不到 clientSilent"的 REST 重拉也不会复活。缺省 `false`(旧推送无此字段 → 行为不变)。
+    pub silent: bool,
 }
 
 #[derive(Clone)]
@@ -306,8 +311,12 @@ impl RecentSessionsStore {
                        external_name   = CASE WHEN ?12 <> '' THEN ?12 ELSE external_name   END, \
                        external_avatar = CASE WHEN ?13 <> '' THEN ?13 ELSE external_avatar END, \
                        wecom_alias     = CASE WHEN ?14 <> '' THEN ?14 ELSE wecom_alias     END, \
-                       removed = CASE WHEN ?6 > removed_at_ms THEN 0 ELSE removed END, \
-                       removed_at_ms = CASE WHEN ?6 > removed_at_ms THEN 0 ELSE removed_at_ms END \
+                       removed = CASE \
+                           WHEN ?17 = 1 THEN removed \
+                           WHEN ?6 > removed_at_ms THEN 0 ELSE removed END, \
+                       removed_at_ms = CASE \
+                           WHEN ?17 = 1 THEN (CASE WHEN removed = 1 AND ?6 > removed_at_ms THEN ?6 ELSE removed_at_ms END) \
+                           WHEN ?6 > removed_at_ms THEN 0 ELSE removed_at_ms END \
                      WHERE employee_id = ?15 AND conversation_id = ?16 \
                        AND ( ?9 > last_message_sort_key_ms \
                              OR (?9 = last_message_sort_key_ms \
@@ -330,6 +339,7 @@ impl RecentSessionsStore {
                         s.wecom_alias,
                         s.employee_id,
                         s.conversation_id,
+                        s.silent as i64,
                     ],
                 )?;
                 Ok(n > 0)
@@ -364,6 +374,38 @@ impl RecentSessionsStore {
             })
             .await??;
         Ok(exists)
+    }
+
+    /// 按 (账号, 客户) 查本地接待行的 `conversation_id`;无则 `None`。
+    /// 用于 `open_friend_conversation` 短路:本地已有记录时直接拿真实会话 ID,免一次网络往返
+    /// (含已被软删除 `removed=1` 的行 —— "打开"语义随后会 un-remove 它,故此处不按 removed 过滤)。
+    pub async fn find_conversation_id(
+        &self,
+        employee_id: &str,
+        wecom_account_id: &str,
+        external_user_id: &str,
+    ) -> Result<Option<String>, StateError> {
+        let employee_id = employee_id.to_string();
+        let account = wecom_account_id.to_string();
+        let user = external_user_id.to_string();
+        let conn = self.pool.pool().get().await?;
+        let id = conn
+            .interact(move |c| -> Result<Option<String>, StateError> {
+                let res: rusqlite::Result<String> = c.query_row(
+                    "SELECT conversation_id FROM hub_conversation_recents \
+                     WHERE employee_id = ?1 AND wecom_account_id = ?2 AND external_user_id = ?3 \
+                     LIMIT 1",
+                    rusqlite::params![employee_id, account, user],
+                    |r| r.get(0),
+                );
+                match res {
+                    Ok(v) => Ok(Some(v)),
+                    Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+                    Err(e) => Err(e.into()),
+                }
+            })
+            .await??;
+        Ok(id)
     }
 
     /// 置顶 / 取消置顶。`pinned=true` 时 `pinned_at_ms = now`,`false` 时置 0。
@@ -910,6 +952,52 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn find_conversation_id_by_friend() {
+        let pool = SqlitePool::in_memory().await.unwrap();
+        let store = RecentSessionsStore::new(pool);
+        // sample_remote 的 external_user_id 默认 = format!("ext_{conv}")。
+        store
+            .upsert_remote_one(sample_remote("cv-9", "wa-1", 100, 0))
+            .await
+            .unwrap();
+        // 命中:按 (employee, account, user) 拿到真实 conversation_id
+        assert_eq!(
+            store
+                .find_conversation_id(E, "wa-1", "ext_cv-9")
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("cv-9"),
+        );
+        // 未命中客户 → None
+        assert_eq!(
+            store
+                .find_conversation_id(E, "wa-1", "ext_x")
+                .await
+                .unwrap(),
+            None,
+        );
+        // 跨员工隔离 → None
+        assert_eq!(
+            store
+                .find_conversation_id("other-emp", "wa-1", "ext_cv-9")
+                .await
+                .unwrap(),
+            None,
+        );
+        // 已软删除的行仍可被找到("打开"语义随后 un-remove 它,故不按 removed 过滤)
+        store.set_removed(E, "cv-9", true).await.unwrap();
+        assert_eq!(
+            store
+                .find_conversation_id(E, "wa-1", "ext_cv-9")
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("cv-9"),
+        );
+    }
+
+    #[tokio::test]
     async fn list_top_filters_by_account() {
         let pool = SqlitePool::in_memory().await.unwrap();
         let store = RecentSessionsStore::new(pool);
@@ -1059,6 +1147,7 @@ mod tests {
             external_name: String::new(),
             external_avatar: String::new(),
             wecom_alias: String::new(),
+            silent: false,
         }
     }
 
@@ -1587,6 +1676,103 @@ mod tests {
             got[0].removed_at_ms, 0,
             "removed_at_ms must be cleared on auto-unhide"
         );
+    }
+
+    // ─── 静默消息不复活被软删除会话(apply_summary 静默感知)──────────────────
+    #[tokio::test]
+    async fn apply_summary_silent_does_not_unremove_soft_deleted() {
+        // 先删再静默:被软删除的会话收到静默 SESSION_SUMMARY_UPSERT,绝不取消隐藏;
+        // 但接待数据照常更新(水位推进)。
+        let pool = SqlitePool::in_memory().await.unwrap();
+        let store = RecentSessionsStore::new(pool);
+        store
+            .upsert_remote_many(&[sample_remote("c1", "wa-1", 100, 0)])
+            .await
+            .unwrap();
+        store.set_removed(E, "c1", true).await.unwrap();
+        assert!(
+            store.list_top(E, None, 10).await.unwrap().is_empty(),
+            "软删除后应从 list_top 消失"
+        );
+        // 静默消息(明显晚于 removed_at_ms)
+        let future_ts = now_unix_ms() + 60_000;
+        let mut s = sample_summary("c1", future_ts, 0);
+        s.silent = true;
+        let changed = store.apply_summary(s).await.unwrap();
+        assert!(changed, "静默消息仍应更新接待数据(返回 changed)");
+        assert!(
+            store.list_top(E, None, 10).await.unwrap().is_empty(),
+            "静默消息不得复活被删会话"
+        );
+        // 接待数据照常更新:水位推进到该消息(读隐藏行,latest_sort_key_ms 不过滤 removed)。
+        assert_eq!(
+            store.latest_sort_key_ms(E, "c1").await.unwrap(),
+            Some(future_ts),
+            "静默消息应更新摘要水位(数据仍维护)"
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_summary_silent_bumps_removed_at_ms_blocking_blind_repull() {
+        // 静默把 removed_at_ms 抬到消息时间 → 同一条消息日后经"看不到 clientSilent"的 REST 重拉
+        // (此处用同 ts 的非静默 apply 模拟)也不会复活。
+        let pool = SqlitePool::in_memory().await.unwrap();
+        let store = RecentSessionsStore::new(pool);
+        store
+            .upsert_remote_many(&[sample_remote("c1", "wa-1", 100, 0)])
+            .await
+            .unwrap();
+        store.set_removed(E, "c1", true).await.unwrap();
+        let silent_ts = now_unix_ms() + 60_000;
+        let mut s = sample_summary("c1", silent_ts, 0);
+        s.silent = true;
+        store.apply_summary(s).await.unwrap();
+        // 模拟 silence-blind 重拉同一条(非静默、同 ts)
+        let blind = sample_summary("c1", silent_ts, 0); // silent=false
+        store.apply_summary(blind).await.unwrap();
+        assert!(
+            store.list_top(E, None, 10).await.unwrap().is_empty(),
+            "removed_at_ms 已抬到静默消息时间,同 ts 的 silence-blind 重拉不得复活"
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_summary_nonsilent_newer_still_unremoves_after_silent() {
+        // 回归:真正更新的非静默消息(严格晚于静默水位)仍应复活会话。
+        let pool = SqlitePool::in_memory().await.unwrap();
+        let store = RecentSessionsStore::new(pool);
+        store
+            .upsert_remote_many(&[sample_remote("c1", "wa-1", 100, 0)])
+            .await
+            .unwrap();
+        store.set_removed(E, "c1", true).await.unwrap();
+        let silent_ts = now_unix_ms() + 60_000;
+        let mut s = sample_summary("c1", silent_ts, 0);
+        s.silent = true;
+        store.apply_summary(s).await.unwrap();
+        // 之后来一条真正的非静默新消息(严格更晚)
+        let real = sample_summary("c1", silent_ts + 1_000, 1); // silent=false
+        store.apply_summary(real).await.unwrap();
+        let got = store.list_top(E, None, 10).await.unwrap();
+        assert_eq!(got.len(), 1, "非静默新消息应复活会话");
+        assert!(!got[0].removed);
+    }
+
+    #[tokio::test]
+    async fn apply_summary_silent_on_visible_row_keeps_visible() {
+        // 可见会话收到静默消息:照常更新,保持可见(不误隐藏)。
+        let pool = SqlitePool::in_memory().await.unwrap();
+        let store = RecentSessionsStore::new(pool);
+        store
+            .upsert_remote_many(&[sample_remote("c1", "wa-1", 100, 0)])
+            .await
+            .unwrap();
+        let mut s = sample_summary("c1", 999, 0);
+        s.silent = true;
+        store.apply_summary(s).await.unwrap();
+        let got = store.list_top(E, None, 10).await.unwrap();
+        assert_eq!(got.len(), 1, "可见会话收到静默消息应保持可见");
+        assert!(!got[0].removed);
     }
 
     #[tokio::test]

@@ -27,7 +27,7 @@ import {
   RESIZE_HANDLE_WIDTH,
   RESIZE_KEYBOARD_STEP,
 } from "./constants";
-import { ConversationList } from "./ConversationList";
+import { ConversationList, type StatusTab } from "./ConversationList";
 import { CustomerDetails } from "./CustomerDetails";
 import { isKnownMessageType } from "./data";
 import type { Conversation, Message, QuickReply } from "./data";
@@ -176,6 +176,9 @@ export function MessagesPage({
   const [selectedId, setSelectedId] = useState<string>("");
   // 账号筛选状态直接存 `account.id`(= wecomAccountId,唯一);同名账号互不干扰。
   const [selectedAccountId, setSelectedAccountId] = useState<string | null>(null);
+  // 会话状态标签(全部/未读/@我)由父级持有:从搜索框/客户页打开会话时一并重置回"全部",
+  // 否则停在"未读"标签下打开的(已读)会话会被过滤掉看不见(见 openConversationByIdentity)。
+  const [statusTab, setStatusTab] = useState<StatusTab>("all");
   const [conversationListWidth, setConversationListWidth] = useState(
     CONVERSATION_LIST_DEFAULT_WIDTH,
   );
@@ -213,6 +216,14 @@ export function MessagesPage({
   } = useRecentFriends({
     accountFilter: selectedAccountId,
   });
+
+  // openConversationByIdentity 需读"最新"的 recentEntries 做乐观即时打开,但不能把 recentEntries
+  // 列进其 deps —— 否则列表每次更新都重建该 callback,连带触发 pendingOpenConversation effect 重跑。
+  // 用 ref 镜像最新列表,callback 经 ref 读取,deps 保持稳定。
+  const recentEntriesRef = useRef(recentEntries);
+  useEffect(() => {
+    recentEntriesRef.current = recentEntries;
+  }, [recentEntries]);
 
   // "移除会话"持久化在 SQLite hub_conversation_recents.removed 列(V11);
   // 后端 list_top WHERE removed=0 已经把隐藏行过滤掉,前端不再二次过滤。
@@ -510,6 +521,25 @@ export function MessagesPage({
   // wecomName/wecomAlias 仅用于"无记录建空白行"时展示归属账号;从 accounts 反查。
   const openConversationByIdentity = useCallback(
     async (identity: PendingOpenConversation) => {
+      // 打开会话前先重置接待列表的筛选条件:账号范围回"全部账号" + 状态标签回"全部"。
+      // 否则停在"某账号"或"未读"筛选下时,打开的会话(属其他账号 / 已读无未读)会被过滤掉而看不见。
+      setSelectedAccountId(null);
+      setStatusTab("all");
+      // 乐观即时打开:该客户的会话若已在本地接待列表(按 账号 + 客户标识 匹配),立刻选中,
+      // 不等后端 openFriend 往返 —— 消除"先跳到列表、再慢慢打开"的迟钝感。后端命令仍在后台跑
+      // (set_opened 提顶 + 首屏历史回填 + ChangeNotice),落地后由 pendingOpenIdRef effect 再确认选中
+      // (服务端权威 conversationId 与已存在行一致,setSelectedId 为同值不闪)。
+      const existing = recentEntriesRef.current.find(
+        (e) =>
+          e.wecomAccountId === identity.wecomAccountId &&
+          e.externalUserId === identity.externalUserId,
+      );
+      if (existing) {
+        setSelectedId(existing.conversationId);
+        if (existing.hasUnread || existing.unreadCount > 0) {
+          void markReadRecent(existing.conversationId);
+        }
+      }
       const accountName = accounts.find((a) => a.id === identity.wecomAccountId)?.name ?? "";
       try {
         const conversationId = await openFriend({
@@ -529,7 +559,7 @@ export function MessagesPage({
         showToast(STRINGS.conversationList.openConversationFailed, { type: "error" });
       }
     },
-    [accounts, openFriend],
+    [accounts, openFriend, markReadRecent],
   );
   const handleOpenCustomer = useCallback(
     (friend: WecomFriend) =>
@@ -561,6 +591,9 @@ export function MessagesPage({
   // 消费后通知 Workbench 置 null,不会重入。本页常驻挂载,切到消息页前 effect 即已触发。
   useEffect(() => {
     if (!pendingOpenConversation) return;
+    // openConversationByIdentity 内会同步重置筛选(setSelectedAccountId/setStatusTab):
+    // 这是"客户页导航意图 → 校正本页筛选"的一次性同步,cascading-renders 在此可接受。
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     void openConversationByIdentity(pendingOpenConversation);
     onConsumePendingOpen?.();
   }, [pendingOpenConversation, openConversationByIdentity, onConsumePendingOpen]);
@@ -598,6 +631,8 @@ export function MessagesPage({
           accounts={accounts}
           selectedAccountId={selectedAccountId}
           onAccountChange={handleAccountChange}
+          statusTab={statusTab}
+          onStatusChange={setStatusTab}
           onOpenCustomer={handleOpenCustomer}
           onClearSearch={handleClearSearch}
           onLoadMore={handleLoadMore}

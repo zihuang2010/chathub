@@ -267,6 +267,13 @@ function VoiceAttachment({ part }: { part: VoicePart }) {
   const isSilk = WEB_UNPLAYABLE_AUDIO.has(ext);
   // amr / 本地预览走 benz;silk 走 silk-wasm 解码;其余 http(mp3/wav 等)用原生 <audio>。
   const nativePlayable = safe && !isLocal && !WEB_UNPLAYABLE_AUDIO.has(ext) && !isAmr;
+  // 下载仅对远程附件开放:本地乐观预览(blob:/data:)的原始字节后端 download_attachment 取不到,
+  // 且未落库前不该让用户另存。VoicePart 无独立文件名,从 URL 末段取;无扩展名兜底 语音.<ext|amr>。
+  const downloadable = !isLocal && safe;
+  const voiceFileName = (() => {
+    const base = decodeURIComponent(part.url.split(/[?#]/, 1)[0]?.split("/").pop() ?? "");
+    return base.includes(".") ? base : `语音.${ext || "amr"}`;
+  })();
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const amrRef = useRef<BenzAMRInstance | null>(null);
   // silk 解码后的 WAV blob: URL,缓存避免二次点击重复取字节+解码;卸载时 revoke。
@@ -420,7 +427,7 @@ function VoiceAttachment({ part }: { part: VoicePart }) {
   }
 
   return (
-    <>
+    <span className="inline-flex items-center gap-1.5">
       <button
         type="button"
         onClick={handleClick}
@@ -450,6 +457,17 @@ function VoiceAttachment({ part }: { part: VoicePart }) {
           {STRINGS.attachment.voiceDuration(seconds)}
         </span>
       </button>
+      {downloadable && (
+        <button
+          type="button"
+          aria-label={`${STRINGS.attachment.download} ${STRINGS.attachment.voice}`}
+          title={STRINGS.attachment.download}
+          onClick={() => void downloadAttachment(part.url, voiceFileName)}
+          className="focus-ring grid size-8 shrink-0 place-items-center rounded-lg text-workbench-text-muted transition-colors hover:bg-workbench-surface-subtle hover:text-workbench-accent"
+        >
+          <Download size={15} strokeWidth={1.6} aria-hidden />
+        </button>
+      )}
       {(nativePlayable || isSilk) && (
         <audio
           ref={audioRef}
@@ -461,7 +479,7 @@ function VoiceAttachment({ part }: { part: VoicePart }) {
           onEnded={() => setPlaying(false)}
         />
       )}
-    </>
+    </span>
   );
 }
 

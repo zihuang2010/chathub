@@ -834,3 +834,66 @@ describe("ChatArea unread divider", () => {
     ]);
   });
 });
+
+describe("ChatArea 失败/发送中出站行抬升 z-index(防「重发」被下一行盖住点不动)", () => {
+  // 回归保护:失败气泡的「重发」状态行是 absolute 浮在气泡下方间距(下一行 pt)里的,虚拟列表里
+  // 下一行为 DOM 后续兄弟、其透明 pt 命中区会盖住浮出的按钮 → 点不动。修复是给「出站 + 发送中/
+  // 失败 + 未撤回」的行 relative + 抬升 z-index,让本行连同浮出的状态行画在下一行之上 → 可点击;
+  // 且不占额外高度(原 pb-6 会在下一行 pt 之上再叠 24px,凭空多出间距)。z 随 index 递减,保证
+  // 连续失败时上一条盖过下一条,都点得到。
+  function outMsg(id: string, status: NonNullable<Message["status"]>): Message {
+    return {
+      id,
+      conversationId: conversation.id,
+      direction: "out",
+      text: id,
+      parts: [{ kind: "text", text: id }],
+      sentAt: `2026-05-19T10:${id.padStart(2, "0")}:00.000Z`,
+      status,
+    };
+  }
+
+  function rowFor(plane: HTMLElement, text: string): HTMLElement {
+    const node = within(plane)
+      .getAllByTestId("message")
+      .find((n) => n.textContent === text);
+    expect(node, `应渲染出文本为 ${text} 的气泡`).toBeTruthy();
+    const row = node!.closest("[data-message-row-id]") as HTMLElement | null;
+    expect(row, `文本 ${text} 应在带 data-message-row-id 的行内`).toBeTruthy();
+    return row!;
+  }
+
+  it("出站 sending/failed 行 relative + 抬升 z-index;sent 与入站不抬升;连续失败上一条 z 更高", async () => {
+    const { getByTestId } = renderChatArea({
+      chatStoreKey: "c1",
+      messages: [
+        message("01"), // 入站
+        outMsg("02", "sent"), // 出站已发送
+        outMsg("03", "failed"), // 出站失败(重发按钮所在)
+        outMsg("04", "sending"), // 出站发送中(紧跟失败 → 连续场景)
+      ],
+    });
+    await act(async () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())));
+    await act(async () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())));
+
+    const plane = getByTestId("timeline-visible-plane");
+    const failedRow = rowFor(plane, "03");
+    const sendingRow = rowFor(plane, "04");
+
+    // 失败/发送中:relative + 正 z-index → 浮出的「重发」画在下一行之上,可点
+    expect(failedRow.className).toContain("relative");
+    expect(Number(failedRow.style.zIndex)).toBeGreaterThan(0);
+    expect(sendingRow.className).toContain("relative");
+    expect(Number(sendingRow.style.zIndex)).toBeGreaterThan(0);
+    // 连续失败:上一条(03)z 必须 > 下一条(04),否则 03 的「重发」又被 04 盖住
+    expect(Number(failedRow.style.zIndex)).toBeGreaterThan(Number(sendingRow.style.zIndex));
+    // 不再用 pb-6 预留高度(避免在下一行 pt 之上多叠间距)
+    expect(failedRow.className).not.toContain("pb-6");
+    expect(sendingRow.className).not.toContain("pb-6");
+    // 已发送 / 入站:无状态行,不抬升
+    expect(rowFor(plane, "02").className).not.toContain("relative");
+    expect(rowFor(plane, "02").style.zIndex).toBe("");
+    expect(rowFor(plane, "01").className).not.toContain("relative");
+    expect(rowFor(plane, "01").style.zIndex).toBe("");
+  });
+});
