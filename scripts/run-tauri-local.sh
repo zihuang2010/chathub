@@ -24,7 +24,7 @@ if [ -f "${ENV_CLIENT}" ]; then
   set -a; . "${ENV_CLIENT}"; set +a
 fi
 
-export CHATHUB_RELAY_URL="${CHATHUB_RELAY_URL:-http://47.92.169.112:30003}"
+export CHATHUB_RELAY_URL="${CHATHUB_RELAY_URL:-http://39.98.175.5:30003}"
 
 # tauri 端的 EnvFilter 读 CHATHUB_LOG (见 backends/src/logging.rs::init),
 # 不是 RUST_LOG。所有客户端 tracing target 都在 "chathub::*" 空间。
