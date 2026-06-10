@@ -73,6 +73,9 @@ export const RECENT_MESSAGE_LIMIT = 2;
 /** 详情中"客户轨迹"展示的最多条数。 */
 export const TIMELINE_LIMIT = 5;
 
+/** 账号筛选多选上限:服务端 listFriends 的 wecomAccountIds 单次最多 20 个。 */
+export const MAX_ACCOUNT_FILTER = 20;
+
 /** 分页可选页大小。 */
 export const PAGE_SIZE_OPTIONS = [20, 50, 100] as const;
 

@@ -30,7 +30,7 @@ import {
 import { ConversationList, type StatusTab } from "./ConversationList";
 import { CustomerDetails } from "./CustomerDetails";
 import { EmptyChatPane } from "./EmptyChatPane";
-import { isKnownMessageType } from "./data";
+import { conversationListPreview } from "./data";
 import type { Conversation, Message, QuickReply } from "./data";
 import { MessagesSkeleton } from "./MessagesSkeleton";
 import { useChatMessages } from "./useChatMessages";
@@ -101,9 +101,13 @@ function adaptEntryToConversation(entry: RecentFriendListEntry): Conversation {
   const effectiveTimeMs = Math.max(entry.lastMessageTimeMs, entry.localDraftAtMs);
   // 未知消息类型(如 lastMessageType=99)上游 lastMessageSummary 为空,直接展示会得到
   // 空白预览行;摘要为空且类型不在已知集合时回退「[未知消息]」占位,与气泡兜底语义一致。
-  const summary = clampField(entry.lastMessageSummary);
-  const preview =
-    summary || (isKnownMessageType(entry.lastMessageType) ? summary : STRINGS.unknown.preview);
+  // 但「完全没有最后消息」的行(type=0 且 time=0,如发起会话合成的空白占位行)预览留空,
+  // 区分逻辑收在 conversationListPreview。
+  const preview = conversationListPreview(
+    clampField(entry.lastMessageSummary),
+    entry.lastMessageType,
+    entry.lastMessageTimeMs,
+  );
   return {
     id: entry.conversationId,
     name: clampField(entry.externalName) || "(未命名)",

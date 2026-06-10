@@ -12,6 +12,8 @@ import { STRINGS } from "./strings";
 
 const SEARCH_DEBOUNCE_MS = 300;
 const WECOM_SOURCE_LOGO = "/wecom-logo.png";
+// fullScope 搜索不下发账号集;稳定引用避免每次 render 触发 useFriends 内部 memo 重算。
+const EMPTY_ACCOUNT_IDS: string[] = [];
 
 interface MessagesContactSearchProps {
   accounts: readonly Account[];
@@ -52,13 +54,15 @@ export const MessagesContactSearch = memo(function MessagesContactSearch({
   // 账号反查表:用结果里的 `wecomAccountId` 取归属账号(显示名 + 配色),展示账号徽章。
   const accountById = useMemo(() => new Map(accounts.map((a) => [a.id, a] as const)), [accounts]);
 
-  // 全量搜索:下发当前可管理的全部账号 id(新接口 wecomAccountIds 必传、至少 1 个)。
-  // 账号集顺带充当 enable 开关:空关键词 → 账号集传空 → useFriends 自动 disabled,不发请求。
-  const searchAccountIds = useMemo(
-    () => (debounced.length > 0 ? accounts.map((a) => a.id) : []),
-    [debounced, accounts],
+  // 全量搜索:走 fullScope(请求体省略 wecomAccountIds,业务后台按登录 token 全量),
+  // 不再罗列全部账号 id —— 服务端 wecomAccountIds 单次最多 20 个,账号多时罗列会超限。
+  // 空关键词 → fullScope=false 且账号集空 → useFriends 自动 disabled,不发请求。
+  const { friends, loading } = useFriends(
+    EMPTY_ACCOUNT_IDS,
+    { externalName: debounced },
+    undefined,
+    debounced.length > 0,
   );
-  const { friends, loading } = useFriends(searchAccountIds, { externalName: debounced });
 
   // 有 debounced 关键词即展开下拉(展示 搜索中/空/结果)。选中后由 suppressRef 压住不重开。
   useEffect(() => {

@@ -9,7 +9,12 @@ import { useFriendDetail } from "@/lib/api/useFriendDetail";
 import { useFriends } from "@/lib/api/useFriends";
 import type { Account } from "@/lib/types/account";
 
-import { DEFAULT_PAGE_SIZE, DEFAULT_VIEW_MODE, type CustomerViewMode } from "./constants";
+import {
+  DEFAULT_PAGE_SIZE,
+  DEFAULT_VIEW_MODE,
+  MAX_ACCOUNT_FILTER,
+  type CustomerViewMode,
+} from "./constants";
 import { CustomerDetailPanel } from "./CustomerDetailPanel";
 import { CustomerList } from "./CustomerList";
 import { CustomersHeader } from "./CustomersHeader";
@@ -66,13 +71,11 @@ export function CustomersPage({
   const [selectedAccountIds, setSelectedAccountIds] =
     useState<ReadonlySet<string>>(EMPTY_ACCOUNTS_SET);
 
-  // API 入参账号:选了账号则下发该子集;没选 → 下发当前可管理的全部账号 id
-  // (新接口 wecomAccountIds 必传、至少 1 个,不能再走「省略字段按 token 全量」)。
-  // accounts 尚未加载(空)时账号集为空 → useFriends 自动 disabled,待账号到位再拉。
-  const apiAccountIds = useMemo(() => {
-    const base = selectedAccountIds.size > 0 ? [...selectedAccountIds] : accounts.map((a) => a.id);
-    return base.sort();
-  }, [selectedAccountIds, accounts]);
+  // API 入参账号:选了账号则下发该子集(服务端 wecomAccountIds 单次最多 20 个,
+  // toggleAccount 已限制多选上限);没选 → fullScope(请求体省略 wecomAccountIds,
+  // 业务后台按登录 token 全量),不再罗列全部账号 id —— 账号多于 20 时罗列会超限被拒。
+  const apiAccountIds = useMemo(() => [...selectedAccountIds].sort(), [selectedAccountIds]);
+  const fullScope = selectedAccountIds.size === 0;
 
   // 搜索:输入即时回显,防抖 350ms 后下推服务端 externalName(按名称模糊匹配)。
   const [searchInput, setSearchInput] = useState("");
@@ -88,6 +91,7 @@ export function CustomersPage({
     apiAccountIds,
     { externalName },
     pageSize,
+    fullScope,
   );
 
   // 列表展示形态（卡片 / 列表），对应头部右上角两个视图切换按钮。
@@ -200,14 +204,22 @@ export function CustomersPage({
   }, [activeCustomer, activeDetail]);
 
   // ── 账号筛选 ─────────────────────────────────────────────────────────────
-  const toggleAccount = useCallback((id: string) => {
-    setSelectedAccountIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  }, []);
+  const toggleAccount = useCallback(
+    (id: string) => {
+      // 服务端 wecomAccountIds 单次最多 20 个:勾选(非取消)且已达上限时拒绝并提示。
+      if (!selectedAccountIds.has(id) && selectedAccountIds.size >= MAX_ACCOUNT_FILTER) {
+        showToast(`最多同时筛选 ${MAX_ACCOUNT_FILTER} 个账号`, { type: "info" });
+        return;
+      }
+      setSelectedAccountIds((prev) => {
+        const next = new Set(prev);
+        if (next.has(id)) next.delete(id);
+        else next.add(id);
+        return next;
+      });
+    },
+    [selectedAccountIds],
+  );
 
   const clearAccounts = useCallback(() => setSelectedAccountIds(EMPTY_ACCOUNTS_SET), []);
 

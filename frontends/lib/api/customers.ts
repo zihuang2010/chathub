@@ -54,7 +54,10 @@ export interface ListFriendsResponse {
 }
 
 export interface FetchFriendsParams {
-  /** 跨账号单 cursor keyset:传入需合并的所有账号。空数组时组件层应短路不调用。 */
+  /**
+   * 跨账号单 cursor keyset:传入需合并的账号子集(服务端单次最多 20 个);
+   * 空数组 = 全量(Tauri 端省略 wecomAccountIds,业务后台按登录 token 圈定)。
+   */
   accountIds: string[];
   /** 首页 ""(空串);续页填上轮 nextCursor。 */
   cursor?: string;
@@ -70,7 +73,8 @@ export interface FetchFriendsParams {
 
 /**
  * 按多账号 cursor 拉取一页好友。Tauri 端透传单 cursor 跨账号 keyset 请求,不写本地镜像。
- * `accountIds` 为空时不应调用(组件层做短路)。
+ * `accountIds` 为空 = 全量拉取(按登录 token 圈定);是否发起请求由 useFriends 的
+ * enabled/fullScope 语义决定,本函数不做短路。
  */
 export async function fetchFriends(params: FetchFriendsParams): Promise<ListFriendsResponse> {
   return invoke<ListFriendsResponse>("list_friends", {

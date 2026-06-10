@@ -1,6 +1,7 @@
 // 消息页的共享类型与 part 组装 helper(纯类型 + 纯函数,无 JSX / 无 React 依赖,任意消费者可用)。
 // 历史遗留的 mock 演示数据(MOCK_CONVERSATIONS / MOCK_MESSAGES_BY_CONVERSATION 等)在 API
 // 接通后已无消费者,已整体移除;真实数据走 useMessageHistory → chatStore。
+import { STRINGS } from "./strings";
 
 export interface Conversation {
   id: string;
@@ -161,6 +162,22 @@ export function attachmentKindFromCode(
 const KNOWN_MESSAGE_TYPES = new Set([1, 2, 3, 4, 5, 6]);
 export function isKnownMessageType(type: number): boolean {
   return KNOWN_MESSAGE_TYPES.has(type);
+}
+
+// 接待列表行的预览文案。「[未知消息]」兜底只针对**确实存在**一条最后消息但类型不识别的行;
+// 完全没有消息的行(type=0 且 time=0,如 open_friend_conversation 对从未聊过的客户合成的
+// 空白占位行)预览留空,否则空会话会被误标成「[未知消息]」。
+export function conversationListPreview(
+  summary: string,
+  lastMessageType: number,
+  lastMessageTimeMs: number,
+): string {
+  if (summary) return summary;
+  const hasLastMessage = lastMessageTimeMs > 0 || lastMessageType !== 0;
+  if (hasLastMessage && !isKnownMessageType(lastMessageType)) {
+    return STRINGS.unknown.preview;
+  }
+  return "";
 }
 
 function attachmentToPart(a: MessageAttachment): MessagePart {

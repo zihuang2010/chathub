@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { attachmentTypeFromExt, buildMessageParts } from "./data";
+import { attachmentTypeFromExt, buildMessageParts, conversationListPreview } from "./data";
 import type { Message, MessageAttachment, MessageBlock } from "./data";
 import { afterEach } from "vitest";
 
@@ -245,5 +245,28 @@ describe("attachmentTypeFromExt:按扩展名判定附件类型", () => {
     expect(attachmentTypeFromExt("png")).toBe("image");
     expect(attachmentTypeFromExt("mp4")).toBe("video");
     expect(attachmentTypeFromExt("pdf")).toBe("file");
+  });
+});
+
+describe("conversationListPreview:接待列表预览兜底", () => {
+  it("summary 非空时原样返回(与类型无关)", () => {
+    expect(conversationListPreview("[文件]", 3, 1_700_000_000_000)).toBe("[文件]");
+    expect(conversationListPreview("你好", 99, 1_700_000_000_000)).toBe("你好");
+  });
+
+  it("空白占位行(type=0 且 time=0,open_friend_conversation 无记录路径)→ 空预览,不显示[未知消息]", () => {
+    expect(conversationListPreview("", 0, 0)).toBe("");
+  });
+
+  it("有消息但类型不识别(type=99、有时间、summary 空)→ 回退[未知消息]", () => {
+    expect(conversationListPreview("", 99, 1_700_000_000_000)).toBe("[未知消息]");
+  });
+
+  it("有消息但类型缺省(type=0 但 time>0,summary 空)→ 回退[未知消息]", () => {
+    expect(conversationListPreview("", 0, 1_700_000_000_000)).toBe("[未知消息]");
+  });
+
+  it("已知类型 summary 空 → 空预览(现状不变)", () => {
+    expect(conversationListPreview("", 1, 1_700_000_000_000)).toBe("");
   });
 });
