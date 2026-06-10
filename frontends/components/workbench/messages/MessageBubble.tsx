@@ -167,7 +167,7 @@ function IncomingBubble({
   return (
     <div className="flex w-full items-start gap-2 self-start">
       <CustomerAvatar name={avatarName} color={avatarColor} avatarUrl={avatarUrl} size="sm" />
-      <div className="flex min-w-0 max-w-[min(76%,560px)] flex-col items-start">
+      <div className="flex min-w-0 max-w-[min(70%,560px)] flex-col items-start">
         <MessageContextMenu message={message} onAction={onAction}>
           <article
             tabIndex={0}
@@ -177,9 +177,10 @@ function IncomingBubble({
             className={cn(
               "group relative flex min-w-0 max-w-full flex-col gap-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-workbench-accent/40",
               mediaOnly
-                ? "rounded-lg"
+                ? "rounded-xl"
                 : cn(
-                    "rounded-lg rounded-tl-sm bg-workbench-bubble-in text-[13.5px] font-[450] leading-[1.65] text-workbench-text shadow-wb-bubble ring-1 ring-workbench-bubble-in-border/50",
+                    // 锚点角:靠头像一侧的上角收小(12px→6px),让气泡指向发送者(企微/Telegram 同款)。
+                    "rounded-xl rounded-tl-md bg-workbench-bubble-in text-[13.5px] font-[450] leading-[1.65] text-workbench-text shadow-wb-bubble ring-1 ring-workbench-bubble-in-border/60",
                     compact ? "px-3.5 py-1.5" : "px-4 py-2",
                   ),
             )}
@@ -211,7 +212,7 @@ function OutgoingBubble({
   return (
     <div className="flex w-full flex-row-reverse items-start gap-2 self-end">
       <AgentAvatar account={account} badge={synced ? <WecomAvatarBadge /> : undefined} />
-      <div className="relative flex min-w-0 max-w-[min(76%,560px)] flex-col items-end">
+      <div className="relative flex min-w-0 max-w-[min(70%,560px)] flex-col items-end">
         <MessageContextMenu message={message} onAction={onAction}>
           <article
             tabIndex={0}
@@ -223,12 +224,14 @@ function OutgoingBubble({
             className={cn(
               "group relative flex min-w-0 max-w-full flex-col gap-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-workbench-accent/40",
               mediaOnly
-                ? "rounded-lg"
+                ? "rounded-xl"
                 : cn(
-                    "rounded-lg rounded-tr-sm text-[13.5px] font-[450] leading-[1.65] text-workbench-text shadow-wb-bubble ring-1",
+                    // 锚点角:靠头像一侧的上角收小(12px→6px),与入向气泡镜像对称。
+                    "rounded-xl rounded-tr-md text-[13.5px] font-[450] leading-[1.65] text-workbench-text shadow-wb-bubble ring-1",
+                    // 出向蓝气泡:纯色 token 作回退,渐变(上浅下深)叠加其上。
                     synced
                       ? "bg-workbench-bubble-sync ring-workbench-bubble-sync-border/60"
-                      : "bg-workbench-bubble-out ring-workbench-bubble-out-border/50",
+                      : "bg-workbench-bubble-out bg-[image:var(--wb-bubble-out-gradient)] ring-workbench-bubble-out-border/50",
                     compact ? "px-3.5 py-1.5" : "px-4 py-2",
                   ),
             )}

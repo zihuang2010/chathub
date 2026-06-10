@@ -285,6 +285,11 @@ impl RecentSessionsStore {
     /// - current = 2(发送中) → 仅接受 3/4(忽略 incoming=1)
     /// - current = 4(失败) → 仅接受 3;忽略 1/2
     /// - current = 3(成功,终态) → 忽略 1/2/4,只接受 3(幂等)
+    ///
+    /// **已读水位门**(V31):`unread_count`/`has_unread` 仅当 incoming 消息时间 > `read_at_ms`
+    /// 才覆写。markRead 后,同版本重放与同消息守卫分支虽可进门更新其余摘要列,但不得把已清零的
+    /// 未读回灌(防"切出会话后红标瞬时复活");多端已读同步走 MARK_READ 事件 → [`Self::clear_unread`],
+    /// 不经此门,不受影响。
     pub async fn apply_summary(&self, s: RecentSessionSummary) -> Result<bool, StateError> {
         let now = now_unix_ms();
         let conn = self.pool.pool().get().await?;
@@ -303,8 +308,8 @@ impl RecentSessionsStore {
                        END, \
                        last_message_summary     = ?5, \
                        last_message_time_ms     = MAX(last_message_time_ms, ?6), \
-                       unread_count             = ?7, \
-                       has_unread               = ?8, \
+                       unread_count = CASE WHEN ?6 > read_at_ms THEN ?7 ELSE unread_count END, \
+                       has_unread   = CASE WHEN ?6 > read_at_ms THEN ?8 ELSE has_unread   END, \
                        last_message_sort_key_ms = MAX(last_message_sort_key_ms, ?9), \
                        gmt_modified_time        = ?10, \
                        updated_at_ms            = ?11, \
@@ -484,12 +489,15 @@ impl RecentSessionsStore {
         Ok(())
     }
 
-    /// 标记会话已读:本地乐观清零未读列(`unread_count=0`、`has_unread=0`)。
+    /// 标记会话已读:本地乐观清零未读列(`unread_count=0`、`has_unread=0`),并把已读水位
+    /// `read_at_ms` 抬到行内 `last_message_time_ms`(V31,服务端消息时间,不用客户端时钟)。
     /// employee_id 校验,行不存在或跨员工时 no-op。
     ///
     /// 注意 `unread_count`/`has_unread` 是**远端权威列**(不同于 pinned/muted 的纯本地列):
-    /// 真正的清除以远端 markRead 接口已成功为前提,本地直写仅为即时 UI 反馈;后续远端刷新
-    /// 返回 `unread=0` 后由 `upsert_remote_in_tx` 收敛(同 sortKey 的 stale 事件回灌为已知 minor race)。
+    /// 真正的清除以远端 markRead 接口已成功为前提,本地直写仅为即时 UI 反馈。此后
+    /// `last_message_time_ms <= read_at_ms` 的迟到/重放事件不得回灌未读
+    /// (见 [`upsert_remote_in_tx`] / [`Self::apply_summary`] 的水位门),根治"切出会话后
+    /// 列表红标瞬时复活";时间更新的新消息照常抬未读。
     pub async fn clear_unread(
         &self,
         employee_id: &str,
@@ -501,7 +509,8 @@ impl RecentSessionsStore {
         conn.interact(move |c| -> Result<(), StateError> {
             c.execute(
                 "UPDATE hub_conversation_recents \
-                   SET unread_count = 0, has_unread = 0 \
+                   SET unread_count = 0, has_unread = 0, \
+                       read_at_ms = MAX(read_at_ms, last_message_time_ms) \
                  WHERE employee_id = ?1 AND conversation_id = ?2",
                 rusqlite::params![employee_id, id],
             )?;
@@ -823,6 +832,8 @@ fn upsert_remote_in_tx(
     // version-guard:仅当 incoming 复合版本 (sort_key_ms, gmt_modified_time) ≥ stored 才覆盖
     // 远端列。冷 cursor 旧页(低版本)在实时事件(高版本)之后到达时,WHERE 为假 → DO UPDATE
     // 整体跳过(stale 页被丢弃),修掉"旧页无条件覆盖新行"的 bug。新行(无冲突)照常 INSERT。
+    // 已读水位门(V31):unread_count/has_unread 仅当 incoming 消息时间 > read_at_ms 才覆写,
+    // 同版本(= sortKey)重放不得把 markRead 已清零的未读回灌(防红标瞬时复活)。
     c.execute(
         "INSERT INTO hub_conversation_recents ( \
            conversation_id, wecom_account_id, employee_id, wecom_name, wecom_account, wecom_alias, \
@@ -850,8 +861,10 @@ fn upsert_remote_in_tx(
            last_send_status       = excluded.last_send_status, \
            last_message_summary   = excluded.last_message_summary, \
            last_message_time_ms   = excluded.last_message_time_ms, \
-           unread_count           = excluded.unread_count, \
-           has_unread             = excluded.has_unread, \
+           unread_count = CASE WHEN excluded.last_message_time_ms > read_at_ms \
+                               THEN excluded.unread_count ELSE unread_count END, \
+           has_unread   = CASE WHEN excluded.last_message_time_ms > read_at_ms \
+                               THEN excluded.has_unread ELSE has_unread END, \
            updated_at_ms          = excluded.updated_at_ms, \
            last_message_sort_key_ms = excluded.last_message_sort_key_ms, \
            gmt_modified_time        = excluded.gmt_modified_time, \
@@ -1223,6 +1236,97 @@ mod tests {
         let got = store.list_top(E, None, 10).await.unwrap();
         assert_eq!(got[0].unread_count, 7, "摘要未读应已更新");
         assert_eq!(got[0].last_message_summary, "新的客户消息");
+    }
+
+    // ─── 已读水位:markRead 后迟到/重放事件不得回灌未读(防列表红标瞬时复活)──────
+    // 场景:切出会话时 markRead → clear_unread 清零;此后同版本(=sortKey)或同消息守卫
+    // 分支的迟到/重放摘要若仍带旧 unread_count,会把红标短暂复活,直到更新的事件再清。
+    // 修复:clear_unread 把 read_at_ms 抬到行内 last_message_time_ms(服务端时间,不用
+    // 客户端时钟);未读列仅当 incoming 消息时间 > read_at_ms 才接受覆写。
+
+    #[tokio::test]
+    async fn clear_unread_blocks_same_version_summary_replay() {
+        let pool = SqlitePool::in_memory().await.unwrap();
+        let store = RecentSessionsStore::new(pool);
+        store
+            .upsert_remote_many(&[sample_remote("c1", "wa-1", 500, 3)])
+            .await
+            .unwrap();
+        store.clear_unread(E, "c1").await.unwrap();
+        // 同版本(=sortKey 500,空 gmt 放行)的迟到摘要重放:其余摘要列照常收敛,
+        // 未读列必须被已读水位挡住。
+        store
+            .apply_summary(sample_summary("c1", 500, 3))
+            .await
+            .unwrap();
+        let got = store.list_top(E, None, 10).await.unwrap();
+        assert_eq!(got[0].unread_count, 0, "同版本摘要重放不得回灌未读");
+        assert!(!got[0].has_unread, "has_unread 同样不得回灌");
+    }
+
+    #[tokio::test]
+    async fn clear_unread_blocks_same_message_guard_replay() {
+        let pool = SqlitePool::in_memory().await.unwrap();
+        let store = RecentSessionsStore::new(pool);
+        store
+            .upsert_remote_many(&[sample_remote("c1", "wa-1", 500, 3)])
+            .await
+            .unwrap();
+        store.clear_unread(E, "c1").await.unwrap();
+        // 同 lastLocalMessageId(sample_remote 默认 "msg_c1")走「同消息守卫」恒过版本门
+        // (即便 sortKey 更小),未读列必须仍被已读水位挡住。
+        let mut s = sample_summary("c1", 400, 3);
+        s.last_local_message_id = "msg_c1".into();
+        store.apply_summary(s).await.unwrap();
+        let got = store.list_top(E, None, 10).await.unwrap();
+        assert_eq!(got[0].unread_count, 0, "同消息守卫分支不得回灌未读");
+        assert!(!got[0].has_unread);
+    }
+
+    #[tokio::test]
+    async fn clear_unread_blocks_same_version_remote_upsert_replay() {
+        let pool = SqlitePool::in_memory().await.unwrap();
+        let store = RecentSessionsStore::new(pool);
+        store
+            .upsert_remote_many(&[sample_remote("c1", "wa-1", 500, 3)])
+            .await
+            .unwrap();
+        store.clear_unread(E, "c1").await.unwrap();
+        // 同版本整行重放(冷 cursor 页 / 重复事件经 upsert_remote 路径):
+        // 版本门(= sortKey,gmt "">="")放行整行覆盖,未读列必须被已读水位挡住。
+        store
+            .upsert_remote_one(sample_remote("c1", "wa-1", 500, 3))
+            .await
+            .unwrap();
+        let got = store.list_top(E, None, 10).await.unwrap();
+        assert_eq!(got[0].unread_count, 0, "同版本 UPSERT 重放不得回灌未读");
+        assert!(!got[0].has_unread);
+    }
+
+    #[tokio::test]
+    async fn new_message_after_clear_unread_still_raises_unread() {
+        let pool = SqlitePool::in_memory().await.unwrap();
+        let store = RecentSessionsStore::new(pool);
+        store
+            .upsert_remote_many(&[sample_remote("c1", "wa-1", 500, 3)])
+            .await
+            .unwrap();
+        store.clear_unread(E, "c1").await.unwrap();
+        // 真正的新消息(时间 > 已读水位)照常抬未读 —— 水位只挡"旧消息的重放",不挡新消息。
+        store
+            .apply_summary(sample_summary("c1", 600, 1))
+            .await
+            .unwrap();
+        let got = store.list_top(E, None, 10).await.unwrap();
+        assert_eq!(got[0].unread_count, 1, "新消息应正常抬未读");
+        assert!(got[0].has_unread);
+        // upsert_remote 路径同样放行新消息。
+        store
+            .upsert_remote_one(sample_remote("c1", "wa-1", 700, 2))
+            .await
+            .unwrap();
+        let got = store.list_top(E, None, 10).await.unwrap();
+        assert_eq!(got[0].unread_count, 2, "新消息经 UPSERT 路径也应抬未读");
     }
 
     #[tokio::test]

@@ -112,6 +112,8 @@ export const DOC_EXTS = [
   "ppt",
   "pptx",
   "txt",
+  "md",
+  "markdown",
   "zip",
   "rar",
 ] as const;
@@ -119,7 +121,7 @@ export const DOC_EXTS = [
 // 按文件后缀(扩展名,不含点;大小写不敏感)判定附件类型,进而决定后端 messageType:
 // image=2 / voice=4 / video / file=3。收(历史消息)发(本地选文件)两侧共用此单一规则,
 // 避免分类漂移(曾因发送侧硬编码 "file" 导致 amr 语音被按 messageType=3 当文件发出)。
-// 其余后缀(pdf/doc/docx/xls/xlsx/ppt/pptx/txt/zip/rar 等)落入 file=3。
+// 其余后缀(pdf/doc/docx/xls/xlsx/ppt/pptx/txt/md/zip/rar 等)落入 file=3。
 export function attachmentTypeFromExt(ext: string): MessageAttachment["type"] {
   const lower = ext.toLowerCase();
   if ((IMAGE_EXTS as readonly string[]).includes(lower)) return "image";

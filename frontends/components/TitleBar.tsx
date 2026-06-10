@@ -49,6 +49,13 @@ export function TitleBar({ tone = "transparent" }: TitleBarProps) {
     };
   }, []);
 
+  // 把最大化状态镜像到 <html data-maximized>:Windows 透明窗口的圆角壳/8px 边距/阴影
+  // (index.css)在最大化时必须撤掉,否则屏幕四周露缝。mac 的 zoom 行为维持原样不受影响
+  // (CSS 选择器只对 windows 加了 :not([data-maximized="true"]) 条件)。
+  useEffect(() => {
+    document.documentElement.dataset.maximized = String(maximized);
+  }, [maximized]);
+
   const safeWindow = () => {
     try {
       return getCurrentWindow();

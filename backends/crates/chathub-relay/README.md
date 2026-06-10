@@ -34,7 +34,8 @@ Rust gRPC + HTTP gateway。Plan 6 起从"有状态认证服务器"重构为**无
 | `RELAY_LOG_FILE_PREFIX`      | `relay`                                                                | 日志文件前缀,生成 `<prefix>.YYYY-MM-DD.log`       |
 | `RELAY_LOG_MAX_FILES`        | `7`                                                                    | 按日保留的日志份数上限,超出删最旧;0 非法          |
 | `RELAY_LOG_STDOUT`           | `compact`                                                              | stdout 格式:`off` / `compact` / `pretty` / `json` |
-| `RUST_LOG`                   | `info,chathub_relay=debug`                                             | EnvFilter 标准入口                                |
+| `RELAY_SOURCE_JSON_LOG`      | `false`                                                                | push 原始 body 旁路落盘(含消息明文,排障期才开)    |
+| `RUST_LOG`                   | `info,nacos_sdk::common::remote::grpc=error`                           | EnvFilter 标准入口;排障设 `chathub_relay=debug`   |
 | `RELAY_OAUTH_CLIENT_ID`      | `rh_wxchat`                                                            | OAuth2 Basic client id(login 时用)                |
 | `RELAY_OAUTH_CLIENT_SECRET`  | `rh_wxchat`                                                            | OAuth2 Basic client secret(login 时用)            |
 | `RELAY_PATH_LOGIN`           | `/account-app/oauth2/token`                                            | OAuth2 token endpoint                             |
@@ -170,7 +171,7 @@ curl -X POST http://127.0.0.1:50052/rpc/v1/wecomAggregate/notify/push \
 
 ## 运维注意
 
-- **日志**:JSON 文件 + stdout 双 sink;`RELAY_LOG_*` 控制;`RUST_LOG` 控级别。文件按日轮转并保留最近 `RELAY_LOG_MAX_FILES` 份(默认 7,超出自动删最旧),磁盘占用有界。文件名带后缀:主日志 `<prefix>.<date>.log`、source-json 旁路 `relay-source-json.<date>.jsonl`(后缀让保留清理只动日志文件,不误删 `relay.db`)
+- **日志**:JSON 文件 + stdout 双 sink;`RELAY_LOG_*` 控制;`RUST_LOG` 控级别。文件按日轮转并保留最近 `RELAY_LOG_MAX_FILES` 份(默认 7,超出自动删最旧),磁盘占用有界。文件名带后缀:主日志 `<prefix>.<date>.log`、source-json 旁路 `relay-source-json.<date>.jsonl`(默认关,排障期设 `RELAY_SOURCE_JSON_LOG=true` 开启;后缀让保留清理只动日志文件,不误删 `relay.db`)
 - **事件日志保留**:`events_v2` 默认 TTL 7 天(stage 5+ 可配),超窗口客户端走兜底 API
 - **关键不变量**:relay **不解析** 业务 `payload_json`;新增 eventType 不需 relay 升级
 - **DownstreamRoutes**:加新业务方法只改 env + 业务后台部署,relay 不动

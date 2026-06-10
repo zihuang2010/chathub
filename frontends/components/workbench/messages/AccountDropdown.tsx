@@ -77,8 +77,9 @@ export function AccountDropdown({
           role="dialog"
           aria-label={title ?? STRINGS.conversationList.accountListLabel}
           className={cn(
-            // 与 AccountPicker 对齐:固定宽 + 最大高 + flex 列 + overflow-hidden
-            "z-20 flex max-h-[480px] w-[280px] flex-col overflow-hidden rounded-xl border border-workbench-line bg-workbench-surface shadow-wb-popover-strong outline-none",
+            // 布局与 AccountPicker 对齐(最大高 + flex 列 + overflow-hidden);宽度收窄:
+            // 本下拉是单选短账号名场景,280px 会留出大片空白,240px 更贴合内容密度。
+            "z-20 flex max-h-[480px] w-[240px] flex-col overflow-hidden rounded-xl border border-workbench-line bg-workbench-surface shadow-wb-popover-strong outline-none",
             // 开/合补间:fade + zoom + 贴边滑入,150ms;reduced-motion 直接跳过。
             "duration-150 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[side=bottom]:slide-in-from-top-1 data-[side=left]:slide-in-from-right-1 data-[side=right]:slide-in-from-left-1 data-[side=top]:slide-in-from-bottom-1 motion-reduce:animate-none",
           )}

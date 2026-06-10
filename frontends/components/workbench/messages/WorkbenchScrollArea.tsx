@@ -1,5 +1,6 @@
 import { type ReactNode, type WheelEventHandler, useCallback, useEffect, useRef } from "react";
 
+import { isMac } from "@/lib/platform";
 import { cn } from "@/lib/utils";
 
 import { AT_BOTTOM_THRESHOLD } from "./constants";
@@ -202,7 +203,9 @@ export function WorkbenchScrollArea({
   // 远离顶部 / 向下 / 未超限一律放行原生,不接管滚动(避免 WKWebView 上与惯性双写打架)。
   // 与 onWheelCapture(scrollTop<=1 才介入)区间不重叠;reduce-motion 下禁用。
   useEffect(() => {
-    if (!smoothWheel) return;
+    // 仅 macOS:该钳制为 WKWebView 触摸板惯性(连续小 deltaY)设计;Windows 鼠标滚轮一格
+    // deltaY≈100-120,远超 MAX_STEP=60,启用会让近顶一屏内每格都被钳、滚动发粘。
+    if (!smoothWheel || !isMac) return;
     const viewport = internalRef.current;
     if (!viewport) return;
     const reduceMotion =

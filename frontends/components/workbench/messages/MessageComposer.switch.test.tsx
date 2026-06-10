@@ -20,8 +20,10 @@ vi.mock("./composer/AiPolishPopover", () => ({
   AiPolishPopover: () => null,
 }));
 
+import { setConversationDraft } from "@/lib/api/recentFriends";
+
 import { MessageComposer } from "./MessageComposer";
-import { setDraft, getDraft, EMPTY_DOC } from "./useDraftStore";
+import { setDraft, getDraft, flushDraftToBackend, EMPTY_DOC } from "./useDraftStore";
 
 function docWith(text: string): JSONContent {
   return { type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text }] }] };
@@ -147,6 +149,31 @@ describe("MessageComposer 持久化编辑器:切会话不重建", () => {
     expect(editableEl(container)?.textContent).toContain("乙稿");
     // setContent 不 emitUpdate → 不应把内容回写,A 仍为空草稿。
     expect(getDraft("conv-A")).toEqual(EMPTY_DOC);
+  });
+
+  // 回归:草稿之间纯切换(零编辑)不得把会话标脏。否则切走时 flushDraftToBackend 会冗余
+  // 调一次后端 set_draft,后端无条件把 local_draft_at_ms 抬成 now → 接待列表顺序对调。
+  it("纯切换不编辑:切走草稿会话时零后端草稿同步(防列表重排)", async () => {
+    setDraft("conv-A", docWith("甲稿"));
+    setDraft("conv-B", docWith("乙稿"));
+    // 等价于"草稿此前已同步过"的稳态(如 localStorage 冷启动恢复):清掉 dirty 与调用计数。
+    flushDraftToBackend("conv-A");
+    flushDraftToBackend("conv-B");
+    const syncSpy = vi.mocked(setConversationDraft);
+    syncSpy.mockClear();
+
+    const { rerender } = render(<MessageComposer conversationId="conv-A" {...baseProps} />);
+    await act(async () => undefined);
+
+    // 切到 B 并停留超过草稿节流窗口(120ms):若 setContent 误触发 onUpdate,此刻 B 已被标脏。
+    rerender(<MessageComposer conversationId="conv-B" {...baseProps} />);
+    await act(async () => await new Promise((r) => setTimeout(r, 180)));
+
+    // 切回 A:若 B 被误标脏,cleanup 的 flushDraftToBackend(conv-B) 会打出一次后端同步。
+    rerender(<MessageComposer conversationId="conv-A" {...baseProps} />);
+    await act(async () => undefined);
+
+    expect(syncSpy).not.toHaveBeenCalled();
   });
 
   // 量化证据:存活编辑器数 O(1) 而非 O(切换次数)——这才是"频繁切换内存不再单调增长"的根因证明。

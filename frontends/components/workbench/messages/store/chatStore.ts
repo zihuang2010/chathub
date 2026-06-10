@@ -451,34 +451,12 @@ function seamUpsert(slice: ConversationSlice, messages: Message[]): Conversation
     }
   }
 
-  // failed 重排 + leftover 贴底:沿用塌缩路径的「withFailed + tailLeftover」语义,保失败行 sentAt
-  // 归位、乐观贴底。rawOrder 已是缝合后的真实+已收敛序列;在其上把 failed 抽出按 sentAt 插回、
-  // 非失败 leftover(在途乐观)贴底。leftover 取自 pendingOptimistic 中未被配对收敛的。
-  const leftover = pendingOptimistic.filter((e) => !convergedByMatch.has(e));
-  const atCache = new Map<string, number>();
-  const at = (id: string) => {
-    const cached = atCache.get(id);
-    if (cached !== undefined) return cached;
-    const t = new Date(byId[id]?.sentAt ?? 0).getTime();
-    const v = Number.isNaN(t) ? 0 : t;
-    atCache.set(id, v);
-    return v;
-  };
-  // spine = rawOrder 去掉 failed(failed 稍后按 sentAt 插回)+ 去掉非失败 leftover(贴底)。
-  const leftoverIds = new Set(leftover.map((e) => e.id));
-  const spine = rawOrder.filter((id) => byId[id]?.status !== "failed" && !leftoverIds.has(id));
-  const failedIds = Object.keys(byId)
-    .filter((id) => byId[id]?.status === "failed")
-    .sort((a, b) => at(a) - at(b));
-  const tailLeftover = leftover.filter((e) => e.status !== "failed").map((e) => e.id);
-  const withFailed: string[] = [];
-  let fi = 0;
-  for (const id of spine) {
-    while (fi < failedIds.length && at(failedIds[fi]) < at(id)) withFailed.push(failedIds[fi++]);
-    withFailed.push(id);
-  }
-  while (fi < failedIds.length) withFailed.push(failedIds[fi++]);
-  const order = [...withFailed, ...tailLeftover];
+  // 显示位置保序(与塌缩路径同语义):rawOrder 本身就是保位序列(乐观原位换权威 id、其余原位
+  // 保留),failed/sending/sent leftover 一律原位不动。旧「failed 按 sentAt 插回 + 非失败 leftover
+  // 贴底」会在重发(failed→sending 就地改)后的下一次缝合 reconcile 把气泡挪到贴底 → 向下跳+闪;
+  // 且 sentAt 是客户端时间,时钟偏差下归位本就不可靠。缝合路径不引入新条目(区间外权威已丢弃),
+  // 故无「本批新出现追底」一说,order = rawOrder 即完整结果。
+  const order = rawOrder;
 
   // 边界刷新:缝合不改 atCacheBottom(仍非贴底);windowOldest/Newest 从缝合后 order 两端有 sortKey
   // 实体派生(内容多为就地更新、边界通常不变)。内容等价短路同塌缩路径:复用原引用。
@@ -522,7 +500,7 @@ function windowMetaUnchanged(slice: ConversationSlice, meta: WindowMeta): boolea
 /**
  * 尾部追加更新一页(loadNewer)。newer 是 sortKey 升序、且严格大于 windowNewest(后端 list_newer
  * 严格 > 锚点保证),按 id 去重后插在「最后一个有 sortKey 的真实条目之后」。fresh 都严格 >
- * windowNewest,接在真实尾部即为正确时序;所有更靠后的乐观气泡(无 sortKey,含按 sentAt 归位
+ * windowNewest,接在真实尾部即为正确时序;所有更靠后的乐观气泡(无 sortKey,含显示位置保序
  * 落在中段的失败气泡)保持各自原位 —— 不能假设「乐观一律连续贴尾」,故不能简单插在「第一个乐观」
  * 之前(否则新页被插到中段乐观之前 → 较新 real 排到较旧 real 之前、时间线错序)。不重排。
  * 更新 windowNewestSortKey + atCacheBottom。
@@ -598,8 +576,8 @@ export function dropFromTop(slice: ConversationSlice, n: number): ConversationSl
 /**
  * 从尾部裁 n 条较新真实行(上滚翻历史超预算 → 删离视口最远的较新尾部)。
  * **关键约束:绝不裁剪未收敛乐观气泡** —— 乐观气泡(无 serverId / status sending|failed)不在
- * SQLite,裁了不可恢复。失败乐观气泡按 sentAt 归位可落在 order **中段**(两条 real 之间,见
- * replaceAuthoritative 的失败行 sentAt 归位),故不能假设「乐观一律连续贴尾」。实现:从尾向前
+ * SQLite,裁了不可恢复。失败乐观气泡按显示位置保序可落在 order **中段**(两条 real 之间,见
+ * replaceAuthoritative 的 priorIndex 保位),故不能假设「乐观一律连续贴尾」。实现:从尾向前
  * **逐条判定** —— 乐观气泡(无论在尾还是中段)一律跳过、绝不裁;只裁真实行(在 SQLite 可恢复),
  * 优先裁最新的真实行;累计裁满 n 条即停。survivors(被跳过的乐观 + 未裁的真实)保持相对顺序。
  * 更新 windowNewestSortKey;atCacheBottom=false。无真实行可裁 → 复用引用。

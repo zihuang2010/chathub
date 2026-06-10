@@ -120,7 +120,7 @@ const DOC_ACCEPT = acceptFor(
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet," +
     "application/vnd.ms-powerpoint," +
     "application/vnd.openxmlformats-officedocument.presentationml.presentation," +
-    "text/plain,application/zip,application/vnd.rar",
+    "text/plain,text/markdown,application/zip,application/vnd.rar",
   DOC_EXTS,
 );
 
@@ -359,9 +359,10 @@ export function MessageComposer({
   // 重建整个 TipTap/ProseMirror 编辑器(本 UI 单次开销最大的对象),频繁切换接待列表时是
   // JS 堆锯齿上涨与切换卡顿的主因。现编辑器跨会话常驻,切会话时把新会话草稿载入同一实例并
   // 聚焦末尾——等价于原重挂时 `content=draft + autofocus:"end"` 的可见行为,但零编辑器重建。
-  // 用 layout effect 在绘制前换内容,避免新会话标题下短暂残留旧会话草稿文本的闪帧。setContent
-  // 沿用 submitDraft 写法不 emitUpdate(TipTap v3 默认),不会把内容回写 store。上一会话的草稿
-  // 已由输入时的 onChange 实时写入 store、并由上面的 cleanup 刷到后端,故此处只读取新会话草稿。
+  // 用 layout effect 在绘制前换内容,避免新会话标题下短暂残留旧会话草稿文本的闪帧。注意
+  // TipTap v3 的 setContent 默认 emitUpdate=true,必须显式传 false:否则纯切换也会触发
+  // onUpdate → setDraft 把新会话误标 dirty,切走时冗余 flush 到后端,后端 set_draft 无条件
+  // 把 local_draft_at_ms 抬成 now → 草稿会话仅因被点开过就跳到接待列表顶部(顺序对调 bug)。
   const prevConversationIdRef = useRef(conversationId);
   useLayoutEffect(() => {
     if (prevConversationIdRef.current === conversationId) return;
@@ -371,7 +372,7 @@ export function MessageComposer({
     const editor = editorRef.current;
     if (!editor) return; // 编辑器尚未就绪(极早期):本次跳过,下次切换再载入最新会话
     prevConversationIdRef.current = conversationId;
-    editor.chain().setContent(getDraft(conversationId)).focus("end").run();
+    editor.chain().setContent(getDraft(conversationId), { emitUpdate: false }).focus("end").run();
   }, [conversationId, flushPendingDraft]);
 
   // ─── Attachment helpers ────────────────────────────────────────────────────

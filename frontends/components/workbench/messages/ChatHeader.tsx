@@ -2,32 +2,46 @@ import type { ReactNode } from "react";
 import { FolderOpen, MoreHorizontal } from "lucide-react";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 
-import { CustomerAvatar } from "./Avatar";
+import { CustomerAvatar, WeChatSourceBadge } from "./Avatar";
 import type { Conversation } from "./data";
 import { STRINGS } from "./strings";
+
+const WECOM_SOURCE_LOGO = "/wecom-logo.png";
 
 export function ChatHeader({ conversation }: { conversation: Conversation }) {
   return (
     <div className="flex min-h-[76px] items-center justify-between gap-4 border-b border-workbench-line bg-workbench-surface px-4 py-3.5">
       <div className="flex min-w-0 flex-1 items-center gap-3">
+        {/* 客户来源标识与接待列表一致:微信角标贴头像左下角(WeChatSourceBadge 共用),
+            不再用「@微信」文字胶囊,避免同一语义两套视觉。 */}
         <CustomerAvatar
           name={conversation.name}
           color={conversation.avatarColor}
           avatarUrl={conversation.avatar}
           size="header"
-        />
+        >
+          <WeChatSourceBadge />
+        </CustomerAvatar>
         <div className="flex min-w-0 flex-col gap-1 leading-tight">
-          <div className="flex min-w-0 items-center gap-2">
-            <span className="truncate text-wb-sm font-medium text-workbench-text">
-              {conversation.name}
+          <span className="truncate text-wb-sm font-medium text-workbench-text">
+            {conversation.name}
+          </span>
+          {/* 归属行:企微 logo + 账号名,与列表行 SourceChip 的「归属哪个企微账号接待」
+              语义/视觉对齐;不再显示「归属：」文字前缀,语义由 logo 承担,hover 的
+              title 仍带前缀以保留完整含义;账号名过长时截断。 */}
+          <span
+            title={`${STRINGS.header.fromAccountLabel}${conversation.account}`}
+            className="flex min-w-0 items-center gap-1.5 text-wb-2xs"
+          >
+            <img
+              src={WECOM_SOURCE_LOGO}
+              alt=""
+              aria-hidden
+              className="size-3.5 shrink-0 rounded-[2px] object-contain"
+            />
+            <span className="min-w-0 truncate font-medium text-workbench-text-secondary">
+              {conversation.account}
             </span>
-            <span className="text-wb-3xs shrink-0 rounded bg-workbench-wechat-bg px-1.5 py-px font-medium text-workbench-wechat-text">
-              {STRINGS.header.fromWeChat}
-            </span>
-          </div>
-          <span className="truncate text-wb-2xs font-medium text-workbench-text-muted">
-            {STRINGS.header.fromAccountLabel}
-            <span className="font-medium text-workbench-text">{conversation.account}</span>
           </span>
         </div>
       </div>

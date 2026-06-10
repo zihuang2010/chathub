@@ -349,14 +349,29 @@ function historyToMessage(
   // 否则气泡渲染为空白。统一兜底为「未知消息」占位 part,由 MessageContent 显示「暂不支持」提示。
   const built = buildMessageParts(text, undefined, attachments);
   const parts: MessagePart[] = built.length > 0 ? built : [{ kind: "unknown" }];
+  const status = direction === "out" ? mapSendStatus(h.sendStatus) : undefined;
+  // 出站失败行回填顶层重发字段(messageType/filePath/...):失败气泡被权威重读(outbox 落库行)
+  // 替换后,重发分支(useChatActions resend)靠这些字段走「复用 objectName 直接重发」路径。
+  // 不回填则附件失败消息被误判为纯文本 → 发出空文本必败,且 failBubble 会用 messageType=1 +
+  // attachments "[]" 覆盖 outbox 行,气泡退化成「暂不支持该消息类型」。仅失败行回填,
+  // 维持「纯文本/入站/成功消息不写」的既有字段语义。mediaId 空串(未上传成功)不写 filePath,
+  // 由重发守卫提示重新选择文件。
+  const failedAtt = status === "failed" ? h.attachments[0] : undefined;
   return {
     id: h.localMessageId,
     conversationId,
     direction,
     text,
     sentAt: isoOf(h.messageTime),
-    status: direction === "out" ? mapSendStatus(h.sendStatus) : undefined,
+    status,
     parts,
+    ...(status === "failed" && { messageType: h.messageType }),
+    ...(failedAtt && {
+      filePath: failedAtt.mediaId || undefined,
+      fileName: failedAtt.fileName || undefined,
+      fileSize: failedAtt.fileSize || undefined,
+      durationSeconds: failedAtt.durationSeconds ?? undefined,
+    }),
     // 撤回标记:服务端 revoked=true → 折叠为"已撤回"系统行(MessageBubble 已有渲染)。
     // false/缺省一律收敛为 undefined,与其余可选字段保持"不存在=未撤回"语义。
     isRecalled: h.revoked || undefined,

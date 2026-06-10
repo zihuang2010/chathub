@@ -9,7 +9,7 @@ export const STRINGS = {
     library: "资料库",
     more: "更多",
     fromWeChat: "@微信",
-    fromAccountLabel: "归属于：",
+    fromAccountLabel: "归属：",
   },
   rangePill: {
     currentRange: "当前范围",
@@ -32,13 +32,15 @@ export const STRINGS = {
     clearSearch: "清空搜索",
     /** 点击搜索结果打开会话失败(网络/服务端异常)时的提示。 */
     openConversationFailed: "打开会话失败,请重试",
-    filter: "筛选",
-    accountFallback: "全部账号",
-    statusAll: "全部",
+    /** 工具栏左侧会话类型筛选:当前仅支持单聊,静态展示(不可下拉)。 */
+    chatTypeSingle: "单聊",
+    chatTypeFilterTitle: "会话类型筛选(当前仅支持单聊)",
+    statusMessages: "消息",
     statusUnread: "未读",
-    statusMentioned: "@我",
     fromShort: "来自: ",
     noConversation: "暂无匹配会话",
+    /** 「未读」标签下列表为空时的占位文案(与"消息"标签的 noConversation 区分语义)。 */
+    noUnread: "暂无未读消息",
     accountFilterTitle: "按账号筛选",
     statusTabsLabel: "会话状态筛选",
     accountListLabel: "账号列表",
@@ -136,7 +138,7 @@ export const STRINGS = {
     imageFormatOnly: "仅支持 jpg / jpeg / png / gif / webp 图片格式",
     voiceFormatOnly: "仅支持 amr / mp3 / wav 语音格式",
     fileFormatOnly:
-      "仅支持 pdf / doc / docx / xls / xlsx / ppt / pptx / txt / zip / rar 等文件格式",
+      "仅支持 pdf / doc / docx / xls / xlsx / ppt / pptx / txt / md / zip / rar 等文件格式",
     // 单个附件体积上限(图片/文件),与 MessageComposer 的 MAX_UPLOAD_BYTES 对应。
     fileTooLarge: "单个文件不能超过 200 MB",
   },
@@ -155,6 +157,7 @@ export const STRINGS = {
   },
   attachment: {
     download: "下载",
+    preview: "预览",
     play: "播放",
     pause: "暂停",
     image: "图片",

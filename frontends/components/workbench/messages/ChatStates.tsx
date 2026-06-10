@@ -61,13 +61,9 @@ function SkeletonRow({
   );
 }
 
+// 无历史/新建会话:不展示任何提示文案,保持空白,仅占住正文区域维持布局
 export function ChatEmptyState() {
-  return (
-    <div className="flex flex-1 flex-col items-center justify-center gap-2 bg-workbench-surface px-6 py-10 text-center">
-      <p className="text-wb-sm font-medium text-workbench-text">{STRINGS.empty.noMessages}</p>
-      <p className="text-wb-2xs text-workbench-text-muted">{STRINGS.empty.startChat}</p>
-    </div>
-  );
+  return <div className="flex-1 bg-workbench-surface" />;
 }
 
 export function ChatErrorState({ error, onRetry }: { error: Error; onRetry: () => void }) {

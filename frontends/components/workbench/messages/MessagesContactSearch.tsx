@@ -105,8 +105,10 @@ export const MessagesContactSearch = memo(function MessagesContactSearch({
     <div ref={rootRef} className="relative">
       <div
         className={cn(
-          "flex h-9 items-center gap-2 rounded-lg border border-workbench-line bg-workbench-surface px-2.5 text-workbench-text-muted transition-colors",
-          "focus-within:border-workbench-accent/40 focus-within:ring-2 focus-within:ring-workbench-accent/20",
+          // surface-elevated/70:白色半透明,叠在列表底色上比实心 surface 更轻盈;
+          // shadow-wb-card 给一层轻浮起;暗色主题下 token 自动跟随,不硬编码白色。
+          "flex h-9 items-center gap-2 rounded-lg border border-workbench-line bg-workbench-surface-elevated/70 px-2.5 text-workbench-text-muted shadow-wb-card transition-colors",
+          "focus-within:border-workbench-accent/50 focus-within:ring-2 focus-within:ring-workbench-accent/25",
         )}
       >
         <Search size={15} className="shrink-0" />

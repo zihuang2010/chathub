@@ -319,3 +319,22 @@ function hashSeed(seed: string): number {
 export function pickAvatarColor(seed: string): string {
   return AVATAR_PALETTE[hashSeed(seed) % AVATAR_PALETTE.length];
 }
+
+// letter-tile 柔和配色:低饱和双色渐变 + 白字。整体压在 40–60% 饱和、50–66% 亮度的
+// 莫兰迪色调,与工作台冷蓝灰主题(低饱和浅底、accent 215)同一气质,避免高饱和色块
+// 在柔和界面里过于抢眼。色相与 AVATAR_PALETTE 逐项对齐(琥珀/蓝/红/绿/紫/橙/天蓝/粉),
+// 同一 seed 在新旧两套色板落同一色系。固定色值不随主题切换,亮/暗两套底色上都成立。
+const AVATAR_GRADIENT_PALETTE = [
+  "linear-gradient(135deg, hsl(36 60% 62%), hsl(28 54% 52%))",
+  "linear-gradient(135deg, hsl(214 58% 64%), hsl(221 50% 55%))",
+  "linear-gradient(135deg, hsl(8 56% 66%), hsl(358 46% 56%))",
+  "linear-gradient(135deg, hsl(150 38% 56%), hsl(158 40% 46%))",
+  "linear-gradient(135deg, hsl(262 46% 68%), hsl(256 40% 58%))",
+  "linear-gradient(135deg, hsl(22 58% 62%), hsl(14 52% 54%))",
+  "linear-gradient(135deg, hsl(200 52% 60%), hsl(208 50% 50%))",
+  "linear-gradient(135deg, hsl(330 44% 66%), hsl(338 40% 56%))",
+];
+
+export function pickAvatarGradient(seed: string): string {
+  return AVATAR_GRADIENT_PALETTE[hashSeed(seed) % AVATAR_GRADIENT_PALETTE.length];
+}

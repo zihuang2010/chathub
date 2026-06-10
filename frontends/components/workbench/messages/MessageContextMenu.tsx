@@ -69,7 +69,7 @@ export function MessageContextMenu({ message, onAction, children }: MessageConte
       <ContextMenu.Trigger asChild>{children}</ContextMenu.Trigger>
       <ContextMenu.Portal>
         <ContextMenu.Content
-          className="z-30 min-w-[140px] overflow-hidden rounded-md border border-workbench-line bg-workbench-surface p-1 shadow-wb-popover"
+          className="z-30 min-w-[96px] overflow-hidden rounded-md border border-workbench-line bg-workbench-surface p-1 shadow-wb-popover"
           onCloseAutoFocus={(e) => e.preventDefault()}
         >
           <Item onSelect={handleCopy}>{STRINGS.contextMenu.copy}</Item>
@@ -105,7 +105,7 @@ function Item({
     <ContextMenu.Item
       onSelect={onSelect}
       className={cn(
-        "cursor-default rounded px-2 py-1.5 text-wb-2xs outline-none transition-colors",
+        "cursor-default rounded px-2.5 py-1 text-wb-2xs outline-none transition-colors",
         "data-[highlighted]:bg-workbench-surface-subtle",
         danger ? "text-workbench-danger" : "text-workbench-text",
       )}

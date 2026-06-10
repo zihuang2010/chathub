@@ -607,6 +607,14 @@ export function useChatActions({
             showToast(STRINGS.toast.outboxReselectFile, { type: "error" });
             break;
           }
+          // 存量损坏行兜底:无 filePath 且文本为空(历史上附件失败行曾被空文本重发覆盖成
+          // type=1 + attachments "[]",渲染为「暂不支持」占位)。正常纯文本不可能为空
+          // (handleSend 拒发空文本),放行只会发出空文本必败,故同样拦截提示重新选择文件。
+          const textForResend = entity?.text ?? message.text;
+          if (!filePathForGuard && !textForResend.trim()) {
+            showToast(STRINGS.toast.outboxReselectFile, { type: "error" });
+            break;
+          }
           if (wecomAccountId && externalUserId) {
             void clearOutboxRow({ conversationId: conversation.id, clientMsgId }).catch((e) =>
               console.warn("[outbox] clear_outbox_row 失败(不阻塞)", e),

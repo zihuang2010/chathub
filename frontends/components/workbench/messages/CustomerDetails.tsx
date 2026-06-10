@@ -7,7 +7,7 @@ import type { Customer, QuickReply } from "./data";
 import { AvatarTile } from "./Avatar";
 import { QuickRepliesPanel } from "./QuickRepliesPanel";
 import { STRINGS } from "./strings";
-import { pickAvatarColor } from "./utils";
+import { pickAvatarGradient } from "./utils";
 import { CUSTOMER_DETAILS_WIDTH } from "./constants";
 
 type DetailsTab = "profile" | "trace";
@@ -147,7 +147,7 @@ function ProfileHeader({
       <AvatarTile
         name={customer.name}
         avatarUrl={customer.avatarUrl}
-        color={pickAvatarColor(customer.id)}
+        color={pickAvatarGradient(customer.id)}
         size={40}
       />
       <div className="flex min-w-0 flex-col gap-0.5">

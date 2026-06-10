@@ -16,8 +16,10 @@ import { LogoutConfirmDialog } from "./LogoutConfirmDialog";
 import { NAV_ITEMS, type NavItem, type Section } from "./nav";
 import { UserMenu } from "./UserMenu";
 
-// 头像回退底色 —— 贴主题的蓝色品牌渐变,作为左栏顶部的视觉锚点。
-const AVATAR_GRADIENT = "linear-gradient(140deg, #6FA8F0 0%, #3E7BD6 100%)";
+// 头像回退底色 —— 多彩极光渐变:靛蓝→紫→品红→橙→青循环,首尾同色保证背景平移时无缝。
+// 配合 chAvatarAurora 动画(background-position 缓慢往返)形成彩色渐进过渡的流动效果。
+const AVATAR_GRADIENT =
+  "linear-gradient(135deg, #6366F1 0%, #A855F7 22%, #EC4899 45%, #F97316 68%, #22D3EE 86%, #6366F1 100%)";
 
 // 底部波浪 viewBox 高/宽 与无缝平移量。窄栏(144px)里要"丝滑大波澜",必须用超长波长:
 // 周期 2560(viewBox 宽 1280 只露半个周期 → 同一时刻一道平缓大波,坡度低)。路径画到
@@ -372,27 +374,59 @@ function ProfileRow({ label, value }: { label: string; value?: string }) {
   );
 }
 
+// VIP 飘带配色 —— 目前没有 VIP 等级数据,默认统一灰色;后续接入等级后在此按等级取色即可。
+const VIP_RIBBON_BG = "linear-gradient(135deg, #A8AFBA 0%, #828A96 100%)";
+const VIP_RIBBON_FOLD = "#646C78";
+
+// 贴在头像左上角的 VIP 飘带(旗帜形):左端外探 4px、其下方用小折角营造"绕到头像背后"
+// 的立体感,右端 V 形缺口收尾。纯装饰,aria-hidden。
+function VipRibbon() {
+  return (
+    <span
+      aria-hidden
+      className="pointer-events-none absolute -left-1 top-[5px] z-10 drop-shadow-[0_1px_2px_rgba(15,23,42,0.25)]"
+    >
+      <span
+        className="grid h-[13px] w-[29px] place-items-center text-[8px] font-bold leading-none text-white"
+        style={{
+          background: VIP_RIBBON_BG,
+          // 右端切出 V 形缺口,形成旗帜飘带轮廓。
+          clipPath: "polygon(0 0, 100% 0, calc(100% - 5px) 50%, 100% 100%, 0 100%)",
+        }}
+      >
+        VIP
+      </span>
+      {/* 左端外探部分下方的折角(border 三角):衔接飘带与头像左边缘。 */}
+      <span
+        className="absolute left-0 top-full size-0 border-l-4 border-t-4 border-l-transparent"
+        style={{ borderTopColor: VIP_RIBBON_FOLD }}
+      />
+    </span>
+  );
+}
+
 function AvatarMark({ avatarUrl, displayName }: { avatarUrl?: string; displayName?: string }) {
   // 存储"导致失败的那个 url"，avatarUrl 变化时失败态自动失效，无需 useEffect。
   const [failedUrl, setFailedUrl] = useState<string | undefined>(undefined);
   const showImg = !!avatarUrl && avatarUrl !== failedUrl;
 
-  if (showImg) {
-    return (
-      <img
-        // 渲染前 http://→https://，避免 macOS 正式包 secure context 的混合内容拦截。
-        src={secureImageUrl(avatarUrl)}
-        alt=""
-        onError={() => setFailedUrl(avatarUrl)}
-        className="size-11 shrink-0 rounded-lg object-cover shadow-[0_4px_10px_rgba(62,123,214,0.28)]"
-      />
-    );
-  }
-
-  return (
+  const tile = showImg ? (
+    <img
+      // 渲染前 http://→https://，避免 macOS 正式包 secure context 的混合内容拦截。
+      src={secureImageUrl(avatarUrl)}
+      alt=""
+      onError={() => setFailedUrl(avatarUrl)}
+      className="size-11 shrink-0 rounded-lg object-cover shadow-[0_4px_10px_rgba(62,123,214,0.28)]"
+    />
+  ) : (
     <div
-      className="relative grid size-11 shrink-0 place-items-center overflow-hidden rounded-lg text-[16px] font-semibold text-white shadow-[0_4px_10px_rgba(62,123,214,0.28)]"
-      style={{ background: AVATAR_GRADIENT }}
+      className="relative grid size-11 shrink-0 place-items-center overflow-hidden rounded-lg text-[16px] font-semibold text-white shadow-[0_4px_12px_rgba(168,85,247,0.32)]"
+      style={{
+        background: AVATAR_GRADIENT,
+        // 背景超采样 3 倍,动画只平移 background-position,颜色之间缓慢渐进过渡。
+        backgroundSize: "300% 300%",
+        animation: "chAvatarAurora 8s ease-in-out infinite",
+      }}
     >
       {/* 顶部高光,增加立体感/高级感。 */}
       <span
@@ -404,6 +438,14 @@ function AvatarMark({ avatarUrl, displayName }: { avatarUrl?: string; displayNam
       />
       <span className="relative">{initialOf(displayName)}</span>
     </div>
+  );
+
+  // 外层 relative 壳承载左上角 VIP 飘带 overlay,真实头像/首字回退两条分支共用。
+  return (
+    <span className="relative inline-block shrink-0">
+      {tile}
+      <VipRibbon />
+    </span>
   );
 }
 

@@ -4,6 +4,7 @@ import { showToast } from "@/components/ui/toast";
 import { isSafeUrl } from "@/components/workbench/messages/utils";
 
 import { openExternal } from "./openExternal";
+import { sanitizeFileName } from "./sanitizeFileName";
 
 /**
  * 下载附件到本地。
@@ -25,7 +26,8 @@ export async function downloadAttachment(url: string, fileName?: string): Promis
     }
     const a = document.createElement("a");
     a.href = url;
-    if (fileName) a.download = fileName;
+    const safeName = sanitizeFileName(fileName);
+    if (safeName) a.download = safeName;
     a.target = "_blank";
     a.rel = "noopener noreferrer";
     document.body.appendChild(a);
@@ -38,7 +40,8 @@ export async function downloadAttachment(url: string, fileName?: string): Promis
   const { save } = await import("@tauri-apps/plugin-dialog");
   let dest: string | null | undefined;
   try {
-    dest = await save({ defaultPath: fileName });
+    // 建议名先清理 Windows 禁字符/控制字符/结尾点空格,否则对话框或写盘可能失败。
+    dest = await save({ defaultPath: sanitizeFileName(fileName) });
   } catch {
     return;
   }

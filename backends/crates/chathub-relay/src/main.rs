@@ -27,8 +27,9 @@ async fn main() -> anyhow::Result<()> {
     let cfg = Config::from_env()?;
     let _log_guard = init_tracing(&cfg)?;
 
-    // push 原始入站 body 旁路落盘(env RELAY_SOURCE_JSON_LOG,默认开):独立按日轮转文件,
-    // 每行一条原样 body,供上线初期 diff/jq 比对。复用 cfg.log.dir(init_tracing 已建)。
+    // push 原始入站 body 旁路落盘(env RELAY_SOURCE_JSON_LOG,默认关 — 原文含消息明文/PII,
+    // 排障期显式开):独立按日轮转文件,每行一条原样 body,供 diff/jq 比对。
+    // 复用 cfg.log.dir(init_tracing 已建)。
     // _source_json_guard 必须活到进程退出,否则丢未刷盘的行。
     // 按日轮转 + 保留 max_files 份(防无限膨胀);后缀 `jsonl` 把清理范围锁死在本旁路文件,
     // 不波及主日志(`.log`)与 relay.db。
@@ -348,11 +349,11 @@ fn init_tracing(cfg: &Config) -> anyhow::Result<WorkerGuard> {
         .build(&cfg.log.dir)?;
     let (file_writer, guard) = tracing_appender::non_blocking(file_appender);
 
-    // 默认过滤:压掉 nacos-sdk gRPC 健康检查的启动期噪声(connection 未注册 / 转换失败,
-    // SDK 自述"重试成功即可忽略")。保留 error 级,真实故障仍会冒出。设 RUST_LOG 可整体覆盖本默认。
-    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-        EnvFilter::new("info,chathub_relay=debug,nacos_sdk::common::remote::grpc=error")
-    });
+    // 默认过滤:relay 自身 info 级(debug 含 login username / forward query 等业务字段,
+    // 不默认落盘;排障时设 RUST_LOG=chathub_relay=debug 临时开启)。另压掉 nacos-sdk gRPC
+    // 健康检查的启动期噪声(SDK 自述"重试成功即可忽略"),保留 error 级,真实故障仍会冒出。
+    let env_filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new("info,nacos_sdk::common::remote::grpc=error"));
 
     let file_layer = tracing_subscriber::fmt::layer()
         .json()

@@ -53,12 +53,21 @@
     --wb-surface-subtle: 220 22% 97%;
     --wb-surface-soft: 218 30% 96%;
     --wb-surface-active: 216 70% 96%;
-    /* Bubble pair — 4% L below surface so block edges read without a
-       hard 1px border. Outgoing keeps a soft blue tint for identity. */
-    --wb-bubble-in: 220 20% 96%;
-    --wb-bubble-in-border: 220 18% 90%;
-    --wb-bubble-out: 213 65% 91%;
-    --wb-bubble-out-border: 213 55% 84%;
+    /* Bubble pair — 入向纯白卡面(参考 Telegram/飞书:白卡浮于近白底,边界靠
+       1px 半透明描边 + 轻阴影呈现);出向浅蓝渐变(上浅下深 4-5% L,给平面气泡
+       加一层"光从上方来"的体积感)。--wb-bubble-out 保留为渐变的回退纯色。 */
+    --wb-bubble-in: 0 0% 100%;
+    /* 入向描边特意加深:白底(100%)对近白背景(99%)无填充对比,边界全靠这条 1px
+       hairline。Windows 低分屏上软阴影衰减明显(同步气泡踩过 95% vs 99% 糊片的坑),
+       描边须独立可见。 */
+    --wb-bubble-in-border: 220 14% 81%;
+    --wb-bubble-out: 213 88% 93%;
+    --wb-bubble-out-border: 213 55% 82%;
+    --wb-bubble-out-gradient: linear-gradient(
+      180deg,
+      hsl(211 100% 95.5%) 0%,
+      hsl(214 85% 90.5%) 100%
+    );
     /* 多端同步出站气泡:中性「纸感」暖灰底,与 in 灰 / out 蓝都拉开,传达"非本端直发"。
        仅 synced_from_other_device=true 的出站气泡使用(见 MessageBubble)。
        亮度下调 95%→90%(从「比 surface 低 4%」加深到「低 9%」)并略增暖色饱和度:
@@ -96,7 +105,7 @@
     /* Elevation tokens — single source of truth for popover/bubble shadows. */
     --wb-shadow-popover: 0 8px 24px rgba(15, 23, 42, 0.1);
     --wb-shadow-popover-strong: 0 12px 32px rgba(15, 23, 42, 0.1);
-    --wb-shadow-bubble: 0 1px 2px rgba(15, 23, 42, 0.04), 0 8px 24px -12px rgba(15, 23, 42, 0.08);
+    --wb-shadow-bubble: 0 1px 2px rgba(15, 23, 42, 0.05), 0 2px 8px -2px rgba(15, 23, 42, 0.05);
     --wb-shadow-badge: 0 1px 2px rgba(239, 68, 68, 0.24);
     --wb-shadow-card: 0 1px 2px rgba(15, 23, 42, 0.06);
     --wb-shadow-card-soft: 0 1px 3px rgba(15, 23, 42, 0.045);
@@ -143,10 +152,12 @@
     --wb-surface-subtle: 220 14% 17%;
     --wb-surface-soft: 220 14% 15%;
     --wb-surface-active: 216 40% 25%;
+    /* 暗色下"纯白入向"映射为浅一档的卡面;出向渐变同样上浅下深保持体积感。 */
     --wb-bubble-in: 220 14% 19%;
-    --wb-bubble-in-border: 220 12% 26%;
-    --wb-bubble-out: 216 35% 30%;
+    --wb-bubble-in-border: 220 12% 27%;
+    --wb-bubble-out: 216 38% 30%;
     --wb-bubble-out-border: 216 35% 38%;
+    --wb-bubble-out-gradient: linear-gradient(180deg, hsl(216 40% 33%) 0%, hsl(216 38% 28%) 100%);
     --wb-bubble-sync: 222 16% 22%;
     --wb-bubble-sync-border: 222 14% 30%;
     --wb-line: 220 12% 26%;
@@ -177,7 +188,7 @@
        surfaces than navy-tinted shadows. */
     --wb-shadow-popover: 0 8px 24px rgba(0, 0, 0, 0.4);
     --wb-shadow-popover-strong: 0 12px 32px rgba(0, 0, 0, 0.5);
-    --wb-shadow-bubble: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 24px -12px rgba(0, 0, 0, 0.5);
+    --wb-shadow-bubble: 0 1px 2px rgba(0, 0, 0, 0.3), 0 2px 8px -2px rgba(0, 0, 0, 0.35);
     --wb-shadow-badge: 0 1px 2px rgba(239, 68, 68, 0.4);
     --wb-shadow-card: 0 1px 2px rgba(0, 0, 0, 0.3);
     --wb-shadow-card-soft: 0 1px 3px rgba(0, 0, 0, 0.25);
@@ -262,12 +273,39 @@
   }
 }
 
+/* ─── 语音消息波形 ─────────────────────────────────────────────────────────
+ * 静止时各条保持组件内联 height 的固有高度;播放中整组条做错峰 scaleY 呼吸
+ * (相位由组件内联 animation-delay 决定)。reduced-motion 下全部静止。 */
+@keyframes wb-voice-wave {
+  0%,
+  100% {
+    transform: scaleY(0.4);
+  }
+  50% {
+    transform: scaleY(1);
+  }
+}
+
+.wb-voice-bar {
+  transform-origin: center;
+}
+
+.wb-voice-playing .wb-voice-bar {
+  animation: wb-voice-wave 1.1s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .wb-voice-playing .wb-voice-bar {
+    animation: none;
+  }
+}
+
 /*
  * On macOS the window is configured with `transparent: true` (see
  * tauri.macos.conf.json), so the OS-level shape is rectangular but visually
  * we clip the app shell to a 10px rounded rectangle. The corner triangles
  * outside the shell are transparent → desktop shows through, giving the
- * native macOS rounded-window look. On Windows we leave the corners square.
+ * native macOS rounded-window look.
  */
 /*
  * The macOS native window shadow (`shadow: true`) renders as a hard dark
@@ -277,11 +315,19 @@
  * here. For that shadow to be visible, the app-shell must sit inside an
  * 8px transparent margin — which is what the body padding below provides.
  */
-html[data-os="mac"] body {
+/*
+ * Windows 同款圆角壳(tauri.windows.conf.json 同样 transparent:true + shadow:false),
+ * 与 macOS 观感对齐;但 Windows 用户常用最大化,贴满屏幕时必须撤掉边距/圆角/描边/阴影,
+ * 否则四周露缝 —— 用 TitleBar 镜像到 <html data-maximized> 的状态做 :not() 门控。
+ * mac 不加该门控,zoom 行为维持原样。
+ */
+html[data-os="mac"] body,
+html[data-os="windows"]:not([data-maximized="true"]) body {
   padding: 8px;
 }
 
-html[data-os="mac"] #app-shell {
+html[data-os="mac"] #app-shell,
+html[data-os="windows"]:not([data-maximized="true"]) #app-shell {
   border-radius: 10px;
   /* Real CSS border (not box-shadow spread) so the gray ring follows the
      rounded corner exactly — box-shadow's 0-spread outline can render
@@ -347,6 +393,32 @@ html[data-os="windows"] {
 
 *::-webkit-scrollbar-thumb:hover {
   background: hsl(var(--wb-thumb-hover));
+}
+
+/* 接待列表专用:拇指自动隐藏 + 再压短一档。
+ * 轨道仍由 overflow-y-scroll 常驻(6px 宽度不回收,防「消息↔未读」切换宽度跳动),
+ * 只把拇指默认画成透明。显隐不走 :hover 伪类(WebKit 上祖先 :hover 变化不会
+ * 重绘 scrollbar 伪元素,表现为悬停不出现/移出不消失),改由 ConversationList
+ * 在区域 mouseenter/mouseleave 时切换 .wb-scrollbar-on —— 元素自身 class 变化
+ * 必然触发样式重算,显隐可靠。只覆盖 background-color,保留全局的
+ * background-clip:content-box。WebKit/Blink 不支持 scrollbar 伪元素 transition,
+ * 显隐为瞬时切换。 */
+.wb-scrollbar-autohide::-webkit-scrollbar-thumb {
+  background-color: transparent;
+}
+
+.wb-scrollbar-autohide.wb-scrollbar-on::-webkit-scrollbar-thumb {
+  background-color: hsl(var(--wb-thumb));
+}
+
+.wb-scrollbar-autohide.wb-scrollbar-on::-webkit-scrollbar-thumb:hover {
+  background-color: hsl(var(--wb-thumb-hover));
+}
+
+.wb-scrollbar-autohide::-webkit-scrollbar-thumb:vertical {
+  min-height: 36px;
+  max-height: 88px;
+  border-block: 10px solid transparent;
 }
 
 /* ─── Splash & Login shared animations ─────────────────────────────────────
@@ -618,10 +690,24 @@ html[data-os="windows"] {
   }
 }
 
+/* 侧边栏字母头像的多彩极光底:背景超采样后缓慢往返平移 background-position,
+   让多停靠点彩色渐变彼此渐进过渡、持续流动。 */
+@keyframes chAvatarAurora {
+  0%,
+  100% {
+    background-position: 0% 50%;
+  }
+
+  50% {
+    background-position: 100% 50%;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   /* 降级开屏/登录页等装饰动画为静态:仍保留其颜色/形状构图(纯静态背景),只去掉漂移、
      脉冲、旋转等持续运动,尊重系统"减少动态效果"偏好。这些动画均以内联 style 形式挂载,
      故用属性选择器逐一兜底。注意:仅覆盖纯装饰动画,不触碰功能性必须的状态反馈。 */
+  [style*="chAvatarAurora"],
   [style*="chSidebarHalo"],
   [style*="chTitleOrb"],
   [style*="chFadeUpSmall"],

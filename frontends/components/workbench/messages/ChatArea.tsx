@@ -28,7 +28,7 @@ import { cn } from "@/lib/utils";
 import { ChatEmptyState, ChatErrorState, ChatLoadingState } from "./ChatStates";
 import { ChatHeader } from "./ChatHeader";
 import { buildPolishContext } from "./composer/polishContext";
-import { COMPOSER_DEFAULT_HEIGHT } from "./constants";
+import { AT_BOTTOM_THRESHOLD, COMPOSER_DEFAULT_HEIGHT } from "./constants";
 import type { Conversation, Message, QuickReply } from "./data";
 import { resolvePrependShift, type FirstItemIndexAnchor } from "./hooks/firstItemIndexAnchor";
 import { useChatActions, type SendMessageOptions } from "./hooks/useChatActions";
@@ -66,12 +66,17 @@ function timelineRowKey(item: MessageTimelineItem): string {
 // 给 Scroller 加横向 padding 会把整个 viewport 右移 padding-left,右侧(出站头像)随之溢出被裁。
 // overflow-x-hidden 保留作安全网:Scroller 内联只设 overflow-y:auto,CSS 会把另一轴 visible 提升为
 // auto,内容稍超宽(亚像素/绝对定位浮出元素)就冒横条;竖向聊天不需横滚,显式 hidden 关掉。
+// overflowY:scroll(合并进 Virtuoso 内联写入的 style,类名盖不过内联):常驻 6px 滚动条轨道,
+// 短会话(无溢出)↔长会话切换时内容宽度不变。不用 scrollbar-gutter:stable —— WKWebView 按
+// 原生滚动条宽度(≈15px)预留 gutter,与自定义 ::-webkit-scrollbar 的 6px 不一致(接待列表
+// 已踩坑);常驻轨道在 macOS WebKit 与 Windows WebView2 行为一致。
 const Scroller = forwardRef<HTMLDivElement, ScrollerProps>(function Scroller(props, ref) {
   return (
     <div
       ref={ref}
       {...props}
-      className="overflow-x-hidden overscroll-contain bg-workbench-surface [overflow-anchor:none] [scrollbar-gutter:stable]"
+      style={{ ...props.style, overflowY: "scroll" }}
+      className="overflow-x-hidden overscroll-contain bg-workbench-surface [overflow-anchor:none]"
     />
   );
 });
@@ -494,20 +499,55 @@ export const ChatArea = memo(function ChatArea({
   // 此时再命令式滚动会提前掀开遮罩、露出尚未落位的首帧 → 切会话「从上往下滑一下」的闪。故跟踪
   // chatStoreKey,重挂后的「首个有数据帧」只标记就绪、不滚,之后的同会话追加才接管。
   const stickRef = useRef({ key: chatStoreKey, ready: false });
+  // 贴底补针句柄:估高→实测收敛期内重申贴底用(双 rAF + 一次定时点位)。
+  const stickPinRafRef = useRef(0);
+  const stickPinTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const cancelStickPins = useCallback(() => {
+    if (stickPinRafRef.current) {
+      cancelAnimationFrame(stickPinRafRef.current);
+      stickPinRafRef.current = 0;
+    }
+    if (stickPinTimerRef.current !== null) {
+      clearTimeout(stickPinTimerRef.current);
+      stickPinTimerRef.current = null;
+    }
+  }, []);
   useLayoutEffect(() => {
     const stick = stickRef.current;
     if (stick.key !== chatStoreKey) {
       stick.key = chatStoreKey;
       stick.ready = false;
+      cancelStickPins(); // 切会话:残留补针作废(新实例首屏贴底归 initialTopMostItemIndex)
     }
     if (!stick.ready) {
       if (timelineItems.length > 0) stick.ready = true; // 首个有数据帧:贴底归 initialTopMostItemIndex
       return;
     }
-    if (wasAtBottomRef.current) {
+    if (!wasAtBottomRef.current) return;
+    const pin = () => {
+      // 每针自检:仍是同会话且仍贴底才落针。用户上滚时滚动事件先行把 wasAtBottomRef
+      // 翻 false(经 atBottomStateChange),补针随即放弃,不会从用户手里抢走滚动。
+      if (stickRef.current.key !== chatStoreKey || !wasAtBottomRef.current) return;
       virtuosoRef.current?.scrollToIndex({ index: "LAST", align: "end" });
-    }
-  }, [timelineItems, chatStoreKey]);
+    };
+    pin();
+    // 补针:首针发生在新行实测之前,Virtuoso 按估高(defaultItemHeight/均值)计算落点;实测落地后
+    // 行高若大于估高,视口就停在差值之上(看不到刚发送的消息),且 atBottom 翻 false 使 followOutput
+    // 停止跟随 → 永久偏上。Virtuoso 内置的 SIZE_INCREASED 看门狗只兜数据刷新后 100ms,兜不住更晚
+    // 的高度收敛。这里在双 rAF(实测落地的下一帧)与 160ms 定时两个点位各重申一次贴底,有界、无循环。
+    cancelStickPins();
+    stickPinRafRef.current = requestAnimationFrame(() => {
+      stickPinRafRef.current = requestAnimationFrame(() => {
+        stickPinRafRef.current = 0;
+        pin();
+      });
+    });
+    stickPinTimerRef.current = setTimeout(() => {
+      stickPinTimerRef.current = null;
+      pin();
+    }, 160);
+  }, [timelineItems, chatStoreKey, cancelStickPins]);
+  useEffect(() => cancelStickPins, [cancelStickPins]);
 
   // ── 未读 below 计数 ────────────────────────────────────────────────────────
   // 非贴底时尾部新增 INCOMING 消息累计 below 计数(给「N 条新消息」滚到底按钮用)。头部 prepend
@@ -935,6 +975,9 @@ const TimelinePlane = memo(function TimelinePlane({
         firstItemIndex={snapshot.firstItemIndex}
         initialTopMostItemIndex={{ index: "LAST", align: "end" }}
         defaultItemHeight={DEFAULT_ROW_HEIGHT}
+        // 离底判定阈值放宽到 24px(react-virtuoso 默认 4px):估高→实测的轻微落点偏差不再把
+        // atBottom 翻 false,followOutput 持续跟随;与迁移前 useScrollController 的口径一致。
+        atBottomThreshold={AT_BOTTOM_THRESHOLD}
         increaseViewportBy={INCREASE_VIEWPORT_BY}
         components={VIRTUOSO_COMPONENTS}
         startReached={current ? startReached : undefined}

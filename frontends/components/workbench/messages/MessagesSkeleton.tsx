@@ -49,7 +49,7 @@ export function MessagesSkeleton() {
           <div className="h-7 w-14 animate-pulse rounded-md bg-workbench-surface-subtle" />
         </div>
         {/* 列表行占位 × 6 */}
-        <div className="flex flex-col gap-1 px-2 pt-1">
+        <div className="flex flex-col gap-0.5 px-2 pt-1">
           {Array.from({ length: 6 }).map((_, i) => (
             <SkeletonRow key={i} />
           ))}
@@ -63,14 +63,15 @@ export function MessagesSkeleton() {
 }
 
 // 单条会话行骨架。首屏整页骨架与切账号时的列表骨架(ConversationList)共用,保证两处占位一致。
+// min-h-[60px] 对齐 ConversationItem 真实行高(头像 44 + py-2 16,两行文本居中),
+// 数据到位切换时不抖。两条 bar 模拟"名称 / 预览"两行主信息结构。
 export function SkeletonRow() {
   return (
-    <div className="grid grid-cols-[44px_minmax(0,1fr)] items-center gap-3 rounded-xl px-3 py-2">
+    <div className="grid min-h-[60px] grid-cols-[44px_minmax(0,1fr)] items-center gap-3 rounded-lg px-3 py-2">
       <div className="size-11 animate-pulse rounded-lg bg-workbench-surface-subtle" />
-      <div className="flex flex-col gap-1.5">
+      <div className="flex flex-col gap-2">
         <div className="h-3 w-24 animate-pulse rounded bg-workbench-surface-subtle" />
         <div className="h-2.5 w-32 animate-pulse rounded bg-workbench-surface-subtle" />
-        <div className="h-2.5 w-20 animate-pulse rounded bg-workbench-surface-subtle" />
       </div>
     </div>
   );

@@ -29,6 +29,7 @@ import {
 } from "./constants";
 import { ConversationList, type StatusTab } from "./ConversationList";
 import { CustomerDetails } from "./CustomerDetails";
+import { EmptyChatPane } from "./EmptyChatPane";
 import { isKnownMessageType } from "./data";
 import type { Conversation, Message, QuickReply } from "./data";
 import { MessagesSkeleton } from "./MessagesSkeleton";
@@ -630,7 +631,6 @@ export function MessagesPage({
           width={conversationListWidth}
           accounts={accounts}
           selectedAccountId={selectedAccountId}
-          onAccountChange={handleAccountChange}
           statusTab={statusTab}
           onStatusChange={setStatusTab}
           onOpenCustomer={handleOpenCustomer}
@@ -705,9 +705,14 @@ export function MessagesPage({
             />
           </ErrorBoundary>
         ) : (
-          <div className="flex min-w-0 flex-1 items-center justify-center bg-white text-wb-2xs text-workbench-text-muted">
-            {STRINGS.conversationList.noConversation}
-          </div>
+          // 无选中会话(如切到无会话的账号)也保留账号筛选入口,否则用户无法切回其他账号。
+          <ErrorBoundary {...ERROR_BOUNDARY_PROPS}>
+            <EmptyChatPane
+              accounts={accounts}
+              selectedAccountId={selectedAccountId}
+              onAccountChange={handleAccountChange}
+            />
+          </ErrorBoundary>
         )}
       </div>
       {detailsOpen && (

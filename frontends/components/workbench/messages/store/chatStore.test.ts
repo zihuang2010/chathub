@@ -608,7 +608,7 @@ describe("appendNewerWindow(尾部追加更新页)", () => {
   });
 
   it("中段失败乐观气泡:新页插在最后一个真实条目之后,中段乐观保位、较新页不错序", () => {
-    // failed 乐观气泡按 sentAt 归位可落在 real 中段(m1 与 m2 之间)。append [m3] 必须插在「最后一个
+    // failed 乐观气泡按显示位置保序可落在 real 中段(m1 与 m2 之间)。append [m3] 必须插在「最后一个
     // 有 sortKey 的真实条目 m2」之后,而非「第一个乐观 c-fail」之前(后者会把 m3 排到 m2 之前 → 错序)。
     const slice = sliceWith([msg("m1"), optimistic("c-fail", { status: "failed" }), msg("m2")]);
     const next = appendNewerWindow(slice, [msg("m3")], { atCacheBottom: false });
@@ -766,7 +766,7 @@ describe("replaceAuthoritative collapseToLatest=false(缝合 UPSERT,不丢上滚
     expect(next.byId["server-1"].clientMsgId).toBe("c-1");
   });
 
-  it("④ failed 乐观气泡在缝合下仍按 sentAt 归位(不被顶到末尾)", () => {
+  it("④ failed 乐观气泡在缝合下显示位置保序(不被顶到末尾)", () => {
     // 窗口 [h0, S](h0 早、S 晚);中间一条 failed 乐观 c-1(sentAt 在两者之间)。
     const slice = sliceWith([
       msg("h0", { sortKey: "a", sentAt: "2026-05-19T00:00:00.000Z" }),
@@ -783,7 +783,7 @@ describe("replaceAuthoritative collapseToLatest=false(缝合 UPSERT,不丢上滚
         sentAt: "2026-05-19T00:00:10.000Z",
       }),
     ]);
-    // 区间内重读(纯 status 等价),failed 行 sentAt 归位在 h0 与 S 之间。
+    // 区间内重读(纯 status 等价),failed 行按显示位置保位在 h0 与 S 之间。
     const next = replaceAuthoritative(
       slice,
       [
@@ -819,6 +819,23 @@ describe("replaceAuthoritative collapseToLatest=false(缝合 UPSERT,不丢上滚
     expect(next.byId["m2x"]).toBeUndefined();
     // byId 键 == order(无孤儿)。
     expect(Object.keys(next.byId).sort()).toEqual(["m1", "m3"]);
+  });
+
+  it("⑦ 重发保位:上滚态中段乐观气泡 failed→sending 后缝合 reconcile,不被贴底", () => {
+    // 上滚找到失败气泡点重发:patchMessage(failed→sending) 就地改,此刻它是「非失败 leftover」。
+    // 下一次缝合重读(区间内纯等价)不得把它挪到贴底 —— 否则重发瞬间气泡向下跳、整列表闪。
+    const slice = sliceWith([
+      msg("h0", { sortKey: "a" }),
+      optimistic("c-1", { status: "sending", text: "A", parts: [{ kind: "text", text: "A" }] }),
+      msg("S", { direction: "out", status: "sent", sortKey: "z" }),
+    ]);
+    const next = replaceAuthoritative(
+      slice,
+      [msg("h0", { sortKey: "a" }), msg("S", { direction: "out", status: "sent", sortKey: "z" })],
+      false,
+    );
+    expect(selectTimeline(next).map((e) => e.id)).toEqual(["h0", "c-1", "S"]);
+    expect(next.byId["c-1"].status).toBe("sending");
   });
 
   it("⑥ collapseToLatest=true(默认)与显式 true 等价 = 现状整窗塌缩(回归)", () => {

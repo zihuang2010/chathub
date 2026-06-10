@@ -230,12 +230,6 @@ async fn handle_push(
         return err_envelope(StatusCode::BAD_REQUEST, "events must be non-empty");
     }
 
-    // 调试:打印本批 event 原始内容(JSON)。线上排障用,定位完成后移除。
-    tracing::info!(
-        events_json = %serde_json::to_string(&body.events).unwrap_or_default(),
-        "push events content (debug)"
-    );
-
     // 4. 分类 + 准备 EventRow(Persist 类) / 计数 Control 类。
     // 转换逻辑抽到 convert_batch_to_rows,与 notify_pull 写回共用。
     let now_ms = std::time::SystemTime::now()

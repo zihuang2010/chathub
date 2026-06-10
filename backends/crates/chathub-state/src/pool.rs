@@ -88,6 +88,9 @@ impl SqlitePool {
                     "../migrations/V29__messages_source_direction.sql"
                 )),
                 M::up(include_str!("../migrations/V30__session_terminal_id.sql")),
+                M::up(include_str!(
+                    "../migrations/V31__recents_read_watermark.sql"
+                )),
             ]);
             migrations
                 .to_latest(c)

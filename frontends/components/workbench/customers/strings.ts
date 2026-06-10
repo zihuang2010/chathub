@@ -57,7 +57,7 @@ export const STRINGS = {
     call: "电话联系",
     more: "更多操作",
     /** 负责人前缀（底部）。 */
-    owner: "负责人",
+    owner: "负责人 - ",
     /** 企业名称缺失时的默认占位。 */
     companyFallback: "暂无企业",
     /** 手机号缺失时的默认占位。 */

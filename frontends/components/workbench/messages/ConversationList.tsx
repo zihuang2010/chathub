@@ -1,5 +1,5 @@
-import { memo, useCallback, useMemo, useRef, useState } from "react";
-import { BellOff, ChevronDown, Menu } from "lucide-react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { BellOff, ListFilter } from "lucide-react";
 import * as ContextMenu from "@radix-ui/react-context-menu";
 import { useVirtualizer } from "@tanstack/react-virtual";
 
@@ -7,18 +7,16 @@ import type { Account } from "@/lib/types/account";
 import type { WecomFriend } from "@/lib/api/customers";
 import { cn } from "@/lib/utils";
 
-import { AccountDropdown } from "./AccountDropdown";
-import { ConversationAvatar } from "./Avatar";
+import { ConversationAvatar, WeChatSourceBadge } from "./Avatar";
 import type { Conversation } from "./data";
 import { MessagesContactSearch } from "./MessagesContactSearch";
 import { SkeletonRow } from "./MessagesSkeleton";
 import { STRINGS } from "./strings";
-import { extractAccountOperator } from "./utils";
 import { WorkbenchScrollArea, type ScrollMetrics } from "./WorkbenchScrollArea";
 
 const WECOM_SOURCE_LOGO = "/wecom-logo.png";
 
-export type StatusTab = "all" | "unread" | "mentioned";
+export type StatusTab = "all" | "unread";
 
 interface ConversationListProps {
   conversations: Conversation[];
@@ -33,10 +31,10 @@ interface ConversationListProps {
   onRemove?: (id: string) => void;
   width: number;
   accounts: readonly Account[];
-  /** 选中账号的 `account.id`(= wecomAccountId),`null` = 全部。展示名按 id 反查 accounts。 */
+  /** 选中账号的 `account.id`(= wecomAccountId),`null` = 全部。账号切换入口已移到聊天区
+   *  RangePill;这里仅用于切账号时的骨架过渡与滚动复位(committedAccountKey)。 */
   selectedAccountId: string | null;
-  onAccountChange: (accountId: string | null) => void;
-  /** 会话状态筛选(全部/未读/@我)。状态提升到父级:从搜索框/客户页打开会话时父级一并重置回"全部",
+  /** 会话状态筛选(消息/未读)。状态提升到父级:从搜索框/客户页打开会话时父级一并重置回"消息",
    *  避免停留在"未读"标签时,打开的(已读)会话被过滤掉而"看不见"。 */
   statusTab: StatusTab;
   onStatusChange: (value: StatusTab) => void;
@@ -55,6 +53,26 @@ interface ConversationListProps {
   switching?: boolean;
 }
 
+// 切账号骨架的延迟出现阈值:本地 cache 命中时新列表几十毫秒即返回,立刻切骨架反而造成
+// 「真列表 → 骨架 → 真列表」两次突变的闪烁。switching 持续超过该阈值(冷缓存需远端预填的
+// 慢路径)才显示骨架;快路径保持渲染旧列表,数据到位后一次性整体替换。
+const SWITCHING_SKELETON_DELAY_MS = 250;
+
+/** switching 持续超过阈值才返回 true(骨架延迟出现);switching 结束立即复位。 */
+function useDelayedSwitching(switching: boolean): boolean {
+  const [delayed, setDelayed] = useState(false);
+  useEffect(() => {
+    if (!switching) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setDelayed(false);
+      return;
+    }
+    const timer = window.setTimeout(() => setDelayed(true), SWITCHING_SKELETON_DELAY_MS);
+    return () => window.clearTimeout(timer);
+  }, [switching]);
+  return switching && delayed;
+}
+
 export const ConversationList = memo(function ConversationList({
   conversations,
   selectedId,
@@ -65,7 +83,6 @@ export const ConversationList = memo(function ConversationList({
   width,
   accounts,
   selectedAccountId,
-  onAccountChange,
   statusTab,
   onStatusChange,
   onLoadMore,
@@ -74,7 +91,23 @@ export const ConversationList = memo(function ConversationList({
   onClearSearch,
   switching,
 }: ConversationListProps) {
-  const [accountPickerOpen, setAccountPickerOpen] = useState(false);
+  // 骨架延迟出现:快路径(本地读几十毫秒)不闪骨架,继续渲染旧账号列表直到新数据落地整体替换。
+  const showSwitchingSkeleton = useDelayedSwitching(!!switching);
+
+  // 滚动条拇指显隐:光标在接待列表区域(搜索框+筛选条+列表整块)内才显示。
+  // 用 JS mouseenter/mouseleave 切 class 而非 CSS :hover —— WebKit 上祖先 :hover
+  // 变化不重绘 scrollbar 伪元素(详见 index.css .wb-scrollbar-autohide 注释)。
+  const [scrollbarVisible, setScrollbarVisible] = useState(false);
+  const showScrollbar = useCallback(() => setScrollbarVisible(true), []);
+  const hideScrollbar = useCallback(() => setScrollbarVisible(false), []);
+
+  // 「已落地」的账号 key:switching 期间保持旧值,新账号数据真正渲染(switching 复位)时才
+  // 提交新值。VirtualizedList 据它在新列表首帧绘制前把滚动复位到顶部 —— 原先靠骨架
+  // 卸载/重挂列表顺带归零滚动,快路径不再卸载后需要显式补偿。
+  const [committedAccountKey, setCommittedAccountKey] = useState(selectedAccountId);
+  if (!switching && committedAccountKey !== selectedAccountId) {
+    setCommittedAccountKey(selectedAccountId);
+  }
 
   // 顶部搜索框已改为「搜客户 → 下拉 → 点击打开会话」(MessagesContactSearch),不再就地过滤会话
   // 列表。这里只按 status tab(未读)过滤;账号过滤由后端 list_recent_friends(accountFilter)
@@ -85,25 +118,22 @@ export const ConversationList = memo(function ConversationList({
   }, [conversations, statusTab]);
 
   return (
-    <div className="flex h-full shrink-0 flex-col bg-workbench-surface" style={{ width }}>
+    <div
+      className="flex h-full shrink-0 flex-col bg-workbench-surface"
+      style={{ width }}
+      onMouseEnter={showScrollbar}
+      onMouseLeave={hideScrollbar}
+    >
       <div className="flex flex-col gap-2 px-3 pb-1.5 pt-3">
         <MessagesContactSearch
           accounts={accounts}
           onOpenCustomer={onOpenCustomer}
           onClear={onClearSearch}
         />
-        <FilterToolbar
-          statusTab={statusTab}
-          onStatusChange={onStatusChange}
-          accounts={accounts}
-          selectedAccountId={selectedAccountId}
-          onAccountChange={onAccountChange}
-          accountPickerOpen={accountPickerOpen}
-          onAccountPickerOpenChange={setAccountPickerOpen}
-        />
+        <FilterToolbar statusTab={statusTab} onStatusChange={onStatusChange} />
       </div>
 
-      {switching ? (
+      {showSwitchingSkeleton ? (
         <ConversationListSkeleton />
       ) : (
         <VirtualizedList
@@ -115,25 +145,72 @@ export const ConversationList = memo(function ConversationList({
           onRemove={onRemove}
           onLoadMore={onLoadMore}
           loading={loading}
+          resetScrollKey={committedAccountKey}
+          scrollbarVisible={scrollbarVisible}
+          emptyText={
+            statusTab === "unread"
+              ? STRINGS.conversationList.noUnread
+              : STRINGS.conversationList.noConversation
+          }
         />
       )}
     </div>
   );
 });
 
-// 切账号过渡期的列表骨架:复用首屏 SkeletonRow,padding 对齐 VirtualizedList 的滚动视口
-// (pl-3 pr-2 pt-0.5 pb-1.5),数据到位切回真列表时不产生 layout shift。行数固定取首屏窗口
+// 切账号过渡期的列表骨架:复用首屏 SkeletonRow,padding 对齐 VirtualizedList 的滚动视口。
+// 右距取 pr-3.5(14px)= 真列表的 pr-2(8px)+ 常驻滚动条轨道 6px —— 本容器 overflow-hidden
+// 无轨道,用 padding 补足,数据到位切回真列表时不产生 layout shift。行数固定取首屏窗口
 // 大致可见的条数。
 const SWITCHING_SKELETON_ROWS = 8;
 function ConversationListSkeleton() {
   return (
-    <div className="flex-1 overflow-hidden pb-1.5 pl-3 pr-2 pt-0.5" aria-hidden>
-      <div className="flex flex-col gap-1">
+    <div className="flex-1 overflow-hidden pb-1.5 pl-3 pr-3.5 pt-0.5" aria-hidden>
+      <div className="flex flex-col gap-0.5">
         {Array.from({ length: SWITCHING_SKELETON_ROWS }).map((_, i) => (
           <SkeletonRow key={i} />
         ))}
       </div>
     </div>
+  );
+}
+
+// 空态插画:开口纸箱(线稿 + 箱口蓝色渐变),配合下方占位文案垂直居中展示。
+// 纯内联 SVG,无外部资源;颜色取与 workbench 骨架/弱文本一致的浅灰系。
+function EmptyBoxIllustration() {
+  return (
+    <svg width="92" height="80" viewBox="0 0 120 104" fill="none" aria-hidden="true">
+      <defs>
+        <linearGradient id="conv-empty-box-blue" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stopColor="#85C1FA" />
+          <stop offset="1" stopColor="#4796F0" />
+        </linearGradient>
+      </defs>
+      {/* 顶部三条放射短线 */}
+      <g stroke="#C9D2DE" strokeWidth="3" strokeLinecap="round">
+        <line x1="40" y1="12" x2="34" y2="3" />
+        <line x1="60" y1="10" x2="60" y2="1" />
+        <line x1="80" y1="12" x2="86" y2="3" />
+      </g>
+      {/* 向外翻开的两片箱盖 */}
+      <g fill="#FFFFFF" stroke="#C9D2DE" strokeWidth="2.5" strokeLinejoin="round">
+        <polygon points="60,28 22,42 10,32 48,18" />
+        <polygon points="60,28 98,42 110,32 72,18" />
+      </g>
+      {/* 箱口(蓝色渐变) */}
+      <polygon
+        points="60,28 98,42 60,56 22,42"
+        fill="url(#conv-empty-box-blue)"
+        stroke="#C9D2DE"
+        strokeWidth="2.5"
+        strokeLinejoin="round"
+      />
+      {/* 箱体两个可见面 */}
+      <g fill="#FFFFFF" stroke="#C9D2DE" strokeWidth="2.5" strokeLinejoin="round">
+        <polygon points="22,42 22,76 60,90 60,56" />
+        <polygon points="98,42 98,76 60,90 60,56" />
+      </g>
+    </svg>
   );
 }
 
@@ -143,15 +220,15 @@ function ConversationListSkeleton() {
 // 与 ScrollMetrics 上报通道(后续若 ChatArea 模式的 anchor / unread divider
 // 需要接入,直接复用)。
 //
-// 高度策略:estimateSize≈行内容 56 + ROW_GAP_PX 间隔 ≈ 60,measureElement
-// 自动测量真实高度修正 scrollbar 拇指。overscan=8(上下各预渲染 8 条,滚动时
-// 接 fill 充裕,避免边缘闪空白)。
+// 高度策略:estimateSize≈行内容 60(头像 44 + py-2 上下 16,两行文本 ≈42 居中)
+// + ROW_GAP_PX 间隔 ≈ 62,measureElement 自动测量真实高度修正 scrollbar 拇指。
+// overscan=8(上下各预渲染 8 条,滚动时接 fill 充裕,避免边缘闪空白)。
 //
 // ROW_GAP_PX:卡片间留白。以每行 wrapper 的 padding-bottom 实现 —— measureElement
 // 测的是 wrapper 的 border-box 高度(含 padding),故 totalSize / start 偏移会自动
 // 把间隔算进去,行与行之间留出透明缝隙,卡片不再贴死。
-const ROW_GAP_PX = 4;
-const ROW_ESTIMATE_PX = 60;
+const ROW_GAP_PX = 2;
+const ROW_ESTIMATE_PX = 62;
 // 距底 ≤ 该像素(约 4 行卡片缓冲)即触发翻更老一页。
 const LOAD_MORE_BOTTOM_THRESHOLD_PX = 240;
 
@@ -164,6 +241,9 @@ const VirtualizedList = memo(function VirtualizedList({
   onRemove,
   onLoadMore,
   loading,
+  resetScrollKey,
+  scrollbarVisible,
+  emptyText,
 }: {
   items: Conversation[];
   selectedId: string;
@@ -173,11 +253,40 @@ const VirtualizedList = memo(function VirtualizedList({
   onRemove?: (id: string) => void;
   onLoadMore?: () => void;
   loading?: boolean;
+  /** 变化时(= 切账号后新数据已落地)在绘制前把滚动复位到顶部。切账号快路径下列表
+   *  不再经历骨架卸载/重挂,旧账号的滚动位置会残留,靠它显式归零。 */
+  resetScrollKey?: string | null;
+  /** 光标在接待列表区域内为 true,viewport 挂 .wb-scrollbar-on 显示滚动条拇指。 */
+  scrollbarVisible?: boolean;
+  /** 列表为空时的占位文案,由父级按当前 statusTab 区分("暂无未读消息"/"暂无匹配会话")。 */
+  emptyText: string;
 }) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const setScrollViewport = useCallback((node: HTMLDivElement | null) => {
     if (node) scrollRef.current = node;
   }, []);
+
+  // useLayoutEffect:在新账号列表首帧绘制前归零滚动,避免"先按旧偏移画一帧再跳顶"的闪动。
+  const prevResetKeyRef = useRef(resetScrollKey);
+  useLayoutEffect(() => {
+    if (prevResetKeyRef.current === resetScrollKey) return;
+    prevResetKeyRef.current = resetScrollKey;
+    const viewport = scrollRef.current;
+    if (viewport) viewport.scrollTop = 0;
+  }, [resetScrollKey]);
+
+  // WebKit 不会因 class 变化重绘已画出的滚动条:移入能出现是鼠标在容器上移动顺带触发了
+  // 重绘,移出后没有事件再碰它,摘掉 .wb-scrollbar-on 拇指也不消失。这里在显隐切换时把
+  // overflow-y 置 hidden 再还原,强制销毁重建滚动条 —— 同一 JS 任务内完成(中间读
+  // offsetHeight 触发同步 layout),不产生可见中间帧;overflow:hidden 仍是滚动容器,
+  // scrollTop 不丢。useLayoutEffect 保证在本次绘制前生效,移出即消失。
+  useLayoutEffect(() => {
+    const viewport = scrollRef.current;
+    if (!viewport) return;
+    viewport.style.overflowY = "hidden";
+    void viewport.offsetHeight;
+    viewport.style.overflowY = "";
+  }, [scrollbarVisible]);
 
   const virtualizer = useVirtualizer({
     count: items.length,
@@ -207,19 +316,37 @@ const VirtualizedList = memo(function VirtualizedList({
   );
 
   if (items.length === 0) {
+    // 空态仍走 WorkbenchScrollArea + overflow-y-scroll:与真列表保持同一常驻 6px 滚动条
+    // 轨道,「消息↔未读」空/非空切换不发生宽度跳动(轨道说明见下方非空分支注释)。
+    // 内容经 contentClassName 撑满 viewport 高度后垂直居中;pb-12 让视觉重心略高于
+    // 几何中心,更稳。
     return (
-      <WorkbenchScrollArea className="flex-1" viewportClassName="pb-1.5 pt-0.5 pl-3 pr-2">
-        <div className="px-5 py-8 text-center text-wb-2xs text-workbench-text-muted">
-          {STRINGS.conversationList.noConversation}
-        </div>
+      <WorkbenchScrollArea
+        className="flex-1"
+        viewportClassName={cn(
+          "wb-scrollbar-autohide overflow-y-scroll pb-1.5 pl-3 pr-2 pt-0.5",
+          scrollbarVisible && "wb-scrollbar-on",
+        )}
+        contentClassName="flex min-h-full flex-col items-center justify-center gap-4 px-5 pb-12"
+      >
+        <EmptyBoxIllustration />
+        <p className="text-wb-xs text-workbench-text-muted">{emptyText}</p>
       </WorkbenchScrollArea>
     );
   }
 
+  // overflow-y-scroll(经 cn/tailwind-merge 替换基类的 overflow-y-auto):常驻 6px 滚动条
+  // 轨道,「消息↔未读」切换时不再因滚动条出现/消失让整列内容左右跳;轨道透明、无溢出时
+  // 不画拇指,视觉无感。不用 scrollbar-gutter:stable —— WKWebView 按原生滚动条宽度
+  // (≈15px)预留 gutter,与自定义 ::-webkit-scrollbar 的 6px 不一致,会引入反向跳动;
+  // 常驻轨道在 macOS WebKit 与 Windows WebView2(Blink) 上行为一致。
   return (
     <WorkbenchScrollArea
       className="flex-1"
-      viewportClassName="pb-1.5 pt-0.5 pl-3 pr-2"
+      viewportClassName={cn(
+        "wb-scrollbar-autohide overflow-y-scroll pb-1.5 pl-3 pr-2 pt-0.5",
+        scrollbarVisible && "wb-scrollbar-on",
+      )}
       scrollRef={setScrollViewport}
       onUserScroll={handleNearBottom}
     >
@@ -267,74 +394,35 @@ const VirtualizedList = memo(function VirtualizedList({
 
 // 静态配置,hoist 到模块级避免每次 render 新建数组(STRINGS 本就是模块级常量)。
 const STATUS_TABS: { value: StatusTab; label: string }[] = [
-  { value: "all", label: STRINGS.conversationList.statusAll },
+  { value: "all", label: STRINGS.conversationList.statusMessages },
   { value: "unread", label: STRINGS.conversationList.statusUnread },
-  { value: "mentioned", label: STRINGS.conversationList.statusMentioned },
 ];
 
+/** 筛选工具栏:左侧会话类型胶囊(当前仅支持单聊,静态展示)+ 右侧「消息/未读」分段切换。
+ *  账号切换入口已收敛到聊天区头部的 RangePill,这里不再放账号下拉。 */
 const FilterToolbar = memo(function FilterToolbar({
   statusTab,
   onStatusChange,
-  accounts,
-  selectedAccountId,
-  onAccountChange,
-  accountPickerOpen,
-  onAccountPickerOpenChange,
 }: {
   statusTab: StatusTab;
   onStatusChange: (value: StatusTab) => void;
-  accounts: readonly Account[];
-  selectedAccountId: string | null;
-  onAccountChange: (accountId: string | null) => void;
-  accountPickerOpen: boolean;
-  onAccountPickerOpenChange: (open: boolean) => void;
 }) {
-  // 选中态存的是 account.id;展示名按 id 反查 accounts(同名账号也唯一区分)。
-  const selectedAccountName = selectedAccountId
-    ? (accounts.find((a) => a.id === selectedAccountId)?.name ?? null)
-    : null;
-  const accountLabel = selectedAccountName
-    ? extractAccountOperator(selectedAccountName)
-    : STRINGS.conversationList.accountFallback;
-
   return (
-    <div className="text-wb-3xs flex h-9 min-w-0 items-center gap-1 font-medium text-workbench-text-secondary">
+    <div className="text-wb-3xs flex min-w-0 items-center justify-between gap-2 font-medium text-workbench-text-secondary">
+      {/* 会话类型:仅"单聊"一种,渲染为不可交互的胶囊(无下拉/无关闭),后续支持群聊再升级为筛选器。 */}
+      <span
+        title={STRINGS.conversationList.chatTypeFilterTitle}
+        className="inline-flex h-8 min-w-0 cursor-default items-center gap-1.5 rounded-full bg-workbench-surface-soft px-3"
+      >
+        <ListFilter size={13} className="shrink-0 text-[#6B86A6]" />
+        <span className="min-w-0 truncate">{STRINGS.conversationList.chatTypeSingle}</span>
+      </span>
+      {/* 消息/未读分段切换:灰底圆角轨道,选中段白底浮起(shadow-wb-card)。 */}
       <div
         role="tablist"
         aria-label={STRINGS.conversationList.statusTabsLabel}
-        className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto pr-1 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+        className="flex h-8 shrink-0 items-center rounded-full bg-workbench-surface-soft p-[3px]"
       >
-        <AccountDropdown
-          accounts={accounts}
-          selectedAccountId={selectedAccountId}
-          onSelect={onAccountChange}
-          open={accountPickerOpen}
-          onOpenChange={onAccountPickerOpenChange}
-        >
-          <button
-            type="button"
-            aria-haspopup="listbox"
-            aria-expanded={accountPickerOpen}
-            className={cn(
-              // min-w-0(替原 shrink-0):账号名过长时让账号按钮收缩截断,把宽度让给后面
-              // 短而固定的状态 Tab(全部/未读/@我),避免 @我 被挤进 overflow 滚动区不可见。
-              "focus-ring-inset inline-flex h-9 min-w-0 max-w-[96px] items-center gap-1 rounded-md px-2 transition-colors",
-              selectedAccountId
-                ? "bg-workbench-surface-soft font-semibold text-[#5B7C99]"
-                : "hover:bg-workbench-surface-active hover:text-[#5B7C99]",
-            )}
-            title={selectedAccountName ?? STRINGS.rangePill.allAccountsBare}
-          >
-            <span className="min-w-0 truncate">{accountLabel}</span>
-            <ChevronDown
-              size={12}
-              className={cn(
-                "shrink-0 text-current opacity-70 transition-transform",
-                accountPickerOpen && "rotate-180",
-              )}
-            />
-          </button>
-        </AccountDropdown>
         {STATUS_TABS.map((tab) => {
           const active = tab.value === statusTab;
           return (
@@ -346,10 +434,10 @@ const FilterToolbar = memo(function FilterToolbar({
               tabIndex={active ? 0 : -1}
               onClick={() => onStatusChange(tab.value)}
               className={cn(
-                "focus-ring-inset inline-flex h-9 shrink-0 items-center rounded-md px-2 transition-colors",
+                "focus-ring-inset inline-flex h-full items-center rounded-full px-3 transition-colors",
                 active
-                  ? "bg-workbench-surface-soft font-semibold text-[#5B7C99]"
-                  : "hover:bg-workbench-surface-active hover:text-[#5B7C99]",
+                  ? "bg-workbench-surface-elevated font-semibold text-workbench-text shadow-wb-card"
+                  : "hover:text-workbench-text",
               )}
             >
               {tab.label}
@@ -357,14 +445,6 @@ const FilterToolbar = memo(function FilterToolbar({
           );
         })}
       </div>
-      <button
-        type="button"
-        aria-label={STRINGS.conversationList.filter}
-        title={STRINGS.conversationList.filter}
-        className="focus-ring grid size-9 shrink-0 place-items-center rounded-md text-workbench-text-secondary transition-colors hover:bg-workbench-surface-subtle hover:text-workbench-accent"
-      >
-        <Menu size={18} strokeWidth={2} />
-      </button>
     </div>
   );
 });
@@ -405,29 +485,33 @@ const ConversationItem = memo(function ConversationItem({
   // selected 与 readPending(markRead 远端往返中)都抑制红标:前者"正在看"、后者"清零在途",
   // 二者都不应让红点在数据落地前现身。
   const showUnread = unread > 0 && !selected && conversation.readPending !== true;
+  // 第二行(预览/草稿/未读徽标)无内容时渲染等高占位行:名称行的垂直位置与有概要的行
+  // 保持一致(不因缺概要下移到行内居中),行高统一也让虚拟列表 estimateSize 更准。
+  const hasSecondLine = Boolean(draftText) || Boolean(preview) || showUnread;
 
   const row = (
     <button
       type="button"
       onClick={() => onSelect(id)}
-      // 列表-导航语义:屏幕阅读器据此播报"当前项";视觉上 selected 以常驻 surface-active
-      // 底色与 hover 的临时浅蓝区分(共用同一底色,selected 常驻、hover 临时)。
+      // 列表-导航语义:屏幕阅读器据此播报"当前项"。
       aria-current={selected ? "true" : undefined}
       className={cn(
-        "focus-ring group relative grid w-full grid-cols-[44px_minmax(0,1fr)] items-start gap-3 overflow-hidden rounded-md px-3 py-1.5 text-left transition-colors duration-100",
+        "focus-ring group relative grid w-full grid-cols-[44px_minmax(0,1fr)] items-center gap-3 overflow-hidden rounded-lg px-3 py-2 text-left transition-colors duration-100",
         // 置顶视觉用右上角折角(corner-fold,见下方 isPinned 元素)表达;行本体
-        // 只保留选中/默认两态。折角内收绘制,不再贴住卡片圆角边缘。
-        // ConversationAvatar.pinned prop 保留供搜索结果复用。
-        // hover 与 selected 共用 surface-active(浅蓝),只是 selected 常驻、hover 临时,
-        // 视觉统一;duration-100 比默认 150ms 更跟手。
-        selected ? "bg-workbench-surface-active" : "hover:bg-workbench-surface-active",
+        // 保留选中/悬停/默认三态。ConversationAvatar.pinned prop 保留供搜索结果复用。
+        // hover 用更浅的 surface-soft、selected 常驻 surface-active:两态分离,鼠标扫过
+        // 其它行时不会与选中行混淆;按下时临时落到 surface-active 提供 press 反馈。
+        // duration-100 比默认 150ms 更跟手。
+        selected
+          ? "bg-workbench-surface-active"
+          : "hover:bg-workbench-surface-soft active:bg-workbench-surface-active",
       )}
     >
-      {/* 置顶标记:作为内容区右上角的小折角,与时间文字错位摆放。 */}
+      {/* 置顶标记:贴卡片右上角的小折角。时间已改为行内文档流,折角收进圆角内侧即可。 */}
       {isPinned && (
         <svg
           aria-hidden
-          className="pointer-events-none absolute right-2.5 top-2 size-2.5"
+          className="pointer-events-none absolute right-1 top-1 size-2.5"
           viewBox="0 0 10 10"
           style={{ color: "hsl(var(--wb-accent-soft) / 0.52)" }}
         >
@@ -437,8 +521,12 @@ const ConversationItem = memo(function ConversationItem({
           />
         </svg>
       )}
-      <div className="relative mt-1">
+      <div className="relative">
         <ConversationAvatar name={name} color={avatarColor} avatarUrl={avatar} online={online} />
+        {/* 客户来源角标:微信小图标贴头像左下角(右下角已被在线点/免打扰铃铛占用)。
+            与 SourceChip 的企微 logo 分工:角标=客户从微信来,chip=归属哪个企微账号接待。
+            视觉与聊天头部(ChatHeader)共用 WeChatSourceBadge,保证两处一致。 */}
+        <WeChatSourceBadge />
         {isMuted && (
           <span
             aria-hidden
@@ -448,66 +536,66 @@ const ConversationItem = memo(function ConversationItem({
           </span>
         )}
       </div>
-      <div className="min-w-0 pt-px">
-        <div className="flex min-w-0 items-center gap-1.5 pr-20">
-          <span className="truncate text-wb-xs font-medium text-workbench-text">{name}</span>
-          <WeChatSourceIcon />
+      <div className="min-w-0">
+        {/* 行 1(主信息 + 辅助标签):名称截断让位,SourceChip(来源 + 归属账号)紧随其后,
+            时间右对齐。全部走文档流,不再用 pr-20 硬编码避让绝对定位的时间槽。
+            unread 时名称加重一档强化未读感。 */}
+        <div className="flex min-w-0 items-center gap-1.5">
+          <span
+            className={cn(
+              "truncate text-wb-xs text-workbench-text",
+              showUnread ? "font-semibold" : "font-medium",
+            )}
+          >
+            {name}
+          </span>
+          <SourceChip account={account} />
+          <span className="ml-auto shrink-0 pl-2 text-wb-4xs text-workbench-text-disabled">
+            <span className="wb-time">{time}</span>
+          </span>
         </div>
-        <div className="text-wb-3xs mt-px truncate pr-7 font-medium text-workbench-text-muted">
-          {draftText ? (
-            <>
-              <span className="mr-1 font-medium text-amber-500">
-                {STRINGS.conversationList.draftPrefix}
-              </span>
-              <span className="text-workbench-text-secondary">{draftText}</span>
-            </>
-          ) : (
-            <>
-              {showUnread && (
-                // 与 preview 同色(muted),仅作语义标签。普通会话 [未读](量级由右侧红数字承担);
-                // 免打扰会话改 [N 条](右侧只剩红点,前缀补回条数信息)。
-                <span className="mr-1 font-medium">
-                  {isMuted
-                    ? STRINGS.conversationList.mutedCountPrefix(unread)
-                    : STRINGS.conversationList.unreadPrefix}
-                </span>
+        {/* 行 2(次信息):消息预览 + 未读徽标。预览 normal 字重拉开与名称的层级;
+            unread 时提一档颜色(secondary)与已读(muted)区分。 */}
+        {hasSecondLine ? (
+          <div
+            className={cn(
+              "text-wb-3xs mt-1 flex min-w-0 items-center gap-2",
+              showUnread ? "text-workbench-text-secondary" : "text-workbench-text-muted",
+            )}
+          >
+            <div className="min-w-0 flex-1 truncate">
+              {draftText ? (
+                <>
+                  <span className="mr-1 font-medium text-amber-500">
+                    {STRINGS.conversationList.draftPrefix}
+                  </span>
+                  <span className="text-workbench-text-secondary">{draftText}</span>
+                </>
+              ) : (
+                <>
+                  {showUnread && (
+                    // 与 preview 同色,仅作语义标签。普通会话 [未读](量级由右侧红数字承担);
+                    // 免打扰会话改 [N 条](右侧只剩红点,前缀补回条数信息)。
+                    <span className="mr-1 font-medium">
+                      {isMuted
+                        ? STRINGS.conversationList.mutedCountPrefix(unread)
+                        : STRINGS.conversationList.unreadPrefix}
+                    </span>
+                  )}
+                  {preview}
+                </>
               )}
-              {preview}
-            </>
-          )}
-        </div>
-        <div className="mt-px flex min-w-0 items-center gap-1.5 text-wb-4xs">
-          <img
-            src={WECOM_SOURCE_LOGO}
-            alt=""
-            aria-hidden
-            className="size-3 shrink-0 rounded-[2px] object-contain"
-          />
-          <span className="min-w-0 truncate font-medium text-workbench-text-muted">{account}</span>
-        </div>
+            </div>
+            {showUnread && <UnreadBadge count={unread} dotOnly={isMuted} />}
+          </div>
+        ) : (
+          // 等高占位:与真实第二行同字号同间距,保证名称不下移、行高与有概要的行一致。
+          // 用不折叠空格撑出一行高度(普通空格会被浏览器折叠成零高)。
+          <div aria-hidden className="text-wb-3xs mt-1">
+            {"\u00A0"}
+          </div>
+        )}
       </div>
-      {/* 右侧时间槽固定 48px,只显示时间;其它状态拆到头像/卡片中部。 */}
-      <span className="text-wb-3xs absolute right-6 top-2.5 w-12 text-right text-workbench-text-disabled">
-        <span className="wb-time">{time}</span>
-      </span>
-      {isMuted && showUnread && (
-        <span
-          aria-label={STRINGS.conversationList.unreadCount(unread)}
-          className="absolute right-4 top-1/2 size-2 -translate-y-1/2 rounded-full bg-workbench-unread"
-        />
-      )}
-      {!isMuted && showUnread && (
-        // 圆点 → 数字徽标:1-2 位居中圆形,3 位(99+)自动横向撑出胶囊形。
-        // 与 preview 前缀 [未读] 互补:文字表状态、数字表量级;尺寸刻意 14×14 (text-[9px])
-        // 让数字徽标"知趣",不与文本流抢眼。bottom-5 比原 bottom-3 微抬 8px,落在
-        // preview 行与 from 行之间,不贴底也不顶第二行。
-        <span
-          aria-label={STRINGS.conversationList.unreadCount(unread)}
-          className="wb-num absolute bottom-5 right-3 grid h-[14px] min-w-[14px] place-items-center rounded-full bg-workbench-unread px-1 text-[9px] font-semibold leading-none text-white"
-        >
-          {unread > 99 ? "99+" : unread}
-        </span>
-      )}
     </button>
   );
 
@@ -515,7 +603,7 @@ const ConversationItem = memo(function ConversationItem({
   if (!onTogglePin && !onToggleMute && !onRemove) return row;
 
   const itemClassName = cn(
-    "cursor-default rounded px-2 py-1.5 text-wb-2xs text-workbench-text outline-none transition-colors",
+    "cursor-default rounded px-2.5 py-1 text-wb-2xs text-workbench-text outline-none transition-colors",
     "data-[highlighted]:bg-workbench-surface-subtle",
   );
 
@@ -524,7 +612,7 @@ const ConversationItem = memo(function ConversationItem({
       <ContextMenu.Trigger asChild>{row}</ContextMenu.Trigger>
       <ContextMenu.Portal>
         <ContextMenu.Content
-          className="z-30 min-w-[140px] overflow-hidden rounded-md border border-workbench-line bg-workbench-surface p-1 shadow-wb-popover"
+          className="z-30 min-w-[96px] overflow-hidden rounded-md border border-workbench-line bg-workbench-surface p-1 shadow-wb-popover"
           onCloseAutoFocus={(e) => e.preventDefault()}
         >
           {onTogglePin && (
@@ -561,27 +649,45 @@ const ConversationItem = memo(function ConversationItem({
   );
 });
 
-function WeChatSourceIcon() {
+/** 未读徽标:普通会话显示数字胶囊(1-2 位圆形,99+ 自动撑出胶囊形),免打扰会话只显示
+ *  一枚小红点(条数信息由 preview 前缀 [N 条] 承担)。挂在 preview 行右端的文档流内,
+ *  不再绝对定位,长预览文本由 flex 自然让位。 */
+function UnreadBadge({ count, dotOnly }: { count: number; dotOnly: boolean }) {
+  if (dotOnly) {
+    return (
+      <span
+        aria-label={STRINGS.conversationList.unreadCount(count)}
+        className="size-2 shrink-0 rounded-full bg-workbench-unread"
+      />
+    );
+  }
   return (
     <span
-      aria-label={STRINGS.header.fromWeChat}
-      title={STRINGS.header.fromWeChat}
-      className="grid size-5 shrink-0 place-items-center rounded-full bg-[#DFF7E8]"
+      aria-label={STRINGS.conversationList.unreadCount(count)}
+      className="wb-num grid h-3 min-w-[12px] shrink-0 place-items-center rounded-full bg-workbench-unread px-[2px] text-[8px] font-semibold leading-none text-white"
     >
-      <svg aria-hidden viewBox="0 0 16 16" className="size-[15px] text-[#21A65B]" fill="none">
-        <path
-          d="M7.1 3.2C4.3 3.2 2 4.9 2 7c0 1.2.7 2.2 1.8 2.9l-.4 1.3 1.5-.7c.7.2 1.4.3 2.2.3 2.8 0 5.1-1.7 5.1-3.8S9.9 3.2 7.1 3.2Z"
-          fill="currentColor"
-          opacity="0.95"
-        />
-        <path
-          d="M10.5 6.3c2.1 0 3.7 1.3 3.7 2.9 0 .9-.5 1.7-1.4 2.2l.3 1-1.1-.5c-.5.2-1 .2-1.6.2-2.1 0-3.7-1.3-3.7-2.9s1.7-2.9 3.8-2.9Z"
-          fill="currentColor"
-          opacity="0.55"
-        />
-        <circle cx="5.5" cy="6.6" r="0.45" fill="hsl(var(--wb-wechat-bg))" />
-        <circle cx="8.4" cy="6.6" r="0.45" fill="hsl(var(--wb-wechat-bg))" />
-      </svg>
+      {count > 99 ? "99+" : count}
+    </span>
+  );
+}
+
+/** 归属账号标签:企业微信 logo + 所属企微账号名,浅底胶囊。表达"该外部联系人由哪个
+ *  企微账号接待";客户本身的微信来源标识已移到头像左下角角标,两个语义不再混淆
+ *  (此前 chip 用微信绿图标,容易被误读成"账号名是微信号")。
+ *  shrink-0 + max-w + 内部 truncate:长账号名截断显示,完整内容走 title。 */
+function SourceChip({ account }: { account: string }) {
+  return (
+    <span
+      title={`${STRINGS.header.fromAccountLabel}${account}`}
+      className="flex h-[18px] min-w-0 max-w-[110px] shrink-0 items-center gap-1 rounded-full bg-workbench-surface-subtle px-1.5"
+    >
+      <img
+        src={WECOM_SOURCE_LOGO}
+        alt=""
+        aria-hidden
+        className="size-3 shrink-0 rounded-[2px] object-contain"
+      />
+      <span className="min-w-0 truncate text-wb-4xs text-workbench-text-muted">{account}</span>
     </span>
   );
 }

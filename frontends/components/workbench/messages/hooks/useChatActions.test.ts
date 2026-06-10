@@ -524,6 +524,38 @@ describe("failBubble / outbox 持久化", () => {
     expect(onSendMessage).toHaveBeenCalledTimes(0);
   });
 
+  it("无 filePath 且空文本(存量损坏 outbox 行)重发拦截:不发空文本,气泡保持 failed", async () => {
+    const onSendMessage = vi
+      .fn()
+      .mockResolvedValue({ localMessageId: "srv-x", sendStatus: 3, messageTime: "" });
+    const { result } = setupWithIdentity(onSendMessage);
+
+    // 模拟历史损坏行读回的形态:messageType=1、text=""、无 filePath(此前被空文本重发
+    // 覆盖成 type=1 + attachments "[]" 的行,渲染为「暂不支持」占位)。
+    const corrupted: Message = {
+      ...outMsg("m3"),
+      text: "",
+      parts: [{ kind: "unknown" }],
+      messageType: 1,
+    };
+    act(() => {
+      useChatStore.getState().enqueueOptimistic("c1", { ...corrupted, clientMsgId: "m3" });
+    });
+
+    await act(async () => {
+      result.current.handleAction("resend", corrupted);
+    });
+    await flush();
+
+    expect(vi.mocked(showToast)).toHaveBeenCalledWith(
+      STRINGS.toast.outboxReselectFile,
+      expect.objectContaining({ type: "error" }),
+    );
+    expect(onSendMessage).toHaveBeenCalledTimes(0);
+    // 拦截发生在置 sending 之前 → 不会卡在「发送中」。
+    expect(timeline()[0].status).toBe("failed");
+  });
+
   it("有 filePath 的失败气泡重发 → clearOutboxRow 被调(含 clientMsgId)", async () => {
     const onSendMessage = vi
       .fn()

@@ -297,8 +297,9 @@ pub struct LogConfig {
     pub dir: PathBuf,
     pub file_prefix: String,
     pub stdout: StdoutFormat,
-    /// push 原始入站 body 旁路到独立按日轮转文件(上线后 diff/jq 比对 / 排障留底)。
-    /// env `RELAY_SOURCE_JSON_LOG`,默认 true(把事件原文落盘备查);设 `"false"`|`"0"` 关闭。
+    /// push 原始入站 body 旁路到独立按日轮转文件(上线初期 diff/jq 比对 / 排障留底)。
+    /// env `RELAY_SOURCE_JSON_LOG`,默认 false(事件原文含消息明文/PII,不默认落盘);
+    /// 排障期设 `"true"`|`"1"` 开启。
     pub source_json: bool,
     /// 按日轮转日志的保留份数上限(超出删最旧),防止日志文件无限累积。
     /// env `RELAY_LOG_MAX_FILES`,默认 7(约一周)。validate() 拒 0
@@ -379,7 +380,7 @@ impl Config {
                 stdout: parse_stdout_format("RELAY_LOG_STDOUT")?,
                 source_json: std::env::var("RELAY_SOURCE_JSON_LOG")
                     .map(|v| v == "true" || v == "1")
-                    .unwrap_or(true),
+                    .unwrap_or(false),
                 max_files: std::env::var("RELAY_LOG_MAX_FILES")
                     .ok()
                     .and_then(|s| s.parse().ok())
@@ -1046,7 +1047,7 @@ mod tests {
         assert_eq!(cfg.log.dir.to_string_lossy(), "./logs");
         assert_eq!(cfg.log.file_prefix, "relay");
         assert_eq!(cfg.log.stdout, StdoutFormat::Compact);
-        assert!(cfg.log.source_json); // 默认开(事件原文落盘备查)
+        assert!(!cfg.log.source_json); // 默认关(事件原文含消息明文/PII,排障期显式开)
         assert_eq!(cfg.log.max_files, 7); // 默认保留 7 份
         clear_all();
     }
@@ -1070,7 +1071,7 @@ mod tests {
 
     #[test]
     fn from_env_source_json_can_be_disabled() {
-        // 默认已改为开,显式 RELAY_SOURCE_JSON_LOG=false 须能关闭。
+        // 默认关;显式 RELAY_SOURCE_JSON_LOG=false 同样得到关闭(显式开见 overrides 测试)。
         let _g = ENV_LOCK.lock();
         clear_all();
         set_required();

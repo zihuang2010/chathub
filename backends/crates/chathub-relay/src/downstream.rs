@@ -517,8 +517,7 @@ impl DownstreamClient {
             "oauth2 login: outbound request",
         );
 
-        // 显式 build() 取出 reqwest::Request,把最终 headers / body 字节长度一起打出来,
-        // 排除 reqwest builder 中途吞参的可能性。
+        // 显式 build() + execute():build 错误(URL/参数拼装失败)与网络错误分开记日志。
         let pending = self
             .http
             .post(&url)
@@ -539,34 +538,6 @@ impl DownstreamClient {
                 RelayError::Http(e.to_string())
             })?;
 
-        // 打 reqwest 最终拼好的 url 与脱敏 headers,确认 query / Basic / Content-Type 都齐。
-        let final_url = pending.url().to_string();
-        let header_dump: Vec<(String, String)> = pending
-            .headers()
-            .iter()
-            .map(|(k, v)| {
-                let val = v.to_str().unwrap_or("<bin>").to_string();
-                // Authorization 整段脱敏,其余原样
-                if k.as_str().eq_ignore_ascii_case("authorization") {
-                    (k.to_string(), Redacted(&val).to_string())
-                } else {
-                    (k.to_string(), val)
-                }
-            })
-            .collect();
-        let body_len = pending
-            .body()
-            .and_then(|b| b.as_bytes())
-            .map(|b| b.len())
-            .unwrap_or(0);
-        tracing::debug!(
-            target: "chathub_relay::downstream",
-            final_url = %final_url,
-            headers = ?header_dump,
-            body_len,
-            "oauth2 login: final request snapshot (post-builder)",
-        );
-
         let resp = self.http.execute(pending).await.map_err(|e| {
             let elapsed_ms = started.elapsed().as_millis() as u64;
             tracing::warn!(
@@ -585,11 +556,22 @@ impl DownstreamClient {
         let status = resp.status();
         let elapsed_ms = started.elapsed().as_millis() as u64;
 
-        // 响应 headers 在 info 级别打印,便于核对 Content-Type / Set-Cookie / X-* 等。
+        // 响应 headers 在 info 级别打印,便于核对 Content-Type / X-* 等。
+        // set-cookie 可能携带会话凭据,与 authorization 一样走 Redacted 脱敏,不落明文。
         let resp_headers: Vec<(String, String)> = resp
             .headers()
             .iter()
-            .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("<bin>").to_string()))
+            .map(|(k, v)| {
+                let val = v.to_str().unwrap_or("<bin>");
+                let name = k.as_str();
+                if name.eq_ignore_ascii_case("set-cookie")
+                    || name.eq_ignore_ascii_case("authorization")
+                {
+                    (k.to_string(), Redacted(val).to_string())
+                } else {
+                    (k.to_string(), val.to_string())
+                }
+            })
             .collect();
         tracing::info!(
             target: "chathub_relay::downstream",

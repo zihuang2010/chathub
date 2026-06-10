@@ -200,3 +200,80 @@ describe("未知消息类型兜底(messageType=99,无文本无附件)", () => {
     expect(m.parts.map((p) => p.kind)).toEqual(["image"]);
   });
 });
+
+describe("出站失败附件消息回填顶层重发字段(messageType/filePath/...)", () => {
+  // 回归:附件发送失败 → persistOutboxFailure 落库 → 权威重读替换乐观气泡。此前
+  // historyToMessage 不回填这些字段,重发分支拿不到 filePath/messageType → 误走纯文本
+  // 路径发出空文本必败,且 failBubble 再以 messageType=1 + "[]" 覆盖 outbox 行,
+  // 气泡退化成「暂不支持该消息类型」。
+  it("失败语音消息 → 顶层带 messageType/filePath/fileName/fileSize/durationSeconds", () => {
+    const r: HistoryMessage = {
+      ...record(2),
+      localMessageId: "fv",
+      messageType: 4,
+      contentText: "",
+      sendStatus: 4,
+      attachments: [
+        {
+          mediaId: "t/dev/voice/a.amr",
+          fileName: "a.amr",
+          fileSize: 2048,
+          attachmentType: 3,
+          fileType: "amr",
+          durationSeconds: 7,
+        },
+      ],
+    };
+    const [m] = adaptHistoryRecords([r], "c1");
+    expect(m.status).toBe("failed");
+    expect(m.messageType).toBe(4);
+    expect(m.filePath).toBe("t/dev/voice/a.amr");
+    expect(m.fileName).toBe("a.amr");
+    expect(m.fileSize).toBe(2048);
+    expect(m.durationSeconds).toBe(7);
+  });
+
+  it("失败附件但 mediaId 为空(未上传成功)→ filePath 不写,留给重发守卫提示重新选择文件", () => {
+    const r: HistoryMessage = {
+      ...record(2),
+      localMessageId: "fi",
+      messageType: 2,
+      contentText: "",
+      sendStatus: 4,
+      attachments: [
+        { mediaId: "", fileName: "x.png", fileSize: 1, attachmentType: 1, fileType: "png" },
+      ],
+    };
+    const [m] = adaptHistoryRecords([r], "c1");
+    expect(m.messageType).toBe(2);
+    expect(m.filePath).toBeUndefined();
+    expect(m.fileName).toBe("x.png");
+  });
+
+  it("成功出站附件 / 入站消息不回填(维持「纯文本/入站不写」的既有语义)", () => {
+    const sentOut: HistoryMessage = {
+      ...record(2),
+      localMessageId: "so",
+      messageType: 2,
+      contentText: "",
+      sendStatus: 3,
+      attachments: [
+        { mediaId: "t/a.jpg", fileName: "", fileSize: 1, attachmentType: 1, fileType: "" },
+      ],
+    };
+    const incoming: HistoryMessage = {
+      ...record(1),
+      localMessageId: "in1",
+      messageType: 2,
+      contentText: "",
+      attachments: [
+        { mediaId: "t/b.jpg", fileName: "", fileSize: 1, attachmentType: 1, fileType: "" },
+      ],
+    };
+    const byId = new Map(adaptHistoryRecords([sentOut, incoming], "c1").map((m) => [m.id, m]));
+    expect(byId.get("so")?.filePath).toBeUndefined();
+    expect(byId.get("so")?.messageType).toBeUndefined();
+    expect(byId.get("in1")?.filePath).toBeUndefined();
+    expect(byId.get("in1")?.messageType).toBeUndefined();
+  });
+});

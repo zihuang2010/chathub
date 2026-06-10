@@ -2,7 +2,8 @@ import { Fragment, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
   Download,
-  FileText,
+  Eye,
+  File as FileIcon,
   Image as ImageIcon,
   ImageOff,
   Loader2,
@@ -183,22 +184,79 @@ function ImageAttachment({ part, fill = false }: { part: ImagePart; fill?: boole
   );
 }
 
+// 文件扩展名 → 类型徽标渐变底色。参考 Telegram/飞书:文档蓝、表格绿、演示橙、PDF 红、
+// 压缩包紫,未识别扩展名回退中性灰 + 通用文件图标。
+const FILE_BADGE_GRADIENTS: Record<string, string> = {
+  pdf: "from-rose-500 to-red-500",
+  doc: "from-sky-500 to-blue-600",
+  docx: "from-sky-500 to-blue-600",
+  xls: "from-emerald-500 to-green-600",
+  xlsx: "from-emerald-500 to-green-600",
+  csv: "from-emerald-500 to-green-600",
+  ppt: "from-amber-500 to-orange-500",
+  pptx: "from-amber-500 to-orange-500",
+  zip: "from-violet-500 to-purple-600",
+  rar: "from-violet-500 to-purple-600",
+  "7z": "from-violet-500 to-purple-600",
+  txt: "from-slate-400 to-slate-500",
+  md: "from-indigo-400 to-indigo-600",
+  markdown: "from-indigo-400 to-indigo-600",
+};
+
+// 长扩展名 → 徽标短标签(超 4 字符放不进 40px 方块,归一为通用缩写)。
+const FILE_BADGE_LABELS: Record<string, string> = {
+  markdown: "MD",
+};
+
+function fileExtension(name?: string): string {
+  if (!name) return "";
+  const dot = name.lastIndexOf(".");
+  return dot > 0 ? name.slice(dot + 1).toLowerCase() : "";
+}
+
+// 文件类型徽标:彩色渐变方块直出扩展名大写标签,作为卡片左侧的视觉锚点;
+// 无扩展名/标签过长时回退通用文件图标。
+function FileTypeBadge({ ext }: { ext: string }) {
+  const gradient = FILE_BADGE_GRADIENTS[ext];
+  const label =
+    FILE_BADGE_LABELS[ext] ?? (ext.length > 0 && ext.length <= 4 ? ext.toUpperCase() : "");
+  return (
+    <span
+      aria-hidden
+      className={cn(
+        "grid size-10 shrink-0 place-items-center rounded-xl bg-gradient-to-b text-white shadow-sm",
+        gradient ?? "from-slate-400 to-slate-500",
+      )}
+    >
+      {label ? (
+        <span className="text-[9.5px] font-bold leading-none tracking-wide">{label}</span>
+      ) : (
+        <FileIcon size={18} strokeWidth={1.8} />
+      )}
+    </span>
+  );
+}
+
+// 文件卡外壳:18px 圆角 + 半透明毛玻璃底 + 轻阴影,hover 阴影加深(去描边的卡片感)。
+const FILE_CARD_SHELL =
+  "flex w-72 max-w-full items-center gap-3 rounded-[18px] bg-workbench-surface-elevated/75 px-3.5 py-3 shadow-wb-card-soft ring-1 ring-workbench-line-subtle/50 backdrop-blur-md";
+
 function FileAttachment({ part }: { part: FilePart }) {
   const state = transferState(part.transferStatus);
   if (state !== "ready") {
-    // 转存中/失败:复用文件卡外壳,左侧图标换 loading/失败,文案右移,保持卡片尺寸不跳。
+    // 转存中/失败:复用文件卡外壳,左侧徽标位换 loading/失败,文案右移,保持卡片尺寸不跳。
     return (
-      <div className="flex w-72 max-w-full items-center gap-3 rounded-lg border border-workbench-line bg-workbench-surface px-3.5 py-3 shadow-wb-bubble">
-        <span className="grid size-11 shrink-0 place-items-center rounded-xl bg-workbench-surface-soft text-workbench-text-muted">
+      <div className={FILE_CARD_SHELL}>
+        <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-workbench-surface-soft text-workbench-text-muted">
           {state === "pending" ? (
             <Loader2
-              size={20}
+              size={18}
               strokeWidth={1.6}
               className="animate-spin text-workbench-text-secondary"
               aria-hidden
             />
           ) : (
-            <FileText size={22} strokeWidth={1.6} aria-hidden />
+            <FileIcon size={18} strokeWidth={1.6} aria-hidden />
           )}
         </span>
         <span className="min-w-0 flex-1 truncate text-wb-xs text-workbench-text-muted">
@@ -208,28 +266,42 @@ function FileAttachment({ part }: { part: FilePart }) {
     );
   }
   const name = part.name ?? STRINGS.attachment.file;
+  const ext = fileExtension(part.name);
   const size = formatFileSize(part.sizeBytes);
   const safe = isSafeUrl(part.url, "link");
   return (
-    // 整卡不再可点:仅右侧下载按钮触发保存(另存为)。卡片本体只承载文件名/大小展示。
-    <div className="flex w-72 max-w-full items-center gap-3 rounded-lg border border-workbench-line bg-workbench-surface px-3.5 py-3 shadow-wb-bubble">
-      <span className="grid size-11 shrink-0 place-items-center rounded-xl bg-workbench-surface-soft text-workbench-accent">
-        <FileText size={22} strokeWidth={1.6} aria-hidden />
+    // 整卡不可点:右侧预览/下载按钮 hover 浮现(focus-within 同步浮现保证键盘可达)。
+    // 文件名是主视觉焦点,大小弱化为 10px 淡灰。
+    <div className={cn(FILE_CARD_SHELL, "group transition-shadow hover:shadow-wb-card")}>
+      <FileTypeBadge ext={ext} />
+      <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+        <span className="truncate text-wb-xs font-semibold text-workbench-text">{name}</span>
+        <span className="wb-num text-wb-4xs text-workbench-text-muted/80">{size}</span>
       </span>
-      <span className="flex min-w-0 flex-1 flex-col gap-1">
-        <span className="truncate text-wb-xs font-medium text-workbench-text">{name}</span>
-        <span className="wb-num text-wb-3xs text-workbench-text-muted">{size}</span>
+      <span className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity duration-150 focus-within:opacity-100 group-hover:opacity-100">
+        <button
+          type="button"
+          disabled={!safe}
+          aria-label={`${STRINGS.attachment.preview} ${name}`}
+          title={STRINGS.attachment.preview}
+          onClick={() => {
+            if (safe) void openExternal(part.url);
+          }}
+          className="focus-ring grid size-8 place-items-center rounded-lg text-workbench-text-muted transition-colors hover:bg-workbench-surface-subtle hover:text-workbench-accent disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          <Eye size={16} strokeWidth={1.6} aria-hidden />
+        </button>
+        <button
+          type="button"
+          disabled={!safe}
+          aria-label={`${STRINGS.attachment.download} ${name}`}
+          title={STRINGS.attachment.download}
+          onClick={() => void downloadAttachment(part.url, part.name ?? undefined)}
+          className="focus-ring grid size-8 place-items-center rounded-lg text-workbench-text-muted transition-colors hover:bg-workbench-surface-subtle hover:text-workbench-accent disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          <Download size={16} strokeWidth={1.6} aria-hidden />
+        </button>
       </span>
-      <button
-        type="button"
-        disabled={!safe}
-        aria-label={`${STRINGS.attachment.download} ${name}`}
-        title={STRINGS.attachment.download}
-        onClick={() => void downloadAttachment(part.url, part.name ?? undefined)}
-        className="focus-ring grid size-8 shrink-0 place-items-center rounded-lg text-workbench-text-muted transition-colors hover:bg-workbench-surface-subtle hover:text-workbench-accent disabled:cursor-not-allowed disabled:opacity-40"
-      >
-        <Download size={16} strokeWidth={1.6} aria-hidden />
-      </button>
     </div>
   );
 }
@@ -281,6 +353,8 @@ function VoiceAttachment({ part }: { part: VoicePart }) {
   const [playing, setPlaying] = useState(false);
   // amr 首次播放需异步取字节 + 解码,loading 期间防重复点击。
   const [loading, setLoading] = useState(false);
+  // 未播放标记:点过播放即消失(仅本挂载周期内的视觉提示,不持久化)。
+  const [hasPlayed, setHasPlayed] = useState(false);
 
   // 卸载时停掉 amr 播放,避免后台残留音频。
   useEffect(() => {
@@ -370,6 +444,7 @@ function VoiceAttachment({ part }: { part: VoicePart }) {
 
   const handleClick = () => {
     if (!safe) return;
+    setHasPlayed(true);
     // silk/sil:走 silk-wasm 应用内解码(自带本地/远程取字节)。放在 isLocal 前,避免极少数
     // blob: silk 误入 benz。
     if (isSilk) {
@@ -407,7 +482,7 @@ function VoiceAttachment({ part }: { part: VoicePart }) {
         aria-label={
           state === "pending" ? STRINGS.attachment.processing : STRINGS.attachment.unavailable
         }
-        className="text-wb-3xs inline-flex items-center gap-2 rounded-lg border border-workbench-line bg-workbench-surface px-3 py-2 text-workbench-text-muted shadow-wb-bubble"
+        className="text-wb-3xs inline-flex items-center gap-2 rounded-[20px] bg-workbench-surface-soft/80 px-3 py-2 text-workbench-text-muted"
       >
         {state === "pending" ? (
           <Loader2
@@ -427,34 +502,53 @@ function VoiceAttachment({ part }: { part: VoicePart }) {
   }
 
   return (
-    <span className="inline-flex items-center gap-1.5">
+    <span className={cn("group inline-flex items-center gap-1.5", playing && "wb-voice-playing")}>
+      {/* 整个胶囊即播放按钮:20px 圆角、无描边、浅蓝(accent)渐变底。整体高度对齐
+          文字气泡(约 36px)。须保持为组件内第一个 button(测试以首个 button 作为播放入口)。 */}
       <button
         type="button"
         onClick={handleClick}
         aria-label={`${STRINGS.attachment.voice} ${seconds}″`}
-        className="focus-ring inline-flex items-center gap-2.5 rounded-lg border border-workbench-line bg-workbench-surface px-3 py-2 shadow-wb-bubble transition-colors hover:bg-workbench-surface-subtle"
+        className="focus-ring inline-flex items-center gap-2 rounded-[20px] bg-[linear-gradient(135deg,hsl(var(--wb-accent)/0.08)_0%,hsl(var(--wb-accent)/0.18)_100%)] py-1 pl-1 pr-3 transition-shadow hover:shadow-wb-bubble active:scale-[0.99]"
       >
-        <span className="grid size-7 shrink-0 place-items-center rounded-full bg-workbench-accent text-white">
-          {playing ? (
-            <Pause size={13} strokeWidth={2} fill="currentColor" aria-hidden />
+        <span className="grid size-7 shrink-0 place-items-center rounded-full bg-workbench-accent text-white shadow-[0_2px_8px_hsl(var(--wb-accent)/0.35)] transition-colors hover:bg-workbench-accent-hover">
+          {loading ? (
+            <Loader2 size={13} strokeWidth={2.2} className="animate-spin" aria-hidden />
+          ) : playing ? (
+            <Pause size={12} strokeWidth={2} fill="currentColor" aria-hidden />
           ) : (
-            <Play size={13} strokeWidth={2} fill="currentColor" aria-hidden />
+            <Play
+              size={12}
+              strokeWidth={2}
+              fill="currentColor"
+              className="translate-x-px"
+              aria-hidden
+            />
           )}
         </span>
-        <span
-          className={cn("flex h-4 items-end gap-[2px]", playing && "animate-pulse")}
-          aria-hidden
-        >
+        {/* 波形:静止时为固有高度的蓝条;播放中由 .wb-voice-playing 驱动错峰 scaleY
+            呼吸(相位走 animation-delay,reduced-motion 自动静止,见 index.css)。 */}
+        <span className="flex h-[14px] items-center gap-[2.5px]" aria-hidden>
           {Array.from({ length: barCount }).map((_, i) => (
             <span
               key={i}
-              className="w-[2px] rounded-full bg-workbench-accent/60"
-              style={{ height: `${30 + ((i * 17) % 70)}%` }}
+              className={cn(
+                "wb-voice-bar w-[2.5px] rounded-full transition-colors",
+                playing ? "bg-workbench-accent/80" : "bg-workbench-accent/50",
+              )}
+              style={{
+                height: `${36 + ((i * 23 + 11) % 53)}%`,
+                animationDelay: `${(i % 5) * 0.12}s`,
+              }}
             />
           ))}
         </span>
-        <span className="wb-num text-wb-3xs text-workbench-text-muted">
-          {STRINGS.attachment.voiceDuration(seconds)}
+        <span className="flex items-center gap-1.5">
+          <span className="wb-num text-wb-3xs text-workbench-text-muted/75">
+            {STRINGS.attachment.voiceDuration(seconds)}
+          </span>
+          {/* 未播放提示:蓝色圆点,点过播放即消失(Telegram 习惯)。 */}
+          {!hasPlayed && <span aria-hidden className="size-1.5 rounded-full bg-workbench-accent" />}
         </span>
       </button>
       {downloadable && (
@@ -463,7 +557,7 @@ function VoiceAttachment({ part }: { part: VoicePart }) {
           aria-label={`${STRINGS.attachment.download} ${STRINGS.attachment.voice}`}
           title={STRINGS.attachment.download}
           onClick={() => void downloadAttachment(part.url, voiceFileName)}
-          className="focus-ring grid size-8 shrink-0 place-items-center rounded-lg text-workbench-text-muted transition-colors hover:bg-workbench-surface-subtle hover:text-workbench-accent"
+          className="focus-ring grid size-8 shrink-0 place-items-center rounded-full text-workbench-text-muted opacity-0 transition-[color,background-color,opacity] hover:bg-workbench-surface-subtle hover:text-workbench-accent focus-visible:opacity-100 group-hover:opacity-100"
         >
           <Download size={15} strokeWidth={1.6} aria-hidden />
         </button>

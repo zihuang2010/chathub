@@ -537,6 +537,82 @@ describe("ChatArea switch-to-bottom flash guard", () => {
     });
     expect(virtuosoMock.scrollToIndex).toHaveBeenCalled();
   });
+
+  it("re-asserts bottom after the append frame so late row measurement cannot leave the newest message hidden", async () => {
+    virtuosoMock.scrollToIndex.mockClear();
+    const { rerender } = render(
+      <ChatArea
+        {...base}
+        conversation={conversation}
+        chatStoreKey="A"
+        messages={[message("01"), message("02")]}
+      />,
+    );
+    act(() => virtuosoMock.emitAtBottom?.(true));
+
+    act(() => {
+      rerender(
+        <ChatArea
+          {...base}
+          conversation={conversation}
+          chatStoreKey="A"
+          messages={[message("01"), message("02"), message("03")]}
+        />,
+      );
+    });
+    // 首针:追加当帧立即贴底(新行此刻仍是估高)。
+    const immediate = virtuosoMock.scrollToIndex.mock.calls.length;
+    expect(immediate).toBeGreaterThan(0);
+
+    // 补针:双 rAF(实测行高落地)后必须重申贴底,否则「实测 > 估高」的差值把新消息留在视口下方。
+    await act(
+      async () =>
+        new Promise<void>((resolve) =>
+          requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+        ),
+    );
+    expect(virtuosoMock.scrollToIndex.mock.calls.length).toBeGreaterThan(immediate);
+    // 所有针都打向底部,不存在其他落点。
+    for (const call of virtuosoMock.scrollToIndex.mock.calls) {
+      expect(call[0]).toMatchObject({ index: "LAST", align: "end" });
+    }
+  });
+
+  it("abandons the bottom re-assert when the user scrolls away before it fires", async () => {
+    virtuosoMock.scrollToIndex.mockClear();
+    const { rerender } = render(
+      <ChatArea
+        {...base}
+        conversation={conversation}
+        chatStoreKey="A"
+        messages={[message("01"), message("02")]}
+      />,
+    );
+    act(() => virtuosoMock.emitAtBottom?.(true));
+
+    act(() => {
+      rerender(
+        <ChatArea
+          {...base}
+          conversation={conversation}
+          chatStoreKey="A"
+          messages={[message("01"), message("02"), message("03")]}
+        />,
+      );
+    });
+    const immediate = virtuosoMock.scrollToIndex.mock.calls.length;
+
+    // 用户在补针点位前上滚离底(滚动事件先行翻 atBottom=false)→ 全部补针放弃,不抢滚动。
+    act(() => virtuosoMock.emitAtBottom?.(false));
+    await act(
+      async () =>
+        new Promise<void>((resolve) =>
+          requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+        ),
+    );
+    await new Promise<void>((resolve) => setTimeout(resolve, 220));
+    expect(virtuosoMock.scrollToIndex.mock.calls.length).toBe(immediate);
+  });
 });
 
 describe("ChatArea history scrolling", () => {
