@@ -34,10 +34,18 @@ export function useCurrentEmployeeId(): string | null {
       } catch {
         if (!cancelled) setEmployeeId(null);
       }
-      // 登出 / 被踢时清空
-      unlisten = await listen<{ reason?: string }>("auth:logged_out", () => {
+      // 登出 / 被踢时清空。listen 排在 await invoke 之后,若组件在 current_session 在途
+      // 期间卸载,cleanup 已先跑过(此刻 unlisten 仍 undefined、空跑),故 await 后补 cancelled
+      // 守卫:已卸载则立即取消、不再赋给 unlisten,避免监听器永久悬挂(与本仓其余 await listen
+      // 点一致,如 App.tsx)。
+      const un = await listen<{ reason?: string }>("auth:logged_out", () => {
         setEmployeeId(null);
       });
+      if (cancelled) {
+        un();
+        return;
+      }
+      unlisten = un;
     })();
 
     return () => {
