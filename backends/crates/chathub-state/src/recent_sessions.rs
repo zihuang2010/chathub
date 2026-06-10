@@ -829,6 +829,82 @@ fn upsert_remote_in_tx(
     r: &RecentSessionRemote,
     now_ms: i64,
 ) -> rusqlite::Result<usize> {
+    // 业务键去重:服务端会对同一 (employee, 账号, 客户) 换发新雪花会话 id(接待重开/重建),
+    // 新 id 走 INSERT 会与旧 id 行并存 → 接待列表重复会话。此处保证业务键唯一:
+    //   ① 守卫:已有"更新身份"的兄弟行(版本更高;同版本时雪花 id 更大)→ 本次写入是
+    //      旧 id 的滞后重放,整体作废(防复活旧行,也防同版本 id 来回翻转)。
+    //   ② 收编:旧兄弟行至多保留版本最新的一行,其余删除(历史脏数据);保留行若与新 id
+    //      无主键碰撞则直接改 id 续命 —— pinned/草稿/已读水位等本地列零丢失;已碰撞
+    //      (新 id 行已在库)则删除残余旧行。
+    // external_user_id 为空(事件未携带)时无业务键可比,跳过去重,行为同旧版。
+    if !r.external_user_id.is_empty() {
+        let newer_sibling_exists: bool = c
+            .prepare(
+                "SELECT 1 FROM hub_conversation_recents \
+                 WHERE employee_id = ?1 AND wecom_account_id = ?2 AND external_user_id = ?3 \
+                   AND conversation_id <> ?4 \
+                   AND (last_message_sort_key_ms > ?5 \
+                        OR (last_message_sort_key_ms = ?5 \
+                            AND CAST(conversation_id AS INTEGER) >= CAST(?4 AS INTEGER))) \
+                 LIMIT 1",
+            )?
+            .exists(rusqlite::params![
+                r.employee_id,
+                r.wecom_account_id,
+                r.external_user_id,
+                r.conversation_id,
+                r.last_message_sort_key_ms,
+            ])?;
+        if newer_sibling_exists {
+            return Ok(0);
+        }
+        // 旧兄弟行至多保留一行(版本最新者),其余直接删除(仅历史脏数据会有多行)。
+        c.execute(
+            "DELETE FROM hub_conversation_recents \
+             WHERE employee_id = ?1 AND wecom_account_id = ?2 AND external_user_id = ?3 \
+               AND conversation_id <> ?4 \
+               AND conversation_id <> ( \
+                 SELECT conversation_id FROM hub_conversation_recents \
+                  WHERE employee_id = ?1 AND wecom_account_id = ?2 AND external_user_id = ?3 \
+                    AND conversation_id <> ?4 \
+                  ORDER BY last_message_sort_key_ms DESC, \
+                           CAST(conversation_id AS INTEGER) DESC \
+                  LIMIT 1)",
+            rusqlite::params![
+                r.employee_id,
+                r.wecom_account_id,
+                r.external_user_id,
+                r.conversation_id
+            ],
+        )?;
+        // 无主键碰撞 → 旧行改 id 续命(本地列全保留),随后 ON CONFLICT 按版本门更新远端列。
+        c.execute(
+            "UPDATE hub_conversation_recents SET conversation_id = ?4 \
+             WHERE employee_id = ?1 AND wecom_account_id = ?2 AND external_user_id = ?3 \
+               AND conversation_id <> ?4 \
+               AND NOT EXISTS ( \
+                 SELECT 1 FROM hub_conversation_recents \
+                  WHERE employee_id = ?1 AND conversation_id = ?4)",
+            rusqlite::params![
+                r.employee_id,
+                r.wecom_account_id,
+                r.external_user_id,
+                r.conversation_id
+            ],
+        )?;
+        // 已碰撞(新 id 行已在库,改不了 id)→ 删除残余旧行;上一步已改 id 时此处天然无行命中。
+        c.execute(
+            "DELETE FROM hub_conversation_recents \
+             WHERE employee_id = ?1 AND wecom_account_id = ?2 AND external_user_id = ?3 \
+               AND conversation_id <> ?4",
+            rusqlite::params![
+                r.employee_id,
+                r.wecom_account_id,
+                r.external_user_id,
+                r.conversation_id
+            ],
+        )?;
+    }
     // version-guard:仅当 incoming 复合版本 (sort_key_ms, gmt_modified_time) ≥ stored 才覆盖
     // 远端列。冷 cursor 旧页(低版本)在实时事件(高版本)之后到达时,WHERE 为假 → DO UPDATE
     // 整体跳过(stale 页被丢弃),修掉"旧页无条件覆盖新行"的 bug。新行(无冲突)照常 INSERT。
@@ -2439,5 +2515,140 @@ mod tests {
             .unwrap();
         let got = store.list_top(E, None, 10).await.unwrap();
         assert_eq!(got[0].conversation_id, "c1", "发送行应顶到非置顶区顶部");
+    }
+
+    // ─── 业务键去重:服务端对同一好友换发新 conversation_id ──────────────────
+    //
+    // 真实故障:接待重开后服务端给同一 (账号, 客户) 换发新雪花会话 id,新 id 事件
+    // 走"未知会话 INSERT"→ 同一好友落两行,接待列表出现重复会话。
+
+    /// 新 id 到达:旧行被收编(改 id 续命),本地列(置顶/草稿)零丢失,远端列被新数据覆盖。
+    #[tokio::test]
+    async fn new_conversation_id_supersedes_old_row_same_friend() {
+        let pool = SqlitePool::in_memory().await.unwrap();
+        let store = RecentSessionsStore::new(pool);
+        let mut old = sample_remote("2001", "wa-1", 100, 0);
+        old.external_user_id = "ext_same".into();
+        store.upsert_remote_one(old).await.unwrap();
+        store.set_pinned(E, "2001", true).await.unwrap();
+        store.set_draft(E, "2001", "草稿未发").await.unwrap();
+
+        let mut newer = sample_remote("2002", "wa-1", 200, 1);
+        newer.external_user_id = "ext_same".into();
+        newer.last_message_summary = "新会话消息".into();
+        store.upsert_remote_one(newer).await.unwrap();
+
+        let got = store.list_top(E, None, 10).await.unwrap();
+        assert_eq!(got.len(), 1, "同 (账号, 客户) 只应保留一行");
+        assert_eq!(got[0].conversation_id, "2002", "保留行应迁移到新 id");
+        assert_eq!(got[0].last_message_summary, "新会话消息");
+        assert!(got[0].pinned, "置顶须随收编保留");
+        assert_eq!(got[0].local_draft_text, "草稿未发", "草稿须随收编保留");
+    }
+
+    /// 旧 id 滞后写入(redelivery / 离线 backfill 重放):不得复活旧行造成重复。
+    #[tokio::test]
+    async fn stale_old_conversation_id_insert_is_dropped() {
+        let pool = SqlitePool::in_memory().await.unwrap();
+        let store = RecentSessionsStore::new(pool);
+        let mut newer = sample_remote("2002", "wa-1", 200, 0);
+        newer.external_user_id = "ext_same".into();
+        store.upsert_remote_one(newer).await.unwrap();
+
+        let mut stale = sample_remote("2001", "wa-1", 100, 5);
+        stale.external_user_id = "ext_same".into();
+        store.upsert_remote_one(stale).await.unwrap();
+
+        let got = store.list_top(E, None, 10).await.unwrap();
+        assert_eq!(got.len(), 1, "旧 id 滞后写入不得新增重复行");
+        assert_eq!(got[0].conversation_id, "2002");
+    }
+
+    /// 同版本(同 sortKey)竞争:雪花 id 更大者视为新会话,且不来回翻转。
+    #[tokio::test]
+    async fn equal_sort_key_prefers_larger_snowflake_id() {
+        let pool = SqlitePool::in_memory().await.unwrap();
+        let store = RecentSessionsStore::new(pool);
+        let mut a = sample_remote("2001", "wa-1", 100, 0);
+        a.external_user_id = "ext_same".into();
+        store.upsert_remote_one(a).await.unwrap();
+
+        // 同 sortKey、更大 id → 收编
+        let mut b = sample_remote("2002", "wa-1", 100, 0);
+        b.external_user_id = "ext_same".into();
+        store.upsert_remote_one(b).await.unwrap();
+        let got = store.list_top(E, None, 10).await.unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].conversation_id, "2002");
+
+        // 同 sortKey、更小 id 重放 → 丢弃,不翻转回旧 id
+        let mut a2 = sample_remote("2001", "wa-1", 100, 0);
+        a2.external_user_id = "ext_same".into();
+        store.upsert_remote_one(a2).await.unwrap();
+        let got = store.list_top(E, None, 10).await.unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].conversation_id, "2002", "同版本重放不得翻转 id");
+    }
+
+    /// 业务键含 wecom_account_id:同一客户分属两个企微号 → 两行都合法保留。
+    #[tokio::test]
+    async fn same_external_user_on_different_accounts_keeps_both() {
+        let pool = SqlitePool::in_memory().await.unwrap();
+        let store = RecentSessionsStore::new(pool);
+        let mut a = sample_remote("2001", "wa-1", 100, 0);
+        a.external_user_id = "ext_same".into();
+        let mut b = sample_remote("2002", "wa-2", 200, 0);
+        b.external_user_id = "ext_same".into();
+        store.upsert_remote_many(&[a, b]).await.unwrap();
+        let got = store.list_top(E, None, 10).await.unwrap();
+        assert_eq!(got.len(), 2, "不同企微号的同名客户不应被误去重");
+    }
+
+    /// 跨员工隔离:同 (账号, 客户) 但属不同 employee → 互不收编。
+    #[tokio::test]
+    async fn dedup_scoped_by_employee() {
+        let pool = SqlitePool::in_memory().await.unwrap();
+        let store = RecentSessionsStore::new(pool);
+        let mut a = sample_remote_for("emp-a", "2001", "wa-1", 100, 0);
+        a.external_user_id = "ext_same".into();
+        let mut b = sample_remote_for("emp-b", "2002", "wa-1", 200, 0);
+        b.external_user_id = "ext_same".into();
+        store.upsert_remote_many(&[a, b]).await.unwrap();
+        assert_eq!(store.list_top("emp-a", None, 10).await.unwrap().len(), 1);
+        assert_eq!(store.list_top("emp-b", None, 10).await.unwrap().len(), 1);
+    }
+
+    /// 历史脏数据(双行已同时在库):新 id 行后续任意事件到达 → 旧行被清掉,收敛为一行。
+    #[tokio::test]
+    async fn existing_duplicate_rows_converge_on_next_upsert() {
+        let pool = SqlitePool::in_memory().await.unwrap();
+        let store = RecentSessionsStore::new(pool);
+        // 直接构造"已重复"状态:绕过去重逻辑,用不同 external_user_id 先落两行再改回同键。
+        let mut old = sample_remote("2001", "wa-1", 100, 0);
+        old.external_user_id = "ext_a".into();
+        let mut newer = sample_remote("2002", "wa-1", 200, 0);
+        newer.external_user_id = "ext_b".into();
+        store.upsert_remote_many(&[old, newer]).await.unwrap();
+        // 模拟脏库:两行实为同一客户(历史版本无去重逻辑落下的)。
+        {
+            let pool2 = store.pool.pool().get().await.unwrap();
+            pool2
+                .interact(|c| {
+                    c.execute(
+                        "UPDATE hub_conversation_recents SET external_user_id = 'ext_same'",
+                        [],
+                    )
+                })
+                .await
+                .unwrap()
+                .unwrap();
+        }
+        // 新 id 行的下一次事件(版本前进)→ 触发收编,旧行删除。
+        let mut next = sample_remote("2002", "wa-1", 300, 0);
+        next.external_user_id = "ext_same".into();
+        store.upsert_remote_one(next).await.unwrap();
+        let got = store.list_top(E, None, 10).await.unwrap();
+        assert_eq!(got.len(), 1, "脏库双行应在下一次写入时收敛");
+        assert_eq!(got[0].conversation_id, "2002");
     }
 }

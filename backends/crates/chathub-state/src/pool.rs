@@ -91,6 +91,7 @@ impl SqlitePool {
                 M::up(include_str!(
                     "../migrations/V31__recents_read_watermark.sql"
                 )),
+                M::up(include_str!("../migrations/V32__recents_dedup_friend.sql")),
             ]);
             migrations
                 .to_latest(c)
