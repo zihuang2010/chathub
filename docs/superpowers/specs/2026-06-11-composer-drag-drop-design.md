@@ -11,17 +11,18 @@
 
 ### 已确认的产品决策
 
-| 决策点                           | 结论                                                              |
-| -------------------------------- | ----------------------------------------------------------------- |
-| 落点范围                         | 整个聊天区域（消息列表 + 输入区），拖入即整片显示遮罩             |
-| 图片（jpg/jpeg/png/gif/webp）    | 内联插入输入框编辑器（同图片按钮 / 粘贴）                         |
-| 文档（DOC_EXTS 白名单）          | 进待发送托盘，按扩展名自动分类（同文件按钮）                      |
-| 语音（amr/mp3/wav）              | 复用语音按钮语义：输入框/托盘为空直接进独占态；有内容弹现有确认框 |
-| 混合拖入夹语音                   | 语音忽略 + toast「语音需单独发送」                                |
-| 不支持的类型（exe/dmg/文件夹等） | 忽略 + toast「不支持的文件类型」                                  |
-| 无打开会话（空态页）             | 拖拽不响应                                                        |
-| 超 200MiB                        | 复用现有 `keepBySize` 拦截与 toast                                |
-| 离线状态                         | 不拦截拖入（与按钮行为对齐，发送时再拦）                          |
+| 决策点                           | 结论                                                                                       |
+| -------------------------------- | ------------------------------------------------------------------------------------------ |
+| 落点范围                         | 整个聊天区域（消息列表 + 输入区），拖入即整片显示遮罩                                      |
+| 图片（jpg/jpeg/png/gif/webp）    | 内联插入输入框编辑器（同图片按钮 / 粘贴）                                                  |
+| 文档（DOC_EXTS 白名单）          | 进待发送托盘，按扩展名自动分类（同文件按钮）                                               |
+| 语音（amr/mp3/wav）              | 复用语音按钮语义：输入框/托盘为空直接进独占态；有内容弹现有确认框                          |
+| 混合拖入夹语音                   | 语音忽略 + toast「语音需单独发送」                                                         |
+| 不支持的类型（exe/dmg/文件夹等） | 忽略 + toast「不支持的文件类型」                                                           |
+| 无打开会话（空态页）             | 拖拽不响应                                                                                 |
+| 超 200MiB                        | 复用现有 `keepBySize` 拦截与 toast                                                         |
+| 离线状态                         | 不拦截拖入（与按钮行为对齐，发送时再拦）                                                   |
+| 设置开关（用户补充需求）         | 设置页「消息行为」组新增「拖拽文件发送」开关，默认开；关闭后不订阅拖拽事件、整个功能不响应 |
 
 ## 2. 方案选型
 
@@ -35,14 +36,17 @@
 
 ### 新增 / 改动文件
 
-| 文件                                                          | 改动                                                                |
-| ------------------------------------------------------------- | ------------------------------------------------------------------- |
-| `frontends/components/workbench/messages/useFileDragDrop.ts`  | 新增 hook：事件订阅、坐标换算、dragActive 状态、drop 落地           |
-| `frontends/components/workbench/messages/ChatArea.tsx`        | 根容器挂 ref + 遮罩 JSX + 使用 hook                                 |
-| `frontends/components/workbench/messages/MessageComposer.tsx` | `useImperativeHandle` 暴露 `acceptDroppedFiles(files: File[])` 句柄 |
-| 文案常量（strings）                                           | 新增「不支持的文件类型」「语音需单独发送」「读取文件失败」          |
+| 文件                                                          | 改动                                                                 |
+| ------------------------------------------------------------- | -------------------------------------------------------------------- |
+| `frontends/components/workbench/messages/useFileDragDrop.ts`  | 新增 hook：事件订阅、坐标换算、dragActive 状态、drop 落地            |
+| `frontends/components/workbench/messages/ChatArea.tsx`        | 根容器挂 ref + 遮罩 JSX + 使用 hook                                  |
+| `frontends/components/workbench/messages/MessageComposer.tsx` | `useImperativeHandle` 暴露 `acceptDroppedFiles(files: File[])` 句柄  |
+| 文案常量（strings）                                           | 新增「不支持的文件类型」「语音需单独发送」「读取文件失败」+ 遮罩文案 |
+| `backends/src/settings.rs`                                    | `ComposerSettings` 加 `drag_drop: bool`（默认 true，手写 Default）   |
+| `frontends/lib/data/settingsStore.ts`                         | `composer` 组加 `dragDrop: boolean`，默认 true                       |
+| `frontends/components/workbench/settings/SettingsPage.tsx`    | 「消息行为」组新增「拖拽文件发送」Toggle                             |
 
-后端零改动；`tauri.conf.json` 零改动；capabilities 零改动（`core:default` 已含事件监听权限）。
+后端仅 `settings.rs` 加一个设置字段（KV 存储 `from_entries` 从默认值出发，老账号无该键自动得 true，无需迁移）；`tauri.conf.json` 零改动；capabilities 零改动（`core:default` 已含事件监听权限）。设置经现有 `useSettingsStore` 镜像到前端，`useFileDragDrop` 以 `enabled` 入参门控（关 = 不订阅事件）。
 
 ### 事件源（双路径，与现有 picker 双路径风格一致）
 
