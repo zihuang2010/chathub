@@ -183,6 +183,7 @@ describe("SettingsPage", () => {
   it("拖拽文件发送开关:默认开,点击发 composer.dragDrop=false 的 patch", async () => {
     render(<SettingsPage />);
     const toggle = await screen.findByRole("switch", { name: "拖拽文件发送" });
+    expect(toggle.getAttribute("aria-checked")).toBe("true");
     fireEvent.click(toggle);
     await waitFor(() => {
       expect(invokeMock).toHaveBeenCalledWith("update_settings", {
