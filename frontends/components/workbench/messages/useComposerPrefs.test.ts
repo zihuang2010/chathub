@@ -1,55 +1,66 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { renderHook, act } from "@testing-library/react";
-import {
-  loadComposerPrefs,
-  saveComposerPrefs,
-  useComposerPrefs,
-  COMPOSER_PREFS_KEY,
-  DEFAULT_PREFS,
-} from "./useComposerPrefs";
+
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: vi.fn(),
+}));
+
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: vi.fn(() => Promise.resolve(() => {})),
+}));
+
+import { invoke } from "@tauri-apps/api/core";
+
+import { DEFAULT_SETTINGS, mergeSettings, useSettingsStore } from "@/lib/data/settingsStore";
+
+import { useComposerPrefs } from "./useComposerPrefs";
+
+const invokeMock = vi.mocked(invoke);
+
+beforeEach(() => {
+  useSettingsStore.setState({ settings: DEFAULT_SETTINGS, loaded: false });
+  // update_settings:回显合并结果(模拟后端 merge 行为)
+  invokeMock.mockImplementation((_cmd, args) => {
+    const { patch } = (args ?? {}) as { patch: Parameters<typeof mergeSettings>[1] };
+    return Promise.resolve(mergeSettings(useSettingsStore.getState().settings, patch));
+  });
+});
 
 afterEach(() => {
-  window.localStorage.clear();
   vi.restoreAllMocks();
 });
 
-describe("composer prefs persistence", () => {
-  it("默认值在没有存储时返回", () => {
-    expect(loadComposerPrefs()).toEqual(DEFAULT_PREFS);
-  });
-
-  it("写入后读出", () => {
-    saveComposerPrefs({ silent: true, jumpToNext: false });
-    expect(loadComposerPrefs()).toEqual({ silent: true, jumpToNext: false });
-  });
-
-  it("损坏的 JSON 回退默认", () => {
-    window.localStorage.setItem(COMPOSER_PREFS_KEY, "not-json");
-    expect(loadComposerPrefs()).toEqual(DEFAULT_PREFS);
-  });
-});
-
-describe("useComposerPrefs hook", () => {
-  it("toggle 持久化到 localStorage", () => {
+describe("useComposerPrefs(settings store 适配层)", () => {
+  it("默认值:silent/jumpToNext 均为 false", () => {
     const { result } = renderHook(() => useComposerPrefs());
-    act(() => result.current.setSilent(true));
-    expect(loadComposerPrefs().silent).toBe(true);
+    expect(result.current.prefs).toEqual({ silent: false, jumpToNext: false, dragDrop: true });
+  });
+
+  it("setSilent 走统一设置存储(invoke update_settings)", async () => {
+    const { result } = renderHook(() => useComposerPrefs());
+    await act(async () => {
+      result.current.setSilent(true);
+    });
+    expect(invokeMock).toHaveBeenCalledWith("update_settings", {
+      patch: { composer: { silent: true } },
+    });
     expect(result.current.prefs.silent).toBe(true);
   });
 
-  it("跨实例同步：A 写入后 B 自动更新", () => {
+  it("跨实例同步:A 写入后 B 自动更新(同一 store)", async () => {
     const a = renderHook(() => useComposerPrefs());
     const b = renderHook(() => useComposerPrefs());
-    act(() => a.result.current.setSilent(true));
+    await act(async () => {
+      a.result.current.setSilent(true);
+    });
     expect(b.result.current.prefs.silent).toBe(true);
   });
 
-  it("unmount 后不再被通知", () => {
-    const { result, unmount } = renderHook(() => useComposerPrefs());
-    const lastKnown = result.current.prefs;
-    unmount();
-    // 调用 saveComposerPrefs 不应再让 result.current 反映新值（已 unmount）
-    saveComposerPrefs({ silent: true, jumpToNext: true });
-    expect(result.current.prefs).toEqual(lastKnown);
+  it("setJumpToNext 不影响 silent(部分更新)", async () => {
+    const { result } = renderHook(() => useComposerPrefs());
+    await act(async () => {
+      result.current.setJumpToNext(true);
+    });
+    expect(result.current.prefs).toEqual({ silent: false, jumpToNext: true, dragDrop: true });
   });
 });
