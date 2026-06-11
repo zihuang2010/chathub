@@ -65,6 +65,12 @@ import {
   useFileAttachments,
 } from "./useDraftStore";
 import { formatFileSize } from "./utils";
+import { classifyDroppedFiles } from "./dropFiles";
+
+/** 拖拽落地句柄:ChatArea 的拖拽 hook 经此把文件灌进 composer 既有管线。 */
+export interface ComposerDropHandle {
+  acceptDroppedFiles: (files: File[]) => void;
+}
 
 interface MessageComposerProps {
   conversationId: string;
@@ -95,6 +101,8 @@ interface MessageComposerProps {
   getPolishContext?: () => string;
   /** hub 连接断开:置真时顶部显示离线横幅并禁用发送(用户仍可继续编辑草稿)。 */
   offline?: boolean;
+  /** ChatArea 拖拽 hook 写入句柄以调用 acceptDroppedFiles;React 19 普通 prop,无需 forwardRef。 */
+  dropHandleRef?: { current: ComposerDropHandle | null };
 }
 
 interface ScreenshotResult {
@@ -186,6 +194,7 @@ export function MessageComposer({
   onCancelReply,
   getPolishContext,
   offline = false,
+  dropHandleRef,
 }: MessageComposerProps) {
   const [draft] = useDraft(conversationId);
   const [pendingFileAttachments, setPendingFileAttachments] = useFileAttachments(conversationId);
@@ -441,6 +450,54 @@ export function MessageComposer({
     [setPendingFileAttachments],
   );
 
+  // 拖拽进来的语音文件:需先过「改用语音」确认框时暂存于此,确认后落地、取消即丢弃。
+  const pendingDroppedVoiceRef = useRef<File | null>(null);
+
+  // 拖拽文件统一入口:按扩展名分流进既有三条管线。语音仅纯语音拖入时生效(独占规则不绕过)。
+  const acceptDroppedFiles = useCallback(
+    (raw: File[]) => {
+      const groups = classifyDroppedFiles(raw);
+      if (groups.unsupported.length > 0) {
+        showToast(STRINGS.toast.dropUnsupported, { type: "error" });
+      }
+      if (groups.images.length > 0) acceptImageFiles(groups.images);
+      if (groups.docs.length > 0) acceptDocFiles(groups.docs);
+      if (groups.voices.length > 0) {
+        if (groups.images.length > 0 || groups.docs.length > 0) {
+          showToast(STRINGS.toast.dropVoiceAlone, { type: "error" });
+        } else {
+          const composerHasContent =
+            textJoined.trim().length > 0 ||
+            blocks.some((b) => b.type === "image") ||
+            pendingFileAttachments.length > 0;
+          if (composerHasContent) {
+            pendingDroppedVoiceRef.current = groups.voices[0];
+            setVoiceConfirmOpen(true);
+          } else {
+            acceptVoiceFiles(groups.voices);
+          }
+        }
+      }
+    },
+    [
+      acceptImageFiles,
+      acceptDocFiles,
+      acceptVoiceFiles,
+      textJoined,
+      blocks,
+      pendingFileAttachments,
+    ],
+  );
+
+  // 句柄发布给 ChatArea(React 19 普通 prop,无需 forwardRef)。
+  useEffect(() => {
+    if (!dropHandleRef) return;
+    dropHandleRef.current = { acceptDroppedFiles };
+    return () => {
+      dropHandleRef.current = null;
+    };
+  }, [dropHandleRef, acceptDroppedFiles]);
+
   // web 预览(非 Tauri)的隐藏 <input> onChange:复用上面的 accept* 落地逻辑。
   const handleImagePicker = (event: ChangeEvent<HTMLInputElement>) => {
     acceptImageFiles(Array.from(event.target.files ?? []));
@@ -577,8 +634,27 @@ export function MessageComposer({
       if (a.url.startsWith("blob:")) URL.revokeObjectURL(a.url);
     }
     setPendingFileAttachments([]);
-    openVoicePicker();
-  }, [conversationId, pendingFileAttachments, setPendingFileAttachments, openVoicePicker]);
+    // 若是拖入语音触发的确认,直接落地暂存文件;否则才打开选择器。
+    const dropped = pendingDroppedVoiceRef.current;
+    pendingDroppedVoiceRef.current = null;
+    if (dropped) {
+      acceptVoiceFiles([dropped]);
+    } else {
+      openVoicePicker();
+    }
+  }, [
+    conversationId,
+    pendingFileAttachments,
+    setPendingFileAttachments,
+    openVoicePicker,
+    acceptVoiceFiles,
+  ]);
+
+  // 取消「改用语音」:关框并丢弃拖入暂存的语音(若有)。
+  const closeVoiceConfirm = useCallback(() => {
+    pendingDroppedVoiceRef.current = null;
+    setVoiceConfirmOpen(false);
+  }, []);
 
   // ─── Resize ───────────────────────────────────────────────────────────────
 
@@ -967,7 +1043,7 @@ export function MessageComposer({
       {/* 改用语音前的二次确认:确认后清空文本与附件并打开语音选择器。 */}
       <Modal
         open={voiceConfirmOpen}
-        onClose={() => setVoiceConfirmOpen(false)}
+        onClose={closeVoiceConfirm}
         ariaLabel={STRINGS.composer.voiceExclusiveTitle}
       >
         <div className="flex flex-col gap-3 p-5">
@@ -978,7 +1054,7 @@ export function MessageComposer({
             {STRINGS.composer.voiceExclusiveBody}
           </p>
           <div className="mt-1 flex items-center justify-end gap-2">
-            <Button variant="ghost" size="sm" onClick={() => setVoiceConfirmOpen(false)}>
+            <Button variant="ghost" size="sm" onClick={closeVoiceConfirm}>
               {STRINGS.composer.voiceExclusiveCancel}
             </Button>
             <Button variant="default" size="sm" onClick={confirmVoiceSwitch}>
