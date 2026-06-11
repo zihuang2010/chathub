@@ -55,6 +55,9 @@ export function useFileDragDrop({ enabled, containerRef, onFiles }: UseFileDragD
 } {
   const [dragActive, setDragActive] = useState(false);
   // onFiles 走 ref 透传:避免调用方每渲染新建闭包导致订阅 effect 反复退订/重订。
+  // 注意:组件卸载后 onFilesRef 仍持有旧闭包引用,当前安全性另有一层来自
+  // ChatArea 侧 composerDropRef 卸载置 null 的 `?.` 短路;下方 drop 分支
+  // 的 disposed 守卫则是第一道防线,阻止 read_local_file 在途 Promise 回调回执。
   const onFilesRef = useRef(onFiles);
   useEffect(() => {
     onFilesRef.current = onFiles;
@@ -94,6 +97,8 @@ export function useFileDragDrop({ enabled, containerRef, onFiles }: UseFileDragD
         if (payload.type !== "drop") return;
         if (!inContainer(payload.position) || payload.paths.length === 0) return;
         void readDroppedPaths(payload.paths).then((files) => {
+          // drop 在途期间组件已卸载或开关已关:守卫阻断幽灵回调与幽灵 toast。
+          if (disposed) return;
           if (files.length === 0) {
             showToast(STRINGS.toast.dropReadFailed, { type: "error" });
           } else {

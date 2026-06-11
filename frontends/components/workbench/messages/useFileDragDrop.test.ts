@@ -150,6 +150,70 @@ describe("useFileDragDrop / Tauri 路径", () => {
     await waitFor(() => expect(onFiles).toHaveBeenCalled());
     expect((onFiles.mock.calls[0][0] as File[]).map((f) => f.name)).toEqual(["ok.pdf"]);
   });
+
+  it("enabled true→false→true 快速切换:unlistenMock 恰被调一次,dragCallback 重新挂上", async () => {
+    // 防双订阅回归:false 切回 true 应先退订旧监听再建新监听,unlisten 恰好一次。
+    const onFiles = vi.fn();
+    const containerRef = makeContainer();
+    const { rerender } = renderHook(
+      ({ enabled }) => useFileDragDrop({ enabled, containerRef, onFiles }),
+      { initialProps: { enabled: true } },
+    );
+    await waitFor(() => expect(dragCallback).not.toBeNull());
+    const firstCallback = dragCallback;
+
+    rerender({ enabled: false });
+    // false 时旧订阅应被退订
+    await waitFor(() => expect(unlistenMock).toHaveBeenCalledTimes(1));
+
+    rerender({ enabled: true });
+    // 重新订阅后 dragCallback 应被替换为新回调
+    await waitFor(() => expect(dragCallback).not.toBeNull());
+    // unlistenMock 不再多次调用(新订阅未被误退订)
+    expect(unlistenMock).toHaveBeenCalledTimes(1);
+    // dragCallback 已被替换(新回调被挂上)
+    expect(dragCallback).not.toBe(firstCallback);
+  });
+
+  it("drop 在途卸载:onFiles 与 toast 均不触发", async () => {
+    // read_local_file 在途期间组件卸载,disposed 守卫应阻断回调。
+    const onFiles = vi.fn();
+    const containerRef = makeContainer();
+    const { showToast } = await import("@/components/ui/toast");
+    const showToastMock = vi.mocked(showToast);
+    showToastMock.mockClear();
+
+    // invoke 返回挂起的 Promise,手动控制 resolve 时机
+    let resolveInvoke!: (v: ArrayBuffer) => void;
+    invokeMock.mockImplementation(
+      () =>
+        new Promise<ArrayBuffer>((resolve) => {
+          resolveInvoke = resolve;
+        }),
+    );
+
+    const { unmount } = renderHook(() => useFileDragDrop({ enabled: true, containerRef, onFiles }));
+    await waitFor(() => expect(dragCallback).not.toBeNull());
+
+    // 触发 drop(在途:invoke 尚未 resolve)
+    act(() =>
+      dragCallback!({
+        payload: { type: "drop", position: { x: 120, y: 240 }, paths: ["/tmp/x.pdf"] },
+      }),
+    );
+
+    // 组件卸载(disposed = true)
+    unmount();
+
+    // 之后 resolve invoke,驱动 .then 回调
+    await act(async () => {
+      resolveInvoke(new ArrayBuffer(1));
+    });
+
+    // disposed 守卫应阻断:onFiles 和 toast 均不触发
+    expect(onFiles).not.toHaveBeenCalled();
+    expect(showToastMock).not.toHaveBeenCalled();
+  });
 });
 
 describe("useFileDragDrop / web 兜底路径", () => {
