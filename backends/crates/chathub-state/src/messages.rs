@@ -98,6 +98,10 @@ impl MessagesStore {
                        message_direction = excluded.message_direction, \
                        source_direction = excluded.source_direction, \
                        content_text      = excluded.content_text, \
+                       request_message_id = CASE \
+                           WHEN request_message_id = '' THEN excluded.request_message_id \
+                           ELSE request_message_id \
+                       END, \
                        send_status = CASE \
                            WHEN send_status <= 1 THEN excluded.send_status \
                            WHEN send_status = 2 AND excluded.send_status IN (3, 4) THEN excluded.send_status \
@@ -116,6 +120,8 @@ impl MessagesStore {
                            WHEN send_status <= 1 THEN excluded.fail_reason \
                            WHEN send_status = 2 AND excluded.send_status IN (3, 4) THEN excluded.fail_reason \
                            WHEN send_status = 4 AND excluded.send_status = 3 THEN excluded.fail_reason \
+                           WHEN send_status = 4 AND excluded.send_status = 4 \
+                                AND fail_reason = '' AND excluded.fail_reason <> '' THEN excluded.fail_reason \
                            ELSE fail_reason \
                        END, \
                        updated_at_ms     = excluded.updated_at_ms",
@@ -139,15 +145,19 @@ impl MessagesStore {
                         r.source_direction as i64,
                     ],
                 )?;
-                // 去重:把同一逻辑消息(request_message_id 相同)的「client 键失败行」塌缩进刚入库的
-                // server 行。仅删 send_status=4,绝不碰 server 多态行(PENDING/CONFIRMED 同 reqid 共存)。
+                // 去重:把同一逻辑消息的旧失败行塌缩进刚入库的行。两条键链,仅删 send_status=4,
+                // 绝不碰 server 多态行(PENDING/CONFIRMED 同 reqid 共存):
+                //   ① 同 reqid 异键 —— client 键失败行被同 reqid 的 server 行收编(既有规则);
+                //   ② 前任收编 —— 存量服务端失败行 reqid 被 history 抹空后,前端只能拿行 id 当幂等键
+                //      重发,服务端为新键再建一行(reqid=前任行 id);新行落库时按「local_message_id =
+                //      新行 reqid」收编前任,行数不增(满屏 778/898 重复失败气泡的链式增殖根源)。
                 // request_message_id 空(inbound/老行)跳过,防空串互删。
                 if !r.request_message_id.is_empty() {
                     tx.execute(
                         "DELETE FROM hub_conversation_messages \
-                         WHERE employee_id = ?1 AND request_message_id = ?2 \
-                           AND request_message_id <> '' AND send_status = 4 \
-                           AND local_message_id <> ?3",
+                         WHERE employee_id = ?1 AND send_status = 4 \
+                           AND local_message_id <> ?3 \
+                           AND (request_message_id = ?2 OR local_message_id = ?2)",
                         rusqlite::params![r.employee_id, r.request_message_id, r.local_message_id],
                     )?;
                 }
@@ -193,10 +203,12 @@ impl MessagesStore {
         Ok(changed)
     }
 
-    /// 写一条出站失败气泡行(send_status=4)。client_msg_id 同时作 local_message_id 与
-    /// request_message_id(收敛桥)。sort_key 复刻服务端失败态形态:13位ms_20位零_id(下划线三段);
-    /// 方向写列 2(out)——新 sort_key 不含 direction 段。先 ensure_window 保证有落脚窗口。
-    /// 不 bump window.newest(避免扰动会话水位门)。
+    /// 写一条出站失败气泡行(send_status=4)。行键:`server_message_id` 非空时用服务端行 id
+    /// (send_message 失败响应携带,服务端按 reqid 幂等稳定)——history/push 回流同 id 命中同一行
+    /// 合并,杜绝 local-* 行与服务端行并存;为空(没打到服务端,如网络断)退回 client_msg_id。
+    /// request_message_id 恒 = client_msg_id(收敛桥/重发幂等键)。sort_key 复刻服务端失败态形态:
+    /// 13位ms_20位零_id(下划线三段);方向写列 2(out)——新 sort_key 不含 direction 段。
+    /// 先 ensure_window 保证有落脚窗口。不 bump window.newest(避免扰动会话水位门)。
     #[allow(clippy::too_many_arguments)]
     pub async fn insert_failed_outbox(
         &self,
@@ -210,6 +222,7 @@ impl MessagesStore {
         content_text: &str,
         fail_reason: &str,
         attachments_json: &str,
+        server_message_id: Option<&str>,
     ) -> Result<(), StateError> {
         self.ensure_window(
             employee_id,
@@ -218,12 +231,16 @@ impl MessagesStore {
             external_user_id,
         )
         .await?;
+        let row_key = match server_message_id {
+            Some(sid) if !sid.is_empty() => sid,
+            _ => client_msg_id,
+        };
         let row = MessageRow {
-            local_message_id: client_msg_id.to_string(),
+            local_message_id: row_key.to_string(),
             conversation_id: conversation_id.to_string(),
             employee_id: employee_id.to_string(),
             wecom_account_id: wecom_account_id.to_string(),
-            sort_key: format!("{:013}_{:020}_{}", sent_at_ms, 0, client_msg_id),
+            sort_key: format!("{:013}_{:020}_{}", sent_at_ms, 0, row_key),
             message_time_ms: sent_at_ms,
             message_direction: 2,
             // 失败气泡是本端直发(源方向 1=发送方)→ to_local_direction=2(out)、非多端同步。
@@ -1449,6 +1466,65 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn upsert_backfills_empty_reqid_but_never_overwrites() {
+        // history 接口不回传 requestMessageId(实测全空):history 先灌(reqid 空)后,push 同 id
+        // 带 reqid 到达应回填;反向(已有 reqid,后到空)绝不能被抹掉,否则整条 reqid 收敛链失效。
+        let pool = SqlitePool::in_memory().await.unwrap();
+        let store = MessagesStore::new(pool);
+        store.upsert_messages(&[row("S1", "", 4)]).await.unwrap();
+        store
+            .upsert_messages(&[row("S1", "local-a", 4)])
+            .await
+            .unwrap();
+        let got = store.list_conversation_asc("E", "c1").await.unwrap();
+        assert_eq!(got[0].request_message_id, "local-a", "空 reqid 应被回填");
+        store.upsert_messages(&[row("S1", "", 4)]).await.unwrap();
+        let got = store.list_conversation_asc("E", "c1").await.unwrap();
+        assert_eq!(
+            got[0].request_message_id, "local-a",
+            "已有 reqid 不被后到的空值覆盖"
+        );
+    }
+
+    #[tokio::test]
+    async fn upsert_backfills_empty_fail_reason_on_failed_row() {
+        // 失败原因只随 SEND_FAILED 推送下发;history 行 fail_reason 为空。同终态(4→4)也要能回填,
+        // 不能让先到的空原因把推送带来的真实原因挡在门外。
+        let pool = SqlitePool::in_memory().await.unwrap();
+        let store = MessagesStore::new(pool);
+        store.upsert_messages(&[row("S1", "", 4)]).await.unwrap();
+        let mut with_reason = row("S1", "", 4);
+        with_reason.fail_reason = "MAPPING_NOT_FOUND".into();
+        store.upsert_messages(&[with_reason]).await.unwrap();
+        let got = store.list_conversation_asc("E", "c1").await.unwrap();
+        assert_eq!(got[0].fail_reason, "MAPPING_NOT_FOUND", "空原因应被回填");
+    }
+
+    #[tokio::test]
+    async fn dedup_collapses_predecessor_failed_row_keyed_as_reqid() {
+        // 重发链收编:存量服务端失败行 S1 的 reqid 被 history 抹空 → 前端只能拿行 id(S1)当幂等键
+        // 重发 → 服务端建新行 S2(reqid=S1)。S2 落库时必须收编前任失败行 S1,行数不增。
+        let pool = SqlitePool::in_memory().await.unwrap();
+        let store = MessagesStore::new(pool);
+        store.upsert_messages(&[row("S1", "", 4)]).await.unwrap();
+        store.upsert_messages(&[row("S2", "S1", 3)]).await.unwrap();
+        let got = store.list_conversation_asc("E", "c1").await.unwrap();
+        let ids: Vec<_> = got.iter().map(|r| r.local_message_id.as_str()).collect();
+        assert_eq!(ids, ["S2"], "前任失败行应被「以其 id 为 reqid」的新行收编");
+    }
+
+    #[tokio::test]
+    async fn dedup_keyed_as_reqid_never_deletes_non_failed_predecessor() {
+        // 防御:reqid 恰好命中某「非失败」行 id 时绝不误删已送达消息(只收编 send_status=4)。
+        let pool = SqlitePool::in_memory().await.unwrap();
+        let store = MessagesStore::new(pool);
+        store.upsert_messages(&[row("S1", "", 3)]).await.unwrap();
+        store.upsert_messages(&[row("S2", "S1", 4)]).await.unwrap();
+        let got = store.list_conversation_asc("E", "c1").await.unwrap();
+        assert_eq!(got.len(), 2, "非失败前任行绝不能被收编误删");
+    }
+
+    #[tokio::test]
     async fn clear_outbox_row_deletes_only_that_local_id() {
         let pool = SqlitePool::in_memory().await.unwrap();
         let store = MessagesStore::new(pool);
@@ -1464,6 +1540,7 @@ mod tests {
                 "a",
                 "r",
                 "[]",
+                None,
             )
             .await
             .unwrap();
@@ -1479,6 +1556,7 @@ mod tests {
                 "b",
                 "r",
                 "[]",
+                None,
             )
             .await
             .unwrap();
@@ -1504,6 +1582,7 @@ mod tests {
                 "a",
                 "r",
                 "[]",
+                None,
             )
             .await
             .unwrap();
@@ -1522,7 +1601,7 @@ mod tests {
         let store = MessagesStore::new(pool);
         // cFail:有失败行,last_accessed 最旧(本该最先被淘汰)
         store
-            .insert_failed_outbox("E", "cFail", "wa", "x", "f1", 1, 1, "a", "r", "[]")
+            .insert_failed_outbox("E", "cFail", "wa", "x", "f1", 1, 1, "a", "r", "[]", None)
             .await
             .unwrap();
         store.touch_accessed("E", "cFail", 1).await.unwrap();
@@ -1551,6 +1630,7 @@ mod tests {
                 "你好",
                 "网络断开",
                 "[]",
+                None,
             )
             .await
             .unwrap();
@@ -1573,5 +1653,75 @@ mod tests {
             r.sort_key,
             "1780000000000_00000000000000000000_local-uuid-1"
         );
+    }
+
+    #[tokio::test]
+    async fn insert_failed_outbox_with_server_id_keys_row_by_server_id() {
+        // 失败响应携带服务端行 id 时,本地失败行直接用服务端 id 作行键(reqid 仍=客户端幂等键):
+        // history/push 回流同 id 命中同一行合并,杜绝 local-* 行与服务端行并存的双行起步。
+        let pool = SqlitePool::in_memory().await.unwrap();
+        let store = MessagesStore::new(pool);
+        store
+            .insert_failed_outbox(
+                "E",
+                "c1",
+                "wa",
+                "ext-1",
+                "local-uuid-1",
+                1_780_000_000_000,
+                1,
+                "778",
+                "MAPPING_NOT_FOUND",
+                "[]",
+                Some("S1"),
+            )
+            .await
+            .unwrap();
+        let got = store.list_conversation_asc("E", "c1").await.unwrap();
+        assert_eq!(got.len(), 1);
+        let r = &got[0];
+        assert_eq!(r.local_message_id, "S1", "行键应为服务端 id");
+        assert_eq!(
+            r.request_message_id, "local-uuid-1",
+            "reqid 保持客户端幂等键"
+        );
+        assert_eq!(r.send_status, 4);
+        assert_eq!(r.sort_key, "1780000000000_00000000000000000000_S1");
+        // 此前同键(reqid)的客户端键失败行(无服务端 id 时代落的)应被同 reqid DELETE 收编。
+        store
+            .insert_failed_outbox(
+                "E",
+                "c1",
+                "wa",
+                "ext-1",
+                "local-uuid-1",
+                1_780_000_000_000,
+                1,
+                "778",
+                "网络断开",
+                "[]",
+                None,
+            )
+            .await
+            .unwrap();
+        store
+            .insert_failed_outbox(
+                "E",
+                "c1",
+                "wa",
+                "ext-1",
+                "local-uuid-1",
+                1_780_000_000_000,
+                1,
+                "778",
+                "MAPPING_NOT_FOUND",
+                "[]",
+                Some("S1"),
+            )
+            .await
+            .unwrap();
+        let got = store.list_conversation_asc("E", "c1").await.unwrap();
+        let ids: Vec<_> = got.iter().map(|r| r.local_message_id.as_str()).collect();
+        assert_eq!(ids, ["S1"], "客户端键失败行应被同 reqid 的服务端键行收编");
     }
 }

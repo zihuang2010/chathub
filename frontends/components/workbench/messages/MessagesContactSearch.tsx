@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 import { Search, X } from "lucide-react";
 
 import type { Account } from "@/lib/types/account";
+import { resolveOwnerAccountName } from "@/lib/types/account";
 import { type WecomFriend } from "@/lib/api/customers";
 import { useFriends } from "@/lib/api/useFriends";
 import { cn } from "@/lib/utils";
@@ -40,6 +41,8 @@ export const MessagesContactSearch = memo(function MessagesContactSearch({
   const [query, setQuery] = useState("");
   const [debounced, setDebounced] = useState("");
   const [open, setOpen] = useState(false);
+  // 中文 IME 合成态(拼音未上屏):合成中输入框照常显示拼音,但不拿拼音去搜。
+  const [isComposing, setIsComposing] = useState(false);
   const rootRef = useRef<HTMLDivElement | null>(null);
   // 选中某条后程序化把名字写回输入框:此次不重新搜索、不重开下拉。
   const suppressRef = useRef(false);
@@ -47,9 +50,11 @@ export const MessagesContactSearch = memo(function MessagesContactSearch({
   // 输入防抖 → debounced(喂给 useFriends 的 externalName)。
   useEffect(() => {
     if (suppressRef.current) return;
+    // IME 合成中(拼音未上屏):不拿拼音去搜,等 compositionend 上屏最终文本再搜。
+    if (isComposing) return;
     const id = setTimeout(() => setDebounced(query.trim()), SEARCH_DEBOUNCE_MS);
     return () => clearTimeout(id);
-  }, [query]);
+  }, [query, isComposing]);
 
   // 账号反查表:用结果里的 `wecomAccountId` 取归属账号(显示名 + 配色),展示账号徽章。
   const accountById = useMemo(() => new Map(accounts.map((a) => [a.id, a] as const)), [accounts]);
@@ -119,6 +124,13 @@ export const MessagesContactSearch = memo(function MessagesContactSearch({
         <input
           value={query}
           onChange={(e) => handleChange(e.currentTarget.value)}
+          onCompositionStart={() => setIsComposing(true)}
+          onCompositionEnd={(e) => {
+            // compositionend 时 value 已是最终上屏文本;显式同步一次,
+            // 不依赖浏览器是否再补发 onChange(Chrome/Firefox 顺序不一致)。
+            setIsComposing(false);
+            handleChange(e.currentTarget.value);
+          }}
           onFocus={() => {
             if (!suppressRef.current && debounced.length > 0) setOpen(true);
           }}
@@ -222,6 +234,12 @@ function ContactRow({
 }) {
   const name = friend.externalName || "(未命名)";
   const company = friend.externalCorpName || friend.remarkCorpName || "";
+  // 归属账号:优先 list_friends 行内别名(wecomAccountAlias),再用账号注册表别名兜底,回退账号名。
+  const ownerName = resolveOwnerAccountName(
+    friend.wecomAccountAlias,
+    friend.wecomAccountName,
+    account,
+  );
   return (
     <button
       type="button"
@@ -243,14 +261,14 @@ function ContactRow({
             {company}
           </div>
         )}
-        {account && <AccountLine account={account} />}
+        {ownerName && <AccountLine name={ownerName} />}
       </div>
     </button>
   );
 }
 
-/** 结果行第三行的归属账号:企微来源图标 + 账号名,样式对齐接待列表(ConversationList)。 */
-function AccountLine({ account }: { account: Account }) {
+/** 结果行第三行的归属账号:企微来源图标 + 账号名(别名优先),样式对齐接待列表(ConversationList)。 */
+function AccountLine({ name }: { name: string }) {
   return (
     <div className="mt-px flex min-w-0 items-center gap-1.5 text-wb-4xs">
       <img
@@ -259,7 +277,7 @@ function AccountLine({ account }: { account: Account }) {
         aria-hidden
         className="size-3 shrink-0 rounded-[2px] object-contain"
       />
-      <span className="min-w-0 truncate font-medium text-workbench-text-muted">{account.name}</span>
+      <span className="min-w-0 truncate font-medium text-workbench-text-muted">{name}</span>
     </div>
   );
 }

@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 
 import type { Account, AccountStatus } from "@/lib/types/account";
+import { accountDisplayName } from "@/lib/types/account";
 import type { Customer, CustomerTimelineEntry } from "@/lib/types/customer";
 import { showToast } from "@/components/ui/toast";
 import { cn } from "@/lib/utils";
@@ -337,8 +338,8 @@ function CustomerInfoSection({
   onCopy: (label: string, value: string) => void;
 }) {
   const f = STRINGS.detail.fields;
-  // 归属账号 = 账号显示名 · 负责人名(负责人来自后端 wecomAccountName,经 customer.follower 透传)。
-  const accountName = account?.name ?? customer.account;
+  // 归属账号 = 账号展示名(别名优先) · 负责人名(负责人来自后端 wecomAccountName,经 customer.follower 透传)。
+  const accountName = account ? accountDisplayName(account) : customer.account;
   const accountValue = customer.follower ? `${accountName} · ${customer.follower}` : accountName;
   return (
     <section className="flex flex-col gap-2.5">

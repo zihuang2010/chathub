@@ -10,7 +10,6 @@ import {
   removeMonitorScreenshot,
 } from "tauri-plugin-screenshots-api";
 import {
-  FileText,
   FolderUp,
   Image,
   Mic,
@@ -53,6 +52,7 @@ import { RichComposer } from "./composer/RichComposer";
 import { EmojiPicker } from "./EmojiPicker";
 import { readImageFileDimensions } from "./imageFileDimensions";
 import type { ReplyTarget } from "./MessageBubble";
+import { FileTypeBadge } from "./MessageContent";
 import { QuickRepliesPanel } from "./QuickRepliesPanel";
 import { ScreenshotCropOverlay } from "./ScreenshotCropOverlay";
 import { STRINGS } from "./strings";
@@ -64,7 +64,7 @@ import {
   useDraft,
   useFileAttachments,
 } from "./useDraftStore";
-import { formatFileSize } from "./utils";
+import { fileExtension, formatFileSize } from "./utils";
 import { classifyDroppedFiles } from "./dropFiles";
 
 /** 拖拽落地句柄:ChatArea 的拖拽 hook 经此把文件灌进 composer 既有管线。 */
@@ -1162,19 +1162,21 @@ const FileChip = memo(function FileChip({
   // 语音附件用 Mic 图标 + "语音"缺省名,与普通文件 chip 轻量区分。
   const isVoice = attachment.type === "voice";
   return (
-    <div className="group relative flex h-14 min-w-[160px] max-w-[240px] items-center gap-2.5 rounded-xl border border-workbench-line bg-workbench-surface px-3 shadow-[0_1px_2px_rgba(15,23,42,0.04)] transition-colors hover:bg-workbench-surface-subtle">
-      <span className="grid size-9 shrink-0 place-items-center rounded-lg bg-workbench-surface-soft text-workbench-accent">
-        {isVoice ? (
-          <Mic size={17} strokeWidth={1.55} aria-hidden />
-        ) : (
-          <FileText size={17} strokeWidth={1.55} aria-hidden />
-        )}
-      </span>
+    // 视觉对齐聊天气泡的文件卡(MessageContent FILE_CARD_SHELL):同款渐变扩展名徽标
+    // + 18px 圆角毛玻璃外壳;尺寸保持 chip 级(h-14)以兼容托盘高度常量 CHIP_TRAY_FOOTPRINT_PX。
+    <div className="group relative flex h-14 min-w-[160px] max-w-[240px] items-center gap-3 rounded-[18px] bg-workbench-surface-elevated/75 px-3.5 shadow-wb-card-soft ring-1 ring-workbench-line-subtle/50 backdrop-blur-md transition-shadow hover:shadow-wb-card">
+      {isVoice ? (
+        <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-workbench-surface-soft text-workbench-accent">
+          <Mic size={18} strokeWidth={1.6} aria-hidden />
+        </span>
+      ) : (
+        <FileTypeBadge ext={fileExtension(attachment.name)} />
+      )}
       <span className="flex min-w-0 flex-1 flex-col gap-0.5 leading-tight">
-        <span className="truncate text-wb-2xs font-medium text-workbench-text">
+        <span className="truncate text-wb-xs font-semibold text-workbench-text">
           {attachment.name ?? (isVoice ? STRINGS.attachment.voice : STRINGS.attachment.file)}
         </span>
-        <span className="wb-num text-wb-3xs text-workbench-text-muted">
+        <span className="wb-num text-wb-4xs text-workbench-text-muted/80">
           {formatFileSize(attachment.sizeBytes)}
         </span>
       </span>

@@ -24,6 +24,7 @@ pub mod quarantined_events;
 pub mod quick_replies;
 pub mod recent_sessions;
 pub mod session;
+pub mod user_settings;
 
 pub use account_cache::{AccountCacheStore, BindingAction, WecomAccountRow};
 pub use error::StateError;
@@ -40,3 +41,4 @@ pub use recent_sessions::{
     RECENT_SESSIONS_GLOBAL_LIMIT, RECENT_SESSIONS_PER_ACCOUNT_LIMIT,
 };
 pub use session::SessionStore;
+pub use user_settings::UserSettingsStore;

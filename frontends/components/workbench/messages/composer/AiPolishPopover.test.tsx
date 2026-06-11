@@ -27,9 +27,18 @@ vi.mock("./aiPolishClient", () => ({
     streamPolishMock(text, tone, context, cb),
 }));
 
+import { DEFAULT_SETTINGS, useSettingsStore } from "@/lib/data/settingsStore";
+
 import { AiPolishPopover } from "./AiPolishPopover";
 
 const C = STRINGS.composer;
+
+/** 设置 AI 润色开关(其余设置保持默认)。 */
+function setAiEnabled(enabled: boolean) {
+  const settings = structuredClone(DEFAULT_SETTINGS);
+  settings.ai.enabled = enabled;
+  useSettingsStore.setState({ settings, loaded: true });
+}
 
 function openPopover(originalText = "原始草稿", getContext?: () => string) {
   const onApply = vi.fn();
@@ -43,6 +52,7 @@ beforeEach(() => {
   lastCallbacks = null;
   cancelSpy.mockClear();
   streamPolishMock.mockClear();
+  useSettingsStore.setState({ settings: structuredClone(DEFAULT_SETTINGS), loaded: true });
 });
 
 afterEach(() => {
@@ -144,5 +154,39 @@ describe("AiPolishPopover", () => {
     // 回到 idle:按钮变回「生成」,预览清空(已生成内容消失)。
     expect(screen.getByText(C.polishGenerate)).toBeTruthy();
     expect(screen.queryByText("已生成内容")).toBeNull();
+  });
+});
+
+describe("AiPolishPopover —— 设置开关门控", () => {
+  it("设置里关闭 AI 润色 → 触发按钮置灰禁点(带提示),点击不打开弹层", () => {
+    setAiEnabled(false);
+    render(<AiPolishPopover originalText="你好" onApply={vi.fn()} />);
+    const trigger = screen.getByRole("button", { name: new RegExp(C.polishTitle) });
+    expect((trigger as HTMLButtonElement).disabled).toBe(true);
+    expect(trigger.getAttribute("title")).toContain("设置");
+    fireEvent.click(trigger);
+    expect(screen.queryByText(C.polishGenerate)).toBeNull();
+  });
+
+  it("开关开启 + 有文本 → 按钮可点", () => {
+    setAiEnabled(true);
+    render(<AiPolishPopover originalText="你好" onApply={vi.fn()} />);
+    const trigger = screen.getByRole("button", { name: new RegExp(C.polishTitle) });
+    expect((trigger as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("开关开启但外部 disabled(空文本)仍禁点,沿用外部提示", () => {
+    setAiEnabled(true);
+    render(
+      <AiPolishPopover
+        originalText=""
+        onApply={vi.fn()}
+        disabled
+        disabledReason={C.aiPolishEmptyHint}
+      />,
+    );
+    const trigger = screen.getByRole("button", { name: new RegExp(C.polishTitle) });
+    expect((trigger as HTMLButtonElement).disabled).toBe(true);
+    expect(trigger.getAttribute("title")).toBe(C.aiPolishEmptyHint);
   });
 });

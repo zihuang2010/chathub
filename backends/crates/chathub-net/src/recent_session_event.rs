@@ -4,20 +4,17 @@
 //! 规范 §8:`MESSAGE_UPSERT` 只更新消息气泡(由 `MessageEventApplier` 落),**不更新**最近接待
 //! 列表;摘要变化由同 batch 的 `SESSION_SUMMARY_UPSERT` 表达。故本 applier 只消费后者。
 //!
-//! 应用策略 —— 纯 UPSERT(事件路径**不**回拉 recentFriends):
+//! 应用策略 —— 合并内核单路径(事件路径**不**回拉 recentFriends;2026-06-11 收编):
 //!
-//!   1. **已知 conversation_id → 分字段部分更新**:`decode_summary` 解 `sessionSummary{}`
-//!      (规范 §9.2),`store.apply_summary` 只覆盖摘要列与非空资料列(§9.3「用服务端
-//!      sessionSummary 覆盖本地同字段」)。`wecomName/externalMobile` 等摘要不携带的展示
-//!      字段、以及 pinned/local_draft_at_ms 等本地列一律保留不动(写入纪律,见 V7 migration)。
+//!   1. **统一构造 + 单点落库**:`decode_summary` 解 `sessionSummary{}`(规范 §9.2),连同
+//!      账号缓存(`AccountCacheStore`)补的 `wecomName/wecomAccount/wecomAlias`,拼成
+//!      「摘要形态」`RecentSessionRemote` 走合并内核 `upsert_remote_one`——与拉取路径同一套
+//!      门控(版本门/已读水位/静默门/业务键收编)。已知会话:内核**非空才覆盖**保证摘要
+//!      缺省的展示字段(externalMobile 等)与 pinned/草稿等本地列不被写空(§9.3 语义);
+//!      未知会话:非静默照常建行(客户名/头像没带就留空,由 `FRIEND_UPSERT`/刷新补齐),
+//!      静默由内核门 A 跳过。离线期新会话经 backfill 补回的事件同走此路,无需拉首页。
 //!
-//!   2. **未知 conversation_id → 直接 INSERT**:用事件顶层身份(conversationId/wecomAccountId/
-//!      externalUserId)+ sessionSummary,并从本地账号缓存(`AccountCacheStore`)补
-//!      `wecomName/wecomAccount/wecomAlias`,拼整行 `upsert_remote_one` 入库。客户名/头像/手机号
-//!      事件没带就先留空,由后续 `FRIEND_UPSERT`/`SUMMARY_PROFILE_CHANGED`/刷新补齐。
-//!      离线期新会话经 backfill 补回的 `SESSION_SUMMARY_UPSERT` 即走此路,无需拉首页。
-//!
-//!   3. **瘦 payload**(无 conversationId 或无 sessionSummary)→ skip + 日志;粗粒度对齐交给
+//!   2. **瘦 payload**(无 conversationId 或无 sessionSummary)→ skip + 日志;粗粒度对齐交给
 //!      连接级 resync / 用户刷新,事件路径不再为此回拉。
 
 use crate::change_notice::{ChangeNotice, ChangeScope, ChangeTopic};
@@ -116,7 +113,7 @@ impl RecentSessionEventApplier {
 
             // MARK_READ 特判:已读上报后未读清零。MARK_READ 的 lastMessageSortKey 与上条消息同值,
             // 仅靠 gmtModifiedTime 决胜,实测有"同 sortKey 且 gmt 不前进 → 版本门拒绝 → 未读清不掉"
-            // 的真实风险。故绕过 decode_summary/apply_summary 版本门,直接 clear_unread 保证清零;
+            // 的真实风险。故绕过 decode_summary/合并内核版本门,直接 clear_unread 保证清零;
             // 未读清零与消息位置正交,不走 insert。仍计入 applied 以触发末尾统一 ChangeNotice。
             if ev.get("eventReason").and_then(|v| v.as_str()) == Some("MARK_READ") {
                 match self.store.clear_unread(&employee_id_str, conv_id).await {
@@ -134,101 +131,71 @@ impl RecentSessionEventApplier {
                 None => continue,
             };
 
-            // 纯 UPSERT:有则更新(保留展示列),无则从事件 + 账号缓存新增。
-            let exists = match self.store.exists(&employee_id_str, conv_id).await {
-                Ok(b) => b,
-                Err(e) => {
-                    // 存在性未知:跳过,避免误把已有行的展示列 UPSERT 抹空。
-                    warn!(
-                        target: "chathub_net::recent_session_event",
-                        ?e, conv_id, "store.exists failed; skip"
-                    );
-                    continue;
-                }
+            // 合并内核单路径(2026-06-11 收编):不再 exists 分支 ——
+            //   · 静默未知会话由内核静默门 A 跳过(原 !exists+clientSilent 守卫);
+            //   · 已知会话的"分字段部分更新"由内核非空才覆盖语义承担(事件缺省的展示字段
+            //     是空串,不会冲掉本地已有值);静默不复活由门 B 承担;
+            //   · 事件与拉取从此过同一套门控,杜绝两路径语义漂移(静默 bug 的病根)。
+            // 账号缓存补企微展示字段(批内只读一次);缓存未命中给空串,内核保留已有值。
+            if accounts_cache.is_none() {
+                accounts_cache = Some(
+                    self.accounts
+                        .read_for_employee(&employee_id_str)
+                        .await
+                        .unwrap_or_default(),
+                );
+            }
+            // 真实 payload:身份字段在 sessionSummary{} 内部。
+            let acct_id = json_id(ss, "wecomAccountId");
+            let acct_id = acct_id.as_str();
+            let (wecom_name, wecom_account, cache_alias) = accounts_cache
+                .as_ref()
+                .and_then(|v| v.iter().find(|a| a.wecom_account_id == acct_id))
+                .map(|a| {
+                    (
+                        a.wecom_name.clone(),
+                        a.wecom_account.clone(),
+                        a.wecom_alias.clone(),
+                    )
+                })
+                .unwrap_or_default();
+            let remote = RecentSessionRemote {
+                conversation_id: conv_id.to_string(),
+                wecom_account_id: acct_id.to_string(),
+                employee_id: employee_id_str.clone(),
+                wecom_name,
+                wecom_account,
+                // 别名:事件带的优先,否则用账号缓存。
+                wecom_alias: if summary.wecom_alias.is_empty() {
+                    cache_alias
+                } else {
+                    summary.wecom_alias.clone()
+                },
+                external_user_id: str_or_empty(ss, "externalUserId"),
+                external_name: summary.external_name.clone(),
+                external_avatar: summary.external_avatar.clone(),
+                // 事件不带手机号 → 空串(内核保留已有值);新行留空待 FRIEND_UPSERT/刷新补。
+                external_mobile: String::new(),
+                last_local_message_id: summary.last_local_message_id.clone(),
+                last_message_type: summary.last_message_type,
+                last_message_direction: summary.last_message_direction,
+                last_send_status: summary.last_send_status,
+                last_message_summary: summary.last_message_summary.clone(),
+                last_message_time_ms: summary.last_message_time_ms,
+                unread_count: summary.unread_count,
+                has_unread: summary.has_unread,
+                last_message_sort_key_ms: summary.last_message_sort_key_ms,
+                gmt_modified_time: summary.gmt_modified_time.clone(),
+                silent: summary.silent,
             };
-
-            if exists {
-                // 已存在:分字段部分更新(只覆盖摘要列与非空资料列,保留展示字段)。
-                match self.store.apply_summary(summary).await {
-                    Ok(true) => applied += 1,
-                    Ok(false) => {
-                        // 版本门拒绝的 stale 摘要 → no-op。
-                    }
-                    Err(e) => warn!(
-                        target: "chathub_net::recent_session_event",
-                        ?e, conv_id, "apply_summary failed"
-                    ),
-                }
-            } else {
-                // 静默消息(clientSilent=true)且该会话尚不在接待列表 → 不创建会话。
-                // 规范:静默仅抑制「新建接待行」,其余数据操作与普通消息一致——已在接待列表的
-                // 会话走上面 exists 分支照常 apply_summary。clientSilent 在 sessionSummary{} 内部,
-                // 缺省 false(旧推送无此字段 → 行为不变)。
-                if ss
-                    .get("clientSilent")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false)
-                {
-                    continue;
-                }
-                // 新会话:事件顶层身份 + 账号缓存补企微展示字段 → 整行 INSERT。
-                if accounts_cache.is_none() {
-                    accounts_cache = Some(
-                        self.accounts
-                            .read_for_employee(&employee_id_str)
-                            .await
-                            .unwrap_or_default(),
-                    );
-                }
-                // 真实 payload:身份字段在 sessionSummary{} 内部。
-                let acct_id = json_id(ss, "wecomAccountId");
-                let acct_id = acct_id.as_str();
-                let (wecom_name, wecom_account, cache_alias) = accounts_cache
-                    .as_ref()
-                    .and_then(|v| v.iter().find(|a| a.wecom_account_id == acct_id))
-                    .map(|a| {
-                        (
-                            a.wecom_name.clone(),
-                            a.wecom_account.clone(),
-                            a.wecom_alias.clone(),
-                        )
-                    })
-                    .unwrap_or_default();
-                let remote = RecentSessionRemote {
-                    conversation_id: conv_id.to_string(),
-                    wecom_account_id: acct_id.to_string(),
-                    employee_id: employee_id_str.clone(),
-                    wecom_name,
-                    wecom_account,
-                    // 别名:事件带的更新,否则用账号缓存。
-                    wecom_alias: if summary.wecom_alias.is_empty() {
-                        cache_alias
-                    } else {
-                        summary.wecom_alias.clone()
-                    },
-                    external_user_id: str_or_empty(ss, "externalUserId"),
-                    external_name: summary.external_name.clone(),
-                    external_avatar: summary.external_avatar.clone(),
-                    // 事件不带手机号 → 留空,后续 FRIEND_UPSERT/刷新补。
-                    external_mobile: String::new(),
-                    last_local_message_id: summary.last_local_message_id.clone(),
-                    last_message_type: summary.last_message_type,
-                    last_message_direction: summary.last_message_direction,
-                    last_send_status: summary.last_send_status,
-                    last_message_summary: summary.last_message_summary.clone(),
-                    last_message_time_ms: summary.last_message_time_ms,
-                    unread_count: summary.unread_count,
-                    has_unread: summary.has_unread,
-                    last_message_sort_key_ms: summary.last_message_sort_key_ms,
-                    gmt_modified_time: summary.gmt_modified_time.clone(),
-                };
-                match self.store.upsert_remote_one(remote).await {
-                    Ok(()) => applied += 1,
-                    Err(e) => warn!(
-                        target: "chathub_net::recent_session_event",
-                        ?e, conv_id, "upsert_remote_one(insert) failed"
-                    ),
-                }
+            match self.store.upsert_remote_one(remote).await {
+                Ok(true) => applied += 1,
+                // 门拒(静默未知会话 / 版本 stale):no-op,不计 applied、不触发末尾通知。
+                Ok(false) => {}
+                Err(e) => warn!(
+                    target: "chathub_net::recent_session_event",
+                    ?e, conv_id, "upsert_remote_one failed"
+                ),
             }
         }
 
@@ -288,6 +255,8 @@ pub fn record_to_remote(r: RecentFriendRecord, employee_id: &str) -> RecentSessi
         // 版本主键回退:sortKey 缺省时用消息时间(同为 epoch-ms,可比)。
         last_message_sort_key_ms: sort_ms.max(time_ms),
         gmt_modified_time: r.gmt_modified_time,
+        // 静默标志透传:upsert 据此不建行/不复活(与事件路径 clientSilent 同语义)。
+        silent: r.client_silent,
     }
 }
 
@@ -344,12 +313,12 @@ fn decode_summary(ev: &serde_json::Value, employee_id: &str) -> Option<RecentSes
         last_message_sort_key_ms: sort_ms.max(time_ms),
         // gmt 次版本:真实 payload 在 sessionSummary 内部读;缺省空串(版本门主键用 sort_key_ms,gmt 仅同值时 tiebreak)。
         gmt_modified_time: str_or_empty(ss, "gmtModifiedTime"),
-        // 可选资料字段:仅"资料变化时"返回,非空才覆盖本地(apply_summary 负责保留逻辑)。
+        // 可选资料字段:仅"资料变化时"返回,非空才覆盖本地(合并内核非空才覆盖负责保留)。
         external_name: str_or_empty(ss, "externalName"),
         external_avatar: str_or_empty(ss, "externalAvatar"),
         wecom_alias: str_or_empty(ss, "wecomAlias"),
         // 静默标志:上游 `sessionSummary.clientSilent=true`。缺省 false(旧推送无此字段 → 行为不变)。
-        // apply_summary 据此对软删除会话只更新摘要、不取消隐藏(见 RecentSessionSummary::silent 注释)。
+        // 合并内核据此不建行/不复活软删行(见 RecentSessionSummary::silent 注释)。
         silent: ss
             .get("clientSilent")
             .and_then(|v| v.as_bool())
@@ -420,7 +389,19 @@ mod tests {
             has_unread: false,
             last_message_sort_key: sort_key.into(),
             gmt_modified_time: String::new(),
+            client_silent: false,
         }
+    }
+
+    /// 回归:列表接口 `clientSilent` 必须透传到 `RecentSessionRemote.silent`(漏传 = 静默门失效,
+    /// 切账号预填重新把静默会话灌进列表)。
+    #[test]
+    fn record_to_remote_passes_client_silent_through() {
+        let mut r = sample_record("2026-06-02T16:55:20", "1_abc");
+        r.client_silent = true;
+        assert!(record_to_remote(r, "emp-1").silent);
+        let r2 = sample_record("2026-06-02T16:55:20", "1_abc");
+        assert!(!record_to_remote(r2, "emp-1").silent);
     }
 
     /// 回归:真实 payload 的无 `Z` ISO-T 时间串必须解析出**非零**显示时间。
@@ -538,7 +519,7 @@ mod tests {
     #[test]
     fn decode_summary_optional_profile_missing_defaults_empty() {
         // 资料字段(externalName/externalAvatar/wecomAlias)摘要事件常不带 → 解码为空串,
-        // 由 store.apply_summary 负责"空串不覆盖本地"。
+        // 由合并内核"非空才覆盖"负责空串不冲掉本地。
         let ev = full_session_summary_event("cv-1", "wa-1");
         let s = decode_summary(&ev, "u-test").expect("optional missing OK");
         assert_eq!(s.external_name, "");
@@ -615,6 +596,7 @@ mod tests {
             has_unread: false,
             last_message_sort_key_ms: sort_ms,
             gmt_modified_time: String::new(),
+            silent: false,
         }
     }
 
@@ -739,7 +721,7 @@ mod tests {
             .await
             .unwrap();
 
-        // 静默消息命中已在接待列表的会话 → 与普通消息一致,照常 apply_summary 更新。
+        // 静默消息命中已在接待列表的会话 → 与普通消息一致,照常经合并内核更新摘要。
         let mut ev = full_session_summary_event("cv-1", "wa-1");
         ev["sessionSummary"]
             .as_object_mut()

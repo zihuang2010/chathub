@@ -2,6 +2,7 @@ import { useState } from "react";
 import { ChevronDown, ListFilter, X } from "lucide-react";
 
 import type { Account } from "@/lib/types/account";
+import { accountDisplayName } from "@/lib/types/account";
 import { cn } from "@/lib/utils";
 
 import { AccountDropdown } from "./AccountDropdown";
@@ -16,9 +17,10 @@ interface RangePillProps {
 
 export function RangePill({ accounts, selectedAccountId, onAccountChange }: RangePillProps) {
   const [open, setOpen] = useState(false);
-  const selectedAccountName = selectedAccountId
-    ? (accounts.find((a) => a.id === selectedAccountId)?.name ?? null)
-    : null;
+  const selectedAccount = selectedAccountId
+    ? accounts.find((a) => a.id === selectedAccountId)
+    : undefined;
+  const selectedAccountName = selectedAccount ? accountDisplayName(selectedAccount) : null;
   const label = selectedAccountName ?? STRINGS.rangePill.allAccounts(accounts.length);
 
   return (

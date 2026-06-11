@@ -3,6 +3,7 @@ mod image_cache;
 mod image_prefetch;
 mod logging;
 mod media;
+mod settings;
 
 use serde::Serialize;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -196,6 +197,7 @@ async fn read_screenshot_file(path: String) -> Result<String, String> {
 
 #[tauri::command]
 async fn login(
+    app: tauri::AppHandle,
     state: State<'_, Arc<AuthApi>>,
     cm: State<'_, Arc<ConnectionManager>>,
     username: String,
@@ -210,6 +212,8 @@ async fn login(
             return Err(e);
         }
     };
+    // 设置页:换账号要换设置。在起连接前加载该账号设置(静默超时等连接级参数即刻可用)。
+    let _ = settings::load_and_apply(&app, &profile.user_id).await;
     // S1:强制干净重连。直接 start() 有幂等陷阱——run_loop 仍存活时 start() 静默 return,
     // 重/二次登录变空操作且日志误导。先 stop()(abort 旧 task + 置 Disconnected)再 start()。
     // stop/start 共用 task mutex 串行,不会产生双 run_loop;abort 可能切断正在 apply 的批,
@@ -953,6 +957,8 @@ async fn upload_attachment(
 /// 前端任一 markFailed 落地一条出站失败气泡到本地库(send_status=4),并乐观写接待列表失败态
 /// (mark_local_failed:写展示列 + last_send_status=4,不抬水位键)。随后广播 ConversationMessages +
 /// RecentSessions ChangeNotice 触发重读。employee_id 走 session 防串台。
+/// `server_message_id`:send_message 失败响应携带的服务端行 id(可缺,网络层失败时无)——
+/// 有则本地失败行直接用它作行键,history/push 回流同 id 合并,不产生双行。
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 async fn persist_outbox_failure(
@@ -969,6 +975,7 @@ async fn persist_outbox_failure(
     content_text: String,
     fail_reason: String,
     attachments_json: String,
+    server_message_id: Option<String>,
 ) -> Result<(), AuthError> {
     let employee_id = auth_api
         .current_session()
@@ -987,6 +994,7 @@ async fn persist_outbox_failure(
             &content_text,
             &fail_reason,
             &attachments_json,
+            server_message_id.as_deref(),
         )
         .await
         .map_err(AuthError::from)?;
@@ -1538,7 +1546,7 @@ async fn open_friend_conversation(
     };
 
     // 接待行:有记录用真实记录;无记录合成空白行(sortKey 空 → 版本 0,不覆盖未来真实记录)。
-    let remote = match record {
+    let mut remote = match record {
         Some(mut r) => {
             r.conversation_id = conversation_id.clone();
             record_to_remote(r, &employee_id)
@@ -1564,10 +1572,14 @@ async fn open_friend_conversation(
                 has_unread: false,
                 last_message_sort_key: String::new(),
                 gmt_modified_time: String::new(),
+                client_silent: false,
             };
             record_to_remote(blank, &employee_id)
         }
     };
+    // 用户主动打开会话:建行就是意图本身,静默标志不参与门控 —— 否则「最后一条恰为静默消息」
+    // 的好友会被静默门 A 拦住建不了行、打不开会话。静默门只约束预填/刷新等被动灌入路径。
+    remote.silent = false;
     recents_store
         .upsert_remote_one(remote)
         .await
@@ -1902,19 +1914,28 @@ pub fn run() {
                 return;
             }
             if let WindowEvent::CloseRequested { api, .. } = event {
-                if !QUITTING.load(Ordering::SeqCst) {
+                if QUITTING.load(Ordering::SeqCst) {
+                    return; // 托盘菜单「退出」已置位 → 放行真正关闭
+                }
+                if settings::CLOSE_TO_TRAY.load(Ordering::SeqCst) {
                     api.prevent_close();
                     if let Err(e) = window.hide() {
                         warn!(error = %e, "隐藏主窗口到托盘失败");
                     }
+                } else {
+                    // 设置页选了「直接退出」:整个应用结束(含托盘),与托盘菜单「退出」同路径。
+                    QUITTING.store(true, Ordering::SeqCst);
+                    window.app_handle().exit(0);
                 }
             }
         })
         .setup(|app| {
             let log_dir = app.path().app_log_dir()?;
-            let guard = logging::init(&log_dir)
+            let (guard, log_control) = logging::init(&log_dir)
                 .map_err(|e| Box::<dyn std::error::Error>::from(e.to_string()))?;
             app.manage(guard);
+            // 设置页「日志级别」热切换句柄(CHATHUB_LOG 环境变量仍优先)。
+            app.manage(log_control);
             info!(?log_dir, "tracing initialised");
 
             // 按显示器分辨率自适应窗口:取屏幕逻辑尺寸 70%,clamp 到 [min, 上限],居中后再显示。
@@ -2014,7 +2035,7 @@ pub fn run() {
 
             // tauri::async_runtime::block_on 在 setup 同步完成 SQLite 与 endpoint 初始化。
             // setup 闭包本身不在 async 上下文,block_on 安全可用。
-            let (auth_api, hub_client, conn_manager, account_cache, recents_store, messages_store, quick_replies_store, friend_detail_cache, message_sync, oss_uploader, change_notice_tx, image_meta_store) = tauri::async_runtime::block_on(async {
+            let (auth_api, hub_client, conn_manager, account_cache, recents_store, messages_store, quick_replies_store, friend_detail_cache, message_sync, oss_uploader, change_notice_tx, image_meta_store, user_settings_store) = tauri::async_runtime::block_on(async {
                 std::fs::create_dir_all(&app_data).ok();
                 let pool = SqlitePool::open(app_data.join("state.sqlite"))
                     .await.map_err(|e| e.to_string())?;
@@ -2024,6 +2045,8 @@ pub fn run() {
                 let recents_store = RecentSessionsStore::new(pool.clone());
                 let messages_store = MessagesStore::new(pool.clone());
                 let quick_replies_store = QuickRepliesStore::new(pool.clone());
+                // 设置页:按登录账号分键的偏好 KV(hub_user_settings)。
+                let user_settings_store = chathub_state::UserSettingsStore::new(pool.clone());
                 // 异常库:语义矛盾脏事件落库前被拦截改入此库(见 MessageEventApplier 网关)。
                 let quarantined_store = QuarantinedEventsStore::new(pool.clone());
                 let friend_detail_cache = FriendDetailCacheStore::new(pool.clone());
@@ -2088,7 +2111,7 @@ pub fn run() {
                     change_notice_tx.clone(),
                 ));
                 let auth_api = AuthApi::new(token_store, session_store);
-                Ok::<_, String>((auth_api, hub_client, conn_manager, account_cache, recents_store, messages_store, quick_replies_store, friend_detail_cache, message_sync, oss_uploader, change_notice_tx, image_meta_store))
+                Ok::<_, String>((auth_api, hub_client, conn_manager, account_cache, recents_store, messages_store, quick_replies_store, friend_detail_cache, message_sync, oss_uploader, change_notice_tx, image_meta_store, user_settings_store))
             }).map_err(Box::<dyn std::error::Error>::from)?;
             let auth_api = Arc::new(auth_api);
             app.manage(Arc::clone(&auth_api));
@@ -2098,6 +2121,9 @@ pub fn run() {
             app.manage(recents_store);
             app.manage(messages_store);
             app.manage(quick_replies_store);
+            app.manage(user_settings_store);
+            // 当前登录账号的设置快照(默认值起步;登录/恢复会话后由 load_and_apply 刷新)。
+            app.manage(settings::SettingsSnapshot::default());
             app.manage(friend_detail_cache);
             app.manage(message_sync);
             app.manage(oss_uploader);
@@ -2113,10 +2139,13 @@ pub fn run() {
             // 启动时 try_resume(后台 task,不阻塞 setup);成功后启动 ConnectionManager
             let api_for_resume = Arc::clone(&auth_api);
             let cm_for_resume = Arc::clone(&conn_manager);
+            let app_for_resume = app_handle.clone();
             tauri::async_runtime::spawn(async move {
                 match api_for_resume.try_resume_session().await {
                     Ok(Some(p)) => {
                         info!(target: "chathub::auth", user_id = %p.user_id, "resumed session");
+                        // 先加载该账号设置(静默超时等),再起连接 → 首条流即用用户设定值。
+                        let _ = settings::load_and_apply(&app_for_resume, &p.user_id).await;
                         cm_for_resume.start().await;
                     }
                     Ok(None)    => info!(target: "chathub::auth", "no session to resume"),
@@ -2252,6 +2281,8 @@ pub fn run() {
             load_conversation_messages, load_older_messages, load_cached_window, clear_chat_messages,
             send_message, upload_attachment, persist_outbox_failure, clear_outbox_row,
             list_quick_replies, create_quick_reply, update_quick_reply, delete_quick_reply,
+            settings::get_settings, settings::update_settings, settings::get_ai_defaults,
+            settings::get_image_cache_usage, settings::clear_image_cache, settings::open_log_dir,
             media::download_attachment, media::fetch_media_bytes, media::read_local_file,
             ai_polish::ai_polish, ai_polish::cancel_ai_polish,
         ])
@@ -2388,6 +2419,7 @@ mod tests {
             has_unread: false,
             last_message_sort_key: String::new(),
             gmt_modified_time: String::new(),
+            client_silent: false,
         }
     }
 

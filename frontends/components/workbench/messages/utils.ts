@@ -282,6 +282,14 @@ export function formatFileSize(bytes?: number): string {
   return `${i === 0 ? n : n.toFixed(1)} ${units[i]}`;
 }
 
+// 文件名 → 小写扩展名(不含点);无扩展名/隐藏文件(".env")返回空串。
+// 供聊天气泡文件卡与输入框待发送 chip 共用,驱动 FileTypeBadge 的徽标标签。
+export function fileExtension(name?: string): string {
+  if (!name) return "";
+  const dot = name.lastIndexOf(".");
+  return dot > 0 ? name.slice(dot + 1).toLowerCase() : "";
+}
+
 // 缩略图请求宽度:按 CSS 显示宽 × 设备像素比(高分屏上限 2×),并封顶在历史固定值 384px。
 // → 视网膜屏(dpr≥2)仍取 cssWidth×2(对 192 盒即 384,画质与此前一致);低分屏(如 Windows
 //   1× / 1.25×)据此降到接近显示宽,webview 解码的位图随面积平方下降(1× 时约为原 1/4),

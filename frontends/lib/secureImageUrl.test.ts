@@ -3,9 +3,33 @@ import { describe, expect, it } from "vitest";
 import { secureImageUrl } from "./secureImageUrl";
 
 describe("secureImageUrl", () => {
-  it("明文 http:// 升级为 https://", () => {
+  it("明文 http:// 升级为 https://(qlogo /0 同时降为 /132)", () => {
     expect(secureImageUrl("http://wx.qlogo.cn/mmhead/abc/0")).toBe(
-      "https://wx.qlogo.cn/mmhead/abc/0",
+      "https://wx.qlogo.cn/mmhead/abc/132",
+    );
+  });
+
+  it("qlogo 头像末段 /0(原图)降为 /132 小图", () => {
+    expect(secureImageUrl("https://wx.qlogo.cn/mmhead/FwaezQHmpBHd/0")).toBe(
+      "https://wx.qlogo.cn/mmhead/FwaezQHmpBHd/132",
+    );
+    expect(secureImageUrl("https://thirdwx.qlogo.cn/mmopen/xyz/0")).toBe(
+      "https://thirdwx.qlogo.cn/mmopen/xyz/132",
+    );
+  });
+
+  it("qlogo 已是小图尺寸(/132、/64)原样返回", () => {
+    expect(secureImageUrl("https://wx.qlogo.cn/mmhead/abc/132")).toBe(
+      "https://wx.qlogo.cn/mmhead/abc/132",
+    );
+    expect(secureImageUrl("https://wx.qlogo.cn/mmhead/abc/64")).toBe(
+      "https://wx.qlogo.cn/mmhead/abc/64",
+    );
+  });
+
+  it("非 qlogo 域的 /0 结尾路径不改写", () => {
+    expect(secureImageUrl("https://filet.jdd51.com/t/dev/0")).toBe(
+      "https://filet.jdd51.com/t/dev/0",
     );
   });
 

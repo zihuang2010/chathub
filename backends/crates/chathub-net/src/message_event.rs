@@ -252,6 +252,20 @@ impl MessageEventApplier {
                 None => continue, // 无 message 快照
             };
 
+            // 发送失败排障:failReason 只随 SEND_FAILED 推送下发(send_message 同步响应不带原因),
+            // 此前仅落库需查 sqlite 才能看到;这里在热/冷门控之前留痕,保证所有失败都进日志。
+            if ev.get("eventReason").and_then(|v| v.as_str()) == Some("SEND_FAILED") {
+                if let Some(msg) = ev.get("message") {
+                    warn!(
+                        target: "chathub_net::message_event",
+                        conv_id,
+                        local_message_id = %json_id(msg, "localMessageId"),
+                        fail_reason = %str_or_empty(msg, "failReason"),
+                        "SEND_FAILED 推送(发送失败)"
+                    );
+                }
+            }
+
             // 语义矛盾脏事件网关:入站客户消息却被上游标成发送方(messageDirection=1)+ 未知类型
             // (messageType=99)+ 无 send_status(0)。若入正常库会被 to_local_direction(1→2) 判成
             // 出站、send_status=0 永远算「发送中」→ 前端无限转圈。拦截:写异常库 + 丢弃,绝不入正常

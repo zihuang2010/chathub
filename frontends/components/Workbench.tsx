@@ -7,6 +7,7 @@ import { type PendingOpenConversation, type Section } from "@/components/workben
 import { AccountsPage } from "@/components/workbench/accounts/AccountsPage";
 import { CustomersPage } from "@/components/workbench/customers/CustomersPage";
 import { MessagesPage } from "@/components/workbench/messages/MessagesPage";
+import { SettingsPage } from "@/components/workbench/settings/SettingsPage";
 import { ToastViewport } from "@/components/ui/toast";
 import { useAccounts } from "@/lib/api/useAccounts";
 import { isWindows } from "@/lib/platform";
@@ -87,12 +88,21 @@ export function Workbench() {
         <SectionLayer active={section === "accounts"}>
           <AccountsPage accountsState={accountsState} onOpenInCustomers={openAccountInCustomers} />
         </SectionLayer>
-        {/* 未实现的 section(tasks/...)走占位页 —— 不需要保留状态,按需挂载即可。 */}
-        {section !== "messages" && section !== "customers" && section !== "accounts" && (
+        {/* 设置页:按需挂载(无需保留状态,进页时顺带刷新缓存占用)。 */}
+        {section === "settings" && (
           <SectionLayer active>
-            <PlaceholderPage section={section} />
+            <SettingsPage />
           </SectionLayer>
         )}
+        {/* 未实现的 section(tasks/...)走占位页 —— 不需要保留状态,按需挂载即可。 */}
+        {section !== "messages" &&
+          section !== "customers" &&
+          section !== "accounts" &&
+          section !== "settings" && (
+            <SectionLayer active>
+              <PlaceholderPage section={section} />
+            </SectionLayer>
+          )}
       </div>
       <ToastViewport />
     </div>

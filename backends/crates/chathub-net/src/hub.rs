@@ -53,6 +53,16 @@ impl Default for BackoffConfig {
     }
 }
 
+/// 设置页可调的静默看门狗超时:`override_ms == 0` 表示未覆盖,用 BackoffConfig 默认值;
+/// 正值为用户设定(毫秒)。在 run_loop 每条新流建立时读取 → "下次重连生效"。
+pub(crate) fn effective_silence_timeout(override_ms: u64, fallback: Duration) -> Duration {
+    if override_ms == 0 {
+        fallback
+    } else {
+        Duration::from_millis(override_ms)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "kebab-case")]
 pub enum ConnectionState {
@@ -295,11 +305,14 @@ impl HubClient {
                 message: format!("fetch_message_history returned http {}", resp.http_status),
             });
         }
-        serde_json::from_slice::<FetchMessageHistoryResp>(&resp.body_json).map_err(|e| {
-            AuthError::Internal {
+        serde_json::from_slice::<FetchMessageHistoryResp>(&resp.body_json)
+            .map(|mut parsed| {
+                parsed.records = drop_unmatchable_failed(parsed.records);
+                parsed
+            })
+            .map_err(|e| AuthError::Internal {
                 message: format!("fetch_message_history JSON parse: {e}"),
-            }
-        })
+            })
     }
 
     /// 发送一条文本消息(`messageType=1`)。POST body 透传请求字段。
@@ -336,7 +349,16 @@ impl HubClient {
                     );
                     tokio::time::sleep(RETRY_BACKOFF).await;
                 }
-                Ok(Err(e)) => return Err(e),
+                Ok(Err(e)) => {
+                    // 失败排障:业务错(Business)自带 serviceCode+msg,经 %e 完整打出。
+                    tracing::warn!(
+                        target: "chathub::msg",
+                        attempt,
+                        error = %e,
+                        "send_message 失败(不重试)"
+                    );
+                    return Err(e);
+                }
                 Err(_) if attempt < MAX_ATTEMPTS => {
                     tracing::warn!(
                         target: "chathub::msg",
@@ -354,15 +376,38 @@ impl HubClient {
         };
 
         if resp.http_status != 200 {
+            // 失败排障:非 200 时把响应体一并打出(否则只剩状态码,看不到拒绝原因)。
+            tracing::warn!(
+                target: "chathub::msg",
+                http_status = resp.http_status,
+                body = %String::from_utf8_lossy(&resp.body_json),
+                "send_message 非 200 响应"
+            );
             return Err(AuthError::Internal {
                 message: format!("send_message returned http {}", resp.http_status),
             });
         }
-        serde_json::from_slice::<SendMessageResp>(&resp.body_json).map_err(|e| {
+        let parsed = serde_json::from_slice::<SendMessageResp>(&resp.body_json).map_err(|e| {
+            tracing::warn!(
+                target: "chathub::msg",
+                error = %e,
+                body = %String::from_utf8_lossy(&resp.body_json),
+                "send_message 响应 JSON 解析失败"
+            );
             AuthError::Internal {
                 message: format!("send_message JSON parse: {e}"),
             }
-        })
+        })?;
+        // HTTP 200 但业务侧判失败终态(send_status=4):气泡只显示「发送失败」,这里把
+        // 完整响应体留痕便于排障。
+        if parsed.send_status == 4 {
+            tracing::warn!(
+                target: "chathub::msg",
+                body = %String::from_utf8_lossy(&resp.body_json),
+                "send_message 返回失败终态 send_status=4"
+            );
+        }
+        Ok(parsed)
     }
 
     /// 标记会话已读。POST body 透传 `{ conversationId, readSortKey? }`;`readSortKey` 省略时
@@ -524,6 +569,9 @@ pub struct WecomFriend {
     /// 归属账号(负责人)显示名;业务后台返回,缺省容忍空串。
     #[serde(default)]
     pub wecom_account_name: String,
+    /// 归属账号别名(企业微信自定义名);优先于 name 展示,缺省容忍空串。
+    #[serde(default)]
+    pub wecom_account_alias: String,
     pub external_user_id: String,
     pub external_name: String,
     pub external_position: String,
@@ -593,6 +641,9 @@ pub struct WecomFriendDetail {
     /// 归属账号(负责人)显示名;业务后台返回,缺省容忍空串。
     #[serde(default)]
     pub wecom_account_name: String,
+    /// 归属账号别名(企业微信自定义名);优先于 name 展示,缺省容忍空串。
+    #[serde(default)]
+    pub wecom_account_alias: String,
     #[serde(default)]
     pub external_name: String,
     #[serde(default)]
@@ -671,7 +722,7 @@ pub struct ListRecentFriendsRequest {
     pub include_first_history: bool,
 }
 
-/// session/recentFriends 单条记录(17 字段,camelCase JSON ↔ Rust snake_case)。
+/// session/recentFriends 单条记录(18 字段,camelCase JSON ↔ Rust snake_case)。
 ///
 /// 业务后台已经做完了"会话最近"语义,客户端拿到即可渲染列表 —— 无需二次拉消息。
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -705,6 +756,12 @@ pub struct RecentFriendRecord {
     /// 记录最后修改时间 `yyyy-MM-dd HH:mm:ss`。LWW 次版本(同 sortKey 时比较)。
     #[serde(default)]
     pub gmt_modified_time: String,
+    /// 静默标志:该会话**最后一条消息**是静默消息(与推送事件 `sessionSummary.clientSilent`
+    /// 同源同语义;服务端不过滤、如实打标,unreadCount 不含静默消息 —— 2026-06-11 后端确认)。
+    /// upsert 据此不为未知会话建行、不复活软删行。旧后端无此字段 → 缺省 false,行为不变。
+    /// 伴随字段 `clientSilentReason`/`clientSilentSource`(命中原因/来源枚举)暂不消费,不解析。
+    #[serde(default)]
+    pub client_silent: bool,
 }
 
 /// session/recentFriends 响应(2xx envelope.data 的形态)。
@@ -744,6 +801,20 @@ pub struct FirstConversationHistory {
 }
 
 // ─── fetch_message_history typed contract ───────────────────────────────────
+
+/// 过滤 history 回流中「不可配对的失败行」:`send_status=4` 且 `requestMessageId` 为空。
+///
+/// 实测上游 message/history 不回传 requestMessageId(全空),而服务端会为**每次发送尝试**
+/// 各记一条失败行 —— 这些行无任何键可与本地乐观气泡/失败行收敛,一经入库即成永久重复失败
+/// 气泡(满屏 778/898),且每次 Replace 重灌都会复活已被去重收编的前任行。本端失败已由
+/// 「本地落库(persist_outbox_failure,带服务端行 id)+ SEND_FAILED 推送(带 reqid)」两条
+/// 带键路径权威覆盖,history 的无键失败行只此一弃;带 reqid 的失败行(上游将来若回传)保留。
+pub fn drop_unmatchable_failed(records: Vec<HistoryMessage>) -> Vec<HistoryMessage> {
+    records
+        .into_iter()
+        .filter(|h| !(h.send_status == 4 && h.request_message_id.is_empty()))
+        .collect()
+}
 
 /// message/history 入参。游标分页(earlier-only)。
 /// 语义固定"往更早翻":服务端取 `sortKey < cursor.sortKey` 的一页。
@@ -995,6 +1066,9 @@ struct Inner {
     device_id: String,
     client_version: String,
     backoff: BackoffConfig,
+    /// 设置页"连接静默超时"运行时覆盖(毫秒)。0 = 未覆盖,用 backoff.silence_timeout。
+    /// run_loop 每条新流建立时读取,故改动"下次重连生效",不打断在途连接。
+    silence_override_ms: std::sync::atomic::AtomicU64,
     state_tx: watch::Sender<ConnectionState>,
     /// 数据同步层:帧落库 / apply-then-advance 水位 / resync 编排,与连接层完全单向隔离(见 sync.rs)。
     /// run_loop 只调 sync.handle_frame(喂帧)与 sync.durable_seq(读水位发 ack),sync 绝不反向触连接。
@@ -1041,11 +1115,20 @@ impl ConnectionManager {
                 device_id,
                 client_version,
                 backoff,
+                silence_override_ms: std::sync::atomic::AtomicU64::new(0),
                 state_tx,
                 sync,
                 task: tokio::sync::Mutex::new(None),
             }),
         }
+    }
+
+    /// 设置页注入"连接静默超时"。传 None 复位为默认;下次重连生效。
+    pub fn set_silence_timeout(&self, timeout: Option<Duration>) {
+        let ms = timeout.map(|d| d.as_millis() as u64).unwrap_or(0);
+        self.inner
+            .silence_override_ms
+            .store(ms, std::sync::atomic::Ordering::SeqCst);
     }
 
     pub fn state_subscribe(&self) -> watch::Receiver<ConnectionState> {
@@ -1184,7 +1267,11 @@ impl Inner {
             // 流静默看门狗:②自协商 —— 收到过 relay 心跳后才武装;武装后若 silence_timeout 内
             // 再无任何帧到达 → 判定流静默死亡 → 静默重连(不打断用户)。每条新流重置(随本作用域)。
             let mut heartbeat_seen = false;
-            let silence_timeout = self.backoff.silence_timeout;
+            let silence_timeout = effective_silence_timeout(
+                self.silence_override_ms
+                    .load(std::sync::atomic::Ordering::SeqCst),
+                self.backoff.silence_timeout,
+            );
             let silence = tokio::time::sleep(silence_timeout);
             tokio::pin!(silence);
 
@@ -1403,6 +1490,35 @@ impl Inner {
 mod tests {
     use super::*;
 
+    #[test]
+    fn drop_unmatchable_failed_filters_reqidless_failed_rows() {
+        let mk = |id: &str, status: i32, reqid: &str| -> HistoryMessage {
+            serde_json::from_value(serde_json::json!({
+                "localMessageId": id,
+                "messageDirection": 1,
+                "messageType": 1,
+                "contentText": "778",
+                "sendStatus": status,
+                "messageTime": "2026-06-11 21:31:00",
+                "sortKey": format!("1781184660906_00000000000000000000_{id}"),
+                "attachments": [],
+                "gmtModifiedTime": "",
+                "requestMessageId": reqid,
+            }))
+            .unwrap()
+        };
+        // 仅「失败(4) 且 reqid 空」被滤掉:带 reqid 的失败行(可配对收敛)、成功/在途行(任意 reqid)保留。
+        let records = vec![
+            mk("S1", 4, ""),
+            mk("S2", 4, "local-a"),
+            mk("S3", 3, ""),
+            mk("S4", 2, ""),
+        ];
+        let kept = drop_unmatchable_failed(records);
+        let ids: Vec<_> = kept.iter().map(|h| h.local_message_id.as_str()).collect();
+        assert_eq!(ids, ["S2", "S3", "S4"], "reqid 空的失败行应被滤掉");
+    }
+
     fn fast_cfg() -> BackoffConfig {
         BackoffConfig {
             base: Duration::from_millis(10),
@@ -1410,6 +1526,23 @@ mod tests {
             cap: Duration::from_millis(150),
             silence_timeout: Duration::from_secs(45),
         }
+    }
+
+    // 设置页"连接静默超时":0 = 未覆盖(用 BackoffConfig 默认),正值 = 用户设定(毫秒)。
+    #[test]
+    fn silence_override_zero_falls_back_to_config() {
+        assert_eq!(
+            effective_silence_timeout(0, Duration::from_secs(45)),
+            Duration::from_secs(45)
+        );
+    }
+
+    #[test]
+    fn silence_override_positive_wins() {
+        assert_eq!(
+            effective_silence_timeout(60_000, Duration::from_secs(45)),
+            Duration::from_secs(60)
+        );
     }
 
     #[test]

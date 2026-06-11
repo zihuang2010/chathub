@@ -115,14 +115,20 @@ pub struct RecentSessionRemote {
     pub last_message_sort_key_ms: i64,
     /// LWW 次版本;见 [`RecentSessionRow::gmt_modified_time`]。
     pub gmt_modified_time: String,
+    /// 静默标志:该会话**最后一条消息**是静默消息(列表接口 `clientSilent` / 推送事件
+    /// `sessionSummary.clientSilent`,同源同语义;服务端不过滤、如实打标)。合并内核据此
+    /// ① 不为未知会话建行 ② 不取消软删除(removed 保持,水位抬到消息时间)——
+    /// 事件路径与拉取路径共用本内核,语义天然一致(2026-06-11 收编)。
+    pub silent: bool,
 }
 
 /// `SESSION_SUMMARY_UPSERT` 事件携带的摘要数据(规范 §9.2 `sessionSummary{}`)。
 ///
 /// 区别于 [`RecentSessionRemote`]:摘要事件**只**携带"最后一条消息 + 未读 + 排序键"以及
 /// 少量可选资料字段;**不**携带 `wecomName/wecomAccount/externalMobile` 等列表展示字段。
-/// 故配套的 [`RecentSessionsStore::apply_summary`] 做**分字段部分更新**——只覆盖摘要列与非空
-/// 资料列,绝不把缺省的展示字段写成空串去覆盖本地已有值(见该方法注释)。
+/// applier 将其(连同账号缓存的企微展示字段)转成「摘要形态」的 [`RecentSessionRemote`]
+/// (缺省字段为空串)走合并内核 [`upsert_remote_in_tx`];内核的**非空才覆盖**语义保证
+/// 缺省的展示字段绝不把本地已有值写空。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RecentSessionSummary {
     pub conversation_id: String,
@@ -143,10 +149,11 @@ pub struct RecentSessionSummary {
     pub external_name: String,
     pub external_avatar: String,
     pub wecom_alias: String,
-    /// 静默消息(上游 `sessionSummary.clientSilent=true`)。静默仅影响"是否取消隐藏":
-    /// `apply_summary` 对静默消息照常更新摘要,但**绝不**把软删除(`removed=1`)的会话取消隐藏,
-    /// 并把 `removed_at_ms` 抬到该消息时间(吸收静默水位)——使同一条静默消息日后即便经
-    /// "看不到 clientSilent"的 REST 重拉也不会复活。缺省 `false`(旧推送无此字段 → 行为不变)。
+    /// 静默消息(上游 `sessionSummary.clientSilent=true`)。静默仅影响"是否建行/取消隐藏":
+    /// 合并内核对静默消息照常更新已有行摘要,但不为未知会话建行、**绝不**把软删除
+    /// (`removed=1`)的会话取消隐藏,并把 `removed_at_ms` 抬到该消息时间(吸收静默水位)
+    /// ——使同一条静默消息日后即便经 silence-blind 路径重放也不会复活。
+    /// 缺省 `false`(旧推送无此字段 → 行为不变)。
     pub silent: bool,
 }
 
@@ -235,122 +242,47 @@ impl RecentSessionsStore {
         if rows.is_empty() {
             return Ok(());
         }
+        let total = rows.len();
         let rows = rows.to_vec();
         let now = now_unix_ms();
         let conn = self.pool.pool().get().await?;
-        conn.interact(move |c| -> Result<(), StateError> {
-            let tx = c.transaction()?;
-            for r in &rows {
-                upsert_remote_in_tx(&tx, r, now)?;
-            }
-            tx.commit()?;
-            Ok(())
-        })
-        .await??;
+        let applied = conn
+            .interact(move |c| -> Result<usize, StateError> {
+                let tx = c.transaction()?;
+                let mut applied = 0usize;
+                for r in &rows {
+                    applied += usize::from(upsert_remote_in_tx(&tx, r, now)? > 0);
+                }
+                tx.commit()?;
+                Ok(applied)
+            })
+            .await??;
+        // 门控可观测:被门拒掉的行数(静默不建行/版本门 stale/业务键滞后重放)。真机排障
+        // 「会话为什么没出现/没更新」从考古变看计数;applied=total 的常态批次不值得关注。
+        if applied < total {
+            tracing::debug!(
+                target: "chathub_state::recent_sessions",
+                total,
+                applied,
+                skipped = total - applied,
+                "upsert_remote_many: 部分行被合并门跳过(静默/stale/滞后重放)"
+            );
+        }
         Ok(())
     }
 
     /// 事件 applier 单行 UPSERT。语义同 `upsert_remote_many` 单元素版。
-    pub async fn upsert_remote_one(&self, row: RecentSessionRemote) -> Result<(), StateError> {
+    /// 返回是否真正写入了行:被合并门拒掉(静默未知会话/版本 stale)返回 false,
+    /// 调用方据此不计 applied、不触发 ChangeNotice(防无效重读)。
+    pub async fn upsert_remote_one(&self, row: RecentSessionRemote) -> Result<bool, StateError> {
         let now = now_unix_ms();
         let conn = self.pool.pool().get().await?;
-        conn.interact(move |c| -> Result<(), StateError> {
-            upsert_remote_in_tx(c, &row, now)?;
-            Ok(())
-        })
-        .await??;
-        Ok(())
-    }
-
-    /// `SESSION_SUMMARY_UPSERT` 分字段部分更新(规范 §9.3「用服务端 sessionSummary 覆盖本地同字段」)。
-    ///
-    /// 只 UPDATE 摘要列(last_*/unread/has_unread/sort_key/gmt + updated_at)与**非空**的可选资料列
-    /// (external_name/external_avatar/wecom_alias);摘要事件不携带的展示字段
-    /// (`wecom_name/wecom_account/external_mobile/external_user_id`)以及全部本地列
-    /// (pinned/muted/draft)一律保留不动 —— 故绝不会把这些字段写空。
-    ///
-    /// 版本门同 [`upsert_remote_in_tx`]:仅当 incoming 复合版本 `(sort_key_ms, gmt_modified)` ≥ stored
-    /// 才覆盖,stale 事件 → 0 行受影响。`removed` 在新消息时间晚于移除时间时自动恢复。
-    /// 返回是否真正改动了一行(`false` = 行不存在 / 跨员工 / 被版本门拒绝的 stale 事件)。
-    ///
-    /// **同消息守卫**:出站消息的 CONFIRMED 摘要 sortKey 可能比 PENDING 小(CONFIRMED 用真实平台
-    /// 发送时间、早于本地 pending 创建时间)。版本门 OR 链尾追加
-    /// `?1 <> '' AND ?1 = last_local_message_id`:同一条消息(同 lastLocalMessageId)的后续状态恒可
-    /// 进入,由既有 `last_send_status` 不倒退 CASE 定终值,修掉发送状态卡"发送中"。不同消息的过期
-    /// 小 sortKey 仍被拒(守卫只对同 id 生效)。`time_ms`/`sort_key_ms` 取 MAX 防同消息小 sortKey
-    /// 拉低展示时间/版本键(正常 `?>stored` 时 MAX 即 `?`,无行为变化)。
-    ///
-    /// `last_send_status` 按文档 §4 不倒退合并:
-    /// - current ≤ 1(无状态/待发送) → 接受任意 incoming
-    /// - current = 2(发送中) → 仅接受 3/4(忽略 incoming=1)
-    /// - current = 4(失败) → 仅接受 3;忽略 1/2
-    /// - current = 3(成功,终态) → 忽略 1/2/4,只接受 3(幂等)
-    ///
-    /// **已读水位门**(V31):`unread_count`/`has_unread` 仅当 incoming 消息时间 > `read_at_ms`
-    /// 才覆写。markRead 后,同版本重放与同消息守卫分支虽可进门更新其余摘要列,但不得把已清零的
-    /// 未读回灌(防"切出会话后红标瞬时复活");多端已读同步走 MARK_READ 事件 → [`Self::clear_unread`],
-    /// 不经此门,不受影响。
-    pub async fn apply_summary(&self, s: RecentSessionSummary) -> Result<bool, StateError> {
-        let now = now_unix_ms();
-        let conn = self.pool.pool().get().await?;
-        let changed = conn
-            .interact(move |c| -> Result<bool, StateError> {
-                let n = c.execute(
-                    "UPDATE hub_conversation_recents SET \
-                       last_local_message_id    = ?1, \
-                       last_message_type        = ?2, \
-                       last_message_direction   = ?3, \
-                       last_send_status = CASE \
-                           WHEN last_send_status <= 1 THEN ?4 \
-                           WHEN last_send_status = 2 AND ?4 IN (3, 4) THEN ?4 \
-                           WHEN last_send_status = 4 AND ?4 = 3 THEN 3 \
-                           ELSE last_send_status \
-                       END, \
-                       last_message_summary     = ?5, \
-                       last_message_time_ms     = MAX(last_message_time_ms, ?6), \
-                       unread_count = CASE WHEN ?6 > read_at_ms THEN ?7 ELSE unread_count END, \
-                       has_unread   = CASE WHEN ?6 > read_at_ms THEN ?8 ELSE has_unread   END, \
-                       last_message_sort_key_ms = MAX(last_message_sort_key_ms, ?9), \
-                       gmt_modified_time        = ?10, \
-                       updated_at_ms            = ?11, \
-                       external_name   = CASE WHEN ?12 <> '' THEN ?12 ELSE external_name   END, \
-                       external_avatar = CASE WHEN ?13 <> '' THEN ?13 ELSE external_avatar END, \
-                       wecom_alias     = CASE WHEN ?14 <> '' THEN ?14 ELSE wecom_alias     END, \
-                       removed = CASE \
-                           WHEN ?17 = 1 THEN removed \
-                           WHEN ?6 > removed_at_ms THEN 0 ELSE removed END, \
-                       removed_at_ms = CASE \
-                           WHEN ?17 = 1 THEN (CASE WHEN removed = 1 AND ?6 > removed_at_ms THEN ?6 ELSE removed_at_ms END) \
-                           WHEN ?6 > removed_at_ms THEN 0 ELSE removed_at_ms END \
-                     WHERE employee_id = ?15 AND conversation_id = ?16 \
-                       AND ( ?9 > last_message_sort_key_ms \
-                             OR (?9 = last_message_sort_key_ms \
-                                 AND (?10 = '' OR ?10 >= gmt_modified_time)) \
-                             OR (?1 <> '' AND ?1 = last_local_message_id) )",
-                    rusqlite::params![
-                        s.last_local_message_id,
-                        s.last_message_type as i64,
-                        s.last_message_direction as i64,
-                        s.last_send_status as i64,
-                        s.last_message_summary,
-                        s.last_message_time_ms,
-                        s.unread_count,
-                        s.has_unread as i64,
-                        s.last_message_sort_key_ms,
-                        s.gmt_modified_time,
-                        now,
-                        s.external_name,
-                        s.external_avatar,
-                        s.wecom_alias,
-                        s.employee_id,
-                        s.conversation_id,
-                        s.silent as i64,
-                    ],
-                )?;
-                Ok(n > 0)
+        let n = conn
+            .interact(move |c| -> Result<usize, StateError> {
+                Ok(upsert_remote_in_tx(c, &row, now)?)
             })
             .await??;
-        Ok(changed)
+        Ok(n > 0)
     }
 
     /// 判某 conversation_id 是否已经在本地行存中(给事件 applier 用,判 unknown 走 fallback)。
@@ -496,7 +428,7 @@ impl RecentSessionsStore {
     /// 注意 `unread_count`/`has_unread` 是**远端权威列**(不同于 pinned/muted 的纯本地列):
     /// 真正的清除以远端 markRead 接口已成功为前提,本地直写仅为即时 UI 反馈。此后
     /// `last_message_time_ms <= read_at_ms` 的迟到/重放事件不得回灌未读
-    /// (见 [`upsert_remote_in_tx`] / [`Self::apply_summary`] 的水位门),根治"切出会话后
+    /// (见 [`upsert_remote_in_tx`] / 合并内核的水位门),根治"切出会话后
     /// 列表红标瞬时复活";时间更新的新消息照常抬未读。
     pub async fn clear_unread(
         &self,
@@ -589,7 +521,7 @@ impl RecentSessionsStore {
     /// 额外用 `MAX(last_message_time_ms, now_ms)` 抬**显示时间**:列表行右上角时间取
     /// `MAX(last_message_time_ms, local_draft_at_ms)`(前端),不含 `local_last_sent_at_ms`,故
     /// 不补这一列时,「发出但尚无服务端 SESSION_SUMMARY 确认」的会话 `last_message_time_ms` 恒 0 →
-    /// 时间空白。此列是显示时间、非版本/水位键,写它不影响 `apply_summary` 的状态收敛;`MAX` 防
+    /// 时间空白。此列是显示时间、非版本/水位键,写它不影响 合并内核的状态收敛;`MAX` 防
     /// 本地 now 倒拉已有的更新服务端时间。
     ///
     /// `last_message_summary` 是乐观覆盖远端列;因不动 `last_message_sort_key_ms`,随后 PENDING 摘要
@@ -635,7 +567,7 @@ impl RecentSessionsStore {
     }
 
     /// 出站发送失败的接待列表乐观写:与 mark_local_sent 同款只动展示列,额外写 last_send_status=4。
-    /// **不动 last_message_sort_key_ms**(水位/版本键),故随后服务端 SESSION_SUMMARY 经 apply_summary
+    /// **不动 last_message_sort_key_ms**(水位/版本键),故随后服务端 SESSION_SUMMARY 经合并内核
     /// 不倒退 CASE(4→3 允许)可把状态收敛回正。会话不在 recents 则 no-op(返 false)。
     /// 同 mark_local_sent 抬显示时间 `last_message_time_ms = MAX(.., now_ms)`:失败气泡若是该会话
     /// 唯一活动(无服务端确认消息),否则 `last_message_time_ms` 恒 0 → 列表行时间空白。
@@ -824,6 +756,24 @@ fn map_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RecentSessionRow> {
     })
 }
 
+/// 接待行**合并内核**:远端数据(拉取 record / 推送事件摘要)落库的唯一入口。
+/// 事件路径与拉取路径共用同一套门控与列合并规则,杜绝"两路径语义漂移"(静默 bug 的病根)。
+///
+/// 列所有权(新增列时必答"归谁、过哪道门"):
+///
+/// | 所有权 | 列 | 合并规则 |
+/// |---|---|---|
+/// | 服务端·摘要 | last_local_message_id/type/direction/summary | 进门即覆盖 |
+/// | 服务端·摘要 | last_send_status | 不倒退 CASE(≤1 任意;2→3/4;4→3;3 幂等) |
+/// | 服务端·版本 | last_message_time_ms / sort_key_ms | MAX(只进不退) |
+/// | 服务端·资料 | wecom_name/account/alias、external_* 、wecom_account_id | **非空才覆盖**(事件不带的字段不冲掉已有值) |
+/// | 客户端独有 | pinned/草稿/muted/opened_at/local_last_sent | 远端永不触碰(签名层面就不携带) |
+/// | 水位仲裁 | unread/has_unread ↔ read_at_ms | 消息时间 > 已读水位才覆写 |
+/// | 水位仲裁 | removed/removed_at_ms ↔ silent | 静默保持+抬水位;非静默晚于水位自动复活 |
+///
+/// 进门条件(WHERE,满足其一):版本更新(sortKey 严格大) / 同版本且 gmt 不倒退(空 gmt 视为
+/// 不携带,放行) / **同消息守卫**(同 last_local_message_id 的状态类更新,如发送失败回执,
+/// 版本可能不前进也放行;时间/排序键有 MAX 保护不会倒退)。
 fn upsert_remote_in_tx(
     c: &rusqlite::Connection,
     r: &RecentSessionRemote,
@@ -905,11 +855,28 @@ fn upsert_remote_in_tx(
             ],
         )?;
     }
+    // 静默门 A(对齐事件路径「!exists + clientSilent → 不建行」):最后一条是静默消息且本地
+    // 无此行 → 整体跳过,不为未知会话建行(切账号/冷启动的远端预填不再把静默会话灌进列表)。
+    // 必须放在业务键收编**之后**:旧 id 行改 id 续命后按新 conversation_id 查才算"存在",
+    // 否则服务端换发新 id 的老会话会被误判不存在而漏更新。
+    if r.silent {
+        let exists: bool = c
+            .prepare(
+                "SELECT 1 FROM hub_conversation_recents \
+                 WHERE employee_id = ?1 AND conversation_id = ?2 LIMIT 1",
+            )?
+            .exists(rusqlite::params![r.employee_id, r.conversation_id])?;
+        if !exists {
+            return Ok(0);
+        }
+    }
     // version-guard:仅当 incoming 复合版本 (sort_key_ms, gmt_modified_time) ≥ stored 才覆盖
     // 远端列。冷 cursor 旧页(低版本)在实时事件(高版本)之后到达时,WHERE 为假 → DO UPDATE
     // 整体跳过(stale 页被丢弃),修掉"旧页无条件覆盖新行"的 bug。新行(无冲突)照常 INSERT。
     // 已读水位门(V31):unread_count/has_unread 仅当 incoming 消息时间 > read_at_ms 才覆写,
     // 同版本(= sortKey)重放不得把 markRead 已清零的未读回灌(防红标瞬时复活)。
+    // 静默门 B(?22):静默时 removed 保持不动,且把 removed_at_ms 抬到消息时间(吸收水位)
+    // ——日后同消息经 silence-blind 路径重放也打不穿;非静默照旧「晚于水位自动复活」。
     c.execute(
         "INSERT INTO hub_conversation_recents ( \
            conversation_id, wecom_account_id, employee_id, wecom_name, wecom_account, wecom_alias, \
@@ -922,37 +889,49 @@ fn upsert_remote_in_tx(
            ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21 \
          ) \
          ON CONFLICT(conversation_id) DO UPDATE SET \
-           wecom_account_id       = excluded.wecom_account_id, \
+           wecom_account_id = CASE WHEN excluded.wecom_account_id <> '' \
+                                   THEN excluded.wecom_account_id ELSE wecom_account_id END, \
            employee_id            = excluded.employee_id, \
-           wecom_name             = excluded.wecom_name, \
-           wecom_account          = excluded.wecom_account, \
-           wecom_alias            = excluded.wecom_alias, \
-           external_user_id       = excluded.external_user_id, \
-           external_name          = excluded.external_name, \
-           external_avatar        = excluded.external_avatar, \
-           external_mobile        = excluded.external_mobile, \
+           wecom_name    = CASE WHEN excluded.wecom_name    <> '' THEN excluded.wecom_name    ELSE wecom_name    END, \
+           wecom_account = CASE WHEN excluded.wecom_account <> '' THEN excluded.wecom_account ELSE wecom_account END, \
+           wecom_alias   = CASE WHEN excluded.wecom_alias   <> '' THEN excluded.wecom_alias   ELSE wecom_alias   END, \
+           external_user_id = CASE WHEN excluded.external_user_id <> '' \
+                                   THEN excluded.external_user_id ELSE external_user_id END, \
+           external_name   = CASE WHEN excluded.external_name   <> '' THEN excluded.external_name   ELSE external_name   END, \
+           external_avatar = CASE WHEN excluded.external_avatar <> '' THEN excluded.external_avatar ELSE external_avatar END, \
+           external_mobile = CASE WHEN excluded.external_mobile <> '' THEN excluded.external_mobile ELSE external_mobile END, \
            last_local_message_id  = excluded.last_local_message_id, \
            last_message_type      = excluded.last_message_type, \
            last_message_direction = excluded.last_message_direction, \
-           last_send_status       = excluded.last_send_status, \
+           last_send_status = CASE \
+               WHEN last_send_status <= 1 THEN excluded.last_send_status \
+               WHEN last_send_status = 2 AND excluded.last_send_status IN (3, 4) THEN excluded.last_send_status \
+               WHEN last_send_status = 4 AND excluded.last_send_status = 3 THEN 3 \
+               ELSE last_send_status END, \
            last_message_summary   = excluded.last_message_summary, \
-           last_message_time_ms   = excluded.last_message_time_ms, \
+           last_message_time_ms   = MAX(last_message_time_ms, excluded.last_message_time_ms), \
            unread_count = CASE WHEN excluded.last_message_time_ms > read_at_ms \
                                THEN excluded.unread_count ELSE unread_count END, \
            has_unread   = CASE WHEN excluded.last_message_time_ms > read_at_ms \
                                THEN excluded.has_unread ELSE has_unread END, \
            updated_at_ms          = excluded.updated_at_ms, \
-           last_message_sort_key_ms = excluded.last_message_sort_key_ms, \
+           last_message_sort_key_ms = MAX(last_message_sort_key_ms, excluded.last_message_sort_key_ms), \
            gmt_modified_time        = excluded.gmt_modified_time, \
            removed                = CASE \
+               WHEN ?22 = 1 THEN removed \
                WHEN excluded.last_message_time_ms > removed_at_ms THEN 0 \
                ELSE removed END, \
            removed_at_ms          = CASE \
+               WHEN ?22 = 1 THEN (CASE WHEN removed = 1 AND excluded.last_message_time_ms > removed_at_ms \
+                                       THEN excluded.last_message_time_ms ELSE removed_at_ms END) \
                WHEN excluded.last_message_time_ms > removed_at_ms THEN 0 \
                ELSE removed_at_ms END \
          WHERE excluded.last_message_sort_key_ms > last_message_sort_key_ms \
             OR (excluded.last_message_sort_key_ms = last_message_sort_key_ms \
-                AND excluded.gmt_modified_time >= gmt_modified_time)",
+                AND (excluded.gmt_modified_time = '' \
+                     OR excluded.gmt_modified_time >= gmt_modified_time)) \
+            OR (excluded.last_local_message_id <> '' \
+                AND excluded.last_local_message_id = last_local_message_id)",
         rusqlite::params![
             r.conversation_id,
             r.wecom_account_id,
@@ -975,6 +954,7 @@ fn upsert_remote_in_tx(
             now_ms,
             r.last_message_sort_key_ms,
             r.gmt_modified_time,
+            r.silent as i64,
         ],
     )
 }
@@ -1019,6 +999,7 @@ mod tests {
             // 版本默认与 ts_ms 对齐(测试里 ts_ms 越大版本越新)。
             last_message_sort_key_ms: ts_ms,
             gmt_modified_time: String::new(),
+            silent: false,
         }
     }
 
@@ -1218,10 +1199,21 @@ mod tests {
         );
     }
 
-    fn sample_summary(conv: &str, sort_ms: i64, unread: i64) -> RecentSessionSummary {
-        RecentSessionSummary {
+    /// 「摘要形态」的远端行:模拟事件路径经合并内核落库的输入 —— 摘要事件不携带的
+    /// 展示/身份字段全为空串(内核非空才覆盖语义负责保留已有值)。原 apply_summary
+    /// 的全部语义测试经此 helper 移植到内核(2026-06-11 收编)。
+    fn sample_summary(conv: &str, sort_ms: i64, unread: i64) -> RecentSessionRemote {
+        RecentSessionRemote {
             conversation_id: conv.into(),
+            wecom_account_id: String::new(),
             employee_id: E.into(),
+            wecom_name: String::new(),
+            wecom_account: String::new(),
+            wecom_alias: String::new(),
+            external_user_id: String::new(),
+            external_name: String::new(),
+            external_avatar: String::new(),
+            external_mobile: String::new(),
             last_local_message_id: "LM_new".into(),
             last_message_type: 1,
             last_message_direction: 2,
@@ -1232,16 +1224,12 @@ mod tests {
             has_unread: unread > 0,
             last_message_sort_key_ms: sort_ms,
             gmt_modified_time: String::new(),
-            // 摘要事件通常不带资料字段(资料变化时才返回)。
-            external_name: String::new(),
-            external_avatar: String::new(),
-            wecom_alias: String::new(),
             silent: false,
         }
     }
 
     #[tokio::test]
-    async fn apply_summary_updates_summary_but_preserves_display_fields() {
+    async fn summary_merge_updates_summary_but_preserves_display_fields() {
         let pool = SqlitePool::in_memory().await.unwrap();
         let store = RecentSessionsStore::new(pool);
         // 预置一行(自带 wecom_name / external_mobile 等展示字段)。
@@ -1253,7 +1241,7 @@ mod tests {
         store.set_pinned(E, "c1", true).await.unwrap();
 
         let changed = store
-            .apply_summary(sample_summary("c1", 999, 5))
+            .upsert_remote_one(sample_summary("c1", 999, 5))
             .await
             .unwrap();
         assert!(changed, "更高版本摘要应改动一行");
@@ -1276,7 +1264,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn apply_summary_version_guard_rejects_stale() {
+    async fn summary_merge_version_guard_rejects_stale() {
         let pool = SqlitePool::in_memory().await.unwrap();
         let store = RecentSessionsStore::new(pool);
         store
@@ -1285,7 +1273,7 @@ mod tests {
             .unwrap();
         // 较旧版本(sort_ms=200 < 500)→ 应被版本门拒绝,0 行改动。
         let changed = store
-            .apply_summary(sample_summary("c1", 200, 9))
+            .upsert_remote_one(sample_summary("c1", 200, 9))
             .await
             .unwrap();
         assert!(!changed, "stale 摘要应被版本门拒绝");
@@ -1295,7 +1283,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn apply_summary_same_sortkey_empty_gmt_still_applies() {
+    async fn summary_merge_same_sortkey_empty_gmt_still_applies() {
         let pool = SqlitePool::in_memory().await.unwrap();
         let store = RecentSessionsStore::new(pool);
         // 预置一行:sort_key_ms=500,带非空 gmt(模拟此前由带 gmt 的源写入)。
@@ -1305,7 +1293,7 @@ mod tests {
         // 摘要事件:同 sort_key_ms=500,但不带 gmt(空串)。旧逻辑下 "" >= "2026-..." 为
         // 假会误拒;修复后空 gmt 视为放行,同版本摘要刷新得以应用。
         let changed = store
-            .apply_summary(sample_summary("c1", 500, 7))
+            .upsert_remote_one(sample_summary("c1", 500, 7))
             .await
             .unwrap();
         assert!(changed, "同 sort_key + 空 gmt 的摘要应被接受,不得误拒");
@@ -1332,7 +1320,7 @@ mod tests {
         // 同版本(=sortKey 500,空 gmt 放行)的迟到摘要重放:其余摘要列照常收敛,
         // 未读列必须被已读水位挡住。
         store
-            .apply_summary(sample_summary("c1", 500, 3))
+            .upsert_remote_one(sample_summary("c1", 500, 3))
             .await
             .unwrap();
         let got = store.list_top(E, None, 10).await.unwrap();
@@ -1353,7 +1341,7 @@ mod tests {
         // (即便 sortKey 更小),未读列必须仍被已读水位挡住。
         let mut s = sample_summary("c1", 400, 3);
         s.last_local_message_id = "msg_c1".into();
-        store.apply_summary(s).await.unwrap();
+        store.upsert_remote_one(s).await.unwrap();
         let got = store.list_top(E, None, 10).await.unwrap();
         assert_eq!(got[0].unread_count, 0, "同消息守卫分支不得回灌未读");
         assert!(!got[0].has_unread);
@@ -1390,7 +1378,7 @@ mod tests {
         store.clear_unread(E, "c1").await.unwrap();
         // 真正的新消息(时间 > 已读水位)照常抬未读 —— 水位只挡"旧消息的重放",不挡新消息。
         store
-            .apply_summary(sample_summary("c1", 600, 1))
+            .upsert_remote_one(sample_summary("c1", 600, 1))
             .await
             .unwrap();
         let got = store.list_top(E, None, 10).await.unwrap();
@@ -1406,7 +1394,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn apply_summary_overwrites_profile_only_when_present() {
+    async fn summary_merge_overwrites_profile_only_when_present() {
         let pool = SqlitePool::in_memory().await.unwrap();
         let store = RecentSessionsStore::new(pool);
         store
@@ -1417,7 +1405,7 @@ mod tests {
         let mut s = sample_summary("c1", 999, 0);
         s.external_name = "改名后的客户".into();
         s.wecom_alias = "新别名".into();
-        store.apply_summary(s).await.unwrap();
+        store.upsert_remote_one(s).await.unwrap();
         let got = store.list_top(E, None, 10).await.unwrap();
         assert_eq!(got[0].external_name, "改名后的客户", "非空资料字段应覆盖");
         assert_eq!(got[0].wecom_alias, "新别名");
@@ -1426,15 +1414,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn apply_summary_no_row_returns_false() {
+    async fn summary_merge_unknown_nonsilent_inserts() {
+        // 内核语义(收编后):未知会话 + 非静默 → INSERT(原 apply_summary 是 update-only
+        // 返 false,由 applier exists 分支补 INSERT;收编后由内核统一承担,applier 总是
+        // 带账号缓存 enrichment 构造,裸摘要插入仅测试构造)。静默不建行见静默门 A 测试。
         let pool = SqlitePool::in_memory().await.unwrap();
         let store = RecentSessionsStore::new(pool);
-        // 行不存在 → false(applier 据此走 fallback)。
         let changed = store
-            .apply_summary(sample_summary("nope", 999, 1))
+            .upsert_remote_one(sample_summary("nope", 999, 1))
             .await
             .unwrap();
-        assert!(!changed);
+        assert!(changed, "未知非静默会话应建行");
+        let got = store.list_top(E, None, 10).await.unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].unread_count, 1);
     }
 
     #[tokio::test]
@@ -1590,13 +1583,16 @@ mod tests {
             .upsert_remote_many(&[sample_remote("c1", "wa-1", 1000, 0)])
             .await
             .unwrap();
-        // 实时事件:更高版本 + 新内容
+        // 实时事件:更高版本 + 新内容(新消息 → 新 last_local_message_id)
         let mut fresh = sample_remote("c1", "wa-1", 2000, 3);
         fresh.last_message_summary = "fresh".into();
+        fresh.last_local_message_id = "msg_fresh".into();
         store.upsert_remote_one(fresh).await.unwrap();
-        // 冷 cursor 旧页:更低版本 + 陈旧内容,晚到
+        // 冷 cursor 旧页:更低版本 + 陈旧内容,晚到。真实陈旧页携带的是**旧消息**的 id
+        // (页面快照时刻的最后一条);若 id 相同则是"同消息刷新",同消息守卫放行属正常语义。
         let mut stale = sample_remote("c1", "wa-1", 1000, 0);
         stale.last_message_summary = "stale-cold-page".into();
+        stale.last_local_message_id = "msg_older".into();
         store.upsert_remote_one(stale).await.unwrap();
         let got = store.list_top(E, None, 10).await.unwrap();
         assert_eq!(got.len(), 1);
@@ -1626,10 +1622,12 @@ mod tests {
             store.list_top(E, None, 10).await.unwrap()[0].last_message_summary,
             "v2"
         );
-        // 同 sortKey,gmt 更旧 → 丢弃
+        // 同 sortKey,gmt 更旧 → 丢弃。隔离 gmt 门本身:给不同消息 id,避免同消息守卫放行
+        // (同 id 即"同消息刷新",数据本就一致,放行无害;gmt 门只需对不同消息拦截)。
         let mut c = sample_remote("c1", "wa-1", 1000, 0);
         c.gmt_modified_time = "2026-05-18 09:00:00".into();
         c.last_message_summary = "stale".into();
+        c.last_local_message_id = "msg_other".into();
         store.upsert_remote_one(c).await.unwrap();
         assert_eq!(
             store.list_top(E, None, 10).await.unwrap()[0].last_message_summary,
@@ -1858,9 +1856,9 @@ mod tests {
         );
     }
 
-    // ─── 静默消息不复活被软删除会话(apply_summary 静默感知)──────────────────
+    // ─── 静默消息不复活被软删除会话(事件摘要形态,合并内核静默感知)──────────────────
     #[tokio::test]
-    async fn apply_summary_silent_does_not_unremove_soft_deleted() {
+    async fn summary_merge_silent_does_not_unremove_soft_deleted() {
         // 先删再静默:被软删除的会话收到静默 SESSION_SUMMARY_UPSERT,绝不取消隐藏;
         // 但接待数据照常更新(水位推进)。
         let pool = SqlitePool::in_memory().await.unwrap();
@@ -1878,7 +1876,7 @@ mod tests {
         let future_ts = now_unix_ms() + 60_000;
         let mut s = sample_summary("c1", future_ts, 0);
         s.silent = true;
-        let changed = store.apply_summary(s).await.unwrap();
+        let changed = store.upsert_remote_one(s).await.unwrap();
         assert!(changed, "静默消息仍应更新接待数据(返回 changed)");
         assert!(
             store.list_top(E, None, 10).await.unwrap().is_empty(),
@@ -1893,7 +1891,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn apply_summary_silent_bumps_removed_at_ms_blocking_blind_repull() {
+    async fn summary_merge_silent_bumps_removed_at_ms_blocking_blind_repull() {
         // 静默把 removed_at_ms 抬到消息时间 → 同一条消息日后经"看不到 clientSilent"的 REST 重拉
         // (此处用同 ts 的非静默 apply 模拟)也不会复活。
         let pool = SqlitePool::in_memory().await.unwrap();
@@ -1906,10 +1904,10 @@ mod tests {
         let silent_ts = now_unix_ms() + 60_000;
         let mut s = sample_summary("c1", silent_ts, 0);
         s.silent = true;
-        store.apply_summary(s).await.unwrap();
+        store.upsert_remote_one(s).await.unwrap();
         // 模拟 silence-blind 重拉同一条(非静默、同 ts)
         let blind = sample_summary("c1", silent_ts, 0); // silent=false
-        store.apply_summary(blind).await.unwrap();
+        store.upsert_remote_one(blind).await.unwrap();
         assert!(
             store.list_top(E, None, 10).await.unwrap().is_empty(),
             "removed_at_ms 已抬到静默消息时间,同 ts 的 silence-blind 重拉不得复活"
@@ -1917,7 +1915,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn apply_summary_nonsilent_newer_still_unremoves_after_silent() {
+    async fn summary_merge_nonsilent_newer_still_unremoves_after_silent() {
         // 回归:真正更新的非静默消息(严格晚于静默水位)仍应复活会话。
         let pool = SqlitePool::in_memory().await.unwrap();
         let store = RecentSessionsStore::new(pool);
@@ -1929,17 +1927,17 @@ mod tests {
         let silent_ts = now_unix_ms() + 60_000;
         let mut s = sample_summary("c1", silent_ts, 0);
         s.silent = true;
-        store.apply_summary(s).await.unwrap();
+        store.upsert_remote_one(s).await.unwrap();
         // 之后来一条真正的非静默新消息(严格更晚)
         let real = sample_summary("c1", silent_ts + 1_000, 1); // silent=false
-        store.apply_summary(real).await.unwrap();
+        store.upsert_remote_one(real).await.unwrap();
         let got = store.list_top(E, None, 10).await.unwrap();
         assert_eq!(got.len(), 1, "非静默新消息应复活会话");
         assert!(!got[0].removed);
     }
 
     #[tokio::test]
-    async fn apply_summary_silent_on_visible_row_keeps_visible() {
+    async fn summary_merge_silent_on_visible_row_keeps_visible() {
         // 可见会话收到静默消息:照常更新,保持可见(不误隐藏)。
         let pool = SqlitePool::in_memory().await.unwrap();
         let store = RecentSessionsStore::new(pool);
@@ -1949,10 +1947,140 @@ mod tests {
             .unwrap();
         let mut s = sample_summary("c1", 999, 0);
         s.silent = true;
-        store.apply_summary(s).await.unwrap();
+        store.upsert_remote_one(s).await.unwrap();
         let got = store.list_top(E, None, 10).await.unwrap();
         assert_eq!(got.len(), 1, "可见会话收到静默消息应保持可见");
         assert!(!got[0].removed);
+    }
+
+    // ─── 静默合并门(拉取整行形态,合并内核静默语义)──────────
+    #[tokio::test]
+    async fn upsert_remote_silent_unknown_does_not_insert() {
+        // 门 A:远端预填拉到「最后一条是静默消息」的未知会话 → 不建行(对齐事件路径守卫)。
+        let pool = SqlitePool::in_memory().await.unwrap();
+        let store = RecentSessionsStore::new(pool);
+        let mut r = sample_remote("c1", "wa-1", 100, 0);
+        r.silent = true;
+        store.upsert_remote_one(r).await.unwrap();
+        assert!(
+            store.list_top(E, None, 10).await.unwrap().is_empty(),
+            "静默未知会话不得经远端预填建行"
+        );
+    }
+
+    #[tokio::test]
+    async fn upsert_remote_silent_does_not_unremove_soft_deleted() {
+        // 门 B:软删会话经远端预填收到静默记录 → 不复活,摘要照常更新(水位推进)。
+        let pool = SqlitePool::in_memory().await.unwrap();
+        let store = RecentSessionsStore::new(pool);
+        store
+            .upsert_remote_many(&[sample_remote("c1", "wa-1", 100, 0)])
+            .await
+            .unwrap();
+        store.set_removed(E, "c1", true).await.unwrap();
+        let future_ts = now_unix_ms() + 60_000;
+        let mut r = sample_remote("c1", "wa-1", future_ts, 0);
+        r.silent = true;
+        store.upsert_remote_one(r).await.unwrap();
+        assert!(
+            store.list_top(E, None, 10).await.unwrap().is_empty(),
+            "静默记录不得复活被删会话"
+        );
+        // 摘要照常更新:水位推进到该消息(latest_sort_key_ms 不过滤 removed)。
+        assert_eq!(
+            store.latest_sort_key_ms(E, "c1").await.unwrap(),
+            Some(future_ts),
+            "静默记录仍应更新摘要水位(数据照常维护)"
+        );
+    }
+
+    #[tokio::test]
+    async fn upsert_remote_silent_bumps_removed_at_ms_blocking_blind_repull() {
+        // 门 B 吸收水位:removed_at_ms 抬到静默消息时间 → 同 ts 的 silence-blind 重拉不复活。
+        let pool = SqlitePool::in_memory().await.unwrap();
+        let store = RecentSessionsStore::new(pool);
+        store
+            .upsert_remote_many(&[sample_remote("c1", "wa-1", 100, 0)])
+            .await
+            .unwrap();
+        store.set_removed(E, "c1", true).await.unwrap();
+        let silent_ts = now_unix_ms() + 60_000;
+        let mut r = sample_remote("c1", "wa-1", silent_ts, 0);
+        r.silent = true;
+        store.upsert_remote_one(r).await.unwrap();
+        // 模拟 silence-blind 重拉同一条(非静默、同 ts、同版本)
+        store
+            .upsert_remote_one(sample_remote("c1", "wa-1", silent_ts, 0))
+            .await
+            .unwrap();
+        assert!(
+            store.list_top(E, None, 10).await.unwrap().is_empty(),
+            "removed_at_ms 已抬到静默消息时间,同 ts 的 silence-blind 重拉不得复活"
+        );
+    }
+
+    #[tokio::test]
+    async fn upsert_remote_nonsilent_newer_still_unremoves_after_silent() {
+        // 回归:静默之后真正的非静默新消息(严格更晚)仍应复活会话。
+        let pool = SqlitePool::in_memory().await.unwrap();
+        let store = RecentSessionsStore::new(pool);
+        store
+            .upsert_remote_many(&[sample_remote("c1", "wa-1", 100, 0)])
+            .await
+            .unwrap();
+        store.set_removed(E, "c1", true).await.unwrap();
+        let silent_ts = now_unix_ms() + 60_000;
+        let mut r = sample_remote("c1", "wa-1", silent_ts, 0);
+        r.silent = true;
+        store.upsert_remote_one(r).await.unwrap();
+        store
+            .upsert_remote_one(sample_remote("c1", "wa-1", silent_ts + 1_000, 1))
+            .await
+            .unwrap();
+        let got = store.list_top(E, None, 10).await.unwrap();
+        assert_eq!(got.len(), 1, "非静默新消息应复活会话");
+        assert!(!got[0].removed);
+    }
+
+    #[tokio::test]
+    async fn upsert_remote_silent_on_visible_row_still_updates_summary() {
+        // 可见会话收到静默记录:摘要照常更新、保持可见(版本门/已读门照常生效)。
+        let pool = SqlitePool::in_memory().await.unwrap();
+        let store = RecentSessionsStore::new(pool);
+        store
+            .upsert_remote_many(&[sample_remote("c1", "wa-1", 100, 0)])
+            .await
+            .unwrap();
+        let mut r = sample_remote("c1", "wa-1", 200, 0);
+        r.last_message_summary = "silent-update".into();
+        r.silent = true;
+        store.upsert_remote_one(r).await.unwrap();
+        let got = store.list_top(E, None, 10).await.unwrap();
+        assert_eq!(got.len(), 1, "可见会话收到静默记录应保持可见");
+        assert!(!got[0].removed);
+        assert_eq!(got[0].last_message_summary, "silent-update");
+        assert_eq!(got[0].last_message_time_ms, 200, "摘要照常更新");
+    }
+
+    #[tokio::test]
+    async fn upsert_remote_silent_with_renamed_sibling_still_updates() {
+        // 门 A 位置回归:服务端对同业务键换发新 id 且最后一条是静默消息 —— 业务键收编先把
+        // 旧 id 行改 id 续命,再判存在性 → 视为"存在",照常更新而非误判不存在跳过。
+        let pool = SqlitePool::in_memory().await.unwrap();
+        let store = RecentSessionsStore::new(pool);
+        store
+            .upsert_remote_many(&[sample_remote("100", "wa-1", 100, 0)])
+            .await
+            .unwrap();
+        // 新 id 201(同业务键 ext_100),静默,版本更新
+        let mut r = sample_remote("201", "wa-1", 200, 0);
+        r.external_user_id = "ext_100".into();
+        r.silent = true;
+        store.upsert_remote_one(r).await.unwrap();
+        let got = store.list_top(E, None, 10).await.unwrap();
+        assert_eq!(got.len(), 1, "业务键收编后应只有一行");
+        assert_eq!(got[0].conversation_id, "201", "旧行应改 id 续命");
+        assert_eq!(got[0].last_message_time_ms, 200, "静默存在行照常更新摘要");
     }
 
     #[tokio::test]
@@ -2238,15 +2366,15 @@ mod tests {
 
     // ─── §4 发送状态不倒退 ──────────────────────────────────────────────────
 
-    /// apply_summary 的 last_send_status 必须遵守 §4 状态机:已是终/中间态时不被 stale 事件倒退。
+    /// 合并内核的 last_send_status 必须遵守 §4 状态机:已是终/中间态时不被 stale 事件倒退。
     ///
-    /// 场景一:行当前 last_send_status=3(成功,终态) → apply_summary 送来 2(发送中) → 应保持 3。
-    /// 场景二:行当前 last_send_status=4(失败) → apply_summary 送来 3(成功) → 应变 3(4→3 被允许)。
+    /// 场景一:行当前 last_send_status=3(成功,终态) → 摘要送来 2(发送中) → 应保持 3。
+    /// 场景二:行当前 last_send_status=4(失败) → 摘要送来 3(成功) → 应变 3(4→3 被允许)。
     ///
     /// 版本门放行策略:incoming sort_key_ms 与种子相等 + gmt="" → 版本门在相等 sortKey 下放行,
     /// 把判定权交给 §4 CASE 表达式。
     #[tokio::test]
-    async fn apply_summary_send_status_does_not_regress() {
+    async fn summary_merge_send_status_does_not_regress() {
         // ── 场景一:3(成功) 收到 2(发送中) → 应保持 3 ─────────────────────────
         let pool = SqlitePool::in_memory().await.unwrap();
         let store = RecentSessionsStore::new(pool);
@@ -2261,11 +2389,11 @@ mod tests {
         let seed = store.list_top(E, None, 10).await.unwrap();
         assert_eq!(seed[0].last_send_status, 3, "种子 last_send_status 应为 3");
 
-        // apply_summary:相同 sort_key_ms=1000,gmt="" → 版本门放行;incoming last_send_status=2。
+        // 摘要合并:相同 sort_key_ms=1000,gmt="" → 版本门放行;incoming last_send_status=2。
         let mut s = sample_summary("cv-1", 1000, 0);
         s.last_send_status = 2; // §4: 3 收到 2 → 应保持 3
         s.gmt_modified_time = String::new(); // 让版本门在相等 sortKey 下放行
-        let changed = store.apply_summary(s).await.unwrap();
+        let changed = store.upsert_remote_one(s).await.unwrap();
         assert!(changed, "版本门应放行同 sortKey + gmt='' 的摘要");
 
         let got = store.list_top(E, None, 10).await.unwrap();
@@ -2288,11 +2416,11 @@ mod tests {
             "种子 last_send_status 应为 4"
         );
 
-        // apply_summary:同 sort_key_ms=2000,gmt="",incoming last_send_status=3。
+        // 摘要合并:同 sort_key_ms=2000,gmt="",incoming last_send_status=3。
         let mut s2 = sample_summary("cv-2", 2000, 0);
         s2.last_send_status = 3; // §4: 4 收到 3 → 应变 3
         s2.gmt_modified_time = String::new();
-        let changed2 = store2.apply_summary(s2).await.unwrap();
+        let changed2 = store2.upsert_remote_one(s2).await.unwrap();
         assert!(changed2, "版本门应放行同 sortKey + gmt='' 的摘要");
 
         let got2 = store2.list_top(E, None, 10).await.unwrap();
@@ -2311,7 +2439,7 @@ mod tests {
         let mut s3 = sample_summary("cv-3", 3000, 0);
         s3.last_send_status = 4; // §4: 3 收到 4 → 应保持 3
         s3.gmt_modified_time = String::new();
-        store3.apply_summary(s3).await.unwrap();
+        store3.upsert_remote_one(s3).await.unwrap();
 
         let got3 = store3.list_top(E, None, 10).await.unwrap();
         assert_eq!(
@@ -2326,7 +2454,7 @@ mod tests {
     /// 再 CONFIRMED(status3, sortKey=B<A) → 终态 status=3,且 time/sort_key 未被拉低(取 MAX)。
     /// 实证根因:出站 CONFIRMED 用真实平台时间,前导 ms 比本地 PENDING 创建时间小。
     #[tokio::test]
-    async fn apply_summary_same_message_confirmed_smaller_sortkey_advances() {
+    async fn summary_merge_same_message_confirmed_smaller_sortkey_advances() {
         let pool = SqlitePool::in_memory().await.unwrap();
         let store = RecentSessionsStore::new(pool);
         // 种子行(status<=1,让 PENDING 能进)。
@@ -2340,7 +2468,7 @@ mod tests {
         let mut pending = sample_summary("cv-1", 1_780_390_520_611, 0);
         pending.last_local_message_id = "L".into();
         pending.last_send_status = 2;
-        let c1 = store.apply_summary(pending).await.unwrap();
+        let c1 = store.upsert_remote_one(pending).await.unwrap();
         assert!(c1, "PENDING 应被接受(sortKey 大于种子)");
         let got = store.list_top(E, None, 10).await.unwrap();
         assert_eq!(got[0].last_send_status, 2, "PENDING 后应为发送中");
@@ -2350,7 +2478,7 @@ mod tests {
         let mut confirmed = sample_summary("cv-1", 1_780_390_519_000, 0);
         confirmed.last_local_message_id = "L".into();
         confirmed.last_send_status = 3;
-        let c2 = store.apply_summary(confirmed).await.unwrap();
+        let c2 = store.upsert_remote_one(confirmed).await.unwrap();
         assert!(c2, "同消息 CONFIRMED(小 sortKey)应被同消息守卫放行");
 
         let got = store.list_top(E, None, 10).await.unwrap();
@@ -2371,7 +2499,7 @@ mod tests {
 
     /// 回归:不同 lastLocalMessageId 的更小 sortKey 摘要仍被拒(同消息守卫只对同 id 生效)。
     #[tokio::test]
-    async fn apply_summary_different_message_smaller_sortkey_rejected() {
+    async fn summary_merge_different_message_smaller_sortkey_rejected() {
         let pool = SqlitePool::in_memory().await.unwrap();
         let store = RecentSessionsStore::new(pool);
         let mut seed = sample_remote("cv-1", "wa-1", 500, 3);
@@ -2382,7 +2510,7 @@ mod tests {
         let mut other = sample_summary("cv-1", 200, 9);
         other.last_local_message_id = "L_other".into();
         other.last_send_status = 3;
-        let changed = store.apply_summary(other).await.unwrap();
+        let changed = store.upsert_remote_one(other).await.unwrap();
         assert!(!changed, "不同消息的过期小 sortKey 摘要应被版本门拒绝");
         let got = store.list_top(E, None, 10).await.unwrap();
         assert_eq!(got[0].last_message_time_ms, 500, "stale 不得覆盖");
@@ -2392,7 +2520,7 @@ mod tests {
 
     /// 同消息 SEND_FAILED(status4)放行 → last_send_status=4。
     #[tokio::test]
-    async fn apply_summary_same_message_send_failed_applies() {
+    async fn summary_merge_same_message_send_failed_applies() {
         let pool = SqlitePool::in_memory().await.unwrap();
         let store = RecentSessionsStore::new(pool);
         let mut seed = sample_remote("cv-1", "wa-1", 100, 0);
@@ -2405,7 +2533,7 @@ mod tests {
         let mut failed = sample_summary("cv-1", 1_780_390_519_000, 0);
         failed.last_local_message_id = "L".into();
         failed.last_send_status = 4;
-        let changed = store.apply_summary(failed).await.unwrap();
+        let changed = store.upsert_remote_one(failed).await.unwrap();
         assert!(changed, "同消息 SEND_FAILED 应被守卫放行");
         let got = store.list_top(E, None, 10).await.unwrap();
         assert_eq!(got[0].last_send_status, 4, "发送中收到失败应变 4");
@@ -2492,7 +2620,7 @@ mod tests {
         );
         assert_eq!(
             got[0].last_message_sort_key_ms, 500,
-            "绝不动版本/水位键(否则破坏 apply_summary 回正)"
+            "绝不动版本/水位键(否则破坏摘要合并回正)"
         );
     }
 

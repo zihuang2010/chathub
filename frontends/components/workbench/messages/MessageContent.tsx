@@ -27,7 +27,7 @@ import { getMeasuredDims, rememberMeasuredDims } from "./imageDimsCache";
 import { ImageLightbox } from "./ImageLightbox";
 import { hasLoadedImageSrc, rememberLoadedImageSrc } from "./loadedImageSrcs";
 import { STRINGS } from "./strings";
-import { formatFileSize, formatRichText, isSafeUrl, thumbWidth } from "./utils";
+import { fileExtension, formatFileSize, formatRichText, isSafeUrl, thumbWidth } from "./utils";
 
 type ImagePart = Extract<MessagePart, { kind: "image" }>;
 type FilePart = Extract<MessagePart, { kind: "file" }>;
@@ -208,15 +208,9 @@ const FILE_BADGE_LABELS: Record<string, string> = {
   markdown: "MD",
 };
 
-function fileExtension(name?: string): string {
-  if (!name) return "";
-  const dot = name.lastIndexOf(".");
-  return dot > 0 ? name.slice(dot + 1).toLowerCase() : "";
-}
-
 // 文件类型徽标:彩色渐变方块直出扩展名大写标签,作为卡片左侧的视觉锚点;
-// 无扩展名/标签过长时回退通用文件图标。
-function FileTypeBadge({ ext }: { ext: string }) {
+// 无扩展名/标签过长时回退通用文件图标。导出供输入框待发送文件 chip 复用同款视觉。
+export function FileTypeBadge({ ext }: { ext: string }) {
   const gradient = FILE_BADGE_GRADIENTS[ext];
   const label =
     FILE_BADGE_LABELS[ext] ?? (ext.length > 0 && ext.length <= 4 ? ext.toUpperCase() : "");

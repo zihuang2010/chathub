@@ -122,16 +122,27 @@ afterEach(() => {
 // 注:filledScopes 是模块级"本会话已预填"标记,跨用例累积。每个用例用**不同 accountFilter**
 // (键 = `emp-1|<account>`)规避相互污染,保证冷启动用例能观察到一次预填。
 describe("useRecentFriends 本地单源深读 + 水位预填", () => {
-  it("冷启动(本地<100):mount 触发水位预填一次,且不走远端整页翻页", async () => {
+  it("冷启动(「全部」scope,本地<100):mount 触发水位预填一次,且不走远端整页翻页", async () => {
+    useResourceMock.mockReturnValue(resourceResult(mkEntries(10)));
+    prefillMock.mockResolvedValue(okPrefill);
+
+    renderHook(() => useRecentFriends({ accountFilter: null }));
+    await act(async () => {});
+
+    expect(prefillMock).toHaveBeenCalledTimes(1);
+    expect(prefillMock).toHaveBeenCalledWith(null, false);
+    expect(pageMock).not.toHaveBeenCalled(); // 默认列表不再走远端 recentFriends 整页翻页
+  });
+
+  it("冷启动(账号筛选 scope,本地<100):纯本地查询,不自动预填", async () => {
     useResourceMock.mockReturnValue(resourceResult(mkEntries(10)));
     prefillMock.mockResolvedValue(okPrefill);
 
     renderHook(() => useRecentFriends({ accountFilter: "acc-cold" }));
     await act(async () => {});
 
-    expect(prefillMock).toHaveBeenCalledTimes(1);
-    expect(prefillMock).toHaveBeenCalledWith("acc-cold", false);
-    expect(pageMock).not.toHaveBeenCalled(); // 默认列表不再走远端 recentFriends 整页翻页
+    expect(prefillMock).not.toHaveBeenCalled(); // 账号筛选下零远端,数据靠全部 scope 预填 + 事件保鲜
+    expect(pageMock).not.toHaveBeenCalled();
   });
 
   it("温缓存(本地≥100):mount 不预填、零远端", async () => {
@@ -221,7 +232,7 @@ describe("useRecentFriends 本地单源深读 + 水位预填", () => {
     expect(result.current.filtered?.map((i) => i.conversationId)).toEqual(["match-1"]);
   });
 
-  it("切账号:切到本地浅的账号触发该账号预填(按 scope 各自判定)", async () => {
+  it("切账号:即使切到本地浅的账号也不预填(纯本地查询,零网络)", async () => {
     useResourceMock.mockReturnValue(resourceResult(mkEntries(TRIGGER + 50)));
     prefillMock.mockResolvedValue(okPrefill);
 
@@ -230,7 +241,7 @@ describe("useRecentFriends 本地单源深读 + 水位预填", () => {
       { initialProps: { accountFilter: "acc-sw1" } },
     );
     await act(async () => {});
-    expect(prefillMock).not.toHaveBeenCalled(); // acc-sw1 本地≥100,不预填
+    expect(prefillMock).not.toHaveBeenCalled();
 
     useResourceMock.mockReturnValue(resourceResult(mkEntries(10)));
     await act(async () => {
@@ -238,7 +249,44 @@ describe("useRecentFriends 本地单源深读 + 水位预填", () => {
     });
     await act(async () => {});
 
-    expect(prefillMock).toHaveBeenCalledWith("acc-sw2", false);
+    expect(prefillMock).not.toHaveBeenCalled(); // 切账号 = 本地过滤,不远端拉取
+  });
+
+  it("账号筛选 scope 本地 0 行:兜底预填一次(空列表死路兜底)", async () => {
+    useResourceMock.mockReturnValue(resourceResult([]));
+    prefillMock.mockResolvedValue(okPrefill);
+
+    renderHook(() => useRecentFriends({ accountFilter: "acc-empty" }));
+    await act(async () => {});
+
+    expect(prefillMock).toHaveBeenCalledTimes(1);
+    expect(prefillMock).toHaveBeenCalledWith("acc-empty", false);
+  });
+
+  it("切 scope 窗口期(isStale):即使 0 行也不决策预填(数据还是旧 scope 的)", async () => {
+    useResourceMock.mockReturnValue(resourceResult([], { isStale: true }));
+    prefillMock.mockResolvedValue(okPrefill);
+
+    renderHook(() => useRecentFriends({ accountFilter: "acc-stale" }));
+    await act(async () => {});
+
+    expect(prefillMock).not.toHaveBeenCalled(); // 等新 scope 数据落地后再判
+  });
+
+  it("手动刷新(账号筛选下):仍 force 预填(显式动作保留远端对齐入口)", async () => {
+    useResourceMock.mockReturnValue(resourceResult(mkEntries(TRIGGER + 50)));
+    prefillMock.mockResolvedValue(okPrefill);
+
+    const { result } = renderHook(() => useRecentFriends({ accountFilter: "acc-refresh" }));
+    await act(async () => {});
+    expect(prefillMock).not.toHaveBeenCalled();
+
+    await act(async () => {
+      await result.current.refresh();
+    });
+
+    expect(prefillMock).toHaveBeenCalledTimes(1);
+    expect(prefillMock).toHaveBeenCalledWith("acc-refresh", true);
   });
 
   it("mkResp helper 自洽(仅搜索路径构造远端响应用)", () => {

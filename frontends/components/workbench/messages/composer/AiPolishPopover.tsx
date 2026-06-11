@@ -3,6 +3,7 @@ import * as Popover from "@radix-ui/react-popover";
 import { Sparkles } from "lucide-react";
 
 import { cn } from "@/lib/utils";
+import { useSettingsStore } from "@/lib/data/settingsStore";
 import { STRINGS } from "../strings";
 import { streamPolish, type PolishTone } from "./aiPolishClient";
 
@@ -103,6 +104,12 @@ export function AiPolishPopover({
     setOpen(next);
   };
 
+  // 设置页总开关:关闭时触发按钮整体置灰禁点(disabled 原生挡住点击,弹层打不开),
+  // 组件内部不做其它限制。
+  const aiEnabled = useSettingsStore((s) => s.settings.ai.enabled);
+  const triggerDisabled = !aiEnabled || disabled;
+  const triggerReason = !aiEnabled ? STRINGS.composer.aiPolishOffHint : disabledReason;
+
   const canApply = status === "done" && preview.length > 0;
   const generateDisabled = disabled || !originalText.trim();
 
@@ -111,8 +118,8 @@ export function AiPolishPopover({
       <Popover.Trigger asChild>
         <button
           type="button"
-          disabled={disabled}
-          title={disabled ? disabledReason : undefined}
+          disabled={triggerDisabled}
+          title={triggerDisabled ? triggerReason : undefined}
           className="focus-ring inline-flex h-9 items-center gap-1 rounded-md bg-workbench-surface-soft px-2.5 text-wb-2xs font-medium text-workbench-accent transition-colors hover:bg-workbench-surface-active disabled:cursor-not-allowed disabled:opacity-50"
         >
           <Sparkles size={12} />

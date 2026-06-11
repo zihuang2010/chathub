@@ -92,6 +92,10 @@ impl SqlitePool {
                     "../migrations/V31__recents_read_watermark.sql"
                 )),
                 M::up(include_str!("../migrations/V32__recents_dedup_friend.sql")),
+                M::up(include_str!("../migrations/V33__user_settings.sql")),
+                M::up(include_str!(
+                    "../migrations/V34__purge_resend_dup_failed.sql"
+                )),
             ]);
             migrations
                 .to_latest(c)
@@ -263,6 +267,70 @@ mod tests {
             exists("unknown_out_sent"),
             1,
             "type=99 出站但已发送(status≠0)保留"
+        );
+    }
+
+    #[test]
+    fn v34_migration_collapses_resend_dup_failed_rows() {
+        let conn = rusqlite::Connection::open_in_memory().expect("open in-memory sqlite");
+        conn.execute_batch(include_str!("../migrations/V14__conversation_messages.sql"))
+            .expect("create conversation message tables");
+        conn.execute_batch(include_str!(
+            "../migrations/V22__messages_revoked_fail_reason.sql"
+        ))
+        .expect("add revoked/fail_reason/request_message_id columns");
+        let insert = |id: &str, sort: &str, status: i64, text: &str, reqid: &str| {
+            conn.execute(
+                "INSERT INTO hub_conversation_messages ( \
+                   local_message_id, conversation_id, employee_id, wecom_account_id, sort_key, \
+                   message_time_ms, message_direction, message_type, content_text, send_status, \
+                   attachments_json, gmt_modified_time, updated_at_ms, request_message_id \
+                 ) VALUES (?1, 'c1', 'u1', 'wa1', ?2, 0, 2, 1, ?3, ?4, '[]', '', 0, ?5)",
+                rusqlite::params![id, sort, text, status, reqid],
+            )
+            .expect("insert row");
+        };
+        // 复刻真机 898 链:本地失败行 + 服务端失败行(reqid 被 history 抹空) + 重发成功行(reqid=前任 id)。
+        insert("local-991c", "1781184183478_a", 4, "898", "local-991c");
+        insert("S-898-fail", "1781184185431_b", 4, "898", "");
+        insert("S-898-ok", "1781185781407_c", 3, "898", "S-898-fail");
+        // 复刻真机 778 堆积:两条本地失败 + 三条服务端无键失败,内容全同 → 只留 sort_key 最新一条。
+        insert("local-1a80", "1781184659000_a", 4, "778", "local-1a80");
+        insert("S-778-1", "1781184660906_b", 4, "778", "");
+        insert("S-778-2", "1781184669674_c", 4, "778", "");
+        insert("local-9a7f", "1781184688000_d", 4, "778", "local-9a7f");
+        insert("S-778-3", "1781184702783_e", 4, "778", "");
+        // 对照:不同内容的孤立失败行、已送达消息,均不许动。
+        insert("lone-fail", "1781184700000_x", 4, "唯一失败", "lone-fail");
+        insert("sent-dup-a", "1781184700001_y", 3, "在吗", "");
+        insert("sent-dup-b", "1781184700002_z", 3, "在吗", "");
+
+        conn.execute_batch(include_str!(
+            "../migrations/V34__purge_resend_dup_failed.sql"
+        ))
+        .expect("run V34 migration");
+
+        let ids: Vec<String> = conn
+            .prepare("SELECT local_message_id FROM hub_conversation_messages ORDER BY sort_key")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        // 898 链:①内容收编把 local-991c 收进最新失败行 S-898-fail;②键链收编再把被成功行
+        // reqid 引用的 S-898-fail 收掉 → 最终只剩成功行,不留失败残影。
+        // 778 堆积:①同内容五条失败行只留 sort_key 最新的 S-778-3;②无引用,不再删。
+        // 孤立失败行与已送达消息(含同内容副本)一律不动。
+        assert_eq!(
+            ids,
+            [
+                "lone-fail",
+                "sent-dup-a",
+                "sent-dup-b",
+                "S-778-3",
+                "S-898-ok"
+            ],
+            "迁移后应恰好剩这五行(按 sort_key 升序)"
         );
     }
 

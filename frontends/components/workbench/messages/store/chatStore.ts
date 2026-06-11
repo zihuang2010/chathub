@@ -307,6 +307,12 @@ export function replaceAuthoritative(
     // 上层据此 clientMsgId 给消息行一个跨「乐观→权威」稳定的 key,收敛零 remount、首帧不闪。
     // 历史消息无乐观来源(echo 无 clientMsgId)→ 不附加,行 key 回退到 id。
     if (echo?.clientMsgId) merged.clientMsgId = echo.clientMsgId;
+    // 重发在途保护:重发就地复用库行(不删行,防时间线行数塌缩),在途期间库里该行仍是
+    // failed —— 权威 failed 行不得把刚置 sending 的在途状态打回;终态由 deliverMessage 的
+    // markSent/markFailed 收敛。权威行已是 sent/sending 时不拦(终态/同态正常覆盖)。
+    if (echo?.status === "sending" && echo.clientMsgId && merged.status === "failed") {
+      merged.status = "sending";
+    }
     byId[m.id] = merged;
   }
   const leftover = pendingOptimistic.filter((e) => !convergedByMatch.has(e));
@@ -430,6 +436,10 @@ function seamUpsert(slice: ConversationSlice, messages: Message[]): Conversation
     const echo = echoLookup.get(m.id) ?? matched;
     const merged: ChatMessageEntity = { ...preserveOptimisticImageDimensions(m, echo) };
     if (echo?.clientMsgId) merged.clientMsgId = echo.clientMsgId;
+    // 重发在途保护(与塌缩路径同语义):在途 sending 行不被库里残留的 failed 行打回。
+    if (echo?.status === "sending" && echo.clientMsgId && merged.status === "failed") {
+      merged.status = "sending";
+    }
     byId[m.id] = merged;
   }
   // 删掉被配对收敛掉的乐观气泡 id(其权威回显已并入)。
@@ -469,11 +479,49 @@ function seamUpsert(slice: ConversationSlice, messages: Message[]): Conversation
   return sliceContentEqual(slice, next) ? slice : next;
 }
 
-/** 往头部 prepend 更旧一页(按 id 去重,已存在的不重复插入)。 */
+/**
+ * 过滤权威批次中「被重发取代的前任失败行」(键链:后继行的 requestMessageId == 前任行 id)。
+ *
+ * 背景:存量服务端失败行 reqid 被 history 抹空后,前端只能拿行 id 当幂等键重发,服务端为
+ * 新键再建一行(reqid=前任行 id)。新旧行在同一权威批次并存时,前任失败行会与后继行同时
+ * 命中同一实体(前任按 id、后继按 serverId/reqid)→ 同一逻辑消息渲染两行且行 key
+ * (clientMsgId ?? id)撞车 → react-virtuoso 尺寸树损坏(幽灵重复气泡/下滑幻影空白/整列表
+ * 不可见)。后端 upsert 已按同键链 DELETE 收编,此过滤是前端入口的对称防线(覆盖后端清理
+ * 生效前的过渡窗口)。只丢弃 status==="failed" 的被引用行,绝不误伤已送达消息。
+ */
+export function collapseSupersededFailed(messages: Message[]): Message[] {
+  // 「被取代」判定:存在另一行(reqid ≠ 自身 id,排除客户端键行的自引用)引用了 m.id。
+  const supersededIds = new Set<string>();
+  for (const m of messages) {
+    if (m.requestMessageId && m.requestMessageId !== m.id) supersededIds.add(m.requestMessageId);
+  }
+  if (supersededIds.size === 0) return messages;
+  return messages.filter((m) => !(m.status === "failed" && supersededIds.has(m.id)));
+}
+
+/**
+ * 往头部 prepend 更旧一页(按**收敛键**去重,已存在的不重复插入)。
+ *
+ * 只按 id 去重不够:重发失败后 persistOutboxFailure 以幂等键(request_message_id)换 id 落库
+ * (旧服务端键行被 upsert 去重删除,新客户端键行 sort_key 排得更旧),内存实体在收敛重读到来前
+ * 还挂着旧 id —— 上滚翻历史会把换键后的行当「更旧的新行」读回,同一逻辑消息成两行,且行 key
+ * (clientMsgId ?? id)撞车 → react-virtuoso 尺寸树(按绝对下标记账)损坏 → 底部幻影空白。
+ * 故按已有实体的 id/clientMsgId/serverId/requestMessageId 全键去重(各键全局唯一,无误伤)。
+ */
 export function prependOlder(slice: ConversationSlice, older: Message[]): ConversationSlice {
   if (older.length === 0) return slice;
-  const existing = new Set(slice.order);
-  const fresh = older.filter((m) => !existing.has(m.id));
+  const seenKeys = new Set<string>();
+  for (const id of slice.order) {
+    const e = slice.byId[id];
+    if (!e) continue;
+    seenKeys.add(e.id);
+    if (e.clientMsgId) seenKeys.add(e.clientMsgId);
+    if (e.serverId) seenKeys.add(e.serverId);
+    if (e.requestMessageId) seenKeys.add(e.requestMessageId);
+  }
+  const fresh = older.filter(
+    (m) => !seenKeys.has(m.id) && !(m.requestMessageId && seenKeys.has(m.requestMessageId)),
+  );
   if (fresh.length === 0) return slice;
   const byId = { ...slice.byId };
   for (const m of fresh) byId[m.id] = { ...m };
@@ -653,12 +701,36 @@ export function markSent(
   };
 }
 
-/** 发送失败:status→failed(供 context menu resend 复用同 clientMsgId 重发)。 */
-export function markFailed(slice: ConversationSlice, clientMsgId: string): ConversationSlice {
+/**
+ * 发送失败:status→failed(供 context menu resend 复用同 clientMsgId 重发)。
+ * `serverId`(可选)= send_message 失败终态响应携带的 localMessageId(服务端为该次发送建的
+ * 失败行 id,按 reqid 幂等稳定)。钉上后 history/push 回流的服务端失败行经 echoLookup(serverId)
+ * 确定性收敛成同一行,不再「local-* 行与服务端行并存」双行起步。若权威失败回显已抢先落地
+ * (SEND_FAILED 推送重读先到),就地塌缩成一行 —— 与 markSent 的竞态收敛完全对称。
+ */
+export function markFailed(
+  slice: ConversationSlice,
+  clientMsgId: string,
+  serverId?: string,
+): ConversationSlice {
   const id = findIdByClientMsgId(slice, clientMsgId);
   if (!id) return slice;
   const e = slice.byId[id];
-  return { ...slice, byId: { ...slice.byId, [id]: { ...e, status: "failed" } } };
+  const echo = serverId && serverId !== id ? slice.byId[serverId] : undefined;
+  if (echo && serverId) {
+    const merged: ChatMessageEntity = {
+      ...preserveOptimisticImageDimensions(echo, e),
+      clientMsgId,
+      serverId,
+      status: "failed",
+    };
+    const byId = { ...slice.byId, [serverId]: merged };
+    delete byId[id];
+    return { ...slice, byId, order: slice.order.filter((x) => x !== id) };
+  }
+  const patched: ChatMessageEntity = { ...e, status: "failed" };
+  if (serverId) patched.serverId = serverId;
+  return { ...slice, byId: { ...slice.byId, [id]: patched } };
 }
 
 /** 就地 patch 一条(如撤回置 isRecalled、重发补钉 clientMsgId)。不存在则 no-op。 */
@@ -715,7 +787,7 @@ interface ChatStoreState {
     serverId: string,
     patch?: Partial<Message>,
   ): void;
-  markFailed(conversationId: string, clientMsgId: string): void;
+  markFailed(conversationId: string, clientMsgId: string, serverId?: string): void;
   patchMessage(conversationId: string, id: string, patch: Partial<ChatMessageEntity>): void;
   removeMessage(conversationId: string, id: string): void;
   setLoading(conversationId: string, loading: boolean): void;
@@ -750,9 +822,10 @@ export const useChatStore = create<ChatStoreState>((set) => {
       update(conversationId, (slice) => {
         const collapseToLatest = meta?.collapseToLatest ?? true;
         // 本地已删除墓碑优先:权威补回前过滤掉本端删过的条目(删了不再出现,以本地为主)。
+        // 再过滤重发链前任失败行(collapseSupersededFailed):防同一逻辑消息双行/行 key 撞车。
         const next = replaceAuthoritative(
           slice,
-          filterDeletedMessages(conversationId, messages),
+          collapseSupersededFailed(filterDeletedMessages(conversationId, messages)),
           collapseToLatest,
         );
         const hasMore = meta?.hasMore ?? next.hasMore;
@@ -768,16 +841,27 @@ export const useChatStore = create<ChatStoreState>((set) => {
       }),
     prependOlder: (conversationId, older, hasMore) =>
       update(conversationId, (slice) => {
-        const next = prependOlder(slice, filterDeletedMessages(conversationId, older));
+        const next = prependOlder(
+          slice,
+          collapseSupersededFailed(filterDeletedMessages(conversationId, older)),
+        );
         return hasMore === undefined ? next : { ...next, hasMore };
       }),
     appendNewerWindow: (conversationId, newer, meta) =>
       update(conversationId, (slice) =>
-        appendNewerWindow(slice, filterDeletedMessages(conversationId, newer), meta),
+        appendNewerWindow(
+          slice,
+          collapseSupersededFailed(filterDeletedMessages(conversationId, newer)),
+          meta,
+        ),
       ),
     prependOlderWindow: (conversationId, older, meta) =>
       update(conversationId, (slice) =>
-        prependOlderWindow(slice, filterDeletedMessages(conversationId, older), meta),
+        prependOlderWindow(
+          slice,
+          collapseSupersededFailed(filterDeletedMessages(conversationId, older)),
+          meta,
+        ),
       ),
     dropFromTop: (conversationId, n) => update(conversationId, (slice) => dropFromTop(slice, n)),
     dropFromBottom: (conversationId, n) =>
@@ -786,8 +870,8 @@ export const useChatStore = create<ChatStoreState>((set) => {
       update(conversationId, (slice) => enqueueOptimistic(slice, entity)),
     markSent: (conversationId, clientMsgId, serverId, patch) =>
       update(conversationId, (slice) => markSent(slice, clientMsgId, serverId, patch)),
-    markFailed: (conversationId, clientMsgId) =>
-      update(conversationId, (slice) => markFailed(slice, clientMsgId)),
+    markFailed: (conversationId, clientMsgId, serverId) =>
+      update(conversationId, (slice) => markFailed(slice, clientMsgId, serverId)),
     patchMessage: (conversationId, id, patch) =>
       update(conversationId, (slice) => patchEntity(slice, id, patch)),
     removeMessage: (conversationId, id) =>

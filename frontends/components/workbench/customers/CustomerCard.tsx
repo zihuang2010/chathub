@@ -10,6 +10,9 @@ import { isKeyCustomer } from "./customerLabels";
 import { STRINGS } from "./strings";
 import { parseDate } from "./utils";
 
+/** 企业微信 logo(public 根资产);负责人行前缀图标,与会话列表归属胶囊同源。 */
+const WECOM_SOURCE_LOGO = "/wecom-logo.png";
+
 interface CustomerCardProps {
   customer: Customer;
   account: Account | undefined;
@@ -128,9 +131,15 @@ export const CustomerCard = memo(function CustomerCard({
             </span>
             <GenderIcon gender={customer.gender} />
           </div>
-          {/* 负责人（接口字段 wecomAccountName，缺失显示「未填写」） */}
-          <div className="mt-0.5 truncate text-[11px] text-workbench-text-secondary">
-            {STRINGS.card.owner} {owner ?? STRINGS.card.followerFallback}
+          {/* 负责人（企业微信账号别名优先、回退账号名；企微 logo + 名称，缺失显示「未填写」） */}
+          <div className="mt-0.5 flex min-w-0 items-center gap-1 text-[11px] text-workbench-text-secondary">
+            <img
+              src={WECOM_SOURCE_LOGO}
+              alt=""
+              aria-hidden
+              className="size-3 shrink-0 rounded-[2px] object-contain"
+            />
+            <span className="truncate">{owner ?? STRINGS.card.followerFallback}</span>
           </div>
         </div>
         <RowIconButton

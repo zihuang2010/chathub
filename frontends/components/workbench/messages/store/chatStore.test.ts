@@ -6,6 +6,7 @@ import type { Message } from "../data";
 import {
   appendNewerWindow,
   type ChatMessageEntity,
+  collapseSupersededFailed,
   type ConversationSlice,
   dropFromBottom,
   dropFromTop,
@@ -15,6 +16,7 @@ import {
   MAX_HOT_CONVERSATIONS,
   markFailed,
   markSent,
+  patchEntity,
   prependOlder,
   prependOlderWindow,
   removeEntity,
@@ -116,6 +118,60 @@ describe("chatStore reducers", () => {
   it("markFailed flips status to failed (keeps bubble for resend)", () => {
     const next = markFailed(sliceWith([optimistic("c-1")]), "c-1");
     expect(next.byId["c-1"].status).toBe("failed");
+  });
+
+  it("markFailed 钉 serverId:失败响应携带服务端行 id 时记到实体上(供权威收敛配对)", () => {
+    // send_message 失败终态响应带 localMessageId(服务端为该次发送建的行 id,按 reqid 幂等稳定)。
+    // 钉上后 history/push 回流的服务端失败行(id 相同)经 echoLookup(serverId)确定性收敛成同一行。
+    const next = markFailed(sliceWith([optimistic("c-1")]), "c-1", "server-9");
+    expect(next.byId["c-1"].status).toBe("failed");
+    expect(next.byId["c-1"].serverId).toBe("server-9");
+  });
+
+  it("markFailed 竞态:权威失败回显已先落地时就地塌缩成一行(对称 markSent 竞态收敛)", () => {
+    // SEND_FAILED 推送/persist ChangeNotice 可能抢在 markFailed 之前把服务端失败行(server-1)
+    // 重读进切片 → 乐观气泡与之并存。markFailed 拿到 server-1 应塌缩:保权威行、带 clientMsgId、
+    // 状态 failed,删乐观副本 —— 杜绝「同一逻辑消息两行」与行 key 撞车。
+    const echo = msg("server-1", { direction: "out", status: "failed" });
+    const slice = sliceWith([echo, optimistic("c-1")]);
+    const next = markFailed(slice, "c-1", "server-1");
+    expect(selectTimeline(next).map((e) => e.id)).toEqual(["server-1"]);
+    expect(next.byId["c-1"]).toBeUndefined();
+    expect(next.byId["server-1"].clientMsgId).toBe("c-1");
+    expect(next.byId["server-1"].serverId).toBe("server-1");
+    expect(next.byId["server-1"].status).toBe("failed");
+  });
+
+  it("collapseSupersededFailed 丢弃被后继行 reqid 引用的失败行(重发链前任,无论后继成败)", () => {
+    // 898 案例:服务端失败行 S1(reqid 被 history 抹空)被以 S1 为幂等键重发,产生 S2(reqid=S1)。
+    // 同批权威里 S1/S2 并存时,S1 是被取代的前任 → 丢弃;否则同一逻辑消息渲染两行且行 key 撞车
+    // (virtuoso 尺寸树损坏 → 幽灵重复气泡/下滑空白/整页不可见)。
+    const s1 = msg("S1", { direction: "out", status: "failed", text: "898" });
+    const s2ok = msg("S2", {
+      direction: "out",
+      status: "sent",
+      text: "898",
+      requestMessageId: "S1",
+    });
+    expect(collapseSupersededFailed([s1, s2ok])).toEqual([s2ok]);
+    // 后继自身仍失败时同理收编前任。
+    const s2fail = msg("S2", {
+      direction: "out",
+      status: "failed",
+      text: "898",
+      requestMessageId: "S1",
+    });
+    expect(collapseSupersededFailed([s1, s2fail])).toEqual([s2fail]);
+  });
+
+  it("collapseSupersededFailed 不误伤:非失败行被引用不删,无引用失败行保留", () => {
+    // 被引用但已送达(理论不应出现,防御):绝不删非失败行。
+    const sentRef = msg("S1", { direction: "out", status: "sent" });
+    const next = msg("S2", { direction: "out", status: "sent", requestMessageId: "S1" });
+    expect(collapseSupersededFailed([sentRef, next])).toEqual([sentRef, next]);
+    // 无引用的孤立失败行照常保留(可重发)。
+    const lone = msg("F1", { direction: "out", status: "failed" });
+    expect(collapseSupersededFailed([lone, next])).toEqual([lone, next]);
   });
 
   it("replaceAuthoritative preserves an in-flight optimistic bubble not yet echoed by server", () => {
@@ -930,5 +986,105 @@ describe("useChatStore actions", () => {
     useChatStore.getState().replaceAuthoritative("conv-NEW", [msg("m-new")]);
     expect(useChatStore.getState().conversations[oldestAlive]).toBeDefined();
     useChatStore.getState().reset();
+  });
+});
+
+// ─── 重发在途保护:权威重读不把在途行打回 failed ─────────────────────────────
+//
+// 重发改为「就地复用库行、不删行」(行数不变 → 不触发虚拟列表幻影空白)后,在途期间本地库里
+// 该行仍是 send_status=4(failed)。权威重读(塌缩/缝合)读回同 id 的 failed 行时,不得把
+// 内存里刚置 sending 的在途状态打回 —— 终态由 deliverMessage 的 markSent/markFailed 收敛。
+describe("重发在途保护(权威重读不打回)", () => {
+  it("塌缩路径:同 id 的 failed 权威行不把在途重发(sending)打回,且保留钉上的 clientMsgId", () => {
+    const failedRow = msg("srv-1", {
+      direction: "out",
+      status: "failed",
+      requestMessageId: "k-orig",
+    });
+    let slice = replaceAuthoritative(emptySlice(), [failedRow]);
+    // 重发点击:就地置 sending + 钉幂等键(useChatActions resend 的 patchMessage 形态)。
+    slice = patchEntity(slice, "srv-1", { status: "sending", clientMsgId: "k-orig" });
+    // 在途期间权威重读:库里该行仍是 failed。
+    const next = replaceAuthoritative(slice, [failedRow]);
+    expect(next.byId["srv-1"].status).toBe("sending");
+    expect(next.byId["srv-1"].clientMsgId).toBe("k-orig");
+  });
+
+  it("塌缩路径:权威行已是 sent 时正常覆盖在途 sending(终态不被挡)", () => {
+    const failedRow = msg("srv-1", { direction: "out", status: "failed" });
+    let slice = replaceAuthoritative(emptySlice(), [failedRow]);
+    slice = patchEntity(slice, "srv-1", { status: "sending", clientMsgId: "k-orig" });
+    const next = replaceAuthoritative(slice, [msg("srv-1", { direction: "out", status: "sent" })]);
+    expect(next.byId["srv-1"].status).toBe("sent");
+  });
+
+  it("缝合路径(collapseToLatest=false):同 id 的 failed 权威行同样不打回在途重发", () => {
+    const failedRow = msg("srv-1", { direction: "out", status: "failed" });
+    let slice = replaceAuthoritative(emptySlice(), [msg("a-0"), failedRow]);
+    slice = patchEntity(slice, "srv-1", { status: "sending", clientMsgId: "k-orig" });
+    const next = replaceAuthoritative(slice, [failedRow], false);
+    expect(next.byId["srv-1"].status).toBe("sending");
+    expect(next.byId["srv-1"].clientMsgId).toBe("k-orig");
+  });
+});
+
+// ─── 翻历史 prepend 的收敛键去重 ─────────────────────────────────────────────
+//
+// 重发失败后 persistOutboxFailure 以幂等键(request_message_id)换 id 落库:旧「服务端键」行
+// 被 upsert 去重删除,新「客户端键」行 sort_key 排得更旧。内存实体在收敛重读到来前还挂着旧 id。
+// 此时上滚翻历史(loadCachedWindow 严格 < windowOldest)会把换键后的行当「更旧的新行」读回 ——
+// 只按 id 去重挡不住:同一逻辑消息成两行,且行 key(clientMsgId ?? id)撞车,react-virtuoso
+// 尺寸树按绝对下标记账被打乱 → 底部幻影空白。prepend 必须按收敛键(id/clientMsgId/serverId/
+// requestMessageId)整体去重。
+describe("prependOlder 收敛键去重(重发换键行不得二次插入)", () => {
+  it("读回行的 id 命中已有实体的 clientMsgId/requestMessageId → 跳过,不插重复行", () => {
+    // 在屏实体:服务端键失败行 srv-1(首发幂等键 k-orig),重发点击已钉 clientMsgId。
+    const failedRow = msg("srv-1", {
+      direction: "out",
+      status: "failed",
+      requestMessageId: "k-orig",
+      sortKey: "500_b",
+    });
+    let slice = replaceAuthoritative(emptySlice(), [failedRow]);
+    slice = patchEntity(slice, "srv-1", { status: "sending", clientMsgId: "k-orig" });
+    // 库里同一条消息已换键为 k-orig(sort_key 更小 → 翻历史读回)。
+    const swapped = msg("k-orig", {
+      direction: "out",
+      status: "failed",
+      requestMessageId: "k-orig",
+      sortKey: "100_a",
+    });
+    const next = prependOlderWindow(slice, [swapped], { atCacheTop: true });
+    expect(next.order).toEqual(["srv-1"]);
+  });
+
+  it("读回行的 requestMessageId 命中已有实体的 requestMessageId → 跳过(未点重发的孪生行同样不二次插入)", () => {
+    // 在屏实体:服务端键失败行(未点重发,无 clientMsgId)。
+    const failedRow = msg("srv-1", {
+      direction: "out",
+      status: "failed",
+      requestMessageId: "k-orig",
+      sortKey: "500_b",
+    });
+    const slice = replaceAuthoritative(emptySlice(), [failedRow]);
+    // 历史遗留的客户端键孪生行(同 requestMessageId)从更旧页读回。
+    const twin = msg("k-orig", {
+      direction: "out",
+      status: "failed",
+      requestMessageId: "k-orig",
+      sortKey: "100_a",
+    });
+    const next = prependOlderWindow(slice, [twin], { atCacheTop: true });
+    expect(next.order).toEqual(["srv-1"]);
+  });
+
+  it("正常更旧页(键不相干)照常 prepend", () => {
+    const slice = replaceAuthoritative(emptySlice(), [
+      msg("m2", { requestMessageId: "r2", sortKey: "200_b" }),
+    ]);
+    const next = prependOlderWindow(slice, [msg("m1", { sortKey: "100_a" })], {
+      atCacheTop: false,
+    });
+    expect(next.order).toEqual(["m1", "m2"]);
   });
 });

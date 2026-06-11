@@ -20,6 +20,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow, UserAttentionType } from "@tauri-apps/api/window";
 
 import { changeBus } from "./changeBus";
+import { playNotificationSound } from "./notificationSound";
+import { useSettingsStore } from "./settingsStore";
 import type { ChangeNotice } from "./types";
 import { useRecentFriends } from "@/lib/api/useRecentFriends";
 
@@ -44,6 +46,15 @@ export function shouldFlashTaskbar(
   );
 }
 
+/** 是否够格播放提示音:服务端推送的新增消息 + 窗口未获焦。
+ *  与任务栏闪烁不同,窗口隐藏(关到托盘)也响 —— 此时声音反而是更重要的提醒通道。 */
+export function shouldPlaySound(
+  notice: Pick<ChangeNotice, "kind" | "source">,
+  ctx: { focused: boolean },
+): boolean {
+  return notice.kind === "upsert" && notice.source === "server-event" && !ctx.focused;
+}
+
 async function setTrayUnread(count: number): Promise<void> {
   try {
     await invoke("set_tray_unread", { count });
@@ -62,6 +73,9 @@ export function useNewMessageFlash(employeeId: string | null): void {
   // 全部账号的未读总数;useRecentFriends 内部按登录态 enabled,登出时 items 为空。
   const { items } = useRecentFriends({ accountFilter: null });
   const totalUnread = items.reduce((sum, it) => sum + (it.unreadCount > 0 ? it.unreadCount : 0), 0);
+
+  // 设置页的通知开关(跟随登录账号):托盘红点 / 任务栏闪烁 / 声音。
+  const notify = useSettingsStore((s) => s.settings.notify);
 
   // 窗口焦点态(初始读一次 + onFocusChanged 跟踪)。默认 true:常规启动即获焦,
   // 万一启动即失焦,isFocused() 解析后会立即纠正。
@@ -90,26 +104,38 @@ export function useNewMessageFlash(employeeId: string | null): void {
   }, []);
 
   // 驱动托盘红点。lastSentRef 去重,避免每次 render 重复打 IPC。
+  // 设置关闭时恒送 0(关闭瞬间也把已亮的红点收掉)。
   const lastSentRef = useRef<number | null>(null);
   useEffect(() => {
-    const next = employeeId ? trayUnreadCount(focused, totalUnread) : 0;
+    const next = employeeId && notify.trayFlash ? trayUnreadCount(focused, totalUnread) : 0;
     if (lastSentRef.current === next) return;
     lastSentRef.current = next;
     void setTrayUnread(next);
-  }, [employeeId, focused, totalUnread]);
+  }, [employeeId, focused, totalUnread, notify.trayFlash]);
 
   // 任务栏闪烁:新入站消息 + 窗口未获焦但仍有任务栏按钮(最小化 / 可见失焦)时持续闪。
   // 冷会话新消息只更新接待列表,故 conversation-messages / recent-sessions 两个 topic 都听。
   useEffect(() => {
     if (!employeeId) return;
     let lastAttentionAt = 0;
+    let lastSoundAt = 0;
     const onNotice = (notice: ChangeNotice) => {
       void (async () => {
         const win = getCurrentWindow();
         const focusedNow = await win.isFocused();
+        const now = Date.now();
+        // 声音提醒:窗口隐藏(关到托盘)也响;独立冷却,与闪烁互不影响。
+        if (
+          notify.sound &&
+          shouldPlaySound(notice, { focused: focusedNow }) &&
+          now - lastSoundAt >= ATTENTION_COOLDOWN_MS
+        ) {
+          lastSoundAt = now;
+          playNotificationSound();
+        }
+        if (!notify.taskbarFlash) return;
         const visibleNow = await win.isVisible();
         if (!shouldFlashTaskbar(notice, { focused: focusedNow, visible: visibleNow })) return;
-        const now = Date.now();
         if (now - lastAttentionAt < ATTENTION_COOLDOWN_MS) return;
         lastAttentionAt = now;
         await win.requestUserAttention(UserAttentionType.Critical);
@@ -121,5 +147,5 @@ export function useNewMessageFlash(employeeId: string | null): void {
       offMessages();
       offRecents();
     };
-  }, [employeeId]);
+  }, [employeeId, notify.sound, notify.taskbarFlash]);
 }

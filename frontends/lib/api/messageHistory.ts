@@ -296,6 +296,11 @@ export async function persistOutboxFailure(params: {
   failReason: string;
   /** 由前端 parts 序列化的 HistoryAttachment[] JSON 串;纯文本传 "[]"。 */
   attachmentsJson: string;
+  /**
+   * send_message 失败响应携带的服务端行 id(服务端按 reqid 幂等稳定);网络层失败拿不到时缺省。
+   * 有则后端用它作本地失败行行键,history/push 回流同 id 合并,不产生重复失败行。
+   */
+  serverMessageId?: string;
 }): Promise<void> {
   return invokeWithTimeout<void>("persist_outbox_failure", { ...params }, SEND_TIMEOUT_MS);
 }

@@ -3,6 +3,7 @@ import * as Popover from "@radix-ui/react-popover";
 import { Check, ChevronDown, Search, Settings, Star } from "lucide-react";
 
 import type { Account } from "@/lib/types/account";
+import { accountDisplayName } from "@/lib/types/account";
 import { cn } from "@/lib/utils";
 
 interface AccountPickerProps {
@@ -48,7 +49,7 @@ export function AccountPicker({
     if (selectedIds.size === 1) {
       const id = selectedIds.values().next().value as string;
       const a = accounts.find((x) => x.id === id);
-      return { name: a?.name ?? "未命名", account: a };
+      return { name: a ? accountDisplayName(a) : "未命名", account: a };
     }
     return { name: `已选 ${selectedIds.size} 个账号`, account: undefined };
   }, [accounts, selectedIds]);
@@ -56,7 +57,9 @@ export function AccountPicker({
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q) return accounts;
-    return accounts.filter((a) => [a.name, a.ownerName].some((v) => v?.toLowerCase().includes(q)));
+    return accounts.filter((a) =>
+      [a.name, a.wecomAlias, a.ownerName].some((v) => v?.toLowerCase().includes(q)),
+    );
   }, [accounts, query]);
 
   const recents = useMemo(() => {
@@ -252,7 +255,9 @@ function Row({
         aria-pressed={checked}
       >
         <Avatar account={account} />
-        <span className="min-w-0 flex-1 truncate text-workbench-text">{account.name}</span>
+        <span className="min-w-0 flex-1 truncate text-workbench-text">
+          {accountDisplayName(account)}
+        </span>
         {typeof count === "number" && (
           <span className="shrink-0 rounded-full bg-workbench-surface-subtle px-1.5 py-0.5 font-numeric text-[11px] tabular-nums text-workbench-text-muted">
             {count}
@@ -323,7 +328,7 @@ function Avatar({ account }: { account: Account }) {
       className="grid size-6 shrink-0 place-items-center rounded-md text-[10.5px] font-medium text-workbench-text"
       style={{ background: `hsl(var(--wb-avatar-${account.colorToken}))` }}
     >
-      {account.name.slice(0, 1)}
+      {accountDisplayName(account).slice(0, 1)}
     </span>
   );
 }

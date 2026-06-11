@@ -9,6 +9,7 @@ import {
 } from "lucide-react";
 
 import type { Account } from "@/lib/types/account";
+import { accountDisplayName } from "@/lib/types/account";
 import { cn } from "@/lib/utils";
 
 import { AccountTrendChart } from "./AccountTrendChart";
@@ -45,7 +46,7 @@ export const AccountCard = memo(function AccountCard({ account }: AccountCardPro
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-1">
             <span className="truncate text-[13px] font-semibold leading-tight text-workbench-text">
-              {account.name}
+              {accountDisplayName(account)}
             </span>
             {account.verified && (
               <BadgeCheck
@@ -55,11 +56,13 @@ export const AccountCard = memo(function AccountCard({ account }: AccountCardPro
               />
             )}
           </div>
-          <div className="mt-1 flex items-center gap-1.5 text-[12px] leading-tight text-workbench-text-secondary">
-            <span className="min-w-0 truncate">昵称：{account.wecomAlias || "—"}</span>
-            <span className="shrink-0 text-workbench-line-strong">·</span>
-            <span className="shrink-0">职业：{account.position || "员工"}</span>
-          </div>
+          {/* 账号名常见 8+ 字，与职业同行会被状态 pill 挤到只剩两字，独占一行整宽展示；职业放底部更新时间行。 */}
+          <span
+            className="mt-2 block min-w-0 truncate text-[12px] leading-tight text-workbench-text-secondary"
+            title={account.name}
+          >
+            账号：{account.name}
+          </span>
         </div>
         <span
           className={cn(
@@ -84,8 +87,12 @@ export const AccountCard = memo(function AccountCard({ account }: AccountCardPro
 
       {/* 底部：更新时间 + ⋯ overflow */}
       <div className="mt-2.5 flex items-center justify-between gap-2 border-t border-workbench-line/60 pt-2 text-[11px] text-workbench-text-muted">
-        <span className="truncate">
-          更新时间：<span className="wb-num tabular-nums">{account.createdAt ?? "—"}</span>
+        <span className="flex min-w-0 items-center gap-1.5">
+          <span className="shrink-0">职业：{account.position || "员工"}</span>
+          <span className="shrink-0 text-workbench-line-strong">·</span>
+          <span className="truncate">
+            更新时间：<span className="wb-num tabular-nums">{account.createdAt ?? "—"}</span>
+          </span>
         </span>
         <button
           type="button"
@@ -101,8 +108,8 @@ export const AccountCard = memo(function AccountCard({ account }: AccountCardPro
 });
 
 function CityAvatar({ account }: { account: Account }) {
-  // 头像展示账号名称的第一个字符（如"任亚奇"→"任"）。
-  const label = Array.from(account.name)[0] ?? "";
+  // 头像展示账号展示名（别名优先）的第一个字符（如"任亚奇"→"任"）。
+  const label = Array.from(accountDisplayName(account))[0] ?? "";
   return (
     <div
       className="grid size-9 shrink-0 place-items-center rounded-lg text-[12px] font-semibold text-workbench-text"

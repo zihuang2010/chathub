@@ -100,6 +100,45 @@ fn build_user_content(context: &str, text: &str) -> String {
     )
 }
 
+/// AI 服务有效配置:设置页值优先,编译期注入值兜底。
+#[derive(Debug)]
+pub(crate) struct AiConfig {
+    pub base_url: String,
+    pub model: String,
+    pub api_key: String,
+}
+
+/// 计算有效 AI 配置(纯函数,便于单测):
+/// - 开关关闭 → Err("AI 润色已停用");
+/// - 三项各自"设置非空(trim)用设置,否则用编译期值";
+/// - 最终 base_url 或 api_key 仍为空 → Err("AI 未配置");
+/// - base_url 剔除尾斜杠(用户手填常带)。
+pub(crate) fn effective_ai_config(
+    ai: &crate::settings::AiSettings,
+    compiled: (&str, &str, &str), // (base_url, model, api_key)
+) -> Result<AiConfig, String> {
+    if !ai.enabled {
+        return Err("AI 润色已停用".into());
+    }
+    let pick = |user: &str, fallback: &str| -> String {
+        let user = user.trim();
+        if user.is_empty() { fallback } else { user }.to_string()
+    };
+    let base_url = pick(&ai.base_url, compiled.0)
+        .trim_end_matches('/')
+        .to_string();
+    let model = pick(&ai.model, compiled.1);
+    let api_key = pick(&ai.api_key, compiled.2);
+    if base_url.is_empty() || api_key.is_empty() {
+        return Err("AI 未配置".into());
+    }
+    Ok(AiConfig {
+        base_url,
+        model,
+        api_key,
+    })
+}
+
 /// 流式 AI 润色命令。逐段经 `on_event` 推 `Delta`,收尾推 `Done`,异常推 `Error`。
 #[tauri::command]
 pub async fn ai_polish(
@@ -108,17 +147,22 @@ pub async fn ai_polish(
     context: String, // 新增:前端组装好的近期对话转录(可能为空串)
     on_event: tauri::ipc::Channel<PolishEvent>,
     state: tauri::State<'_, PolishState>,
+    snapshot: tauri::State<'_, crate::settings::SettingsSnapshot>,
 ) -> Result<(), String> {
-    // a. 读编译期注入的配置;base_url 或 key 为空 → 未配置,直接报错返回(不视为命令失败)。
-    let base_url = env!("CHATHUB_AI_BASE_URL_RESOLVED");
-    let model = env!("CHATHUB_AI_MODEL_RESOLVED");
-    let api_key = env!("CHATHUB_AI_API_KEY_RESOLVED");
-    if base_url.is_empty() || api_key.is_empty() {
-        let _ = on_event.send(PolishEvent::Error {
-            message: "AI 未配置".into(),
-        });
-        return Ok(());
-    }
+    // a. 有效配置 = 设置页(当前登录账号快照)优先,编译期注入值兜底;
+    //    开关关闭 / 双方都没 Key → 直接报错事件返回(不视为命令失败)。
+    let compiled = (
+        env!("CHATHUB_AI_BASE_URL_RESOLVED"),
+        env!("CHATHUB_AI_MODEL_RESOLVED"),
+        env!("CHATHUB_AI_API_KEY_RESOLVED"),
+    );
+    let cfg = match effective_ai_config(&snapshot.get().ai, compiled) {
+        Ok(cfg) => cfg,
+        Err(message) => {
+            let _ = on_event.send(PolishEvent::Error { message });
+            return Ok(());
+        }
+    };
 
     // b. 取消上一条在途流(取出旧 AbortHandle 并 abort)。
     if let Ok(mut guard) = state.0.lock() {
@@ -134,9 +178,9 @@ pub async fn ai_polish(
     let context_owned = context;
     let handle = tokio::spawn(async move {
         run_polish(
-            base_url,
-            model,
-            api_key,
+            &cfg.base_url,
+            &cfg.model,
+            &cfg.api_key,
             &tone_owned,
             &text_owned,
             &context_owned,
@@ -298,6 +342,54 @@ pub fn cancel_ai_polish(state: tauri::State<'_, PolishState>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn ai(enabled: bool, key: &str, model: &str, base: &str) -> crate::settings::AiSettings {
+        crate::settings::AiSettings {
+            enabled,
+            api_key: key.into(),
+            model: model.into(),
+            base_url: base.into(),
+        }
+    }
+
+    const COMPILED: (&str, &str, &str) = ("https://compiled.example/v1", "qwen-flash", "ck-key");
+
+    /// 设置全空 → 回落编译期注入值(与改造前行为一致)。
+    #[test]
+    fn effective_ai_config_falls_back_to_compiled() {
+        let cfg = effective_ai_config(&ai(true, "", "", ""), COMPILED).unwrap();
+        assert_eq!(cfg.base_url, "https://compiled.example/v1");
+        assert_eq!(cfg.model, "qwen-flash");
+        assert_eq!(cfg.api_key, "ck-key");
+    }
+
+    /// 设置非空 → 设置优先;base_url 尾斜杠剔除。
+    #[test]
+    fn effective_ai_config_prefers_settings_and_trims_slash() {
+        let cfg = effective_ai_config(
+            &ai(true, "sk-user", "qwen-max", "https://user.example/v1/"),
+            COMPILED,
+        )
+        .unwrap();
+        assert_eq!(cfg.base_url, "https://user.example/v1");
+        assert_eq!(cfg.model, "qwen-max");
+        assert_eq!(cfg.api_key, "sk-user");
+    }
+
+    /// 开关关闭 → Err(提示已停用)。
+    #[test]
+    fn effective_ai_config_disabled_errors() {
+        let err = effective_ai_config(&ai(false, "sk", "", ""), COMPILED).unwrap_err();
+        assert!(err.contains("停用"), "got: {err}");
+    }
+
+    /// 设置与编译期都没有 Key → Err(未配置)。
+    #[test]
+    fn effective_ai_config_no_key_anywhere_errors() {
+        let err =
+            effective_ai_config(&ai(true, "", "", ""), ("https://x.example", "m", "")).unwrap_err();
+        assert!(err.contains("未配置"), "got: {err}");
+    }
 
     #[test]
     fn parse_sse_line_delta() {

@@ -8,6 +8,7 @@ import { adaptFriendDetailToCustomer, adaptFriendToCustomer } from "@/lib/api/cu
 import { useFriendDetail } from "@/lib/api/useFriendDetail";
 import { useFriends } from "@/lib/api/useFriends";
 import type { Account } from "@/lib/types/account";
+import { accountDisplayName } from "@/lib/types/account";
 
 import {
   DEFAULT_PAGE_SIZE,
@@ -104,7 +105,7 @@ export function CustomersPage({
   // 行存每条带 wecomAccountId,adapter 用 map 查账号显示名;多账号 / 单账号一致路径。
   const accountNameById = useMemo(() => {
     const m = new Map<string, string>();
-    for (const a of accounts) m.set(a.id, a.name);
+    for (const a of accounts) m.set(a.id, accountDisplayName(a));
     return m;
   }, [accounts]);
 
@@ -150,7 +151,7 @@ export function CustomersPage({
     if (!isNewPending) return;
     const account = accounts.find((a) => a.id === pendingAccountFilter);
     if (account) {
-      showToast(`已锁定账号「${account.name}」的客户列表`, { type: "info" });
+      showToast(`已锁定账号「${accountDisplayName(account)}」的客户列表`, { type: "info" });
     }
     onConsumePendingFilter?.();
   }, [isNewPending, pendingAccountFilter, accounts, onConsumePendingFilter]);

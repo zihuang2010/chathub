@@ -13,9 +13,11 @@
 //     匹配 scope → 自动按当前 limit 重读(新消息冒泡、未读更新、事件 backfill)。
 //   - loadMore:纯本地 —— 本地已填满当前 limit 才把 limit += PAGE_STEP 并重读;读不满
 //     当前 limit ⇒ 本地见底,no-op。limit 触顶 MAX_DEFAULT_LIST(对齐后端 trim 上限)。
-//   - 水位预填(prefillWatermark):本地 < 触发线时调后端 prefill_recent_friends 一次,
-//     后端循环远端续拉写库到目标水位/耗尽。filledScopes 标记本会话每 scope 只预填一次,
-//     形成闭环(小列表远端耗尽也不反复拉)。resync / 手动刷新 force 重新对齐。
+//   - 水位预填(prefillWatermark):「全部」scope 本地 < 触发线时调后端
+//     prefill_recent_friends 一次,后端循环远端续拉写库到目标水位/耗尽。filledScopes
+//     标记本会话每 scope 只预填一次,形成闭环(小列表远端耗尽也不反复拉)。
+//     切账号筛选 = 纯本地过滤查询为主,仅本地 0 行兜底预填一次(空列表死路兜底,
+//     silent 合并门保证数据安全);resync / 手动刷新 force 重新对齐。
 //   - lastEventAt / lastRefreshAt / connectionState / resyncing 全部来自 useResource。
 //
 // 本地 state:
@@ -337,18 +339,29 @@ export function useRecentFriends(opts: UseRecentFriendsOptions): UseRecentFriend
     }
   }, [employeeId]);
 
-  // 冷启动 / 低水位:本地 cache 秒开(initialFetched)后,若本地(当前 scope)行数低于触发线,
+  // 冷启动 / 低水位:本地 cache 秒开(initialFetched)后,若本地行数低于触发线,
   // 预填一次补到目标水位。filledScopes 闭环防重复(温缓存重启 = 零远端;小列表只拉一次)。
+  // 分 scope 策略:
+  //   - 「全部」scope(accountFilter 为空):低于触发线即自动预填,全量拉取(wecomAccountId="")
+  //     天然覆盖各账号 —— 冷启动主路径。
+  //   - 账号筛选 scope:纯本地过滤查询为主,**仅本地 0 行才兜底预填一次**(冷门账号空列表
+  //     死路兜底)。silent 合并门(upsert 不建静默行/不复活软删)落地后被动预填已数据安全,
+  //     兜底只付一次网络成本;本地有行(哪怕很少)就不联网,防切账号反复远端拉取。
+  //   - isStale(切 scope 后新列表未返回)窗口期不决策:此刻 cacheItems 还是旧 scope 数据,
+  //     按它判长度会误触发/误跳过;等新 scope 数据落地(isStale 退出)后 effect 重跑再判。
+  // 账号筛选下的其余远端对齐入口:手动刷新(refresh)与 resync,均 force(显式/完整性)。
   useEffect(() => {
     if (!employeeId) return;
     if (!resource.initialFetched) return;
-    if (cacheItems.length >= WATERMARK_TRIGGER) return;
+    if (resource.isStale) return; // 切 scope 窗口期:数据还是旧 scope 的,不决策
+    if (accountFilter && cacheItems.length > 0) return; // 账号 scope 有行:纯本地
+    if (!accountFilter && cacheItems.length >= WATERMARK_TRIGGER) return;
     // eslint-disable-next-line react-hooks/set-state-in-effect
     void prefillWatermark(false);
     // prefillWatermark 依赖 resource(引用每 render 变),入 deps 会死循环;
-    // 需要反应的量(scope / 首读完成 / 本地深度)已在 deps。
+    // 需要反应的量(scope / 首读完成 / 切换窗口 / 本地深度)已在 deps。
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [employeeId, accountFilter, resource.initialFetched, cacheItems.length]);
+  }, [employeeId, accountFilter, resource.initialFetched, resource.isStale, cacheItems.length]);
 
   // Resync 门:relay 报 gap 超出 retention(resyncing false→true)→ 本地 cache 可能缺事件,
   // force 预填全量对齐(绕过 filledScopes)。useResource 自身在 resync 时只重读本地 cache,

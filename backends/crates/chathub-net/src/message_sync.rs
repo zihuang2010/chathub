@@ -1385,6 +1385,7 @@ mod tests {
                 "a",
                 "r",
                 "[]",
+                None,
             )
             .await
             .unwrap();
@@ -1400,6 +1401,7 @@ mod tests {
                 "b",
                 "r",
                 "[]",
+                None,
             )
             .await
             .unwrap();

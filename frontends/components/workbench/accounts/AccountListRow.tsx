@@ -9,6 +9,7 @@ import {
 } from "lucide-react";
 
 import type { Account } from "@/lib/types/account";
+import { accountDisplayName } from "@/lib/types/account";
 import { cn } from "@/lib/utils";
 
 import { formatNumber, formatRelative, getCityLabel, getStatusMeta } from "./utils";
@@ -26,7 +27,7 @@ const STATUS_ICONS: Record<ReturnType<typeof getStatusMeta>["pillIconName"], Luc
 
 /** list 视图列宽模板：表头与数据行共用，保证两者列对齐。 */
 const LIST_GRID_COLS =
-  "grid-cols-[auto_minmax(180px,2fr)_minmax(80px,1fr)_minmax(160px,2fr)_repeat(2,minmax(80px,1fr))_minmax(110px,1fr)_minmax(80px,auto)_auto]";
+  "grid-cols-[auto_minmax(180px,2fr)_minmax(110px,1.2fr)_minmax(160px,2fr)_repeat(2,minmax(80px,1fr))_minmax(110px,1fr)_minmax(80px,auto)_auto]";
 
 /** list 视图列头：标注各列含义，尤其让「客户数 / 会话数」两列数字不再无名。 */
 export function AccountListHeader() {
@@ -39,8 +40,8 @@ export function AccountListHeader() {
     >
       {/* 占位宽度需与数据行的头像(size-9)、更多按钮(size-7)一致，否则 auto 列宽不同会导致表头整体偏移。 */}
       <span className="w-9" aria-hidden />
-      <span>账号名称</span>
       <span>昵称</span>
+      <span>账号名称</span>
       <span>职业</span>
       <span className="text-right">客户数</span>
       <span className="text-right">会话数</span>
@@ -74,7 +75,7 @@ export const AccountListRow = memo(function AccountListRow({
       tabIndex={0}
       onClick={() => onOpen(account.id)}
       onKeyDown={handleKeyDown}
-      aria-label={`查看 ${account.name} 的客户`}
+      aria-label={`查看 ${accountDisplayName(account)} 的客户`}
       className={cn(
         "focus-ring group grid cursor-pointer items-center gap-4 border-b border-workbench-line/60 bg-workbench-surface px-4 py-3 transition-colors hover:bg-workbench-surface-subtle/50",
         LIST_GRID_COLS,
@@ -89,9 +90,11 @@ export const AccountListRow = memo(function AccountListRow({
         {getCityLabel(account)}
       </div>
 
-      {/* 名称 + verified */}
+      {/* 昵称（别名优先的展示名，主列）+ verified */}
       <div className="flex min-w-0 items-center gap-1">
-        <span className="truncate text-[13px] font-medium text-workbench-text">{account.name}</span>
+        <span className="truncate text-[13px] font-medium text-workbench-text">
+          {accountDisplayName(account)}
+        </span>
         {account.verified && (
           <BadgeCheck
             size={13}
@@ -101,10 +104,8 @@ export const AccountListRow = memo(function AccountListRow({
         )}
       </div>
 
-      {/* 昵称 */}
-      <span className="truncate text-[12px] text-workbench-text-secondary">
-        {account.wecomAlias ?? "—"}
-      </span>
+      {/* 账号名称（原 wecomName，降为次要列） */}
+      <span className="truncate text-[12px] text-workbench-text-secondary">{account.name}</span>
 
       {/* 职业 */}
       <span className="truncate text-[12px] text-workbench-text-secondary">

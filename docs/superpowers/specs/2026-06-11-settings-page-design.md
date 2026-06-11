@@ -73,15 +73,15 @@
 
 ### 4.1 数据模型
 
-`chathub-state` 新增迁移（版本号顺延当前最新）：
+`chathub-state` 新增迁移 V33。注意：`hub_settings` 表名已被 NotifySeqStore（notify_seq 水位）占用，故用 `hub_user_settings`；账号键沿用项目惯例 `employee_id`（= profile.user_id）：
 
 ```sql
-CREATE TABLE hub_settings (
-  account_key   TEXT NOT NULL,   -- 登录账号标识，与现有按账号组织的表保持同一键
+CREATE TABLE hub_user_settings (
+  employee_id   TEXT NOT NULL,   -- 登录账号标识，与现有按账号组织的表保持同一键
   key           TEXT NOT NULL,   -- 设置项名，如 'notify.trayFlash'
   value         TEXT NOT NULL,   -- JSON 值
   updated_at_ms INTEGER NOT NULL,
-  PRIMARY KEY (account_key, key)
+  PRIMARY KEY (employee_id, key)
 );
 ```
 

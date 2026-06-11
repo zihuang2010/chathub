@@ -8,6 +8,7 @@ import { WindowResizeEdges } from "@/components/WindowResizeEdges";
 import { UpdateDialogViewport } from "@/components/ui/UpdateDialog";
 import { useMessagesReady } from "@/lib/data/appReady";
 import { changeBus } from "@/lib/data/changeBus";
+import { startSettingsSync, useSettingsStore } from "@/lib/data/settingsStore";
 import { useNewMessageFlash } from "@/lib/data/useNewMessageFlash";
 import { checkForAppUpdates } from "@/lib/updater";
 import { cn } from "@/lib/utils";
@@ -63,7 +64,19 @@ function App() {
     void checkForAppUpdates({ silent: true });
     // 全局 ChangeBus 启动 —— 整个应用只有这一个 listen("hub:change")。
     void changeBus.start();
+    // 设置多窗口同步 —— 唯一的 listen("settings:changed")。
+    startSettingsSync();
   }, []);
+
+  // 设置跟随登录账号:登录(含恢复会话)后回填该账号设置;登出/切账号先回默认值。
+  const settingsEmployeeId = profile?.user_id ?? null;
+  useEffect(() => {
+    if (settingsEmployeeId) {
+      void useSettingsStore.getState().load();
+    } else {
+      useSettingsStore.getState().reset();
+    }
+  }, [settingsEmployeeId]);
 
   // C1: bootstrap — 调 current_session 决定首屏(try_resume_session 是后端 setup
   // 阶段 spawn 的,这里 invoke 时 token 已经被恢复到内存或 None)。

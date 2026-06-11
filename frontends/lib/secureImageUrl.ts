@@ -11,8 +11,15 @@
  *
  * 仅替换开头的明文 `http://`；`https://`、`blob:`、`data:`、自定义协议（cachedimg://）等
  * 一律原样返回。空值返回 undefined。
+ *
+ * 另:qlogo.cn(企微/微信头像 CDN)末段 `/0` 表示原图(可达 640px+),按原始分辨率解码的
+ * 位图是头像内存大头(~1.6MB/个,列表级数量线性放大);qlogo 原生支持尺寸后缀,改请求
+ * `/132`(132px,显示尺寸 ≤66px@2x 足够)。仅 qlogo 域、仅末段恰为 `/0` 时改写,带 query
+ * 或已是其他尺寸(/132、/64)不动;加载失败由调用方既有 onError 兜底(首字母色块)。
  */
 export function secureImageUrl(url: string | undefined | null): string | undefined {
   if (!url) return undefined;
-  return url.replace(/^http:\/\//i, "https://");
+  return url
+    .replace(/^http:\/\//i, "https://")
+    .replace(/^(https:\/\/(?:[^/]*\.)?qlogo\.cn\/.+)\/0$/i, "$1/132");
 }

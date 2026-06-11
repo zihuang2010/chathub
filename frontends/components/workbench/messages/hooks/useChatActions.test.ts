@@ -119,8 +119,10 @@ describe("useChatActions", () => {
     expect(t[0].status).toBe("failed");
   });
 
-  it("handleSend 同步返回 sendStatus=4(失败)→ 立即 markFailed,不当成功(不钉 serverId)", async () => {
-    // 同步接口已知失败:不能等回调。否则回调不来时会假「已发送」(本次根因)。
+  it("handleSend 同步返回 sendStatus=4(失败)→ 立即 markFailed 并钉服务端行 id,不当成功", async () => {
+    // 同步接口已知失败:不能等回调,否则回调不来时会假「已发送」。失败响应的 localMessageId
+    // 是服务端为该次发送建的失败行 id(按 reqid 幂等稳定)→ 钉成 serverId,供 history/push
+    // 回流的服务端失败行确定性收敛成同一行(否则双行起步 → 满屏重复失败气泡)。状态仍 failed。
     const onSendMessage = vi
       .fn()
       .mockResolvedValue({ localMessageId: "srv-x", sendStatus: 4, messageTime: "" });
@@ -134,7 +136,7 @@ describe("useChatActions", () => {
     const t = timeline();
     expect(t).toHaveLength(1);
     expect(t[0].status).toBe("failed");
-    expect(t[0].serverId).toBeUndefined();
+    expect(t[0].serverId).toBe("srv-x");
   });
 
   it("handleSend 同步返回 sendStatus=2(发送中)→ 保持发送中,不假成功也不钉 serverId", async () => {
@@ -409,6 +411,28 @@ describe("useChatActions", () => {
     expect(timeline()[0].status).toBe("failed");
     expect(timeline()[0].clientMsgId).toBe("m1");
   });
+
+  it('handleAction "resend" 库行无 clientMsgId 时优先复用 requestMessageId 作幂等键', async () => {
+    const onSendMessage = vi
+      .fn()
+      .mockResolvedValue({ localMessageId: "srv-9", sendStatus: 3, messageTime: "" });
+    const { result } = setup(onSendMessage);
+    // 模拟权威重读读回的「服务端键」失败行:id=服务端 localMessageId,无 clientMsgId,
+    // 带首发时固化的 requestMessageId。重发必须沿用 requestMessageId 作幂等键,
+    // 服务端/本地库的 request_message_id 去重链才能把旧失败行收敛掉(否则重发一次多一条失败行)。
+    const dbRow: Message = { ...outMsg("srv-1"), requestMessageId: "k-orig" };
+    act(() => {
+      useChatStore.getState().enqueueOptimistic("c1", { ...dbRow });
+    });
+
+    await act(async () => {
+      result.current.handleAction("resend", dbRow);
+    });
+    expect(onSendMessage).toHaveBeenCalledWith("srv-1", "k-orig");
+    // 幂等键写回实体,后续 markSent/markFailed 按它收敛回这一条。
+    expect(timeline()).toHaveLength(1);
+    expect(timeline()[0].clientMsgId).toBe("k-orig");
+  });
 });
 
 // ─── failBubble / outbox 相关用例 ──────────────────────────────────────────
@@ -417,7 +441,7 @@ describe("useChatActions", () => {
 //   1. handleSend 失败 → persistOutboxFailure 被调(有身份)
 //   2. 无会话身份降级 → persistOutboxFailure 不调,气泡仍 markFailed
 //   3. never-uploaded 重发拦截 → showToast(outboxReselectFile),不触发 onSendMessage
-//   4. 有 filePath 的失败气泡重发 → clearOutboxRow 被调
+//   4. 重发不删本地失败行 → clearOutboxRow 不被调用(行保留)
 
 /** 带 wecomAccountId/externalUserId 身份的 renderHook 快捷方式。*/
 function setupWithIdentity(
@@ -472,6 +496,26 @@ describe("failBubble / outbox 持久化", () => {
     // failReason 不应为空字符串
     const callArg = vi.mocked(persistOutboxFailure).mock.calls[0][0];
     expect(callArg.failReason.length).toBeGreaterThan(0);
+    // 网络层失败拿不到服务端行 id → serverMessageId 缺省。
+    expect(callArg.serverMessageId).toBeUndefined();
+  });
+
+  it("sendStatus=4 同步失败 → persistOutboxFailure 携带 serverMessageId(服务端失败行 id)", async () => {
+    // 后端据此用服务端 id 作本地失败行行键:history/push 回流同 id 合并,不再产生
+    // 「local-* 行与服务端行并存」→ 根治重发后失败行成倍增殖。
+    const onSendMessage = vi
+      .fn()
+      .mockResolvedValue({ localMessageId: "srv-fail-1", sendStatus: 4, messageTime: "" });
+    const { result } = setupWithIdentity(onSendMessage);
+
+    await act(async () => {
+      result.current.handleSend("会失败");
+    });
+    await flush();
+
+    expect(vi.mocked(persistOutboxFailure)).toHaveBeenCalledWith(
+      expect.objectContaining({ serverMessageId: "srv-fail-1" }),
+    );
   });
 
   it("缺会话身份 → persistOutboxFailure 不调,气泡仍 markFailed(降级到纯内存)", async () => {
@@ -556,7 +600,7 @@ describe("failBubble / outbox 持久化", () => {
     expect(timeline()[0].status).toBe("failed");
   });
 
-  it("有 filePath 的失败气泡重发 → clearOutboxRow 被调(含 clientMsgId)", async () => {
+  it("重发不删本地失败行:clearOutboxRow 不被调用(行保留,防时间线行数塌缩出幻影空白)", async () => {
     const onSendMessage = vi
       .fn()
       .mockResolvedValue({ localMessageId: "srv-2", sendStatus: 3, messageTime: "" });
@@ -584,11 +628,10 @@ describe("failBubble / outbox 持久化", () => {
     });
     await flush();
 
-    // clearOutboxRow 必须被调用,参数含 clientMsgId
-    expect(vi.mocked(clearOutboxRow)).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(clearOutboxRow)).toHaveBeenCalledWith(
-      expect.objectContaining({ clientMsgId: "m2" }),
-    );
+    // 行保留策略:重发不再删本地失败行(失败行从库里消失会让时间线行数缩短,触发
+    // react-virtuoso firstItemIndex 模式下的尺寸残留 → 底部幻影空白)。在途期间权威重读
+    // 不打回由 chatStore 的「重发在途保护」兜住,终态由 markSent/markFailed 收敛。
+    expect(vi.mocked(clearOutboxRow)).not.toHaveBeenCalled();
   });
 });
 

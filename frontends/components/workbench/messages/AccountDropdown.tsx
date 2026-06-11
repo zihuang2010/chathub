@@ -4,6 +4,7 @@ import * as Popover from "@radix-ui/react-popover";
 import { Search } from "lucide-react";
 
 import type { Account } from "@/lib/types/account";
+import { accountDisplayName } from "@/lib/types/account";
 import { cn } from "@/lib/utils";
 
 import { STRINGS } from "./strings";
@@ -50,7 +51,7 @@ export function AccountDropdown({
     const q = query.trim().toLowerCase();
     if (!q) return accounts;
     return accounts.filter((a) =>
-      [a.name, a.ownerName, a.city].some((v) => v?.toLowerCase().includes(q)),
+      [a.name, a.wecomAlias, a.ownerName, a.city].some((v) => v?.toLowerCase().includes(q)),
     );
   }, [accounts, query]);
 
@@ -224,7 +225,7 @@ function AccountRow({
           active ? "font-medium text-[#5B7C99]" : "text-workbench-text",
         )}
       >
-        {account.name}
+        {accountDisplayName(account)}
       </span>
       {active && <span className="size-1.5 shrink-0 rounded-full bg-[#5B7C99]" />}
     </button>
@@ -238,7 +239,7 @@ function Avatar({ account }: { account: Account }) {
       className="grid size-6 shrink-0 place-items-center rounded-md text-[10.5px] font-medium text-workbench-text"
       style={{ background: `hsl(var(--wb-avatar-${account.colorToken}))` }}
     >
-      {account.name.slice(0, 1)}
+      {accountDisplayName(account).slice(0, 1)}
     </span>
   );
 }

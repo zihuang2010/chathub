@@ -36,6 +36,8 @@ const ALLOWED_HOST_SUFFIXES: &[&str] = &["aliyuncs.com", env!("CHATHUB_ATTACHMEN
 pub struct ImageCache {
     dir: PathBuf,
     http: reqwest::Client,
+    /// 磁盘预算(字节),设置页可调;默认 MAX_CACHE_BYTES。evict 时读取。
+    max_bytes: std::sync::atomic::AtomicU64,
 }
 
 pub struct CachedImage {
@@ -51,7 +53,31 @@ impl ImageCache {
             .user_agent("chathub-imgcache/1")
             .build()
             .unwrap_or_default();
-        Self { dir, http }
+        Self {
+            dir,
+            http,
+            max_bytes: std::sync::atomic::AtomicU64::new(MAX_CACHE_BYTES),
+        }
+    }
+
+    /// 设置页注入缓存预算(字节)。下次 evict 生效。
+    pub fn set_max_bytes(&self, bytes: u64) {
+        self.max_bytes
+            .store(bytes.max(1), std::sync::atomic::Ordering::SeqCst);
+    }
+
+    fn budget(&self) -> u64 {
+        self.max_bytes.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// 当前缓存目录占用(字节)。walk 目录同步统计,调用方放 spawn_blocking。
+    pub fn usage_bytes(&self) -> u64 {
+        dir_usage_bytes(&self.dir)
+    }
+
+    /// 清空缓存目录,返回释放的字节数。调用方放 spawn_blocking。
+    pub fn clear_all(&self) -> u64 {
+        clear_dir(&self.dir)
     }
 
     fn key_path(&self, url: &str, width: u32) -> PathBuf {
@@ -99,7 +125,8 @@ impl ImageCache {
         write_atomic(&path, &out.bytes);
         // 写入后做一次预算/过期淘汰(后台 blocking,不阻塞本次响应)。
         let dir = self.dir.clone();
-        tauri::async_runtime::spawn_blocking(move || evict(&dir));
+        let budget = self.budget();
+        tauri::async_runtime::spawn_blocking(move || evict(&dir, budget));
 
         let fresh = (dims.0, dims.1, path.to_string_lossy().into_owned());
         Ok((out, Some(fresh)))
@@ -122,7 +149,8 @@ impl ImageCache {
         .map_err(|e| format!("join: {e}"))??;
         // 写入后触发 LRU 淘汰（后台，不阻塞本次响应）
         let dir = self.dir.clone();
-        tauri::async_runtime::spawn_blocking(move || evict(&dir));
+        let budget = self.budget();
+        tauri::async_runtime::spawn_blocking(move || evict(&dir, budget));
         Ok((dims.0, dims.1, path.to_string_lossy().into_owned()))
     }
 
@@ -297,10 +325,10 @@ fn write_atomic(path: &Path, bytes: &[u8]) {
     }
 }
 
-/// 过期(>30 天)直接删;再按总量预算从最旧开始删到 500MB 以内。
+/// 过期(>30 天)直接删;再按总量预算从最旧开始删到 `max_bytes` 以内(设置页可调,默认 500MB)。
 /// 用文件 mtime(写入时间)近似 LRU —— 不引 `filetime` 依赖、不在命中时改 mtime,
 /// 故偏 FIFO;热图被按年龄淘汰后下次访问会重新下载缩略图,对缓存语义可接受。
-fn evict(dir: &Path) {
+fn evict(dir: &Path, max_bytes: u64) {
     let now = SystemTime::now();
     let mut files: Vec<(PathBuf, u64, SystemTime)> = Vec::new();
     let mut total: u64 = 0;
@@ -326,18 +354,50 @@ fn evict(dir: &Path) {
         total += md.len();
         files.push((entry.path(), md.len(), mtime));
     }
-    if total <= MAX_CACHE_BYTES {
+    if total <= max_bytes {
         return;
     }
     files.sort_by_key(|(_, _, mtime)| *mtime); // 最旧在前
     for (path, size, _) in files {
-        if total <= MAX_CACHE_BYTES {
+        if total <= max_bytes {
             break;
         }
         if std::fs::remove_file(&path).is_ok() {
             total = total.saturating_sub(size);
         }
     }
+}
+
+/// 目录内全部普通文件的字节总和(非递归 —— 缓存目录是平铺的)。
+fn dir_usage_bytes(dir: &Path) -> u64 {
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    rd.flatten()
+        .filter_map(|e| e.metadata().ok())
+        .filter(|md| md.is_file())
+        .map(|md| md.len())
+        .sum()
+}
+
+/// 删除目录内全部普通文件,返回释放的字节数。
+fn clear_dir(dir: &Path) -> u64 {
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    let mut freed: u64 = 0;
+    for entry in rd.flatten() {
+        let Ok(md) = entry.metadata() else {
+            continue;
+        };
+        if !md.is_file() {
+            continue;
+        }
+        if std::fs::remove_file(entry.path()).is_ok() {
+            freed += md.len();
+        }
+    }
+    freed
 }
 
 /// 解析 OSS image/info 返回的 JSON,取原图宽高。形如
@@ -448,5 +508,49 @@ mod tests {
     #[test]
     fn parse_oss_image_info_garbage() {
         assert!(parse_oss_image_info("not json").is_err());
+    }
+
+    /// 独立临时目录(进程 id + 名字区分),用完即删。
+    fn temp_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "chathub-imgcache-test-{}-{name}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// 设置页"缓存上限"可调:evict 收预算参数,超预算从最旧开始删到预算内。
+    #[test]
+    fn evict_respects_budget_parameter() {
+        let dir = temp_dir("evict-budget");
+        for i in 0..4u8 {
+            std::fs::write(dir.join(format!("f{i}.img")), vec![0u8; 100]).unwrap();
+        }
+        // 预算 250 字节:4×100 = 400 → 至少删 2 个文件
+        evict(&dir, 250);
+        let remain = std::fs::read_dir(&dir).unwrap().flatten().count();
+        assert!(remain <= 2, "超预算应淘汰到预算内,剩 {remain}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn dir_usage_bytes_sums_files() {
+        let dir = temp_dir("usage");
+        std::fs::write(dir.join("a.img"), vec![0u8; 100]).unwrap();
+        std::fs::write(dir.join("b.img"), vec![0u8; 50]).unwrap();
+        assert_eq!(dir_usage_bytes(&dir), 150);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn clear_dir_removes_all_and_reports_freed() {
+        let dir = temp_dir("clear");
+        std::fs::write(dir.join("a.img"), vec![0u8; 100]).unwrap();
+        std::fs::write(dir.join("b.img"), vec![0u8; 50]).unwrap();
+        assert_eq!(clear_dir(&dir), 150);
+        assert_eq!(dir_usage_bytes(&dir), 0);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

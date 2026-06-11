@@ -543,7 +543,8 @@ const ConversationItem = memo(function ConversationItem({
         <div className="flex min-w-0 items-center gap-1.5">
           <span
             className={cn(
-              "truncate text-wb-xs text-workbench-text",
+              // min-w-[3em] 保底:长账号名挤压时名称至少保留约两字+省略号,不被压没。
+              "min-w-[3em] truncate text-wb-xs text-workbench-text",
               showUnread ? "font-semibold" : "font-medium",
             )}
           >
@@ -674,12 +675,15 @@ function UnreadBadge({ count, dotOnly }: { count: number; dotOnly: boolean }) {
 /** 归属账号标签:企业微信 logo + 所属企微账号名,浅底胶囊。表达"该外部联系人由哪个
  *  企微账号接待";客户本身的微信来源标识已移到头像左下角角标,两个语义不再混淆
  *  (此前 chip 用微信绿图标,容易被误读成"账号名是微信号")。
- *  shrink-0 + max-w + 内部 truncate:长账号名截断显示,完整内容走 title。 */
+ *  max-w 封顶 + 低权重收缩(shrink-[0.3])+ 内部 truncate:长账号名先截到 110px;
+ *  行内仍挤时主要由名称让步(名称留 min-w 保底),chip 只小幅收缩,尽量保住账号名
+ *  尾部的区分字符(如"乐乐"/"牛牛");时间(shrink-0)永不被挤。完整内容走 title。
+ *  不用 shrink-0:否则名称压到保底后行宽不够会把时间顶出可视区。 */
 function SourceChip({ account }: { account: string }) {
   return (
     <span
       title={`${STRINGS.header.fromAccountLabel}${account}`}
-      className="flex h-[18px] min-w-0 max-w-[110px] shrink-0 items-center gap-1 rounded-full bg-workbench-surface-subtle px-1.5"
+      className="flex h-[18px] min-w-0 max-w-[110px] shrink-[0.3] items-center gap-1 rounded-full bg-workbench-surface-subtle px-1.5"
     >
       <img
         src={WECOM_SOURCE_LOGO}

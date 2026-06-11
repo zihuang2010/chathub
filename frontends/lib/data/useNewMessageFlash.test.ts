@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, renderHook } from "@testing-library/react";
+import { act, cleanup, renderHook } from "@testing-library/react";
 
 import type { ChangeKind, ChangeNotice, ChangeSource } from "./types";
 
@@ -14,6 +14,7 @@ const h = vi.hoisted(() => ({
   invoke: vi.fn<(cmd: string, args?: unknown) => Promise<unknown>>(() => Promise.resolve()),
   employeeId: "emp-1" as string | null,
   items: [] as { unreadCount: number }[],
+  playSound: vi.fn(),
 }));
 
 vi.mock("@tauri-apps/api/window", () => ({
@@ -33,8 +34,25 @@ vi.mock("@/lib/api/useRecentFriends", () => ({
   useRecentFriends: () => ({ items: h.items }),
 }));
 
+vi.mock("./notificationSound", () => ({
+  playNotificationSound: h.playSound,
+}));
+
 import { changeBus } from "./changeBus";
-import { shouldFlashTaskbar, trayUnreadCount, useNewMessageFlash } from "./useNewMessageFlash";
+import { DEFAULT_SETTINGS, useSettingsStore, type UserSettings } from "./settingsStore";
+import {
+  shouldFlashTaskbar,
+  shouldPlaySound,
+  trayUnreadCount,
+  useNewMessageFlash,
+} from "./useNewMessageFlash";
+
+/** 局部覆盖通知设置(其余默认)。 */
+function setNotify(over: Partial<UserSettings["notify"]>) {
+  const settings = structuredClone(DEFAULT_SETTINGS);
+  Object.assign(settings.notify, over);
+  useSettingsStore.setState({ settings, loaded: true });
+}
 
 const EMP = "emp-1";
 const CRITICAL = 1;
@@ -74,9 +92,13 @@ beforeEach(() => {
   h.items = [];
   h.isFocused.mockResolvedValue(false);
   h.isVisible.mockResolvedValue(true);
+  useSettingsStore.setState({ settings: structuredClone(DEFAULT_SETTINGS), loaded: true });
 });
 
 afterEach(() => {
+  // 卸载已挂载的 hook:它们订阅了 settingsStore,后续测试 setState 会把它们唤醒并
+  // 重新订阅 changeBus,造成跨用例的幽灵通知(声音/闪烁多次触发)。
+  cleanup();
   changeBus._resetForTest();
   vi.clearAllMocks();
 });
@@ -182,6 +204,63 @@ describe("useNewMessageFlash —— 任务栏闪烁", () => {
     renderHook(() => useNewMessageFlash(h.employeeId));
     await dispatchAndFlush(notice());
     expect(h.requestUserAttention).not.toHaveBeenCalled();
+  });
+});
+
+// ─── 设置开关(settingsStore.notify)──────────────────────────────────────────
+
+describe("shouldPlaySound", () => {
+  it("服务端新增 + 未获焦 → 响(窗口隐藏在托盘也响)", () => {
+    expect(shouldPlaySound({ kind: "upsert", source: "server-event" }, { focused: false })).toBe(
+      true,
+    );
+  });
+  it("已获焦 → 不响", () => {
+    expect(shouldPlaySound({ kind: "upsert", source: "server-event" }, { focused: true })).toBe(
+      false,
+    );
+  });
+  it("自己发 / 整表重拉 → 不响", () => {
+    expect(shouldPlaySound({ kind: "upsert", source: "local-command" }, { focused: false })).toBe(
+      false,
+    );
+    expect(
+      shouldPlaySound({ kind: "bulk-invalidate", source: "server-event" }, { focused: false }),
+    ).toBe(false);
+  });
+});
+
+describe("useNewMessageFlash —— 设置开关", () => {
+  it("声音开(默认):服务端新消息 + 未获焦 → 播放提示音(隐藏在托盘也响)", async () => {
+    h.isVisible.mockResolvedValue(false); // 关到托盘
+    renderHook(() => useNewMessageFlash(h.employeeId));
+    await dispatchAndFlush(notice());
+    expect(h.playSound).toHaveBeenCalledTimes(1);
+  });
+
+  it("声音关 → 不播放", async () => {
+    setNotify({ sound: false });
+    renderHook(() => useNewMessageFlash(h.employeeId));
+    await dispatchAndFlush(notice());
+    expect(h.playSound).not.toHaveBeenCalled();
+  });
+
+  it("任务栏闪烁关 → 不 requestUserAttention(声音照常)", async () => {
+    setNotify({ taskbarFlash: false });
+    renderHook(() => useNewMessageFlash(h.employeeId));
+    await dispatchAndFlush(notice());
+    expect(h.requestUserAttention).not.toHaveBeenCalled();
+    expect(h.playSound).toHaveBeenCalledTimes(1);
+  });
+
+  it("托盘红点关 → 有未读也 set_tray_unread(0)", async () => {
+    setNotify({ trayFlash: false });
+    h.items = [{ unreadCount: 3 }];
+    h.isFocused.mockResolvedValue(false);
+    renderHook(() => useNewMessageFlash(h.employeeId));
+    await flush();
+    expect(h.invoke).toHaveBeenCalledWith("set_tray_unread", { count: 0 });
+    expect(h.invoke).not.toHaveBeenCalledWith("set_tray_unread", { count: 3 });
   });
 });
 

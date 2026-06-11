@@ -6,6 +6,7 @@ import { showToast } from "@/components/ui/toast";
 import { WorkbenchPanel } from "@/components/workbench/WorkbenchPanel";
 import type { PendingOpenConversation } from "@/components/workbench/nav";
 import type { Account } from "@/lib/types/account";
+import { resolveOwnerAccountName } from "@/lib/types/account";
 import { adaptFriendDetailToCustomer, type WecomFriend } from "@/lib/api/customers";
 import { useFriendDetail } from "@/lib/api/useFriendDetail";
 import { useQuickReplies } from "@/lib/api/useQuickReplies";
@@ -92,7 +93,7 @@ function clampField(value: string): string {
   return value.length > MAX_FIELD_LEN ? value.slice(0, MAX_FIELD_LEN) : value;
 }
 
-function adaptEntryToConversation(entry: RecentFriendListEntry): Conversation {
+function adaptEntryToConversation(entry: RecentFriendListEntry, account?: Account): Conversation {
   const draftText = extractDraftPreview(entry.localDraftText);
   // 列表行时间用 max(lastMessageTimeMs, localDraftAtMs),与后端 list_top 的多键
   // 排序键一致:有草稿且新于最后消息时显示草稿时间,新消息进来反超
@@ -113,7 +114,7 @@ function adaptEntryToConversation(entry: RecentFriendListEntry): Conversation {
     name: clampField(entry.externalName) || "(未命名)",
     avatar: entry.externalAvatar || undefined,
     preview,
-    account: clampField(entry.wecomAlias || entry.wecomName),
+    account: clampField(resolveOwnerAccountName(entry.wecomAlias, entry.wecomName, account)),
     time: formatRelativeTime(effectiveTimeMs),
     unread: entry.unreadCount,
     online: false,
@@ -240,13 +241,15 @@ export function MessagesPage({
 
   // 适配成 ConversationList 现有 `Conversation` 形态;源是稳定引用,按 displayEntries 记忆化。
   // readPending 由 useRecentFriends.readingIds 注入:markRead 远端往返期间抑制该行红标。
+  // 账号反查表:用 wecomAccountId 取归属账号,给行内空别名兜底(详见 resolveOwnerAccountName)。
+  const accountsById = useMemo(() => new Map(accounts.map((a) => [a.id, a] as const)), [accounts]);
   const conversations = useMemo(
     () =>
       displayEntries.map((entry) => ({
-        ...adaptEntryToConversation(entry),
+        ...adaptEntryToConversation(entry, accountsById.get(entry.wecomAccountId)),
         readPending: readingIds.has(entry.conversationId),
       })),
-    [displayEntries, readingIds],
+    [displayEntries, readingIds, accountsById],
   );
 
   // 用户主动点开会话:置选中 + 仅当该会话有未读时调 markRead 清红标。
@@ -369,9 +372,11 @@ export function MessagesPage({
         externalUserId: e.externalUserId,
         name: clampField(e.externalName) || "(未命名)",
         avatar: e.externalAvatar || undefined,
-        account: clampField(e.wecomAlias || e.wecomName),
+        account: clampField(
+          resolveOwnerAccountName(e.wecomAlias, e.wecomName, accountsById.get(e.wecomAccountId)),
+        ),
       })),
-    [recentEntries],
+    [recentEntries, accountsById],
   );
 
   // 转发(仅文本):复用 sendMessage 把文本批量发到所有勾选目标(与编辑器发送同一调用)。无乐观气泡——
@@ -545,7 +550,7 @@ export function MessagesPage({
           void markReadRecent(existing.conversationId);
         }
       }
-      const accountName = accounts.find((a) => a.id === identity.wecomAccountId)?.name ?? "";
+      const acct = accounts.find((a) => a.id === identity.wecomAccountId);
       try {
         const conversationId = await openFriend({
           wecomAccountId: identity.wecomAccountId,
@@ -553,8 +558,8 @@ export function MessagesPage({
           externalName: identity.externalName,
           externalAvatar: identity.externalAvatar,
           externalMobile: identity.externalMobile,
-          wecomName: accountName,
-          wecomAlias: accountName,
+          wecomName: acct?.name ?? "",
+          wecomAlias: acct?.wecomAlias ?? "",
         });
         pendingOpenIdRef.current = conversationId;
       } catch (e) {

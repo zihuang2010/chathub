@@ -11,7 +11,6 @@ import { useCallback, type Dispatch, type MutableRefObject, type SetStateAction 
 
 import { showToast } from "@/components/ui/toast";
 import {
-  clearOutboxRow,
   persistOutboxFailure,
   SEND_STATUS,
   uploadAttachment,
@@ -330,10 +329,13 @@ export function useChatActions({
 }: UseChatActionsParams): UseChatActionsResult {
   // 统一失败处理:既 markFailed(内存即时态),又调 IPC 落本地库(重启不丢)。缺会话身份时降级为
   // 仅 markFailed。IPC 失败仅 warn,绝不阻塞。entity 优先按 byId key 取,兜底按 clientMsgId 字段找。
+  // serverMessageId = send_message 失败终态响应的 localMessageId(服务端失败行 id,按 reqid 幂等
+  // 稳定;网络层失败拿不到则缺省):钉 serverId 供权威收敛 + 透传后端作本地失败行行键,
+  // history/push 回流同 id 合并 —— 根治「重发一次多一条失败行」。
   const failBubble = useCallback(
-    (clientMsgId: string, failReason: string) => {
+    (clientMsgId: string, failReason: string, serverMessageId?: string) => {
       const owningStoreKey = chatStoreKey;
-      useChatStore.getState().markFailed(owningStoreKey, clientMsgId);
+      useChatStore.getState().markFailed(owningStoreKey, clientMsgId, serverMessageId);
       if (!wecomAccountId || !externalUserId) return;
       const slice = useChatStore.getState().conversations[owningStoreKey];
       const entity =
@@ -351,6 +353,7 @@ export function useChatActions({
         contentText: entity.text,
         failReason,
         attachmentsJson: buildOutboxAttachmentsJson(entity),
+        serverMessageId,
       }).catch((e) => console.warn("[outbox] persist_outbox_failure 失败(不阻塞)", e));
     },
     [chatStoreKey, conversation.id, wecomAccountId, externalUserId],
@@ -388,7 +391,12 @@ export function useChatActions({
             if (resp) {
               if (resp.sendStatus === SEND_STATUS.failed) {
                 showToast(STRINGS.errors.sendFailed, { type: "error" });
-                failBubble(clientMsgId, STRINGS.errors.sendFailed);
+                // 失败响应带服务端行 id(按 reqid 幂等稳定):钉 serverId + 透传落库行键。
+                failBubble(
+                  clientMsgId,
+                  STRINGS.errors.sendFailed,
+                  resp.localMessageId || undefined,
+                );
                 return false;
               }
               if (resp.sendStatus === SEND_STATUS.success) {
@@ -597,10 +605,13 @@ export function useChatActions({
           const entity = useChatStore.getState().conversations[chatStoreKey]?.byId[message.id];
           // 在途守卫:已在发送中则忽略重复点击,避免并发重发把同一条重复投递。
           if (entity?.status === "sending") break;
-          // 幂等键:乐观气泡复用已有 clientMsgId;历史来源失败消息(无 clientMsgId)用其 store id
-          // 钉一个稳定键并写回实体——既让后端按同键去重,又让 markSent/markFailed 能按 clientMsgId
-          // 收敛回这一条,不再每次重发都新增一条失败气泡。
-          const clientMsgId = entity?.clientMsgId ?? message.id;
+          // 幂等键:乐观气泡复用已有 clientMsgId;历史来源失败消息(无 clientMsgId)优先沿用
+          // 首发时固化的 requestMessageId(服务端键失败行 id≠首发键,用 id 当新键会让服务端/
+          // 本地库的 request_message_id 去重链失配 → 每重发一次多一条失败行),无 requestMessageId
+          // 再退 store id。钉回实体后 markSent/markFailed 按 clientMsgId 收敛回这一条。
+          const clientMsgId =
+            entity?.clientMsgId ??
+            (entity?.requestMessageId || message.requestMessageId || message.id);
           const mtForGuard = entity?.messageType ?? message.messageType;
           const filePathForGuard = entity?.filePath ?? message.filePath;
           if (mtForGuard && mtForGuard !== MSG_TYPE_TEXT && !filePathForGuard) {
@@ -615,11 +626,10 @@ export function useChatActions({
             showToast(STRINGS.toast.outboxReselectFile, { type: "error" });
             break;
           }
-          if (wecomAccountId && externalUserId) {
-            void clearOutboxRow({ conversationId: conversation.id, clientMsgId }).catch((e) =>
-              console.warn("[outbox] clear_outbox_row 失败(不阻塞)", e),
-            );
-          }
+          // 不删本地失败行:行从库里消失会让时间线行数塌缩(虚拟列表 firstItemIndex 模式下
+          // 尺寸残留 → 底部幻影空白)。库行在途期间仍是 failed,由 chatStore 的「重发在途保护」
+          // 挡住权威重读打回;再失败 persistOutboxFailure 按 request_message_id 去重收敛,
+          // 成功则新 sent 行的同键去重清掉旧失败行 —— 全程行数不增不减。
           useChatStore
             .getState()
             .patchMessage(chatStoreKey, message.id, { status: "sending", clientMsgId });
@@ -718,8 +728,6 @@ export function useChatActions({
       conversation.id,
       conversation.name,
       setReplyDraft,
-      wecomAccountId,
-      externalUserId,
     ],
   );
 

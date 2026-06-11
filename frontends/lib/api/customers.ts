@@ -20,6 +20,8 @@ export interface WecomFriend {
   wecomAccountId: string;
   /** 归属账号(负责人)显示名。业务后台尚未下发,暂为可选,缺失时 UI 兜底默认值。 */
   wecomAccountName?: string;
+  /** 归属账号别名(企业微信自定义名)。优先于 name 展示,缺失时回退 name。 */
+  wecomAccountAlias?: string;
   externalUserId: string;
   externalName: string;
   externalPosition: string;
@@ -118,11 +120,16 @@ export function adaptFriendToCustomer(friend: WecomFriend, ctx: { accountName: s
     company: friend.externalCorpName || friend.remarkCorpName || "—",
     source: addWayToSource(friend.addWay),
     addedAt: friend.addTime,
-    follower: friend.wecomAccountName ?? "",
+    follower: pickFollower(friend.wecomAccountAlias, friend.wecomAccountName),
     starred: false,
     lastContactAt: null,
     gender,
   };
+}
+
+/** 负责人显示名:企业微信账号别名优先,回退账号名;两者均空白则空串。 */
+function pickFollower(alias?: string, name?: string): string {
+  return (alias ?? "").trim() || (name ?? "").trim();
 }
 
 function addWayToSource(way: number): string {
@@ -165,6 +172,8 @@ export interface WecomFriendDetail {
   externalUserId: string;
   /** 归属账号(负责人)显示名。业务后台返回,缺失时为空串。 */
   wecomAccountName?: string;
+  /** 归属账号别名(企业微信自定义名)。优先于 name 展示,缺失时回退 name。 */
+  wecomAccountAlias?: string;
   externalName: string;
   externalPosition: string;
   externalAvatar: string;
@@ -239,7 +248,7 @@ export function adaptFriendDetailToCustomer(
     company: detail.externalCorpName || detail.remarkCorpName || "—",
     source: addWayToSource(detail.addWay),
     addedAt: detail.addTime,
-    follower: detail.wecomAccountName ?? "",
+    follower: pickFollower(detail.wecomAccountAlias, detail.wecomAccountName),
     starred: false,
     lastContactAt: null,
     gender,
