@@ -38,7 +38,14 @@ import {
   RESIZE_KEYBOARD_STEP,
 } from "./constants";
 import type { Conversation, MessageAttachment, MessageBlock, QuickReply } from "./data";
-import { attachmentTypeFromExt, DOC_EXTS, IMAGE_EXTS, VOICE_EXTS } from "./data";
+import {
+  attachmentTypeFromExt,
+  DOC_EXTS,
+  extOf,
+  IMAGE_EXTS,
+  MIME_BY_EXT,
+  VOICE_EXTS,
+} from "./data";
 import { AiPolishPopover } from "./composer/AiPolishPopover";
 import { SendButtonGroup } from "./composer/SendButtonGroup";
 import { blocksToDoc, docToBlocks } from "./composer/docToBlocks";
@@ -124,12 +131,6 @@ const DOC_ACCEPT = acceptFor(
   DOC_EXTS,
 );
 
-// 取文件名扩展名(不含点,小写);无扩展名返回空串。
-const extOf = (name: string) => {
-  const dot = name.lastIndexOf(".");
-  return dot >= 0 ? name.slice(dot + 1).toLowerCase() : "";
-};
-
 // 按扩展名白名单过滤文件,丢弃不在白名单内的(对话框 accept 提示的兜底二次校验)。
 const keepByExt = (files: File[], exts: readonly string[]) =>
   files.filter((f) => (exts as readonly string[]).includes(extOf(f.name)));
@@ -142,28 +143,6 @@ const keepBySize = (files: File[], max: number) => files.filter((f) => f.size <=
 // 选错文件 / 读取失败时的统一提示。
 const reportPickError = (e: unknown) =>
   showToast(`选择文件失败：${e instanceof Error ? e.message : String(e)}`, { type: "error" });
-
-// 扩展名 → MIME:给 new File 的 type 用(图片尤其需要正确 type 才能在编辑器/上传中正常处理)。
-const MIME_BY_EXT: Record<string, string> = {
-  jpg: "image/jpeg",
-  jpeg: "image/jpeg",
-  png: "image/png",
-  gif: "image/gif",
-  webp: "image/webp",
-  amr: "audio/amr",
-  mp3: "audio/mpeg",
-  wav: "audio/wav",
-  pdf: "application/pdf",
-  doc: "application/msword",
-  docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-  xls: "application/vnd.ms-excel",
-  xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-  ppt: "application/vnd.ms-powerpoint",
-  pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-  txt: "text/plain",
-  zip: "application/zip",
-  rar: "application/vnd.rar",
-};
 
 // 用 Tauri 原生文件框按扩展名过滤(macOS 上 <input accept> 无法过滤,见 wry#1191):选中路径经
 // read_local_file 读回字节,就地组装成 File 交给与 <input> 完全一致的下游管线。仅在 Tauri 下调用;

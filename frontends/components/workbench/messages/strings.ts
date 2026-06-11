@@ -71,8 +71,6 @@ export const STRINGS = {
     recalledPlaceholder: "(已撤回)",
     scrollToBottom: "回到底部",
     newMessagesBelow: (n: number) => `${n > 99 ? "99+" : n} 条新消息`,
-    /** 顶部浮动 pill,提示视口上方还有未读;点击跳到 UnreadDivider。 */
-    unreadAbove: (n: number) => `↑ ${n > 99 ? "99+" : n} 条未读`,
     /** 顶部浮动 pill,向上翻历史时加载更早消息的状态文案(带 spinner)。 */
     loadingHistory: "加载更早的消息",
     recalledByMe: "你撤回了一条消息",
@@ -141,6 +139,9 @@ export const STRINGS = {
       "仅支持 pdf / doc / docx / xls / xlsx / ppt / pptx / txt / md / zip / rar 等文件格式",
     // 单个附件体积上限(图片/文件),与 MessageComposer 的 MAX_UPLOAD_BYTES 对应。
     fileTooLarge: "单个文件不能超过 200 MB",
+    dropUnsupported: "包含不支持的文件类型，已忽略",
+    dropVoiceAlone: "语音文件需单独拖入发送",
+    dropReadFailed: "读取拖入的文件失败",
   },
   errors: {
     pageUnavailable: "消息页暂时不可用",
@@ -188,6 +189,7 @@ export const STRINGS = {
       concise: "简洁",
     },
     aiPolishEmptyHint: "请先输入需要润色的内容",
+    aiPolishOffHint: "AI 润色已在设置中关闭",
     polishOriginal: "原文",
     polishPreview: "润色预览",
     polishCancel: "取消",
@@ -232,6 +234,8 @@ export const STRINGS = {
     emojiPickerLabel: "选择表情",
     mentionListLabel: "选择联系人",
     cancelReply: "取消引用",
+    dropTitle: "松开发送文件",
+    dropHint: "图片将插入输入框，文档将作为附件",
   },
   customerDetails: {
     tabsLabel: "客户详情视图",

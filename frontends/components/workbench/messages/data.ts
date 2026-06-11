@@ -101,6 +101,34 @@ export type MessagePart =
   // 兜底为占位 part,由渲染层显示「暂不支持」提示,避免出现空白气泡。无字段。
   | { kind: "unknown" };
 
+// 取文件名扩展名(不含点,小写);无扩展名返回空串。
+export const extOf = (name: string) => {
+  const dot = name.lastIndexOf(".");
+  return dot >= 0 ? name.slice(dot + 1).toLowerCase() : "";
+};
+
+// 扩展名 → MIME:给 new File 的 type 用(图片尤其需要正确 type 才能在编辑器/上传中正常处理)。
+export const MIME_BY_EXT: Record<string, string> = {
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  png: "image/png",
+  gif: "image/gif",
+  webp: "image/webp",
+  amr: "audio/amr",
+  mp3: "audio/mpeg",
+  wav: "audio/wav",
+  pdf: "application/pdf",
+  doc: "application/msword",
+  docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  xls: "application/vnd.ms-excel",
+  xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  ppt: "application/vnd.ms-powerpoint",
+  pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  txt: "text/plain",
+  zip: "application/zip",
+  rar: "application/vnd.rar",
+};
+
 // 收发两侧(历史消息分类 / 本地选文件)与 composer 校验共用的单一真相源:扩展名白名单。
 export const IMAGE_EXTS = ["jpg", "jpeg", "png", "gif", "webp"] as const;
 export const VOICE_EXTS = ["amr", "mp3", "wav"] as const;
