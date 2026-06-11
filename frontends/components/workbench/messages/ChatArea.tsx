@@ -9,7 +9,7 @@ import {
   useState,
   type MutableRefObject,
 } from "react";
-import { ArrowDown, ArrowUp } from "lucide-react";
+import { ArrowDown } from "lucide-react";
 import {
   Virtuoso,
   type Components,
@@ -36,12 +36,14 @@ import { useChatTimeline } from "./hooks/useChatTimeline";
 import { EnlargeReader } from "./EnlargeReader";
 import { ForwardDialog, type ForwardTarget } from "./ForwardDialog";
 import { DateDivider, MessageBubble, type ReplyTarget, UnreadDivider } from "./MessageBubble";
-import { MessageComposer } from "./MessageComposer";
+import { MessageComposer, type ComposerDropHandle } from "./MessageComposer";
 import type { MessageActionType } from "./MessageContextMenu";
 import { nextOfflineSticky } from "./offlineState";
 import { RangePill } from "./RangePill";
 import type { ChatMessageEntity } from "./store/chatStore";
 import { STRINGS } from "./strings";
+import { useSettingsStore } from "@/lib/data/settingsStore";
+import { useFileDragDrop } from "./useFileDragDrop";
 
 type MessageTimelineItem = ReturnType<typeof useChatTimeline>[number];
 
@@ -235,13 +237,7 @@ export const ChatArea = memo(function ChatArea({
   // 时间线派生(日期/未读分隔 + 气泡 + 未读锚点冻结)抽到 useChatTimeline(Stage 4d),纯派生。
   const timelineItems = useChatTimeline({ localMessages, conversation });
 
-  // 未读分隔条在 timelineItems 里的下标(无未读为 -1)。供 scrollToUnread / 上方未读 pill 判定用。
-  const unreadDividerIndex = useMemo(
-    () => timelineItems.findIndex((item) => item.type === "unread-divider"),
-    [timelineItems],
-  );
-
-  // Virtuoso 命令式句柄(scrollToIndex):scrollToUnread / 滚到底按钮 / 发送贴底用。
+  // Virtuoso 命令式句柄(scrollToIndex):滚到底按钮 / 发送贴底用。
   const virtuosoRef = useRef<VirtuosoHandle | null>(null);
 
   // ── 贴底状态 ───────────────────────────────────────────────────────────────
@@ -294,11 +290,6 @@ export const ChatArea = memo(function ChatArea({
     };
   }, []);
 
-  // ── 上方未读 pill ──────────────────────────────────────────────────────────
-  // 用户从底部上滚、未读分隔条仍在视口上方(未看到)时点亮。看到(rangeChanged 越过分隔条)即清。
-  const [unreadAbove, setUnreadAbove] = useState(0);
-  const hasSeenDividerRef = useRef(false);
-
   // ── firstItemIndex 派生(渲染期,锚最旧「消息」行)────────────────────────────
   // 窗口只增不减:prepend 更旧消息后,据「旧锚消息在新表的下标 − 旧下标 = 锚上方净新增行数」
   // 把 firstItemIndex 下移,使 Virtuoso 据 firstItemIndex 锚定、当前可见内容保持稳定。
@@ -322,9 +313,9 @@ export const ChatArea = memo(function ChatArea({
   );
   let firstItemIndex = firstIndexState.firstItemIndex;
   if (firstIndexState.convId !== conversation.id) {
-    // 切会话:重置 firstItemIndex 基值 + 锚 + 贴底/未读 pill 本地态(随 key={chatStoreKey} 重挂回
+    // 切会话:重置 firstItemIndex 基值 + 锚 + 贴底本地态(随 key={chatStoreKey} 重挂回
     // 首屏贴底)。这些渲染期 setState 被 React 丢弃当前渲染并立即重渲,条件收敛(convId 已更新)
-    // 不死循环。配套 ref 重置(wasAtBottomRef / hasSeenDividerRef / 外部 atBottomRef)在下方 layout
+    // 不死循环。配套 ref 重置(wasAtBottomRef / 外部 atBottomRef)在下方 layout
     // effect 做——渲染期禁写 ref(react-hooks/refs)。
     firstItemIndex = INITIAL_FIRST_ITEM_INDEX;
     setFirstIndexState({
@@ -335,7 +326,6 @@ export const ChatArea = memo(function ChatArea({
     });
     setAtBottom(true);
     setUnreadBelow(0);
-    setUnreadAbove(0);
   } else {
     const next = resolvePrependShift(firstIndexState, rowKeys, oldestMessageIndex);
     firstItemIndex = next.firstItemIndex;
@@ -431,11 +421,10 @@ export const ChatArea = memo(function ChatArea({
     });
   }, [currentTimelineSettled, preservingCurrentTimeline, chatStoreKey, currentTimelineSnapshot]);
 
-  // 切会话:重置贴底/已看分隔条相关的 ref(渲染期禁写 ref,故放 layout effect)。外部 atBottomRef
+  // 切会话:重置贴底相关的 ref(渲染期禁写 ref,故放 layout effect)。外部 atBottomRef
   // 同步置 true → 新会话首屏 readCache 走整窗塌缩。只写 ref、不 setState,故无 set-state-in-effect。
   useLayoutEffect(() => {
     wasAtBottomRef.current = true;
-    hasSeenDividerRef.current = false;
     if (atBottomRef) atBottomRef.current = true;
   }, [conversation.id, atBottomRef]);
 
@@ -587,10 +576,7 @@ export const ChatArea = memo(function ChatArea({
       });
   }, [loading, hasMoreHistory, onLoadMoreHistory]);
 
-  // ── 上方未读 pill:rangeChanged 判定 ────────────────────────────────────────
-  // 绝对 dividerIndex = firstItemIndex + unreadDividerIndex(Virtuoso 的 range 用绝对下标)。
-  //   - range.startIndex > 绝对dividerIndex → 已滚过分隔条(看到)→ 清 pill + 标 seen;
-  //   - range.startIndex < 绝对dividerIndex 且未 seen 且有未读 → 点亮 pill。
+  // ── 时间线就绪判定:rangeChanged 检测到列表尾行进入视口 → 标记 ready ────────
   const handleRangeChanged = useCallback(
     (range: ListRange) => {
       if (
@@ -606,38 +592,9 @@ export const ChatArea = memo(function ChatArea({
           );
         });
       }
-      if (unreadDividerIndex < 0) return;
-      const absDivider = firstItemIndex + unreadDividerIndex;
-      if (range.startIndex > absDivider) {
-        hasSeenDividerRef.current = true;
-        setUnreadAbove((prev) => (prev === 0 ? prev : 0));
-        return;
-      }
-      if (hasSeenDividerRef.current) return;
-      const unread = conversation.unread ?? 0;
-      if (unread <= 0) return;
-      setUnreadAbove((prev) => (prev === unread ? prev : unread));
     },
-    [
-      chatStoreKey,
-      timelineItems.length,
-      timelineStage.key,
-      timelineStage.ready,
-      unreadDividerIndex,
-      firstItemIndex,
-      conversation.unread,
-    ],
+    [chatStoreKey, timelineItems.length, timelineStage.key, timelineStage.ready, firstItemIndex],
   );
-
-  const scrollToUnread = useCallback(() => {
-    if (unreadDividerIndex < 0) return;
-    // 传 data 相对 index,Virtuoso 内部加 firstItemIndex。
-    virtuosoRef.current?.scrollToIndex({
-      index: unreadDividerIndex,
-      align: "center",
-      behavior: "smooth",
-    });
-  }, [unreadDividerIndex]);
 
   const scrollToBottom = useCallback(() => {
     virtuosoRef.current?.scrollToIndex({ index: "LAST", align: "end", behavior: "smooth" });
@@ -711,10 +668,24 @@ export const ChatArea = memo(function ChatArea({
     setOffline((prev) => nextOfflineSticky(prev, connectionState));
   }, [connectionState]);
 
+  // ── 拖拽文件发送(设置页开关门控;遮罩覆盖消息列表+输入区整片,统一一套视觉) ──
+  const dragDropEnabled = useSettingsStore((s) => s.settings.composer.dragDrop);
+  const chatAreaRef = useRef<HTMLDivElement | null>(null);
+  const composerDropRef = useRef<ComposerDropHandle | null>(null);
+  const { dragActive, webHandlers } = useFileDragDrop({
+    enabled: dragDropEnabled,
+    containerRef: chatAreaRef,
+    onFiles: (files) => composerDropRef.current?.acceptDroppedFiles(files),
+  });
+
   // 切会话采用 IM 常见的稳定舞台:新 Virtuoso 先隐身落位,尾部 range ready 后再切入。
   // 用户只看到无滚动条的聊天骨架过渡,看不到原生 scrollbar 从上方跳到底部的中间态。
   return (
-    <div className="relative flex h-full min-w-0 flex-1 flex-col overflow-hidden bg-workbench-surface">
+    <div
+      ref={chatAreaRef}
+      {...webHandlers}
+      className="relative flex h-full min-w-0 flex-1 flex-col overflow-hidden bg-workbench-surface"
+    >
       <ChatHeader conversation={displayConversation} />
       <RangePill
         accounts={accounts}
@@ -780,9 +751,6 @@ export const ChatArea = memo(function ChatArea({
           onClick={scrollToBottom}
         />
       )}
-      {!loading && !error && timelineReadyForOverlays && unreadAbove > 0 && (
-        <UnreadAbovePill count={unreadAbove} onClick={scrollToUnread} />
-      )}
       <MessageComposer
         conversationId={displayConversation.id}
         height={composerHeight}
@@ -799,6 +767,7 @@ export const ChatArea = memo(function ChatArea({
         onCancelReply={() => setReplyDraft(null)}
         getPolishContext={() => buildPolishContext(displayMessages)}
         offline={offline}
+        dropHandleRef={composerDropRef}
       />
       {enlargeMessage && (
         <EnlargeReader text={enlargeMessage.text} onClose={() => setEnlargeMessage(null)} />
@@ -810,6 +779,16 @@ export const ChatArea = memo(function ChatArea({
           onForward={(targets) => onForward?.(forwardMessage, targets)}
           onClose={() => setForwardMessage(null)}
         />
+      )}
+      {dragActive && (
+        <div className="pointer-events-none absolute inset-0 z-40 flex items-center justify-center bg-workbench-surface/80 backdrop-blur-sm duration-150 animate-in fade-in motion-reduce:animate-none">
+          <div className="flex flex-col items-center gap-2 rounded-2xl border-2 border-dashed border-workbench-accent bg-workbench-surface px-10 py-8 shadow-wb-popover">
+            <p className="text-wb-sm font-semibold text-workbench-text">
+              {STRINGS.composer.dropTitle}
+            </p>
+            <p className="text-wb-2xs text-workbench-text-secondary">{STRINGS.composer.dropHint}</p>
+          </div>
+        </div>
       )}
     </div>
   );
@@ -1032,34 +1011,6 @@ const ScrollToBottomButton = memo(function ScrollToBottomButton({
       ) : (
         <span>{STRINGS.status.scrollToBottom}</span>
       )}
-    </button>
-  );
-});
-
-// ─── Floating unread-above pill ─────────────────────────────────────────────
-// 视觉镜像 ScrollToBottomButton:位置在消息区域右上角(top-3),箭头朝上,文案
-// "↑ N 条未读"。点击 → scrollToIndex 到未读分隔条。rangeChanged 检测到分隔条进入视口后
-// 由 handleRangeChanged 清零 count,本 pill 跟着卸载。
-const UnreadAbovePill = memo(function UnreadAbovePill({
-  count,
-  onClick,
-}: {
-  count: number;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      aria-label={STRINGS.status.unreadAbove(count)}
-      className={cn(
-        "focus-ring absolute right-[var(--wb-floating-pill-inset-inline-end)] top-3 z-20 inline-flex items-center gap-1.5 rounded-full border border-workbench-line bg-workbench-surface px-2.5 py-1 text-wb-2xs font-medium text-workbench-text-secondary shadow-wb-popover transition-all hover:bg-workbench-surface-subtle hover:text-workbench-accent",
-        "animate-in fade-in slide-in-from-top-2",
-      )}
-    >
-      <ArrowUp size={14} className="shrink-0" aria-hidden />
-      <span className="wb-num font-medium text-workbench-accent">{count > 99 ? "99+" : count}</span>
-      <span>{STRINGS.status.unreadAbove(count).replace(/^↑\s*\d+\+?\s*/, "")}</span>
     </button>
   );
 });

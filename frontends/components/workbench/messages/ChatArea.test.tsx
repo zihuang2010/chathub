@@ -1,9 +1,11 @@
-import { act, cleanup, render, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { Account } from "@/lib/types/account";
+import { DEFAULT_SETTINGS, useSettingsStore } from "@/lib/data/settingsStore";
 
 import { ChatArea } from "./ChatArea";
+import { STRINGS } from "./strings";
 import type { Conversation, Message } from "./data";
 import type { ChatMessageEntity } from "./store/chatStore";
 import { clearImageDimsCache, rememberMeasuredDims } from "./imageDimsCache";
@@ -908,6 +910,35 @@ describe("ChatArea unread divider", () => {
       "msg:04",
       "msg:05",
     ]);
+  });
+});
+
+describe("ChatArea 拖拽文件遮罩(设置开关门控)", () => {
+  it("拖文件悬停聊天区:出现统一「松开发送」遮罩;设置关闭则不响应", async () => {
+    // 确保设置 store 带默认值(dragDrop=true)
+    act(() => {
+      useSettingsStore.setState({ settings: structuredClone(DEFAULT_SETTINGS), loaded: true });
+    });
+    const { container } = renderChatArea();
+    const root = container.firstElementChild as HTMLElement;
+
+    // 拖入文件 → 遮罩出现
+    fireEvent.dragOver(root, { dataTransfer: { types: ["Files"] } });
+    await waitFor(() => expect(screen.queryByText(STRINGS.composer.dropTitle)).toBeTruthy());
+    expect(screen.queryByText(STRINGS.composer.dropHint)).toBeTruthy();
+
+    // 拖出聊天区 → 遮罩消失
+    fireEvent.dragLeave(root, { relatedTarget: document.body });
+    await waitFor(() => expect(screen.queryByText(STRINGS.composer.dropTitle)).toBeNull());
+
+    // 关掉设置开关 → 再拖不出遮罩
+    act(() => {
+      useSettingsStore.setState((s) => ({
+        settings: { ...s.settings, composer: { ...s.settings.composer, dragDrop: false } },
+      }));
+    });
+    fireEvent.dragOver(root, { dataTransfer: { types: ["Files"] } });
+    expect(screen.queryByText(STRINGS.composer.dropTitle)).toBeNull();
   });
 });
 
